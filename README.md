@@ -33,7 +33,7 @@ See [healthcheck/docs](healthcheck/docs/) for the technical guide (design, valid
 | Item | Status |
 |---|---|
 | SOP | v1.1 |
-| NetworkHealthCheck | v1.1.0 — static validation passed; Windows acceptance in progress |
+| NetworkHealthCheck | v1.1.0 — static validation, independent code review, and Windows acceptance **passed** ([validation record](healthcheck/VALIDATION.md)) |
 | NHC v1.2 | Planned: separate User / IT modes |
 | Guided triage wizard | Planned: decision-tree front-end over the SOP |
 
