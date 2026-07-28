@@ -27,7 +27,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：PowerShell 可提供時，報告會保存例外類型、訊息、位置與堆疊。
 
-$script:ToolVersion = "1.1.1"
+$script:ToolVersion = "1.1.2"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Results = New-Object System.Collections.ArrayList
 $script:StartupMessages = New-Object System.Collections.ArrayList
@@ -1374,7 +1374,7 @@ function Test-PingTargets {
 
         if ($targets.Count -eq 0) {
             $status = if ($required) { "FAIL" } else { "WARN" }
-            Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status $status -Message "找不到可測試的目標。" -Details ("設定值：$address" + [Environment]::NewLine + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms。" -f $count, $timeout)) | Out-Null
+            Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status $status -Message "找不到可測試的目標。" -Details ("設定值：$address" + [Environment]::NewLine + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms。" -f $count, $timeout) + [Environment]::NewLine + "手動驗證：ping -n $count <目標 IP>") | Out-Null
             continue
         }
 
@@ -1406,7 +1406,7 @@ function Test-PingTargets {
                 }
 
                 $message = "目標 {0}：遺失 {1}%（{2}/{3} 成功），{4}。" -f $target, $measurement.LossPercent, $measurement.Received, $measurement.Sent, $latencyText
-                $details = (@($measurement.AttemptDetails) + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms。" -f $count, $timeout)) -join [Environment]::NewLine
+                $details = (@($measurement.AttemptDetails) + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms。" -f $count, $timeout) + ("手動驗證：ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
                 Add-CheckResult -Category "延遲與封包遺失" -Check ("{0}：{1}" -f $name, $target) -Status $status -Message $message -Details $details | Out-Null
             }
             catch {
@@ -1467,16 +1467,16 @@ function Test-DnsNames {
         try {
             $result = Invoke-DnsLookup -HostName $hostName -TimeoutMs $timeout
             if ($result.Addresses.Count -gt 0) {
-                Add-CheckResult -Category "DNS" -Check $name -Status "PASS" -Message ("{0} 已解析為 {1}（{2} ms）。" -f $hostName, ($result.Addresses -join ", "), $result.ElapsedMs) -Details $methodText | Out-Null
+                Add-CheckResult -Category "DNS" -Check $name -Status "PASS" -Message ("{0} 已解析為 {1}（{2} ms）。" -f $hostName, ($result.Addresses -join ", "), $result.ElapsedMs) -Details ($methodText + [Environment]::NewLine + "手動驗證：nslookup $hostName") | Out-Null
             }
             else {
                 $status = if ($required) { "FAIL" } else { "WARN" }
-                Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("$hostName 沒有回傳 IP 位址。") -Details $methodText | Out-Null
+                Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("$hostName 沒有回傳 IP 位址。") -Details ($methodText + [Environment]::NewLine + "手動驗證：nslookup $hostName") | Out-Null
             }
         }
         catch {
             $status = if ($required) { "FAIL" } else { "WARN" }
-            Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("無法解析 $hostName。") -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + $methodText) | Out-Null
+            Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("無法解析 $hostName。") -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + $methodText + [Environment]::NewLine + "手動驗證：nslookup $hostName") | Out-Null
         }
     }
 }
@@ -1674,11 +1674,11 @@ function Test-ConnectivityTargets {
 
         $result = Invoke-TcpConnectionTest -HostName $hostName -Port $port -TimeoutMs $tcpTimeout
         if ($result.Success) {
-            Add-CheckResult -Category "TCP 連線" -Check $name -Status "PASS" -Message ("可連線至 {0}:{1}，耗時 {2} ms。" -f $hostName, $port, $result.ElapsedMs) -Details $tcpMethod | Out-Null
+            Add-CheckResult -Category "TCP 連線" -Check $name -Status "PASS" -Message ("可連線至 {0}:{1}，耗時 {2} ms。" -f $hostName, $port, $result.ElapsedMs) -Details ($tcpMethod + [Environment]::NewLine + "手動驗證：Test-NetConnection $hostName -Port $port") | Out-Null
         }
         else {
             $status = if ($required) { "FAIL" } else { "INFO" }
-            Add-CheckResult -Category "TCP 連線" -Check $name -Status $status -Message ("無法連線至 {0}:{1}。" -f $hostName, $port) -Details ($result.Error + [Environment]::NewLine + $tcpMethod) | Out-Null
+            Add-CheckResult -Category "TCP 連線" -Check $name -Status $status -Message ("無法連線至 {0}:{1}。" -f $hostName, $port) -Details ($result.Error + [Environment]::NewLine + $tcpMethod + [Environment]::NewLine + "手動驗證：Test-NetConnection $hostName -Port $port") | Out-Null
         }
 
         if (-not [string]::IsNullOrWhiteSpace($group)) {
@@ -1710,11 +1710,11 @@ function Test-ConnectivityTargets {
 
         $result = Invoke-HttpConnectionTest -Url $url -TimeoutMs $httpTimeout
         if ($result.Success) {
-            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "PASS" -Message ("HTTP {0}，耗時 {1} ms。" -f $result.StatusCode, $result.ElapsedMs) -Details ("原始網址：{0}`r`n最終網址：{1}`r`n狀態：{2}`r`n{3}" -f $url, $result.FinalUrl, $result.StatusText, $httpMethod) | Out-Null
+            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "PASS" -Message ("HTTP {0}，耗時 {1} ms。" -f $result.StatusCode, $result.ElapsedMs) -Details ("原始網址：{0}`r`n最終網址：{1}`r`n狀態：{2}`r`n{3}`r`n手動驗證：Invoke-WebRequest {0} -UseBasicParsing" -f $url, $result.FinalUrl, $result.StatusText, $httpMethod) | Out-Null
         }
         else {
             $status = if ($required) { "FAIL" } else { "INFO" }
-            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status $status -Message ("無法連線：$url") -Details ($result.Error + [Environment]::NewLine + $httpMethod) | Out-Null
+            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status $status -Message ("無法連線：$url") -Details ($result.Error + [Environment]::NewLine + $httpMethod + [Environment]::NewLine + "手動驗證：Invoke-WebRequest $url -UseBasicParsing") | Out-Null
         }
 
         if (-not [string]::IsNullOrWhiteSpace($group)) {
@@ -1840,7 +1840,8 @@ function Compare-AdapterStatistics {
             "傳送丟棄增量：$txDiscardDelta（累積 $($afterItem.OutboundDiscardedPackets)）",
             "接收位元組累積：$($afterItem.ReceivedBytes)",
             "傳送位元組累積：$($afterItem.SentBytes)",
-            "檢測方式：Get-NetAdapterStatistics 測試前後取樣，顯示增量。"
+            "檢測方式：Get-NetAdapterStatistics 測試前後取樣，顯示增量。",
+            "手動驗證：Get-NetAdapterStatistics -Name '$name'"
         ) -join [Environment]::NewLine
 
         Add-CheckResult -Category "網卡錯誤計數" -Check $name -Status $status -Message $message -Details $details | Out-Null
@@ -1954,6 +1955,7 @@ function Compare-TcpCounters {
             "起始累積：Sent=$($start.SegmentsSent), Retrans=$($start.Retransmitted)",
             "結束累積：Sent=$($end.SegmentsSent), Retrans=$($end.Retransmitted)",
             "檢測方式：Win32_PerfRawData_Tcpip_$protocol 累積計數器，取樣期間增量。",
+            "手動驗證：Get-CimInstance Win32_PerfRawData_Tcpip_$protocol（取樣兩次比較增量）",
             "說明：此為整台電腦在檢測期間的系統級統計，不只包含單一程式。"
         ) -join [Environment]::NewLine
 
