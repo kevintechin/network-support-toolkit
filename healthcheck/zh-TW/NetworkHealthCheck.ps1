@@ -27,7 +27,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：PowerShell 可提供時，報告會保存例外類型、訊息、位置與堆疊。
 
-$script:ToolVersion = "1.1.0"
+$script:ToolVersion = "1.1.1"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Results = New-Object System.Collections.ArrayList
 $script:StartupMessages = New-Object System.Collections.ArrayList
@@ -1374,7 +1374,7 @@ function Test-PingTargets {
 
         if ($targets.Count -eq 0) {
             $status = if ($required) { "FAIL" } else { "WARN" }
-            Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status $status -Message "找不到可測試的目標。" -Details ("設定值：$address") | Out-Null
+            Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status $status -Message "找不到可測試的目標。" -Details ("設定值：$address" + [Environment]::NewLine + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms。" -f $count, $timeout)) | Out-Null
             continue
         }
 
@@ -1406,7 +1406,7 @@ function Test-PingTargets {
                 }
 
                 $message = "目標 {0}：遺失 {1}%（{2}/{3} 成功），{4}。" -f $target, $measurement.LossPercent, $measurement.Received, $measurement.Sent, $latencyText
-                $details = @($measurement.AttemptDetails) -join [Environment]::NewLine
+                $details = (@($measurement.AttemptDetails) + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms。" -f $count, $timeout)) -join [Environment]::NewLine
                 Add-CheckResult -Category "延遲與封包遺失" -Check ("{0}：{1}" -f $name, $target) -Status $status -Message $message -Details $details | Out-Null
             }
             catch {
@@ -1444,6 +1444,7 @@ function Invoke-DnsLookup {
 
 function Test-DnsNames {
     $timeout = [math]::Max(500, (ConvertTo-IntSafe $script:Config.Tests.DnsTimeoutMs 4000))
+    $methodText = "檢測方式：System.Net.Dns.GetHostAddressesAsync 經作業系統解析，逾時 $timeout ms。"
 
     foreach ($dnsConfig in @($script:Config.Tests.DnsNames)) {
         if ($null -eq $dnsConfig) { continue }
@@ -1466,16 +1467,16 @@ function Test-DnsNames {
         try {
             $result = Invoke-DnsLookup -HostName $hostName -TimeoutMs $timeout
             if ($result.Addresses.Count -gt 0) {
-                Add-CheckResult -Category "DNS" -Check $name -Status "PASS" -Message ("{0} 已解析為 {1}（{2} ms）。" -f $hostName, ($result.Addresses -join ", "), $result.ElapsedMs) -Details "" | Out-Null
+                Add-CheckResult -Category "DNS" -Check $name -Status "PASS" -Message ("{0} 已解析為 {1}（{2} ms）。" -f $hostName, ($result.Addresses -join ", "), $result.ElapsedMs) -Details $methodText | Out-Null
             }
             else {
                 $status = if ($required) { "FAIL" } else { "WARN" }
-                Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("$hostName 沒有回傳 IP 位址。") -Details "" | Out-Null
+                Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("$hostName 沒有回傳 IP 位址。") -Details $methodText | Out-Null
             }
         }
         catch {
             $status = if ($required) { "FAIL" } else { "WARN" }
-            Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("無法解析 $hostName。") -Details (Get-ExceptionDetails $_) | Out-Null
+            Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("無法解析 $hostName。") -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + $methodText) | Out-Null
         }
     }
 }
@@ -1639,11 +1640,11 @@ function Add-ConnectivityGroupResult {
     $successful = @($entries | Where-Object { $_.Success })
     if ($successful.Count -gt 0) {
         $names = @($successful | ForEach-Object { $_.Name })
-        Add-CheckResult -Category "連線能力" -Check ("群組：$GroupName") -Status "PASS" -Message ("至少一種連線方式成功：{0}" -f ($names -join ", ")) -Details ("成功 {0}/{1} 項。" -f $successful.Count, $entries.Count) | Out-Null
+        Add-CheckResult -Category "連線能力" -Check ("群組：$GroupName") -Status "PASS" -Message ("至少一種連線方式成功：{0}" -f ($names -join ", ")) -Details (("成功 {0}/{1} 項。" -f $successful.Count, $entries.Count) + [Environment]::NewLine + "檢測方式：群組內任一連線測試成功即通過。") | Out-Null
     }
     else {
         $status = if ($Required) { "FAIL" } else { "WARN" }
-        $details = @($entries | ForEach-Object { "{0}：{1}" -f $_.Name, $_.Error }) -join [Environment]::NewLine
+        $details = (@($entries | ForEach-Object { "{0}：{1}" -f $_.Name, $_.Error }) + "檢測方式：群組內任一連線測試成功即通過。") -join [Environment]::NewLine
         Add-CheckResult -Category "連線能力" -Check ("群組：$GroupName") -Status $status -Message "所有連線方式都失敗。" -Details $details | Out-Null
     }
 }
@@ -1651,6 +1652,8 @@ function Add-ConnectivityGroupResult {
 function Test-ConnectivityTargets {
     $tcpTimeout = [math]::Max(500, (ConvertTo-IntSafe $script:Config.Tests.TcpTimeoutMs 4000))
     $httpTimeout = [math]::Max(500, (ConvertTo-IntSafe $script:Config.Tests.HttpTimeoutMs 6000))
+    $tcpMethod = "檢測方式：TcpClient.BeginConnect，逾時 $tcpTimeout ms。"
+    $httpMethod = "檢測方式：HttpWebRequest GET（系統 Proxy、TLS 1.2），逾時 $httpTimeout ms。"
     $groupResults = @{}
 
     foreach ($target in @($script:Config.Tests.TcpTargets)) {
@@ -1671,11 +1674,11 @@ function Test-ConnectivityTargets {
 
         $result = Invoke-TcpConnectionTest -HostName $hostName -Port $port -TimeoutMs $tcpTimeout
         if ($result.Success) {
-            Add-CheckResult -Category "TCP 連線" -Check $name -Status "PASS" -Message ("可連線至 {0}:{1}，耗時 {2} ms。" -f $hostName, $port, $result.ElapsedMs) -Details "" | Out-Null
+            Add-CheckResult -Category "TCP 連線" -Check $name -Status "PASS" -Message ("可連線至 {0}:{1}，耗時 {2} ms。" -f $hostName, $port, $result.ElapsedMs) -Details $tcpMethod | Out-Null
         }
         else {
             $status = if ($required) { "FAIL" } else { "INFO" }
-            Add-CheckResult -Category "TCP 連線" -Check $name -Status $status -Message ("無法連線至 {0}:{1}。" -f $hostName, $port) -Details $result.Error | Out-Null
+            Add-CheckResult -Category "TCP 連線" -Check $name -Status $status -Message ("無法連線至 {0}:{1}。" -f $hostName, $port) -Details ($result.Error + [Environment]::NewLine + $tcpMethod) | Out-Null
         }
 
         if (-not [string]::IsNullOrWhiteSpace($group)) {
@@ -1707,11 +1710,11 @@ function Test-ConnectivityTargets {
 
         $result = Invoke-HttpConnectionTest -Url $url -TimeoutMs $httpTimeout
         if ($result.Success) {
-            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "PASS" -Message ("HTTP {0}，耗時 {1} ms。" -f $result.StatusCode, $result.ElapsedMs) -Details ("原始網址：{0}`r`n最終網址：{1}`r`n狀態：{2}" -f $url, $result.FinalUrl, $result.StatusText) | Out-Null
+            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "PASS" -Message ("HTTP {0}，耗時 {1} ms。" -f $result.StatusCode, $result.ElapsedMs) -Details ("原始網址：{0}`r`n最終網址：{1}`r`n狀態：{2}`r`n{3}" -f $url, $result.FinalUrl, $result.StatusText, $httpMethod) | Out-Null
         }
         else {
             $status = if ($required) { "FAIL" } else { "INFO" }
-            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status $status -Message ("無法連線：$url") -Details $result.Error | Out-Null
+            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status $status -Message ("無法連線：$url") -Details ($result.Error + [Environment]::NewLine + $httpMethod) | Out-Null
         }
 
         if (-not [string]::IsNullOrWhiteSpace($group)) {
@@ -1836,7 +1839,8 @@ function Compare-AdapterStatistics {
             "接收丟棄增量：$rxDiscardDelta（累積 $($afterItem.ReceivedDiscardedPackets)）",
             "傳送丟棄增量：$txDiscardDelta（累積 $($afterItem.OutboundDiscardedPackets)）",
             "接收位元組累積：$($afterItem.ReceivedBytes)",
-            "傳送位元組累積：$($afterItem.SentBytes)"
+            "傳送位元組累積：$($afterItem.SentBytes)",
+            "檢測方式：Get-NetAdapterStatistics 測試前後取樣，顯示增量。"
         ) -join [Environment]::NewLine
 
         Add-CheckResult -Category "網卡錯誤計數" -Check $name -Status $status -Message $message -Details $details | Out-Null
@@ -1949,6 +1953,7 @@ function Compare-TcpCounters {
             "近似重傳比例：$rate%",
             "起始累積：Sent=$($start.SegmentsSent), Retrans=$($start.Retransmitted)",
             "結束累積：Sent=$($end.SegmentsSent), Retrans=$($end.Retransmitted)",
+            "檢測方式：Win32_PerfRawData_Tcpip_$protocol 累積計數器，取樣期間增量。",
             "說明：此為整台電腦在檢測期間的系統級統計，不只包含單一程式。"
         ) -join [Environment]::NewLine
 

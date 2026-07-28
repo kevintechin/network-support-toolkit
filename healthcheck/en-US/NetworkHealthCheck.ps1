@@ -34,7 +34,7 @@ param(
 # - Traceability: detailed exception type, message, location, and script stack are
 #   stored in the report whenever PowerShell exposes those values.
 
-$script:ToolVersion = "1.1.0"
+$script:ToolVersion = "1.1.1"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Results = New-Object System.Collections.ArrayList
 $script:StartupMessages = New-Object System.Collections.ArrayList
@@ -1381,7 +1381,7 @@ function Test-PingTargets {
 
         if ($targets.Count -eq 0) {
             $status = if ($required) { "FAIL" } else { "WARN" }
-            Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status $status -Message "No testable target was found." -Details ("Configured value: $address") | Out-Null
+            Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status $status -Message "No testable target was found." -Details ("Configured value: $address" + [Environment]::NewLine + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms." -f $count, $timeout)) | Out-Null
             continue
         }
 
@@ -1413,7 +1413,7 @@ function Test-PingTargets {
                 }
 
                 $message = "Target {0}: {1}% loss ({2}/{3} successful), {4}." -f $target, $measurement.LossPercent, $measurement.Received, $measurement.Sent, $latencyText
-                $details = @($measurement.AttemptDetails) -join [Environment]::NewLine
+                $details = (@($measurement.AttemptDetails) + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms." -f $count, $timeout)) -join [Environment]::NewLine
                 Add-CheckResult -Category "Latency and Packet Loss" -Check ("{0}: {1}" -f $name, $target) -Status $status -Message $message -Details $details | Out-Null
             }
             catch {
@@ -1451,6 +1451,7 @@ function Invoke-DnsLookup {
 
 function Test-DnsNames {
     $timeout = [math]::Max(500, (ConvertTo-IntSafe $script:Config.Tests.DnsTimeoutMs 4000))
+    $methodText = "Method: System.Net.Dns.GetHostAddressesAsync via the OS resolver, timeout $timeout ms."
 
     foreach ($dnsConfig in @($script:Config.Tests.DnsNames)) {
         if ($null -eq $dnsConfig) { continue }
@@ -1473,16 +1474,16 @@ function Test-DnsNames {
         try {
             $result = Invoke-DnsLookup -HostName $hostName -TimeoutMs $timeout
             if ($result.Addresses.Count -gt 0) {
-                Add-CheckResult -Category "DNS" -Check $name -Status "PASS" -Message ("{0} resolved to {1} ({2} ms)." -f $hostName, ($result.Addresses -join ", "), $result.ElapsedMs) -Details "" | Out-Null
+                Add-CheckResult -Category "DNS" -Check $name -Status "PASS" -Message ("{0} resolved to {1} ({2} ms)." -f $hostName, ($result.Addresses -join ", "), $result.ElapsedMs) -Details $methodText | Out-Null
             }
             else {
                 $status = if ($required) { "FAIL" } else { "WARN" }
-                Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("$hostName returned no IP address.") -Details "" | Out-Null
+                Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("$hostName returned no IP address.") -Details $methodText | Out-Null
             }
         }
         catch {
             $status = if ($required) { "FAIL" } else { "WARN" }
-            Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("Unable to resolve $hostName.") -Details (Get-ExceptionDetails $_) | Out-Null
+            Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("Unable to resolve $hostName.") -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + $methodText) | Out-Null
         }
     }
 }
@@ -1646,11 +1647,11 @@ function Add-ConnectivityGroupResult {
     $successful = @($entries | Where-Object { $_.Success })
     if ($successful.Count -gt 0) {
         $names = @($successful | ForEach-Object { $_.Name })
-        Add-CheckResult -Category "Connectivity" -Check ("Group: $GroupName") -Status "PASS" -Message ("At least one connectivity method succeeded: {0}" -f ($names -join ", ")) -Details ("{0}/{1} item(s) succeeded." -f $successful.Count, $entries.Count) | Out-Null
+        Add-CheckResult -Category "Connectivity" -Check ("Group: $GroupName") -Status "PASS" -Message ("At least one connectivity method succeeded: {0}" -f ($names -join ", ")) -Details (("{0}/{1} item(s) succeeded." -f $successful.Count, $entries.Count) + [Environment]::NewLine + "Method: the group passes if at least one member connectivity test succeeds.") | Out-Null
     }
     else {
         $status = if ($Required) { "FAIL" } else { "WARN" }
-        $details = @($entries | ForEach-Object { "{0}: {1}" -f $_.Name, $_.Error }) -join [Environment]::NewLine
+        $details = (@($entries | ForEach-Object { "{0}: {1}" -f $_.Name, $_.Error }) + "Method: the group passes if at least one member connectivity test succeeds.") -join [Environment]::NewLine
         Add-CheckResult -Category "Connectivity" -Check ("Group: $GroupName") -Status $status -Message "All connectivity methods failed." -Details $details | Out-Null
     }
 }
@@ -1658,6 +1659,8 @@ function Add-ConnectivityGroupResult {
 function Test-ConnectivityTargets {
     $tcpTimeout = [math]::Max(500, (ConvertTo-IntSafe $script:Config.Tests.TcpTimeoutMs 4000))
     $httpTimeout = [math]::Max(500, (ConvertTo-IntSafe $script:Config.Tests.HttpTimeoutMs 6000))
+    $tcpMethod = "Method: TcpClient.BeginConnect, timeout $tcpTimeout ms."
+    $httpMethod = "Method: HttpWebRequest GET via the system proxy, TLS 1.2, timeout $httpTimeout ms."
     $groupResults = @{}
 
     foreach ($target in @($script:Config.Tests.TcpTargets)) {
@@ -1678,11 +1681,11 @@ function Test-ConnectivityTargets {
 
         $result = Invoke-TcpConnectionTest -HostName $hostName -Port $port -TimeoutMs $tcpTimeout
         if ($result.Success) {
-            Add-CheckResult -Category "TCP Connection" -Check $name -Status "PASS" -Message ("Connected to {0}:{1} in {2} ms." -f $hostName, $port, $result.ElapsedMs) -Details "" | Out-Null
+            Add-CheckResult -Category "TCP Connection" -Check $name -Status "PASS" -Message ("Connected to {0}:{1} in {2} ms." -f $hostName, $port, $result.ElapsedMs) -Details $tcpMethod | Out-Null
         }
         else {
             $status = if ($required) { "FAIL" } else { "INFO" }
-            Add-CheckResult -Category "TCP Connection" -Check $name -Status $status -Message ("Unable to connect to {0}:{1}." -f $hostName, $port) -Details $result.Error | Out-Null
+            Add-CheckResult -Category "TCP Connection" -Check $name -Status $status -Message ("Unable to connect to {0}:{1}." -f $hostName, $port) -Details ($result.Error + [Environment]::NewLine + $tcpMethod) | Out-Null
         }
 
         if (-not [string]::IsNullOrWhiteSpace($group)) {
@@ -1714,11 +1717,11 @@ function Test-ConnectivityTargets {
 
         $result = Invoke-HttpConnectionTest -Url $url -TimeoutMs $httpTimeout
         if ($result.Success) {
-            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "PASS" -Message ("HTTP {0}, elapsed {1} ms." -f $result.StatusCode, $result.ElapsedMs) -Details ("Original URL: {0}`r`nFinal URL: {1}`r`nStatus: {2}" -f $url, $result.FinalUrl, $result.StatusText) | Out-Null
+            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "PASS" -Message ("HTTP {0}, elapsed {1} ms." -f $result.StatusCode, $result.ElapsedMs) -Details ("Original URL: {0}`r`nFinal URL: {1}`r`nStatus: {2}`r`n{3}" -f $url, $result.FinalUrl, $result.StatusText, $httpMethod) | Out-Null
         }
         else {
             $status = if ($required) { "FAIL" } else { "INFO" }
-            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status $status -Message ("Unable to connect: $url") -Details $result.Error | Out-Null
+            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status $status -Message ("Unable to connect: $url") -Details ($result.Error + [Environment]::NewLine + $httpMethod) | Out-Null
         }
 
         if (-not [string]::IsNullOrWhiteSpace($group)) {
@@ -1843,7 +1846,8 @@ function Compare-AdapterStatistics {
             "Receive discard delta: $rxDiscardDelta (cumulative $($afterItem.ReceivedDiscardedPackets))",
             "Send discard delta: $txDiscardDelta (cumulative $($afterItem.OutboundDiscardedPackets))",
             "Cumulative received bytes: $($afterItem.ReceivedBytes)",
-            "Cumulative sent bytes: $($afterItem.SentBytes)"
+            "Cumulative sent bytes: $($afterItem.SentBytes)",
+            "Method: Get-NetAdapterStatistics sampled before and after the test; deltas shown."
         ) -join [Environment]::NewLine
 
         Add-CheckResult -Category "Network Adapter Error Counters" -Check $name -Status $status -Message $message -Details $details | Out-Null
@@ -1956,6 +1960,7 @@ function Compare-TcpCounters {
             "Approximate retransmission rate: $rate%",
             "Starting cumulative values: Sent=$($start.SegmentsSent), Retrans=$($start.Retransmitted)",
             "Ending cumulative values: Sent=$($end.SegmentsSent), Retrans=$($end.Retransmitted)",
+            "Method: Win32_PerfRawData_Tcpip_$protocol cumulative counters; delta over the sample window.",
             "Explanation: This is a system-wide statistic for the entire computer during the test, not for a single application."
         ) -join [Environment]::NewLine
 

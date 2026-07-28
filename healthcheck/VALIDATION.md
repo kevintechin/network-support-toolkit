@@ -1,4 +1,14 @@
-# Validation Record — NetworkHealthCheck v1.1.0
+# Validation Record — NetworkHealthCheck
+
+## v1.1.1 · 2026-07-28
+
+**Change:** every check's details now carry a **Method line** stating the underlying API/command and its parameters (e.g., ".NET Ping — 4 ICMP echo requests, timeout 1200 ms", "Win32_PerfRawData_Tcpip_TCPv4 cumulative counters") — reports are self-explaining during walkthroughs. Backlog item 12; both language versions updated identically.
+
+**Re-validation:** PS 5.1 parser — 0 errors in both versions; function parity 56 = 56, names identical; real-machine acceptance re-run on both en-US and zh-TW — Overall Healthy, exit 0, all 11 Method lines present in each report.
+
+---
+
+# v1.1.0 baseline
 
 ## Windows acceptance run · 2026-07-28
 
@@ -48,4 +58,4 @@ All four injected faults were detected and correctly classified at the overall-v
 9. The non-required public-IP ping shows "100 % loss" with an Information badge and no explanation; add "informational — ICMP may be blocked; see the Connectivity group for the authoritative internet verdict."
 10. Virtual adapters (VirtualBox / Hyper-V) earn Pass rows and inflate the adapter count; demote virtual NICs to Information and report physical vs virtual counts separately ("0 physical" should itself be a failure signal).
 11. Full PowerShell stack traces (with local file paths) render in the HTML report; keep them in JSON only, show a one-line summary in HTML.
-12. Add a "Method" line to each check's details (command / API + parameters) so reports are self-explaining during walkthroughs (author request).
+12. ~~Add a "Method" line to each check's details~~ — **done in v1.1.1** (2026-07-28).
