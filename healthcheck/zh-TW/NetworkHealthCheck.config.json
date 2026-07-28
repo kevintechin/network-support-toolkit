@@ -1,0 +1,73 @@
+﻿{
+  "OrganizationName": "",
+  "ReportFolderName": "Reports",
+  "Expected": {
+    "AllowedIPv4Addresses": [],
+    "AllowedIPv4Cidrs": [],
+    "AllowedPrefixLengths": [],
+    "AllowedDefaultGateways": [],
+    "RequiredDnsServers": [],
+    "DhcpEnabled": null
+  },
+  "Tests": {
+    "PingCount": 4,
+    "PingTimeoutMs": 1200,
+    "DnsTimeoutMs": 4000,
+    "TcpTimeoutMs": 4000,
+    "HttpTimeoutMs": 6000,
+    "RetransmissionSampleSeconds": 8,
+    "PingTargets": [
+      {
+        "Name": "預設閘道",
+        "Address": "AUTO_GATEWAY",
+        "Required": true
+      },
+      {
+        "Name": "公網 IP",
+        "Address": "1.1.1.1",
+        "Required": false
+      }
+    ],
+    "DnsNames": [
+      {
+        "Name": "DNS 名稱解析",
+        "Host": "www.microsoft.com",
+        "Required": true
+      }
+    ],
+    "TcpTargets": [
+      {
+        "Name": "HTTPS 直連測試",
+        "Host": "1.1.1.1",
+        "Port": 443,
+        "Required": false,
+        "Group": "Internet"
+      }
+    ],
+    "HttpTargets": [
+      {
+        "Name": "HTTPS 網頁測試",
+        "Url": "https://www.microsoft.com/",
+        "Required": false,
+        "Group": "Internet"
+      }
+    ],
+    "RequiredConnectivityGroups": [
+      "Internet"
+    ]
+  },
+  "Thresholds": {
+    "PacketLossWarningPercent": 5,
+    "PacketLossCriticalPercent": 20,
+    "LatencyWarningMs": 100,
+    "LatencyCriticalMs": 250,
+    "TcpRetransmissionWarningPercent": 2,
+    "TcpRetransmissionCriticalPercent": 5,
+    "TcpRetransmissionCriticalCount": 50,
+    "MinimumTcpSegmentsForRate": 50,
+    "AdapterErrorWarningDelta": 1,
+    "AdapterErrorCriticalDelta": 10,
+    "AdapterDiscardWarningDelta": 1,
+    "AdapterDiscardCriticalDelta": 100
+  }
+}

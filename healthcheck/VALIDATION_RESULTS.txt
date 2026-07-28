@@ -1,0 +1,80 @@
+﻿NetworkHealthCheck Portable 1.1.0 - Release Validation Results
+Validation date: 2026-07-23
+Package: Bilingual (Traditional Chinese + English)
+
+Scope
+-----
+Cross-platform static release validation was completed. The validator checks package
+contents, JSON parsing, Windows-compatible encodings and line endings, English
+localization, source-structure parity, function inventory, launcher references, and
+SHA-256 values.
+
+Windows runtime status
+----------------------
+NOT EXECUTED in the current build environment. Windows Forms, NetTCPIP, NetAdapter,
+CIM/WMI performance counters, and real network operations still require acceptance
+testing on representative Windows 10/11 systems.
+
+Archive integrity
+-----------------
+PASS - the released ZIP archive was tested after packaging with a full member-integrity
+check. The archive SHA-256 is published in the external release checksum file.
+
+Static validator output
+-----------------------
+Root: /mnt/data/NetworkHealthCheck_Portable_v1.1.0_Bilingual
+[PASS] required file zh-TW/NetworkHealthCheck.ps1 
+[PASS] required file zh-TW/NetworkHealthCheck.config.json 
+[PASS] required file zh-TW/Start-NetworkCheck.cmd 
+[PASS] required file en-US/NetworkHealthCheck.ps1 
+[PASS] required file en-US/NetworkHealthCheck.config.json 
+[PASS] required file en-US/Start-NetworkCheck.cmd 
+[PASS] required file docs/NetworkHealthCheck_Technical_Guide_zh-TW.md 
+[PASS] required file docs/NetworkHealthCheck_Technical_Guide_en-US.md 
+[PASS] JSON parse zh-TW/NetworkHealthCheck.config.json 
+[PASS] JSON parse en-US/NetworkHealthCheck.config.json 
+[PASS] UTF-8 BOM zh-TW/NetworkHealthCheck.ps1 
+[PASS] CRLF zh-TW/NetworkHealthCheck.ps1 
+[PASS] UTF-8 BOM en-US/NetworkHealthCheck.ps1 
+[PASS] CRLF en-US/NetworkHealthCheck.ps1 
+[PASS] UTF-8 BOM zh-TW/NetworkHealthCheck.config.json 
+[PASS] CRLF zh-TW/NetworkHealthCheck.config.json 
+[PASS] UTF-8 BOM en-US/NetworkHealthCheck.config.json 
+[PASS] CRLF en-US/NetworkHealthCheck.config.json 
+[PASS] CMD CRLF zh-TW/Start-NetworkCheck.cmd 
+[PASS] CMD script reference zh-TW/Start-NetworkCheck.cmd 
+[PASS] CMD CRLF en-US/Start-NetworkCheck.cmd 
+[PASS] CMD script reference en-US/Start-NetworkCheck.cmd 
+[PASS] CMD CRLF zh-TW/Start-NetworkCheck-Console.cmd 
+[PASS] CMD script reference zh-TW/Start-NetworkCheck-Console.cmd 
+[PASS] CMD CRLF en-US/Start-NetworkCheck-Console.cmd 
+[PASS] CMD script reference en-US/Start-NetworkCheck-Console.cmd 
+[PASS] PowerShell executable skeleton equality 
+[PASS] function set equality zh=56, en=56
+[PASS] function count 56 56
+[PASS] English file has no CJK en-US/NetworkHealthCheck.ps1 
+[PASS] English file has no CJK en-US/NetworkHealthCheck.config.json 
+[PASS] English file has no CJK en-US/README_en-US.txt 
+[PASS] version 1.1.0 zh-TW/NetworkHealthCheck.ps1 
+[PASS] version 1.1.0 en-US/NetworkHealthCheck.ps1 
+[PASS] SHA256 README_BILINGUAL.md f7acd3847c038391184c8746d89b3c8dd341a5b329f657e34491bd8186330372
+[PASS] SHA256 Start-English.cmd ed07baf03aa768df944f1f3e5cbac9838555054bfe24c27cbf78bfeb0c27deb1
+[PASS] SHA256 Start-Traditional-Chinese.cmd 8f9292d4ed0a3fad7ec1bd09dcd444d88a1dbc6a3775f4c0c6f9d6e9ac1efce6
+[PASS] SHA256 docs/NetworkHealthCheck_Technical_Guide_en-US.md 3b2600141d24f438826af355b2a0be5f48ae0740ad4040a10bb494c2278fd4e5
+[PASS] SHA256 docs/NetworkHealthCheck_Technical_Guide_zh-TW.md bb8b53c0e8e5716c1e1114c278905509b0c951b064482dc35bef407573de6edf
+[PASS] SHA256 en-US/NetworkHealthCheck.config.json ec945bd5ef3b3e7616874e6fd406fb6db394e031519b4bafb3798324335befa7
+[PASS] SHA256 en-US/NetworkHealthCheck.ps1 ae9f888fe165651d7fbe04ee31818042ac550730184212d2522edac8255de242
+[PASS] SHA256 en-US/NetworkHealthCheck_Technical_Guide_en-US.md 3b2600141d24f438826af355b2a0be5f48ae0740ad4040a10bb494c2278fd4e5
+[PASS] SHA256 en-US/NetworkHealthCheck_Technical_Guide_zh-TW.md bb8b53c0e8e5716c1e1114c278905509b0c951b064482dc35bef407573de6edf
+[PASS] SHA256 en-US/README_en-US.txt 3ab14da1366fadd44ffed68f576c0f435a61e18663c6fd534a7031c8c74b98d2
+[PASS] SHA256 en-US/Start-NetworkCheck-Console.cmd 6c3e7d34c43beea007bcd1a22609b35c122850a58fa1b663dc7e5720adc37dc9
+[PASS] SHA256 en-US/Start-NetworkCheck.cmd 1095221864a57fd881b03eee78b60f6b6dd4a03143a47b05253e77708e320ec6
+[PASS] SHA256 tools/validate_release.py 746dbdaa449fc57d5dc82fffec3e739ee18df68526ca847436f7b5a9b45671b5
+[PASS] SHA256 zh-TW/NetworkHealthCheck.config.json 362349d236114c73d2badbfae3efc93569dc4d066abb8ac65b19c9279eba35f3
+[PASS] SHA256 zh-TW/NetworkHealthCheck.ps1 e60efc0d239ebce49567c69eed37837b998e1d7a748bdc7c571d9de2d1b30efb
+[PASS] SHA256 zh-TW/NetworkHealthCheck_Technical_Guide_en-US.md 3b2600141d24f438826af355b2a0be5f48ae0740ad4040a10bb494c2278fd4e5
+[PASS] SHA256 zh-TW/NetworkHealthCheck_Technical_Guide_zh-TW.md bb8b53c0e8e5716c1e1114c278905509b0c951b064482dc35bef407573de6edf
+[PASS] SHA256 zh-TW/README_zh-TW.txt 6796f315e8e03a3301d41e4f385107f18e202cf96b8e6b1ba675035c926b79ca
+[PASS] SHA256 zh-TW/Start-NetworkCheck-Console.cmd 4e5e3392a76440dd6e45235f7341049bb49c3005e4da9795efcb290ace74b629
+[PASS] SHA256 zh-TW/Start-NetworkCheck.cmd 70390e54039e6a1a769d8df634b35ee6af9164ca64e992a88cb25b87215f0918
+Summary: 54 passed, 0 failed

@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Network Troubleshooting SOP — Kevin Lin</title>
+<style>
+  :root{
+    --ink:#16233b; --muted:#5b6b85; --line:#d8e0ec; --bg:#f4f7fb; --card:#ffffff;
+    --blue:#1d4ed8; --blue-soft:#e8effd; --green:#0f7b52; --green-soft:#e6f5ee;
+    --red:#b3372e; --red-soft:#faeae8; --amber:#9a6700; --amber-soft:#fcf3e1;
+    --mono:Consolas,"Cascadia Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);color:var(--ink);line-height:1.5;padding:2.2rem 1.4rem}
+  .page{max-width:1060px;margin:0 auto}
+  code{font-family:var(--mono);background:#eef2f8;border:1px solid var(--line);
+    border-radius:4px;padding:.08rem .35rem;font-size:.86em;white-space:nowrap}
+
+  header{margin-bottom:1.6rem}
+  header h1{font-size:1.7rem;letter-spacing:-.01em}
+  header .tag{color:var(--muted);font-size:1.02rem;margin-top:.2rem}
+  header .meta{color:var(--muted);font-size:.82rem;margin-top:.45rem}
+
+  .principle{display:flex;gap:.7rem;flex-wrap:wrap;margin:1.1rem 0 1.8rem}
+  .principle span{background:var(--blue-soft);color:var(--blue);border:1px solid #c4d5fb;
+    border-radius:999px;padding:.35rem .9rem;font-weight:600;font-size:.9rem}
+
+  section{margin-bottom:1.9rem}
+  h2{font-size:1.12rem;margin-bottom:.7rem;display:flex;align-items:baseline;gap:.55rem}
+  h2 .k{color:var(--muted);font-weight:500;font-size:.85rem}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:1rem 1.15rem;box-shadow:0 1px 2px rgba(22,35,59,.05)}
+
+  table{width:100%;border-collapse:collapse;font-size:.9rem}
+  th,td{text-align:left;padding:.5rem .65rem;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+  tr:last-child td{border-bottom:none}
+
+  .scripts{display:grid;grid-template-columns:1fr 1fr;gap:.7rem;margin-top:.8rem}
+  .scripts .s{border:1px dashed var(--line);border-radius:8px;padding:.6rem .75rem;font-size:.88rem}
+  .scripts .s b{display:block;font-size:.76rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.25rem}
+  .scripts .it b{color:var(--blue)} .scripts .usr b{color:var(--green)}
+
+  .qgrid{display:grid;grid-template-columns:1fr 1fr;gap:.7rem}
+  .q{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.8rem .95rem}
+  .q b{display:block;margin-bottom:.3rem}
+  .q .n{display:inline-block;width:1.35rem;height:1.35rem;border-radius:50%;background:var(--blue);
+    color:#fff;text-align:center;line-height:1.35rem;font-size:.8rem;margin-right:.4rem}
+  .q p{font-size:.88rem;color:var(--muted)}
+
+  .lanes{margin-top:.7rem}
+  .lanes table td:first-child{font-weight:600;width:46%}
+  .lanes .l1{color:var(--red)} .lanes .l2{color:var(--amber)}
+  .lanes .l3{color:var(--blue)} .lanes .l4{color:var(--green)}
+
+  .station{display:grid;grid-template-columns:3rem 1fr;gap:.9rem;position:relative;padding-bottom:1rem}
+  .station:not(:last-child)::before{content:"";position:absolute;left:1.45rem;top:3rem;bottom:0;
+    width:2px;background:var(--line)}
+  .snum{width:2.9rem;height:2.9rem;border-radius:50%;background:var(--card);border:2px solid var(--blue);
+    color:var(--blue);font-weight:700;display:flex;align-items:center;justify-content:center;z-index:1}
+  .sbody{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.85rem 1rem}
+  .sbody h3{font-size:1rem;margin-bottom:.5rem}
+  .sbody h3 small{color:var(--muted);font-weight:500;margin-left:.4rem}
+  .cols{display:grid;grid-template-columns:1.25fr 1fr 1.15fr;gap:.65rem;font-size:.87rem}
+  .col{border-radius:8px;padding:.55rem .7rem}
+  .col .lb{display:block;font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;margin-bottom:.3rem}
+  .col .lb.second{margin-top:.5rem}
+  .chk{background:#f2f5fa} .chk .lb{color:var(--muted)}
+  .ok{background:var(--green-soft)} .ok .lb{color:var(--green)}
+  .bad{background:var(--red-soft)} .bad .lb{color:var(--red)}
+  .note{font-size:.8rem;color:var(--muted);margin-top:.5rem}
+
+  .rules{display:grid;grid-template-columns:1fr 1fr 1fr;gap:.7rem}
+  .rules .card b{color:var(--blue)}
+  .rules .card p{font-size:.9rem;margin-top:.3rem}
+
+  ul.esc{list-style:none;columns:2;column-gap:2rem;font-size:.9rem}
+  ul.esc li{margin-bottom:.45rem;padding-left:1.2rem;position:relative;break-inside:avoid}
+  ul.esc li::before{content:"▸";position:absolute;left:.2rem;color:var(--blue)}
+
+  footer{color:var(--muted);font-size:.8rem;border-top:1px solid var(--line);padding-top:.8rem;margin-top:.5rem}
+
+  @media (max-width:760px){
+    .cols,.scripts,.qgrid,.rules{grid-template-columns:1fr}
+    ul.esc{columns:1}
+  }
+  @media print{
+    body{background:#fff;padding:0;font-size:11px}
+    .card,.sbody,.q{box-shadow:none}
+    section{break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <h1>Network Troubleshooting SOP</h1>
+  <div class="tag">From the user's chair to the ISP — a fault-isolation playbook for L2 support</div>
+  <div class="meta">v1.0 · Kevin (Te-Chin) Lin · July 2026</div>
+  <div class="principle">
+    <span>Follow the packet, not the device list</span>
+    <span>Fix one, test one</span>
+    <span>Prove it end-to-end</span>
+  </div>
+</header>
+
+<section>
+  <h2>Station 0 — Profile the Reporter <span class="k">30 seconds, before any troubleshooting</span></h2>
+  <div class="card">
+    <p style="font-size:.92rem;margin-bottom:.7rem">We work through the person reporting the problem. Who they are decides what evidence you can trust and what actions you can delegate. Calibrate with one question — <i>"Are you comfortable running a command in a terminal?"</i> — and listen to their vocabulary (<i>"the network is down"</i> vs <i>"DHCP isn't handing out leases"</i>).</p>
+    <table>
+      <tr><th></th><th>IT professional</th><th>General user</th></tr>
+      <tr><td><b>Delegation</b></td><td>Commands by name, several in parallel</td><td>One action at a time, exact click path</td></tr>
+      <tr><td><b>Evidence</b></td><td>Paraphrase acceptable</td><td>Raw output only — read back or screenshot</td></tr>
+      <tr><td><b>Pace</b></td><td>Match theirs</td><td>Confirm each step before the next</td></tr>
+    </table>
+    <div class="scripts">
+      <div class="s it"><b>IT script</b>"Run <code>ipconfig /all</code> and paste me the output."</div>
+      <div class="s usr"><b>User script</b>"Click Start, type <code>cmd</code>, press Enter. In the black window, type <code>ipconfig /all</code> — then read me the line that says <i>IPv4 Address</i>."</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Front Door — Four Isolation Questions <span class="k">cut the search space before touching anything</span></h2>
+  <div class="qgrid">
+    <div class="q"><b><span class="n">1</span>Blast radius</b>
+      <p>One user or many? One VLAN / SSID / location, or all? Wired and wireless both? One user → endpoint. One switch → uplink. Everyone → gateway or ISP.</p></div>
+    <div class="q"><b><span class="n">2</span>What changed?</b>
+      <p>Config, firmware, new device, cabling work, power event — anything in the last 24–72 h?</p></div>
+    <div class="q" style="grid-column:1 / -1"><b><span class="n">3</span>Failure fingerprint — pick the lane</b>
+      <div class="lanes"><table>
+        <tr><td class="l1">No IP (169.254.x.x)</td><td>DHCP path: port VLAN → uplink → relay → server</td></tr>
+        <tr><td class="l2">IP, but gateway unreachable</td><td>Local L1/L2: cable or RF, port, VLAN</td></tr>
+        <tr><td class="l3">Gateway OK, internet dead</td><td>Routing / NAT / firewall / ISP</td></tr>
+        <tr><td class="l4">IP works, names fail</td><td>DNS</td></tr>
+      </table></div></div>
+    <div class="q"><b><span class="n">4</span>Constant or intermittent?</b>
+      <p>Intermittent points at performance causes: RF interference, congestion, duplex mismatch, retransmissions.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>The Packet's Journey <span class="k">read state → verify config · healthy · if broken</span></h2>
+
+  <div class="station"><div class="snum">1</div><div class="sbody">
+    <h3>PC / Client</h3>
+    <div class="cols">
+      <div class="col chk"><b class="lb">Read state</b><code>ipconfig /all</code> — lease + <b>DHCP Server</b> field · ping ladder: loopback → gateway → <code>8.8.8.8</code> → a domain name · <code>arp -a</code> · <code>tracert</code><b class="lb second">Verify config</b>NIC set to DHCP — no stale static IP / DNS override</div>
+      <div class="col ok"><b class="lb">Healthy</b>Valid lease from the expected scope; the ladder climbs all four rungs</div>
+      <div class="col bad"><b class="lb">If broken</b>APIPA (Automatic Private IP Addressing) → DHCP lane (st. 3–5). Wrong-scope IP → port VLAN (st. 3). Ladder breaks at a rung → that rung names your next station (corroborate first — Rule 3)</div>
+    </div>
+    <div class="note">One-click evidence: <b>NetworkHealthCheck</b> — see Tools.</div>
+  </div></div>
+
+  <div class="station"><div class="snum">2</div><div class="sbody">
+    <h3>Wi-Fi Link — RF + AP <small>wireless cases</small></h3>
+    <div class="cols">
+      <div class="col chk"><b class="lb">Read state</b>Client sees SSID? · AP client table: associated vs <b>authenticated</b> · RSSI ≥ −65 dBm, SNR ≥ 25 dB (client: <code>netsh wlan show interfaces</code>) · RADIUS log: <b>Access-Reject</b> = fast, logged on server; <b>timeout</b> = slow retries, server log silent · channel utilization &amp; client count<b class="lb second">Verify config</b>SSID security — current PSK (forget &amp; rejoin) or 802.1X server &amp; shared secret</div>
+      <div class="col ok"><b class="lb">Healthy</b>Associated, authenticated, sane RF numbers</div>
+      <div class="col bad"><b class="lb">If broken</b>Auth fails → credentials / RADIUS. Poor RSSI → coverage / interference. Associated but no IP → station 3 (the AP's wired side)</div>
+    </div>
+    <div class="note">Order of operations: 802.1X gates the connection — DHCP starts only <b>after</b> authentication succeeds, so "authenticated but no IP" means the wireless part is already done and healthy.</div>
+  </div></div>
+
+  <div class="station"><div class="snum">3</div><div class="sbody">
+    <h3>Access Switch</h3>
+    <div class="cols">
+      <div class="col chk"><b class="lb">Read state</b>Port up, not err-disabled · client MAC learned on expected port, expected VLAN · error-counter delta, two samples (<b>CRC/alignment = physical; discards = congestion/policy</b>)<b class="lb second">Verify config</b>Port <b>VLAN + PVID</b> — tagging governs <b>egress</b> (out); PVID assigns <b>incoming untagged</b> frames (in) · AP uplink <b>tagged for every SSID VLAN + AP mgmt VLAN</b></div>
+      <div class="col ok"><b class="lb">Healthy</b>Link up, MAC in table, VLANs match design, counters clean</div>
+      <div class="col bad"><b class="lb">If broken</b>VLAN/PVID mismatch → fix, retest. Counters climbing → cable / SFP / duplex. Port RX climbs but no MAC learned → STP, port auth, or LAG state is eating frames</div>
+    </div>
+  </div></div>
+
+  <div class="station"><div class="snum">4</div><div class="sbody">
+    <h3>Uplink / LAG</h3>
+    <div class="cols">
+      <div class="col chk"><b class="lb">Read state</b>LAG up, <b>all members active</b> · LACP partner status · per-member traffic counters · STP <b>forwarding</b> (a blocked port is up but passes nothing — looks like a dead link)<b class="lb second">Verify config</b>Same type both ends — prefer <b>LACP</b> (mismatched port refuses to join) over static (misconfig stays silently up) · <b>VLANs tagged on the LAG interface itself (ch1)</b></div>
+      <div class="col ok"><b class="lb">Healthy</b>Members active, LACP negotiated, VLANs ride the LAG</div>
+      <div class="col bad"><b class="lb">If broken</b>Members missing → membership / port properties. Negotiated but traffic dies → the LAG interface's VLAN membership, <b>both ends</b> — member-port settings don't carry over</div>
+    </div>
+  </div></div>
+
+  <div class="station"><div class="snum">5</div><div class="sbody">
+    <h3>Core &amp; Gateway</h3>
+    <div class="cols">
+      <div class="col chk"><b class="lb">Read state</b>Client VLAN's gateway answers — its <b>SVI</b> (Switched Virtual Interface: the VLAN's gateway IP on the L3 switch) · gateway's ARP sees the client · lease table &amp; scope % (a full scope hands out nothing while the server looks healthy) · default route active<b class="lb second">Verify config</b><b>DHCP server / relay (IP helper)</b> configured for that VLAN</div>
+      <div class="col ok"><b class="lb">Healthy</b>Gateway answers from the client VLAN; leases flow</div>
+      <div class="col bad"><b class="lb">If broken</b>Relay missing → DHCP-lane root cause. No default route → routing</div>
+    </div>
+  </div></div>
+
+  <div class="station"><div class="snum">6</div><div class="sbody">
+    <h3>Firewall / NAT <small>triage depth</small></h3>
+    <div class="cols">
+      <div class="col chk"><b class="lb">Read state</b>Policy <b>hit counters</b> for the source · <b>NAT translation</b> created · session table entry &amp; state · deny logs · WAN up, expected IP<b class="lb second">Verify config</b>The permit rule itself — source / destination / service, rule order</div>
+      <div class="col ok"><b class="lb">Healthy</b>Permits hit, translations build, sessions establish</div>
+      <div class="col bad"><b class="lb">If broken</b>Locate + collect evidence here — fix what's in scope, escalate the rest with the package below</div>
+    </div>
+  </div></div>
+
+  <div class="station"><div class="snum">7</div><div class="sbody">
+    <h3>DNS</h3>
+    <div class="cols">
+      <div class="col chk"><b class="lb">Read state</b><code>nslookup</code> vs configured server, then a known-good resolver · failure type: timeout vs SERVFAIL vs NXDOMAIN<b class="lb second">Verify config</b>Which DNS servers the client points at — DHCP-assigned or static override</div>
+      <div class="col ok"><b class="lb">Healthy</b>Both resolve</div>
+      <div class="col bad"><b class="lb">If broken</b>Configured-only fails → internal DNS / forwarder. Both fail (IP ping OK) → upstream filtering / ISP</div>
+    </div>
+  </div></div>
+
+  <div class="station"><div class="snum">8</div><div class="sbody">
+    <h3>ISP / Beyond</h3>
+    <div class="cols">
+      <div class="col chk"><b class="lb">Read state</b>Modem / ONT line stats: sync, SNR margin, CRC · WAN IP sanity (public vs CGNAT) · last <code>tracert</code> hop · provider status<b class="lb second">Verify config</b>WAN settings — PPPoE credentials, ISP handoff VLAN tag</div>
+      <div class="col ok"><b class="lb">Healthy</b>WAN up with a routable address</div>
+      <div class="col bad"><b class="lb">If broken</b>Open the provider ticket <b>with your evidence package</b> — everything on your side is already excluded</div>
+    </div>
+  </div></div>
+</section>
+
+<section>
+  <h2>Read State Before Config <span class="k">the network testifies before you open a single settings page</span></h2>
+  <div class="card">
+    <p style="font-size:.92rem;margin-bottom:.6rem">Config tells you what the network is <b>supposed</b> to do; state tells you what it is <b>actually</b> doing. Read state first — it needs no design document, it cannot lie, and it is read-only. Three families: <b>tables</b> (the network's memory — MAC, ARP, clients, leases, sessions), <b>counters</b> (always a <b>delta</b>: two samples, 30–60 s apart), and <b>probes</b> (differential tests — two pings that differ in exactly one thing: ping the IP vs ping the name; if one works and one fails, that one difference names the fault). Two discriminators, in order — <b>counters first:</b> climbing CRC/alignment errors mean physical (cable, SFP, duplex); discards mean congestion or policy, not physical. <b>Then the VLAN probe:</b> a fault that hits one VLAN but spares another on the same wire is config — <b>physical faults are VLAN-blind; config faults are VLAN-selective</b> — but mind the asymmetry: all-VLANs-dead proves nothing by itself (a whole-link config error looks just like a dead wire). The station cards above embody this order — every <i>Read state</i> block comes before <i>Verify config</i>.</p>
+    <p style="font-size:.82rem;color:var(--muted);margin:.3rem 0 .4rem"><b>Counter reference</b> — read as deltas; absolute values are history, not evidence:</p>
+    <table>
+      <tr><th>Counter</th><th>Climbing means</th><th>Which drawer next</th></tr>
+      <tr><td><b>CRC / FCS errors</b></td><td>Frames arriving corrupted — cable, connector, SFP, EMI, duplex</td><td><b>Physical — the reliable convict</b></td></tr>
+      <tr><td>Alignment / runts · <b>late collisions</b></td><td>Collisions; the classic duplex-mismatch signature</td><td>Physical / negotiation</td></tr>
+      <tr><td>Giants (oversize)</td><td>MTU / jumbo-frame inconsistency between ends</td><td>Config</td></tr>
+      <tr><td>RX / TX <b>discards</b></td><td>Valid frames dropped — buffers, QoS, storm control</td><td>Congestion / policy</td></tr>
+      <tr><td>Broadcast share spiking</td><td>Loop or storm</td><td>Config / loop</td></tr>
+      <tr><td>Link flaps (up/down count)</td><td>Unstable link or far-end reboots</td><td>Physical / power</td></tr>
+      <tr><td><b>RX near zero</b></td><td>Far end down, admin-down, or a broken pair — <b>ambiguous</b></td><td>Never convict alone — second witness (Rule 3)</td></tr>
+    </table>
+    <p style="font-size:.82rem;color:var(--muted);margin:.5rem 0 0"><i>Caveats: counters only testify <b>when traffic flows</b> — a dead link shows zero errors, which clears nothing. CRC counts at the <b>receiver</b> — the fault lies between the far-end transmitter and this port. <b>Directional probe:</b> send a known burst (<code>ping -n 20 &lt;gateway&gt;</code>) and read deltas at <b>both ends</b> — NIC TX up but switch RX flat = outbound leg broken; switch TX up but NIC RX flat = return leg. One test, direction resolved.</i></p>
+    <div style="height:.9rem"></div>
+    <table>
+      <tr><th>St.</th><th>Key observable</th><th>What it tells you</th></tr>
+      <tr><td>1</td><td><code>arp -a</code> — gateway MAC resolved? · DHCP Server field in <code>ipconfig /all</code></td><td>L2 path proven without ICMP (Rule 3's witness) · rogue-DHCP detector</td></tr>
+      <tr><td>2</td><td>AP client table (state, RSSI, rate) · RADIUS log: reject vs silence</td><td>Absent = RF/SSID · auth-pending = credentials · reject = bad creds, silence = AP↔server path</td></tr>
+      <tr><td>3</td><td>MAC table — client on expected port, expected VLAN · error-counter delta</td><td>Frame arrived <b>and</b> was classified; wrong VLAN = PVID fault · climbing delta = physical</td></tr>
+      <tr><td>4</td><td>LACP partner info · per-member traffic counters · MAC table on ch1, per VLAN</td><td>No partner = far end silent · idle member = not bundling · VLAN with no MACs on ch1 = tagging fault</td></tr>
+      <tr><td>5</td><td>Gateway's ARP for the client · DHCP lease table, scope %</td><td>Gateway sees client = path proven · DISCOVERs but no lease = scope exhausted</td></tr>
+      <tr><td>6</td><td>Session table · policy hit counters for the source IP</td><td>A deny counter ticking while the user retries = the smoking gun</td></tr>
+      <tr><td>7</td><td>Failure type: timeout vs SERVFAIL vs NXDOMAIN</td><td>Timeout = path · SERVFAIL = server · NXDOMAIN = record / split-DNS</td></tr>
+      <tr><td>8</td><td>WAN line stats (sync, SNR margin, CRC) · last <code>tracert</code> hop</td><td>Line-level truth · the last responding hop names the boundary</td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>Three Rules That Keep You Honest</h2>
+  <div class="rules">
+    <div class="card"><b>Fix one, test one.</b><p>State the expected outcome before you retest. If the result doesn't match the prediction, revert before trying the next idea.</p></div>
+    <div class="card"><b>Close the loop end-to-end.</b><p>Valid IP → ping gateway → ping external IP → resolve a name → open the app the user actually cares about. Confirm with the user, write it down.</p></div>
+    <div class="card"><b>A failed ping is a suspect, not a conviction.</b><p>ICMP is often blocked. A successful ping proves the path; a failed one needs a second witness — <code>arp -a</code>, <code>tracert</code>, or a TCP/HTTP test. (Why the companion tool tests TCP + HTTP alongside ICMP.)</p></div>
+  </div>
+</section>
+
+<section>
+  <h2>Escalation — When, and With What <span class="k">rules for the hand-off · start L3 at your frontier, not from zero</span></h2>
+  <div class="card">
+    <p style="font-size:.9rem;margin-bottom:.6rem"><b>When to escalate — rules, not feelings:</b> the <b>timebox</b> expires without isolation · the fix needs <b>access or authority</b> you don't have · <b>severity</b> says so — big-impact cases go up early, by policy · your layers are <b>excluded</b> and the remaining suspects live in L3's domain.</p>
+    <ul class="esc">
+      <li>Topology sketch of the affected path (hand-drawn is fine)</li>
+      <li>Blast radius, timeline, and what changed</li>
+      <li><b>What you excluded, with the evidence that excludes it</b></li>
+      <li>Raw outputs: ipconfig / ping / tracert, or the NetworkHealthCheck report</li>
+      <li>Relevant switch &amp; AP status pages</li>
+      <li><b>Device logs</b> (switch / AP / firewall) for the failure window + <b>config exports</b> of the path</li>
+      <li>Reproduction steps; current workaround if any</li>
+      <li>Business impact and severity</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <h2>Fingerprint Library <span class="k">fast lookups</span></h2>
+  <div class="card"><table>
+    <tr><th>Symptom</th><th>First suspect</th></tr>
+    <tr><td>169.254.x.x address</td><td>DHCP unreachable — VLAN, relay, or scope exhaustion</td></tr>
+    <tr><td>Ping 8.8.8.8 OK, browsing fails</td><td>DNS</td></tr>
+    <tr><td>Some sites fine, VPN / large uploads fail</td><td>MTU / fragmentation</td></tr>
+    <tr><td>One user down</td><td>Endpoint — port, cable, NIC, profile</td></tr>
+    <tr><td>Whole switch down</td><td>Uplink / LAG / switch power</td></tr>
+    <tr><td>Whole site down</td><td>Gateway, firewall, or ISP</td></tr>
+    <tr><td>Wireless-only and intermittent</td><td>RF interference, roaming, band steering</td></tr>
+    <tr><td>Reboot fixes it, keeps returning</td><td>DHCP scope, duplicate IP, or a loop</td></tr>
+    <tr><td>Connected but slow</td><td>Duplex mismatch, port errors, retransmissions</td></tr>
+    <tr><td>Link negotiates 100 M instead of 1 G</td><td>Damaged pair or connector — gigabit needs all four pairs</td></tr>
+  </table></div>
+</section>
+
+<section>
+  <h2>Tools</h2>
+  <div class="card" style="font-size:.9rem">
+    <p><b>NetworkHealthCheck</b> (companion tool) — portable, read-only Windows health check a non-technical user can run with one double-click; produces HTML / TXT / JSON reports that drop straight into the escalation package. <span style="color:var(--muted)">Roadmap v1.2: separate User / IT modes.</span></p>
+    <p style="margin-top:.4rem"><b>Wireshark / pktmon</b> — when packet-level proof is required.</p>
+  </div>
+</section>
+
+<footer>Network Troubleshooting SOP · v1.0 draft · Kevin (Te-Chin) Lin · July 2026</footer>
+
+</div>
+</body>
+</html>
