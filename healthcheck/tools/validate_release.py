@@ -65,7 +65,7 @@ cjk=lambda s:any('\u4e00'<=c<='\u9fff' for c in s)
 for rel in ['en-US/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.config.json','en-US/README_en-US.txt']:
     ok('English file has no CJK '+rel,not cjk(read_text(ROOT/rel)))
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
-    ok('version 1.1.0 '+rel,'$script:ToolVersion = "1.1.0"' in read_text(ROOT/rel))
+    ok('version 1.1.0 '+rel,'$script:ToolVersion = "1.1.3"' in read_text(ROOT/rel))
 # Hash manifest is checked if already present.
 manifest=ROOT/'SHA256SUMS.txt'
 if manifest.exists():

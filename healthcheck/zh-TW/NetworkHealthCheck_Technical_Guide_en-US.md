@@ -1,8 +1,8 @@
-﻿# NetworkHealthCheck Portable 1.1.0: Features, Design, Validation, and Limitations
+﻿# NetworkHealthCheck Portable 1.1.3: Features, Design, Validation, and Limitations
 
 ## 1. Purpose
 
-This document describes the features, architecture, decision rules, error handling, validation approach, known limitations, and source-comment strategy of the portable `NetworkHealthCheck` tool. It applies to version **1.1.0** and to both the Traditional Chinese and English packages. The executable logic is the same; user-visible text, default test names, and comment language are localized separately.
+This document describes the features, architecture, decision rules, error handling, validation approach, known limitations, and source-comment strategy of the portable `NetworkHealthCheck` tool. It applies to version **1.1.3** and to both the Traditional Chinese and English packages. The executable logic is the same; user-visible text, default test names, and comment language are localized separately.
 
 ## 2. Product scope
 
@@ -176,9 +176,9 @@ The build performed checks that do not require a Windows network environment:
 
 Actual output is in `VALIDATION_RESULTS.txt`; the validator is `tools/validate_release.py`.
 
-### 7.2 Validation not completed in the current build environment
+### 7.2 Validation status on Windows
 
-The build environment is not Windows. Windows Forms, NetTCPIP, NetAdapter, CIM/WMI performance counters, and real network operations were not executed here. Static validation does not replace Windows acceptance testing.
+The original 1.1.0 package was produced in a non-Windows build environment, so Windows Forms, NetTCPIP, NetAdapter, CIM/WMI performance counters, and real network operations could not be executed at packaging time. Since then, versions 1.1.1–1.1.3 (2026-07-28/30) have completed full Windows validation on Windows 11 with Windows PowerShell 5.1: real-machine acceptance runs of both language versions, an independent code review, and five author-executed fault-injection scenarios. The current record is maintained in `../VALIDATION.md`. Static validation still does not replace Windows acceptance testing — the two complement each other.
 
 ### 7.3 Recommended Windows acceptance matrix
 

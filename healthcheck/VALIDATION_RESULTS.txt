@@ -1,4 +1,6 @@
-﻿NetworkHealthCheck Portable 1.1.0 - Release Validation Results
+[Historical record - static validation of the original v1.1.0 packaging. Current validation: see VALIDATION.md]
+
+NetworkHealthCheck Portable 1.1.0 - Release Validation Results
 Validation date: 2026-07-23
 Package: Bilingual (Traditional Chinese + English)
 

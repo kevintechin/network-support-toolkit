@@ -1,8 +1,8 @@
-﻿# NetworkHealthCheck Portable 1.1.0：功能、設計、驗證與限制
+﻿# NetworkHealthCheck Portable 1.1.3：功能、設計、驗證與限制
 
 ## 1. 文件目的
 
-本文件說明 `NetworkHealthCheck` 免安裝工具的功能、架構、判定方式、錯誤處理、驗證方法、已知限制與原始碼註解策略。文件對應版本 **1.1.0**，適用於套件中的繁體中文版與英文版；兩者的執行邏輯相同，只有使用者可見文字、預設測試名稱與註解語言不同。
+本文件說明 `NetworkHealthCheck` 免安裝工具的功能、架構、判定方式、錯誤處理、驗證方法、已知限制與原始碼註解策略。文件對應版本 **1.1.3**，適用於套件中的繁體中文版與英文版；兩者的執行邏輯相同，只有使用者可見文字、預設測試名稱與註解語言不同。
 
 ## 2. 程式定位
 
@@ -176,9 +176,9 @@ FAIL > ERROR > WARN > PASS
 
 實際結果收錄於 `VALIDATION_RESULTS.txt`，驗證程式位於 `tools/validate_release.py`。
 
-### 7.2 尚未在目前建置環境完成的驗證
+### 7.2 Windows 驗證狀態
 
-目前建置環境不是 Windows，因此沒有實際執行 Windows Forms、NetTCPIP、NetAdapter、CIM/WMI 效能計數器與真實網路連線。靜態驗證不能取代 Windows 實機驗收。
+原始 1.1.0 套件在非 Windows 環境打包，當時無法實際執行 Windows Forms、NetTCPIP、NetAdapter、CIM/WMI 效能計數器與真實網路連線。其後 1.1.1–1.1.3 版（2026-07-28／30）已在 Windows 11＋Windows PowerShell 5.1 完成完整實機驗證：中英兩版驗收執行、獨立程式碼審查、以及五個作者實測的故障注入場景。最新記錄維護於 `../VALIDATION.md`。靜態驗證仍不能取代 Windows 實機驗收——兩者互補。
 
 ### 7.3 建議 Windows 驗收矩陣
 

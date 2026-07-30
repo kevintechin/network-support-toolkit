@@ -1,5 +1,5 @@
-﻿Windows Portable Network Health Check
-Version: 1.1.0
+Windows Portable Network Health Check
+Version: 1.1.3
 ========================================
 
 1. Quick start
