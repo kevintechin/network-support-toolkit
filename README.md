@@ -21,6 +21,19 @@ A read-only Windows diagnostic a non-technical user can run with **one double-cl
 
 See [healthcheck/docs](healthcheck/docs/) for the technical guide (design, validation, known limits).
 
+## Quick start
+
+**SOP** — open [sop/network-troubleshooting-sop.html](sop/network-troubleshooting-sop.html) in any browser, or read the [markdown version](sop/network-troubleshooting-sop.md).
+
+**NetworkHealthCheck** — no installation, no admin rights, no prerequisites beyond stock Windows 10 / 11 (Windows PowerShell 5.1 and .NET Framework 4.x are built into the OS):
+
+1. Download this repository (Code → Download ZIP) and extract it to a local folder
+2. Open `healthcheck/en-US/` (or `healthcheck/zh-TW/` for Traditional Chinese)
+3. Double-click **`Start-NetworkCheck.cmd`** — the GUI runs all checks automatically and writes HTML / TXT / JSON reports into a `Reports/` folder next to the script
+4. If the GUI cannot start, **`Start-NetworkCheck-Console.cmd`** runs the same checks in text mode
+
+> If Windows flags the downloaded ZIP: right-click the ZIP → Properties → **Unblock**, then extract. Corporate policies (AppLocker / WDAC) may still block PowerShell — see `healthcheck/README_en-US.txt` for details.
+
 ## Design principles
 
 - **Follow the packet, not the device list**
