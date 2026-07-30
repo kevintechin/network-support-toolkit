@@ -50,6 +50,10 @@ See [healthcheck/docs](healthcheck/docs/) for the technical guide (design, valid
 | NHC v1.2 | Planned: separate User / IT modes |
 | Guided triage wizard | Planned: decision-tree front-end over the SOP |
 
+## Working method
+
+Built and maintained **with AI assistance** — the methodology, requirements, and field experience behind it are mine; every release is validated end-to-end before it ships (PowerShell 5.1 parser checks, dual-language parity, real-machine acceptance runs, fault-injection scenarios). See the [validation record](healthcheck/VALIDATION.md).
+
 ## Author
 
 Kevin (Te-Chin) Lin · 2026
