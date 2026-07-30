@@ -27,7 +27,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：PowerShell 可提供時，報告會保存例外類型、訊息、位置與堆疊。
 
-$script:ToolVersion = "1.1.2"
+$script:ToolVersion = "1.1.3"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Results = New-Object System.Collections.ArrayList
 $script:StartupMessages = New-Object System.Collections.ArrayList
@@ -1374,7 +1374,11 @@ function Test-PingTargets {
 
         if ($targets.Count -eq 0) {
             $status = if ($required) { "FAIL" } else { "WARN" }
-            Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status $status -Message "找不到可測試的目標。" -Details ("設定值：$address" + [Environment]::NewLine + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms。" -f $count, $timeout) + [Environment]::NewLine + "手動驗證：ping -n $count <目標 IP>") | Out-Null
+            $noTargetDetail = "設定值：$address"
+            if ($address -eq "AUTO_GATEWAY") {
+                $noTargetDetail = "設定值：AUTO_GATEWAY——此為佔位符，執行時解析為目前的 IPv4 預設閘道；目前不存在（通常代表本地連線中斷）。"
+            }
+            Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status $status -Message "找不到可測試的目標。" -Details ($noTargetDetail + [Environment]::NewLine + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms。" -f $count, $timeout) + [Environment]::NewLine + "手動驗證：ping -n $count <目標 IP>") | Out-Null
             continue
         }
 
@@ -1407,6 +1411,9 @@ function Test-PingTargets {
 
                 $message = "目標 {0}：遺失 {1}%（{2}/{3} 成功），{4}。" -f $target, $measurement.LossPercent, $measurement.Received, $measurement.Sent, $latencyText
                 $details = (@($measurement.AttemptDetails) + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms。" -f $count, $timeout) + ("手動驗證：ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
+                if ($status -eq "INFO") {
+                    $details += [Environment]::NewLine + "補充說明：此為非必要目標，可能單純封鎖 ICMP——網際網路的權威判定請看「連線能力」群組。"
+                }
                 Add-CheckResult -Category "延遲與封包遺失" -Check ("{0}：{1}" -f $name, $target) -Status $status -Message $message -Details $details | Out-Null
             }
             catch {
@@ -1958,6 +1965,10 @@ function Compare-TcpCounters {
             "手動驗證：Get-CimInstance Win32_PerfRawData_Tcpip_$protocol（取樣兩次比較增量）",
             "說明：此為整台電腦在檢測期間的系統級統計，不只包含單一程式。"
         ) -join [Environment]::NewLine
+
+        if ($rate -gt 100) {
+            $details += [Environment]::NewLine + "補充：比例超過 100% 代表重傳的是取樣窗之前送出的 segment——請視為比值而非百分比。"
+        }
 
         if ($sentDelta -eq 0 -and $retransDelta -eq 0) {
             Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "INFO" -Message "取樣期間沒有足夠的 TCP 傳送流量，未發現重傳，但不能據此判定長時間狀況。" -Details $details | Out-Null
@@ -2598,6 +2609,7 @@ function Initialize-Gui {
         return $false
     }
 
+    try {
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "網路健檢工具 $($script:ToolVersion)"
     $form.StartPosition = "CenterScreen"
@@ -2783,6 +2795,12 @@ function Initialize-Gui {
     })
 
     return $true
+    }
+    catch {
+        $script:GuiAvailable = $false
+        [void]$script:StartupMessages.Add("圖形介面無法啟動，已改用文字模式。錯誤：$($_.Exception.Message)")
+        return $false
+    }
 }
 
 # -------------------- Program entry point --------------------

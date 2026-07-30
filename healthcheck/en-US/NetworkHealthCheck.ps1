@@ -34,7 +34,7 @@ param(
 # - Traceability: detailed exception type, message, location, and script stack are
 #   stored in the report whenever PowerShell exposes those values.
 
-$script:ToolVersion = "1.1.2"
+$script:ToolVersion = "1.1.3"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Results = New-Object System.Collections.ArrayList
 $script:StartupMessages = New-Object System.Collections.ArrayList
@@ -1381,7 +1381,11 @@ function Test-PingTargets {
 
         if ($targets.Count -eq 0) {
             $status = if ($required) { "FAIL" } else { "WARN" }
-            Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status $status -Message "No testable target was found." -Details ("Configured value: $address" + [Environment]::NewLine + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms." -f $count, $timeout) + [Environment]::NewLine + "Manual check: ping -n $count <target-ip>") | Out-Null
+            $noTargetDetail = "Configured value: $address"
+            if ($address -eq "AUTO_GATEWAY") {
+                $noTargetDetail = "Configured value: AUTO_GATEWAY - this placeholder resolves to the current IPv4 default gateway, and none exists right now (usually the local link is down)."
+            }
+            Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status $status -Message "No testable target was found." -Details ($noTargetDetail + [Environment]::NewLine + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms." -f $count, $timeout) + [Environment]::NewLine + "Manual check: ping -n $count <target-ip>") | Out-Null
             continue
         }
 
@@ -1414,6 +1418,9 @@ function Test-PingTargets {
 
                 $message = "Target {0}: {1}% loss ({2}/{3} successful), {4}." -f $target, $measurement.LossPercent, $measurement.Received, $measurement.Sent, $latencyText
                 $details = (@($measurement.AttemptDetails) + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms." -f $count, $timeout) + ("Manual check: ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
+                if ($status -eq "INFO") {
+                    $details += [Environment]::NewLine + "Informational: this optional target may simply block ICMP - see the Connectivity group for the authoritative internet verdict."
+                }
                 Add-CheckResult -Category "Latency and Packet Loss" -Check ("{0}: {1}" -f $name, $target) -Status $status -Message $message -Details $details | Out-Null
             }
             catch {
@@ -1965,6 +1972,10 @@ function Compare-TcpCounters {
             "Manual check: Get-CimInstance Win32_PerfRawData_Tcpip_$protocol — sample twice and compare the deltas.",
             "Explanation: This is a system-wide statistic for the entire computer during the test, not for a single application."
         ) -join [Environment]::NewLine
+
+        if ($rate -gt 100) {
+            $details += [Environment]::NewLine + "Note: a rate above 100% means retransmissions of segments sent before the sample window - read it as a ratio, not a percentage."
+        }
 
         if ($sentDelta -eq 0 -and $retransDelta -eq 0) {
             Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "INFO" -Message "There was not enough TCP send traffic during the sample. No retransmissions were observed, but this does not establish the long-term condition." -Details $details | Out-Null
@@ -2605,6 +2616,7 @@ function Initialize-Gui {
         return $false
     }
 
+    try {
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Network Health Check Tool $($script:ToolVersion)"
     $form.StartPosition = "CenterScreen"
@@ -2790,6 +2802,12 @@ function Initialize-Gui {
     })
 
     return $true
+    }
+    catch {
+        $script:GuiAvailable = $false
+        [void]$script:StartupMessages.Add("The graphical interface could not be started. Console mode will be used. Error: $($_.Exception.Message)")
+        return $false
+    }
 }
 
 # -------------------- Program entry point --------------------

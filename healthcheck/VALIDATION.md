@@ -1,5 +1,16 @@
 # Validation Record — NetworkHealthCheck
 
+## v1.1.3 · 2026-07-29
+
+**Changes** (closing the loop on the fault-injection review):
+
+- **Backlog #1 (major) fixed** — `Initialize-Gui`'s try/catch now wraps the entire function body: any exception during form construction falls back to console mode instead of exiting 1. (Failure path verified by parser + code review; not fault-injected.)
+- **Backlog #7 fixed** — a retransmission ratio above 100 % now carries an inline note: it means retransmissions of segments sent before the sample window; read as a ratio, not a percentage.
+- **Backlog #8 fixed** — the AUTO_GATEWAY placeholder no longer leaks raw: the failure detail now explains it resolves to the current IPv4 default gateway and none exists.
+- **Backlog #9 fixed** — an optional ping target that fails completely now explains its Information badge: ICMP may simply be blocked; the Connectivity group is the authoritative internet verdict.
+
+**Re-validation:** PS 5.1 parser 0 errors × 2; acceptance re-run on both language versions — exit 0, Overall Healthy, tool version 1.1.3 in reports.
+
 ## v1.1.2 · 2026-07-28
 
 **Change:** every check's details now also carry a **Manual check line** — the copy-paste command a person can run to reproduce the result by hand (`ping -n 4 <target>`, `nslookup <host>`, `Test-NetConnection <host> -Port <port>`, `Invoke-WebRequest <url> -UseBasicParsing`, `Get-NetAdapterStatistics -Name '<adapter>'`, `Get-CimInstance Win32_PerfRawData_Tcpip_*` sampled twice). The connectivity group is deliberately excluded — it is derived from its members. Reports are now self-explaining **and self-reproducible**.
@@ -50,7 +61,7 @@ All four injected faults were detected and correctly classified at the overall-v
 
 ## Known issues — backlog for v1.1.1
 
-1. **GUI fallback gap (major):** `Initialize-Gui`'s try/catch covers assembly loading only; an exception thrown during form construction exits with code 1 instead of falling back to console mode. Fix: wrap the entire function body.
+1. ~~GUI fallback gap (major)~~ — **fixed in v1.1.3** (2026-07-29).
 2. On report-write failure the emergency report is produced twice (double dialog in GUI mode).
 3. If one of the three report formats fails, the whole run is treated as a report failure — "Open Report" stays disabled even when HTML/TXT succeeded.
 4. Retransmission thresholds are parsed with raw `[double]` casts (inconsistent with the `ConvertTo-IntSafe` defensive style; a non-numeric config value degrades that step to ERROR). Packet-loss/latency thresholds silently round decimals to integers.
@@ -59,9 +70,9 @@ All four injected faults were detected and correctly classified at the overall-v
 
 ### From fault-injection review (2026-07-28)
 
-7. TCPv6 retransmission ratio can exceed 100 % (observed 15 retrans / 5 sent = "300 %") — retransmissions of pre-sample traffic break the percentage semantics; cap the display or annotate as a ratio.
-8. "Configured value: AUTO_GATEWAY" leaks an internal placeholder into a user-facing failure message; reword to "No default gateway exists to test."
-9. The non-required public-IP ping shows "100 % loss" with an Information badge and no explanation; add "informational — ICMP may be blocked; see the Connectivity group for the authoritative internet verdict."
+7. ~~Retransmission ratio above 100 % unexplained~~ — **fixed in v1.1.3** (inline ratio note).
+8. ~~AUTO_GATEWAY placeholder leak~~ — **fixed in v1.1.3** (explanatory detail).
+9. ~~Optional-ping Information badge unexplained~~ — **fixed in v1.1.3** (inline explanation).
 10. Virtual adapters (VirtualBox / Hyper-V) earn Pass rows and inflate the adapter count; demote virtual NICs to Information and report physical vs virtual counts separately ("0 physical" should itself be a failure signal).
 11. Full PowerShell stack traces (with local file paths) render in the HTML report; keep them in JSON only, show a one-line summary in HTML.
 12. ~~Add a "Method" line to each check's details~~ — **done in v1.1.1** (2026-07-28).
