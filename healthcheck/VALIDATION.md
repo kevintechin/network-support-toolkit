@@ -1,5 +1,29 @@
 # Validation Record — NetworkHealthCheck
 
+## Scenario matrix — v1.1.3 · 2026-07-30 (author-executed, five fault scenarios)
+
+All five scenarios re-run on v1.1.3 (Windows 11, en-US build). Every overall verdict correct; every v1.1.3 wording fix verified **under fault conditions** (the 07-29 note "failure path not fault-injected" is now closed for #8 and #9).
+
+| Check | 01 All pass | 02 Wrong DNS | 03 NIC disabled | 04 WAN cut | 05 AP off | As expected? |
+|---|---|---|---|---|---|---|
+| **Overall verdict** | Healthy | Problem | Problem | Problem | Problem | ✓ 5/5 |
+| Default gateway (config) | Pass | Pass | **Fail** | Pass | **Fail** | ✓ |
+| Gateway ping | Pass 1.8 ms | Pass | Fail — no target | **Pass 2.2 ms** | Fail — no target | ✓ — 04's "gateway OK" is the *gateway-up-internet-dead* lane signature |
+| Public-IP ping (optional) | Pass 30 ms | Pass | Info — send **errors** | Info — **TimedOut** | Info — Unreachable→timeouts | ✓ — the ICMP failure *type* is itself evidence: error = no route to send; timeout = packet left, nothing returned |
+| DNS resolution | Pass | **Fail** | Fail | Fail | Fail | ✓ |
+| TCP 1.1.1.1:443 | Pass | **Pass** | Info | Info | Info | ✓ — 02's TCP-by-IP pass separates the DNS lane cleanly |
+| Internet group | Pass | **Pass** | Fail | Fail | Fail | ✓ |
+| TCPv4 retransmissions | 0 % | 0 % | 0 % (38 seg — packets can't leave) | **40.3 % FAIL** (link up, no ACKs) | 16.7 % WARN (small sample) | ✓ — fingerprint pair confirmed: *NIC dead → zero; WAN dead behind a live link → spike* |
+| Connected adapters | 3 | 3 | 2 | 3 | 2 | ✓ |
+
+**Fix verification in fault conditions:** #8 AUTO_GATEWAY explanatory wording appears in 03/05; #9 optional-ping Information explanation appears in 03/04/05; Method + Manual-check lines present in every scenario.
+
+**Additional observations:**
+- Run duration stretches under faults (04: ~27 s vs ~10 s baseline) — connect/DNS timeouts dominate; the retransmission sample window auto-extended to 24.8 s (`Wait-ForMinimumTcpSample` behaving as designed).
+- OS-locale exception strings bleed into reports (a Chinese "作業逾時" appears in the en-US report when the OS throws it) — logged as backlog #14.
+- Raw scenario reports are kept out of the repository by design: they contain hostname, username, SSID, and MAC (see technical guide §8.11). This matrix carries the evidence without the PII.
+- zh-TW coverage: scenario runs were executed on en-US; zh-TW is covered by happy-path acceptance runs (v1.1.1–v1.1.3) plus the token-skeleton identity proof — the fault-path logic is literally the same code.
+
 ## v1.1.3 · 2026-07-29
 
 **Changes** (closing the loop on the fault-injection review):
@@ -77,3 +101,4 @@ All four injected faults were detected and correctly classified at the overall-v
 11. Full PowerShell stack traces (with local file paths) render in the HTML report; keep them in JSON only, show a one-line summary in HTML.
 12. ~~Add a "Method" line to each check's details~~ — **done in v1.1.1** (2026-07-28).
 13. Wi-Fi RF data (RSSI / channel / band) for wireless adapters — needs `netsh wlan show interfaces` parsing (locale-sensitive output) or the native WLAN API; note the client-side view is inherently weaker evidence than the AP's client table.
+14. OS-locale exception strings pass through verbatim into reports (e.g., a Chinese "作業逾時" inside an en-US report); consider mapping common .NET socket/web exceptions to the report language, or note the behavior in the technical guide.
