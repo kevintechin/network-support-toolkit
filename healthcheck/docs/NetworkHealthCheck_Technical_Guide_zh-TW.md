@@ -22,7 +22,6 @@
 | `NetworkHealthCheck_Technical_Guide_*.md` | 本文件的中英文版本。 |
 | `SHA256SUMS.txt` | 發行檔案的 SHA-256。 |
 | `tools/validate_release.py` | 跨平台靜態發行驗證腳本，不執行 Windows 網路檢測。 |
-| `VALIDATION_RESULTS.txt` | 本次打包時的實際靜態驗證結果。 |
 
 ## 4. 功能與判定方式
 
@@ -174,7 +173,7 @@ FAIL > ERROR > WARN > PASS
 8. SHA-256 清單逐項重新計算並比對。
 9. ZIP 執行完整性測試，沒有損壞項目。
 
-實際結果收錄於 `VALIDATION_RESULTS.txt`，驗證程式位於 `tools/validate_release.py`。
+驗證程式位於 `tools/validate_release.py`，對套件根目錄執行即可重現檢查；最新結果記錄於 `../VALIDATION.md`。
 
 ### 7.2 Windows 驗證狀態
 

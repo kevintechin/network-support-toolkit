@@ -22,7 +22,6 @@ The tool is read-only with respect to system configuration. It does not change I
 | `NetworkHealthCheck_Technical_Guide_*.md` | English and Traditional Chinese versions of this document. |
 | `SHA256SUMS.txt` | SHA-256 values for release files. |
 | `tools/validate_release.py` | Cross-platform static release validator; it does not run Windows network checks. |
-| `VALIDATION_RESULTS.txt` | Actual static-validation output from this build. |
 
 ## 4. Features and decision rules
 
@@ -174,7 +173,7 @@ The build performed checks that do not require a Windows network environment:
 8. Every SHA-256 entry is recalculated and compared.
 9. ZIP integrity tests report no damaged members.
 
-Actual output is in `VALIDATION_RESULTS.txt`; the validator is `tools/validate_release.py`.
+The validator is `tools/validate_release.py`; run it against the package root to reproduce these checks. Current results are recorded in `../VALIDATION.md`.
 
 ### 7.2 Validation status on Windows
 
