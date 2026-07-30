@@ -2,6 +2,8 @@
 
 ## Scenario matrix — v1.1.3 · 2026-07-30 (author-executed, five fault scenarios)
 
+> Formatted version: [validation-matrix.html](validation-matrix.html) — open locally in a browser (GitHub shows HTML files as source).
+
 All five scenarios re-run on v1.1.3 (Windows 11, en-US build). Every overall verdict correct; every v1.1.3 wording fix verified **under fault conditions** (the 07-29 note "failure path not fault-injected" is now closed for #8 and #9).
 
 | Check | 01 All pass | 02 Wrong DNS | 03 NIC disabled | 04 WAN cut | 05 AP off | As expected? |

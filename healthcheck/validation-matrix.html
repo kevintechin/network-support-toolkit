@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetworkHealthCheck — Scenario Validation Matrix (v1.1.3)</title>
+<style>
+body { margin:0; font-family:"Segoe UI", Arial, sans-serif; background:#f4f6f8; color:#1f2933; }
+header { background:#17324d; color:#fff; padding:22px 32px; }
+header h1 { margin:0 0 6px; font-size:24px; }
+header p { margin:3px 0; opacity:.92; font-size:14px; }
+main { max-width:1180px; margin:22px auto; padding:0 18px 40px; }
+section { background:#fff; border-radius:12px; margin-bottom:18px; padding:18px 20px; box-shadow:0 2px 8px rgba(0,0,0,.06); }
+section h2 { margin-top:0; font-size:18px; }
+table { width:100%; border-collapse:collapse; font-size:13.5px; }
+th { background:#edf2f7; text-align:left; padding:9px 10px; border-bottom:2px solid #cbd5e0; }
+td { padding:9px 10px; border-bottom:1px solid #e2e8f0; vertical-align:top; }
+td:first-child { font-weight:600; white-space:nowrap; }
+.badge { display:inline-block; border-radius:999px; padding:2px 9px; font-weight:700; font-size:12px; white-space:nowrap; }
+.pass { background:#c6f6d5; color:#22543d; }
+.fail { background:#fed7d7; color:#822727; }
+.info { background:#bee3f8; color:#2a4365; }
+.warn { background:#feebc8; color:#7b341e; }
+.ok   { color:#14804a; font-weight:700; }
+small.note { color:#52606d; display:block; margin-top:3px; font-weight:400; }
+ul { margin:8px 0 0; padding-left:20px; }
+li { margin-bottom:7px; font-size:14px; }
+.scroll { overflow-x:auto; }
+footer { color:#718096; font-size:13px; margin-top:14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Scenario Validation Matrix — NetworkHealthCheck v1.1.3</h1>
+  <p>Five author-executed fault scenarios · Windows 11 Pro (10.0.26200) · Windows PowerShell 5.1 · en-US build · 2026-07-30</p>
+  <p>Full validation history: VALIDATION.md · Raw reports kept out of the repository by design (they contain hostname / user / SSID / MAC)</p>
+</header>
+<main>
+
+<section>
+  <h2>Per-check comparison across scenarios</h2>
+  <div class="scroll">
+  <table>
+    <thead>
+      <tr><th>Check</th><th>01 All pass</th><th>02 Wrong DNS</th><th>03 NIC disabled</th><th>04 AP WAN cut</th><th>05 AP powered off</th><th>As expected?</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Overall verdict</td>
+        <td><span class="badge pass">Healthy</span></td>
+        <td><span class="badge fail">Problem</span></td>
+        <td><span class="badge fail">Problem</span></td>
+        <td><span class="badge fail">Problem</span></td>
+        <td><span class="badge fail">Problem</span></td>
+        <td class="ok">✓ 5 / 5</td>
+      </tr>
+      <tr>
+        <td>Default gateway (config)</td>
+        <td><span class="badge pass">Pass</span></td>
+        <td><span class="badge pass">Pass</span></td>
+        <td><span class="badge fail">Fail</span></td>
+        <td><span class="badge pass">Pass</span></td>
+        <td><span class="badge fail">Fail</span></td>
+        <td class="ok">✓</td>
+      </tr>
+      <tr>
+        <td>Gateway ping</td>
+        <td><span class="badge pass">Pass</span> 1.8 ms</td>
+        <td><span class="badge pass">Pass</span> 2.5 ms</td>
+        <td><span class="badge fail">Fail</span> no target</td>
+        <td><span class="badge pass">Pass</span> 2.2 ms<small class="note">the “gateway up, internet dead” lane signature</small></td>
+        <td><span class="badge fail">Fail</span> no target</td>
+        <td class="ok">✓</td>
+      </tr>
+      <tr>
+        <td>Public-IP ping (optional)</td>
+        <td><span class="badge pass">Pass</span> 30 ms</td>
+        <td><span class="badge pass">Pass</span> 32 ms</td>
+        <td><span class="badge info">Info</span> send <b>errors</b></td>
+        <td><span class="badge info">Info</span> <b>TimedOut</b></td>
+        <td><span class="badge info">Info</span> Unreachable → timeouts</td>
+        <td class="ok">✓<small class="note">the ICMP failure <i>type</i> is itself evidence: error = no route to send; timeout = packet left, nothing returned</small></td>
+      </tr>
+      <tr>
+        <td>DNS resolution</td>
+        <td><span class="badge pass">Pass</span> 62 ms</td>
+        <td><span class="badge fail">Fail</span></td>
+        <td><span class="badge fail">Fail</span></td>
+        <td><span class="badge fail">Fail</span></td>
+        <td><span class="badge fail">Fail</span></td>
+        <td class="ok">✓</td>
+      </tr>
+      <tr>
+        <td>TCP 1.1.1.1:443</td>
+        <td><span class="badge pass">Pass</span> 36 ms</td>
+        <td><span class="badge pass">Pass</span> 35 ms</td>
+        <td><span class="badge info">Info</span></td>
+        <td><span class="badge info">Info</span> timeout</td>
+        <td><span class="badge info">Info</span></td>
+        <td class="ok">✓<small class="note">02’s TCP-by-IP pass separates the DNS lane cleanly</small></td>
+      </tr>
+      <tr>
+        <td>Internet group</td>
+        <td><span class="badge pass">Pass</span></td>
+        <td><span class="badge pass">Pass</span></td>
+        <td><span class="badge fail">Fail</span></td>
+        <td><span class="badge fail">Fail</span></td>
+        <td><span class="badge fail">Fail</span></td>
+        <td class="ok">✓</td>
+      </tr>
+      <tr>
+        <td>TCPv4 retransmissions</td>
+        <td><span class="badge pass">Pass</span> 0 %</td>
+        <td><span class="badge pass">Pass</span> 0 %</td>
+        <td><span class="badge info">Info</span> 0 % (38 seg)</td>
+        <td><span class="badge fail">Fail</span> <b>40.3 %</b></td>
+        <td><span class="badge warn">Warn</span> 16.7 % (small sample)</td>
+        <td class="ok">✓<small class="note">fingerprint pair: NIC dead → packets can’t leave → zero; WAN dead behind a live link → packets leave, no ACKs → spike</small></td>
+      </tr>
+      <tr>
+        <td>Connected adapters</td>
+        <td>3</td>
+        <td>3</td>
+        <td>2</td>
+        <td>3</td>
+        <td>2</td>
+        <td class="ok">✓</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>v1.1.3 fix verification under fault conditions</h2>
+  <ul>
+    <li><b>#8 AUTO_GATEWAY wording</b> — explanatory detail appears in scenarios 03 and 05 (no raw placeholder leak).</li>
+    <li><b>#9 optional-ping explanation</b> — the Information-badge rationale appears in scenarios 03, 04, and 05.</li>
+    <li><b>Method + Manual-check lines</b> — present in every check, every scenario.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Observations</h2>
+  <ul>
+    <li>Run duration stretches under faults (scenario 04: ~27 s vs ~10 s baseline) — connect/DNS timeouts dominate; the retransmission sample window auto-extended to 24.8 s as designed.</li>
+    <li>OS-locale exception strings pass through verbatim (backlog #14).</li>
+    <li>zh-TW coverage: scenarios executed on en-US; zh-TW is covered by happy-path acceptance runs plus the token-skeleton identity proof — the fault-path logic is the same code.</li>
+  </ul>
+</section>
+
+<footer>NetworkHealthCheck v1.1.3 · scenario matrix · 2026-07-30 · Kevin (Te-Chin) Lin</footer>
+</main>
+</body>
+</html>

@@ -1,6 +1,6 @@
 # Network Troubleshooting SOP
 
-**From the user's chair to the ISP — a fault-isolation playbook for L2 support**
+**From the user's chair to the ISP — a fault-isolation playbook**
 
 Version 1.0 (draft) · Kevin (Te-Chin) Lin · July 2026
 

@@ -1,6 +1,6 @@
 # Network Support Toolkit
 
-A working support engineer's toolkit: a fault-isolation SOP and a portable network health-check tool — built from 15+ years of customer-facing network support.
+A working support engineer's toolkit: a fault-isolation SOP and a portable network health-check tool.
 
 ## Components
 
@@ -10,9 +10,9 @@ A one-page fault-isolation playbook, from the user's chair to the ISP ([markdown
 
 - **Station 0 — Profile the Reporter**: IT-professional vs general-user delegation tracks
 - **Front door**: four isolation questions that cut the search space before touching anything
-- **The Packet's Journey**: eight stations (PC → Wi-Fi → switch → LAG → core → firewall → DNS → ISP), each in *read state → verify config → healthy → if broken* form
+- **The Packet's Journey**: eight stations, each in *read state → verify config → healthy → if broken* form
 - **Read State Before Config**: tables / counters / probes, a counter reference, and two fault discriminators
-- **Escalation — when, and with what**: four hand-off rules and the evidence package L3 receives
+- **Escalation — when, and with what**: four hand-off rules and the evidence package that travels with the hand-off
 - **Fingerprint library**: fast symptom-to-suspect lookups
 
 ### 🔧 [healthcheck/](healthcheck/) — NetworkHealthCheck (Portable)
@@ -46,7 +46,7 @@ See [healthcheck/docs](healthcheck/docs/) for the technical guide (design, valid
 | Item | Status |
 |---|---|
 | SOP | v1.1 |
-| NetworkHealthCheck | v1.1.1 — self-explaining Method lines in every check; validation chain: static checks, independent code review, Windows acceptance, fault-injection scenarios ([validation record](healthcheck/VALIDATION.md)) |
+| NetworkHealthCheck | v1.1.3 — self-explaining Method + Manual-check lines in every check; validation chain: static checks, independent code review, Windows acceptance, five fault-injection scenarios ([validation record](healthcheck/VALIDATION.md) · [scenario matrix](healthcheck/validation-matrix.html)) |
 | NHC v1.2 | Planned: separate User / IT modes |
 | Guided triage wizard | Planned: decision-tree front-end over the SOP |
 
