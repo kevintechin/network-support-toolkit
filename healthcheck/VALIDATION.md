@@ -65,6 +65,12 @@ Re-validation after round 4: parser 0 errors × 2; validator 62/62; unit tests 8
 
 Re-validation after round 5: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 83 × 2 (new: optional group failure → `attention`; required failure next to a passing group → `mixed`; gateway ping `ERROR` → `incomplete`; a URL with `,` and `;` survives as one target); console acceptance en-US user, en-US IT switches (including `-HttpUrl "https://www.microsoft.com/?ids=1,2"`) and zh-TW user, exit 0.
 
+**Independent review — Codex, PR #3, round 6 · 2026-09-03 (requested by the maintainer after the five-round limit).** One P2 finding on commit 01ff2c7, accepted and fixed:
+
+1. *CLI ping / DNS / TCP lists were split on commas and semicolons only* while the guide and the IT panel also accept spaces, so `-PingTarget "10.0.0.1 10.0.0.2"` became one invalid target. Fix: the three CLI lists now split on commas, semicolons or whitespace (`[,;\s]+`), matching the panel; URLs keep the whitespace-only rule.
+
+Re-validation after round 6: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 86 × 2 (new: whitespace and mixed separators for ping / DNS / TCP); console acceptance en-US user, en-US IT switches (`-PingTarget "8.8.8.8 9.9.9.9" -TcpTarget "1.1.1.1:53 bad"` → two pings accepted, one TCP accepted, `bad` reported once) and zh-TW user, exit 0.
+
 ## v1.1.5 · 2026-09-03
 
 **Changes** (backlog #2 and #3):

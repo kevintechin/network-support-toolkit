@@ -635,19 +635,19 @@ function Set-RunOptions {
     $extra = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
     $raw = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
 
-    foreach ($value in @(@($Overrides["PingTarget"]) | ForEach-Object { ([string]$_) -split '[,;]' } | ForEach-Object { ([string]$_).Trim() })) {
+    foreach ($value in @(@($Overrides["PingTarget"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $raw.Ping += [string]$value
         $config.Tests.PingTargets = @($config.Tests.PingTargets) + [pscustomobject][ordered]@{ Name = "Extra ping"; Address = [string]$value; Required = $false }
         $extra.Ping += [string]$value
     }
-    foreach ($value in @(@($Overrides["DnsName"]) | ForEach-Object { ([string]$_) -split '[,;]' } | ForEach-Object { ([string]$_).Trim() })) {
+    foreach ($value in @(@($Overrides["DnsName"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $raw.Dns += [string]$value
         $config.Tests.DnsNames = @($config.Tests.DnsNames) + [pscustomobject][ordered]@{ Name = "Extra DNS"; Host = [string]$value; Required = $false }
         $extra.Dns += [string]$value
     }
-    foreach ($value in @(@($Overrides["TcpTarget"]) | ForEach-Object { ([string]$_) -split '[,;]' } | ForEach-Object { ([string]$_).Trim() })) {
+    foreach ($value in @(@($Overrides["TcpTarget"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $raw.Tcp += [string]$value
         $parts = ([string]$value).Split(':')
