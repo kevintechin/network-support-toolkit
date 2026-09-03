@@ -133,15 +133,19 @@ def overwritten_parameters(text):
         if n<=param_end: continue
         # Every function in these files opens with `function Name {` and closes with a column-0 `}`; everything else is
         # top level, where try / if / foreach blocks create no scope, so "local" means the script scope there.
-        if re.match(r'^function\s',line): in_function=True
+        if re.match(r'^function\s',line):
+            # A one-line `function F { ... }` is closed on its own line and its body is local: nothing on that line is scanned.
+            in_function=('{' not in line) or (line.count('{')!=line.count('}'))
+            continue
         elif line.rstrip()=='}': in_function=False
         code=strip_line_comment(line,blank_single=True)
-        # Assignment statements: $Name, ${Name}, $script:Name, $Script:Name, ${script:Name}, $global:Name, $local:Name ..., with or
-        # without type constraints / attributes in front ([bool]$script:Name = ..., [ValidateNotNull()][string[]]$Name = ...).
-        # Names are case-insensitive like PowerShell's. The assigned expression must contain the parameter's own token
-        # (outside comments and single quotes; $NameBackup does not count).
-        m=re.match(r'^\s*(?:\[[^=]*?\]\s*)*\$\{?(?:(\w+):)?(\w+)\}?\s*=\s*(.*)$',code,re.I)   # optional [type] / [Attribute()] prefixes
-        if m and m.group(2).lower() in params:
+        # Assignment statements at every statement start of the line (line start, after `{`, after `;` - if / try / foreach
+        # blocks create no scope): $Name, ${Name}, $script:Name, $Script:Name, ${script:Name}, $global:Name, $local:Name ...,
+        # with or without type constraints / attributes in front ([bool]$script:Name = ..., [ValidateNotNull()][string[]]$Name = ...).
+        # Names are case-insensitive like PowerShell's. The assigned expression (read up to the next `;` or `}`) must contain
+        # the parameter's own token (outside comments and single quotes; $NameBackup does not count).
+        for m in re.finditer(r'(?:^|[{;])\s*(?:\[[^=]*?\]\s*)*\$\{?(?:(\w+):)?(\w+)\}?\s*=(?!=)\s*([^;}]*)',code,re.I):
+            if m.group(2).lower() not in params: continue
             scope=(m.group(1) or '').lower()
             if scope in ('script','global') or (scope in ('','local','private') and not in_function):
                 if not token(m.group(2),m.group(3)): hits.append(f'{n} (${m.group(2)})')

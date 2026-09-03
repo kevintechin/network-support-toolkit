@@ -77,6 +77,12 @@ Re-validation after round 7 (scripts unchanged; validator and manifest only): pa
 
 Review loop closed: eight Codex passes on PR #4, eight findings fixed in seven rounds (rounds 6 and 7 requested by the maintainer after the five-round limit), one finding rejected with evidence. The shipped scripts are unchanged since the UI Automation runs of commit ade80fd.
 
+**Independent review — Codex, PR #4, round 9 · 2026-09-03 (requested by the maintainer).** One P2 finding on commit 4a50e02, accepted and fixed:
+
+1. *The parameter guard only saw assignments that begin a physical line.* A top-level one-line block such as `if ($c) { $script:Interactive = $false }`, or a second statement after `;`, was not scanned although `if` / `try` / `foreach` create no scope. Fix: assignment statements are matched at every statement start of the comment-free line (line start, after `{`, after `;`), the assigned expression is read up to the next `;` or `}`, and a one-line `function F { ... }` is treated as closed on its line with a local body. The guard is now independent of statement position; hashtable keys (`@{ Interactive = ... }`), index and property assignments (`$h[$script:X] = ...`, `$script:X.Value = ...`) are not reported. Self-tests extended (twelve top-level and three function-local cases); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 8 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
