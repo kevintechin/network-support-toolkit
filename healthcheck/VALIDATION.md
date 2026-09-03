@@ -1,5 +1,31 @@
 # Validation Record — NetworkHealthCheck
 
+## v1.2.1 · 2026-09-03 — IT panel keeps configured values; two 1.2.0 GUI regressions
+
+**Changes** (PR #4). The first item is the seventh Codex pass on PR #3; the other two were found by the first real GUI runs of 1.2.0 — the earlier chain exercised the WinForms code by review only.
+
+1. **IT panel truncated configured sampling values (Codex, PR #3 round 7 — P2).** `Set-OptionsPanelValues` clamped `PingCount` to the spinner's 1–20 range and `RetransmissionSampleSeconds` to 1–120, and Start wrote the clamped values back through `Get-RunOptionsFromPanel` even when nothing was touched, while configuration validation accepts any positive Int32 — so `PingCount: 30` ran as 30 from the user entry and the console but as 20 from the IT launcher (300 s → 120 s likewise). Fix: the spinner's `Maximum` is raised to the configured value before the value is assigned (`max(20, configured)` / `max(120, configured)`); the default ranges are unchanged for configurations within them, a panel edit still wins, and "Reset to config" restores both value and range. `TracerouteHops` was already consistent (configuration and panel both enforce 1–10).
+2. **The GUI fell back to console mode for both entries (1.2.0 regression, P1).** Six control positions were written as `New-Object System.Drawing.Point(22, 84 + $offset)` (also `Size(900, 700 + $offset)` and `Point(22, $bottomY + 44)`). A `New-Object` argument list is parsed in expression mode, where the comma binds tighter than `+`, so `(22, 84 + $offset)` is the three-element array `22, 84, $offset` and the constructor threw "cannot find an overload for Point and the argument count 3". `Initialize-Gui` caught it, logged "The graphical interface could not be started. Console mode will be used.", and every double-click of `Start-NetworkCheck.cmd` or `Start-NetworkCheck-IT.cmd` ran in a console window. Introduced by v1.2.0 — up to 1.1.5 those lines were literals. Fix: the arithmetic is parenthesized.
+3. **The IT launcher opened the user layout (1.2.0 regression, P1).** The top-level line `$script:Interactive = $false` ran after parameter binding and overwrote the bound `-Interactive` switch — a script's top-level scope and its `$script:` scope are the same variable table — so once the GUI could start at all, `Start-NetworkCheck-IT.cmd` showed the user window (no run-options panel, auto-start) with only `-ExpandDetails` in effect. Fix: the variable is initialized from the parameter and the redundant re-assignment in the entry block is removed.
+4. **Validator** — two new guards per language file: no unparenthesized arithmetic inside a `New-Object` argument list, and no top-level `$script:<Parameter> = <literal>`; both flag the v1.2.0 files (six lines, and line 77 / 70) and pass on 1.2.1 — 62 → 66 checks. Version 1.2.1 in both scripts, READMEs, guides (§4.10 documents the panel-range rule, §7.2 the history); function count unchanged (77).
+
+**Re-validation (Windows 11, Windows PowerShell 5.1.26100):**
+
+| Step | Result |
+|---|---|
+| PS 5.1 parser, both languages | 0 errors × 2 |
+| `validate_release.py` | 66 passed, 0 failed — skeleton identical, 77 = 77 functions, both new guards pass (and flag the v1.2.0 files when run against them), hashes regenerated (22 files) |
+| Helper unit tests | 89 × 2 (unchanged) |
+| Report-stage functional tests | 103 × 2 — new I: real WinForms panel controls created headless (no form): a configured 30 pings / 300 s is shown, the spinner ranges widen to 30 / 300, an untouched Start keeps 30 / 300 in the effective configuration and the profile text; a panel edit (12 / 45) still wins; "Reset to config" restores 30 / 300; the default configuration keeps the 1–20 / 1–120 ranges and shows 4 / 8; a CLI `-PingCount 25` is shown, not clamped; traceroute hops keep 1–10 |
+| Headless `Initialize-Gui` (the function body executed without showing the form, both entries × both languages) | before the fix: all four threw at `$overall.Location = New-Object System.Drawing.Point(22, 84 + $offset)`; after: user form 940×700, IT form 940×872 with the panel populated |
+| **GUI, user entry — real window (UI Automation)** | en-US and zh-TW: the window opens, the run starts by itself, JSON `EntryPoint = User`, ping count 4, sample 8 s, Overall Healthy, 28 results; closed with the Close button, exit 0 |
+| **GUI, IT entry — real window (UI Automation)**, configuration `PingCount: 30`, `RetransmissionSampleSeconds: 125` | en-US and zh-TW: the title carries "- IT", the window is the panel layout (872 px logical), the run does not start by itself; Start clicked with the panel untouched → JSON `EntryPoint = IT`, `PingCount = 30`, `SampleSeconds = 125`, gateway ping 30/30, Overall Healthy, 28 results; closed with the Close button, exit 0. Before the fixes the same launch fell back to console mode, and with fix 2 alone it opened the user layout (title without "- IT", 700 px, auto-start) — both also reproduced through `Start-NetworkCheck-IT.cmd` itself |
+| Acceptance, en-US user entry (console) | exit 0, Overall Healthy, 28 results (6 IT), fingerprint `healthy`, ~12 s |
+| Acceptance, en-US IT entry (console switches: `-PingCount 6 -SampleSeconds 6 -PingTarget 8.8.8.8 -TcpTarget 1.1.1.1:53 -TracerouteHops 4 -ExpandDetails`) | exit 0, 30 results, `EntryPoint = IT`, ping count 6, sample 6 s, 4 hops, extra targets present, ~8 s |
+| Acceptance, zh-TW user entry (console) | exit 0, Overall Healthy, 28 results (6 IT), ~10 s |
+
+Lesson: "reviewed, not exercised headlessly" was not enough for WinForms code — the 1.2.0 GUI never opened on a real machine during its six review rounds because every acceptance run used `-ConsoleOnly`. From 1.2.1 the chain includes the headless `Initialize-Gui` smoke test and a UI Automation run of both entries in both languages (backlog #16 is about committing those driver scripts). The panel's spinner values cannot be read back through UI Automation (WinForms `NumericUpDown` exposes no value pattern here); the JSON run options are the evidence instead.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
@@ -70,6 +96,12 @@ Re-validation after round 5: parser 0 errors × 2; validator 62/62; unit tests 8
 1. *CLI ping / DNS / TCP lists were split on commas and semicolons only* while the guide and the IT panel also accept spaces, so `-PingTarget "10.0.0.1 10.0.0.2"` became one invalid target. Fix: the three CLI lists now split on commas, semicolons or whitespace (`[,;\s]+`), matching the panel; URLs keep the whitespace-only rule.
 
 Re-validation after round 6: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 86 × 2 (new: whitespace and mixed separators for ping / DNS / TCP); console acceptance en-US user, en-US IT switches (`-PingTarget "8.8.8.8 9.9.9.9" -TcpTarget "1.1.1.1:53 bad"` → two pings accepted, one TCP accepted, `bad` reported once) and zh-TW user, exit 0.
+
+**Independent review — Codex, PR #3, round 7 · 2026-09-03 (the pass on 08fa353 completed at 15:04, five minutes after the PR was merged at 14:59).** One P2 finding, accepted and fixed in v1.2.1 (PR #4 — see the entry above):
+
+1. *Configured sampling values above the IT panel's spinner range were silently truncated.* `Set-OptionsPanelValues` clamped `PingCount` to 1–20 and `RetransmissionSampleSeconds` to 1–120 and Start wrote the clamped values back, so a valid configuration ran with different sampling through the IT launcher (30 pings → 20, 300 s → 120 s).
+
+The same release fixes two 1.2.0 GUI regressions that the seven review rounds could not see because the GUI was never opened during validation (the "reviewed, not exercised headlessly" rows above).
 
 ## v1.1.5 · 2026-09-03
 
@@ -259,3 +291,7 @@ All four injected faults were detected and correctly classified at the overall-v
 ### From release packaging (2026-09-03)
 
 15. ~~GitHub *Code → Download ZIP* shipped LF line endings — the auto-generated archive failed the validator (all 8 CRLF checks, all 19 SHA256 manifest entries) and was therefore not the validated package~~ — **fixed 2026-09-03** (`.gitattributes`: `healthcheck/** text eol=crlf`, re-simulated archive 54/54; the v1.1.3 release asset is built from tracked files only — see the Packaging entry at the top).
+
+### From the v1.2.1 GUI runs (2026-09-03)
+
+16. The unit, functional, headless-GUI and UI Automation test scripts live outside the repository (session scratchpad); commit them — e.g. a top-level `tests/` folder outside the shipped `healthcheck/` package — so the full chain, including the real-window run that caught the two 1.2.0 GUI regressions, is reproducible from a fresh checkout.

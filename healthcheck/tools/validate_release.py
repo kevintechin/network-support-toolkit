@@ -3,7 +3,7 @@ from pathlib import Path
 import sys, json, hashlib, re
 
 ROOT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
-TOOL_VERSION = '1.2.0'
+TOOL_VERSION = '1.2.1'
 FUNCTION_COUNT = 77
 failures=[]; passes=[]
 
@@ -68,6 +68,33 @@ for rel in ['en-US/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.config.json
     ok('English file has no CJK '+rel,not cjk(read_text(ROOT/rel)))
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     ok('version '+TOOL_VERSION+' '+rel,'$script:ToolVersion = "'+TOOL_VERSION+'"' in read_text(ROOT/rel))
+# New-Object argument lists are parsed in expression mode, where the comma binds tighter than + (v1.2.0 shipped
+# `Point(22, 84 + $offset)` = three arguments, and the GUI fell back to console mode): arithmetic must be parenthesized.
+def unparenthesized_arithmetic(text):
+    hits=[]
+    for n,line in enumerate(text.splitlines(),1):
+        m=re.search(r'New-Object [A-Za-z.]+\((.*)\)\s*$',line)
+        if not m: continue
+        depth=0; prev=''
+        for c in m.group(1):
+            if c in '([': depth+=1
+            elif c in ')]': depth-=1
+            elif depth==0 and (c in '+*/' or (c=='-' and prev not in '(, ')): hits.append(n); break
+            if c!=' ': prev=c
+    return hits
+for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
+    hits=unparenthesized_arithmetic(read_text(ROOT/rel)); ok('New-Object arguments parenthesized '+rel,not hits,'lines '+', '.join(map(str,hits)) if hits else '')
+# A script's top-level scope and its $script: scope are the same variable table, so a top-level
+# `$script:<Parameter> = <literal>` overwrites the bound parameter (v1.2.0 wrote `$script:Interactive = $false` and
+# the IT launcher opened the user layout): such a line must derive its value from the parameter itself.
+def overwritten_parameters(text):
+    head=text.split('\n)',1)[0]; params=re.findall(r'\[[\w\[\].]+\]\$(\w+)',head); hits=[]
+    for n,line in enumerate(text.splitlines(),1):
+        m=re.match(r'^\$script:(\w+)\s*=\s*(.*)$',line)
+        if m and m.group(1) in params and ('$'+m.group(1)) not in m.group(2): hits.append(f'{n} (${m.group(1)})')
+    return hits
+for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
+    hits=overwritten_parameters(read_text(ROOT/rel)); ok('parameters not overwritten at script scope '+rel,not hits,'lines '+', '.join(hits) if hits else '')
 # Hash manifest is checked if already present.
 manifest=ROOT/'SHA256SUMS.txt'
 if manifest.exists():
