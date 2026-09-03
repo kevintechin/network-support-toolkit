@@ -2147,6 +2147,10 @@ function Compare-AdapterStatistics {
 
         $beforeItem = $Before[$name]
         $afterItem = $After[$name]
+        $isVirtualAdapter = $false
+        if ($adapterByName.ContainsKey($name)) {
+            $isVirtualAdapter = ($adapterByName[$name].IsPhysical -ne $true)
+        }
 
         $counterReset = (
             [double]$afterItem.ReceivedPacketErrors -lt [double]$beforeItem.ReceivedPacketErrors -or
@@ -2162,7 +2166,9 @@ function Compare-AdapterStatistics {
                 "起始：RxErrors=$($beforeItem.ReceivedPacketErrors), TxErrors=$($beforeItem.OutboundPacketErrors), RxDiscards=$($beforeItem.ReceivedDiscardedPackets), TxDiscards=$($beforeItem.OutboundDiscardedPackets), RxBytes=$($beforeItem.ReceivedBytes), TxBytes=$($beforeItem.SentBytes)",
                 "結束：RxErrors=$($afterItem.ReceivedPacketErrors), TxErrors=$($afterItem.OutboundPacketErrors), RxDiscards=$($afterItem.ReceivedDiscardedPackets), TxDiscards=$($afterItem.OutboundDiscardedPackets), RxBytes=$($afterItem.ReceivedBytes), TxBytes=$($afterItem.SentBytes)"
             ) -join [Environment]::NewLine
-            Add-CheckResult -Category "網卡錯誤計數" -Check $name -Status "WARN" -Message "網卡計數器在檢測期間重設，可能曾重新連線或重啟；無法可靠計算增量。" -Details $resetDetails -Tag "adapter-errors" | Out-Null
+            $resetStatus = "WARN"
+            if ($isVirtualAdapter) { $resetStatus = "INFO" }
+            Add-CheckResult -Category "網卡錯誤計數" -Check $name -Status $resetStatus -Message "網卡計數器在檢測期間重設，可能曾重新連線或重啟；無法可靠計算增量。" -Details $resetDetails -Tag "adapter-errors" | Out-Null
             continue
         }
 
@@ -2183,10 +2189,6 @@ function Compare-AdapterStatistics {
 
         $message = "檢測期間新增錯誤 {0}、丟棄 {1}。" -f $errorDelta, $discardDelta
         $trafficDelta = ([double]$afterItem.ReceivedBytes - [double]$beforeItem.ReceivedBytes) + ([double]$afterItem.SentBytes - [double]$beforeItem.SentBytes)
-        $isVirtualAdapter = $false
-        if ($adapterByName.ContainsKey($name)) {
-            $isVirtualAdapter = ($adapterByName[$name].IsPhysical -ne $true)
-        }
         if ($isVirtualAdapter) {
             $status = "INFO"
             $message = "虛擬網卡：檢測期間新增錯誤 {0}、丟棄 {1}（僅供參考）。" -f $errorDelta, $discardDelta
@@ -3551,14 +3553,16 @@ function Set-OptionsPanelValues {
     $controls["SampleSeconds"].Value = [math]::Min(120, [math]::Max(1, $options.SampleSeconds))
     $controls["TracerouteHops"].Value = [math]::Min(10, [math]::Max(1, $options.TracerouteHops))
     $controls["WifiRf"].Checked = [bool]$options.ChecksEnabled.WifiRf
-    $controls["ItData"].Checked = ([bool]$options.ChecksEnabled.RouteTable -or [bool]$options.ChecksEnabled.GatewayNeighbor -or [bool]$options.ChecksEnabled.ProxySettings -or [bool]$options.ChecksEnabled.DriverInfo)
+    $controls["RouteTable"].Checked = [bool]$options.ChecksEnabled.RouteTable
+    $controls["GatewayNeighbor"].Checked = [bool]$options.ChecksEnabled.GatewayNeighbor
+    $controls["ProxySettings"].Checked = [bool]$options.ChecksEnabled.ProxySettings
+    $controls["DriverInfo"].Checked = [bool]$options.ChecksEnabled.DriverInfo
     $controls["Traceroute"].Checked = [bool]$options.ChecksEnabled.Traceroute
     $controls["ExpandDetails"].Checked = [bool]$options.ExpandDetails
 }
 
 function Get-RunOptionsFromPanel {
     $controls = $script:OptionsPanel
-    $itData = [bool]$controls["ItData"].Checked
     return @{
         EntryPoint     = "IT"
         ExpandDetails  = [bool]$controls["ExpandDetails"].Checked
@@ -3572,10 +3576,10 @@ function Get-RunOptionsFromPanel {
         Checks         = @{
             WifiRf          = [bool]$controls["WifiRf"].Checked
             Traceroute      = [bool]$controls["Traceroute"].Checked
-            RouteTable      = $itData
-            GatewayNeighbor = $itData
-            ProxySettings   = $itData
-            DriverInfo      = $itData
+            RouteTable      = [bool]$controls["RouteTable"].Checked
+            GatewayNeighbor = [bool]$controls["GatewayNeighbor"].Checked
+            ProxySettings   = [bool]$controls["ProxySettings"].Checked
+            DriverInfo      = [bool]$controls["DriverInfo"].Checked
         }
     }
 }
@@ -3599,7 +3603,7 @@ function Initialize-Gui {
     if ($script:Interactive) { $form.Text += "（IT）" }
     $form.StartPosition = "CenterScreen"
     $offset = 0
-    if ($script:Interactive) { $offset = 160 }
+    if ($script:Interactive) { $offset = 190 }
     $form.Size = New-Object System.Drawing.Size(940, 700 + $offset)
     $form.MinimumSize = New-Object System.Drawing.Size(780, 560 + $offset)
     $form.MaximizeBox = $true
@@ -3630,7 +3634,7 @@ function Initialize-Gui {
         $panel = New-Object System.Windows.Forms.GroupBox
         $panel.Text = "執行選項（IT）"
         $panel.Location = New-Object System.Drawing.Point(22, 84)
-        $panel.Size = New-Object System.Drawing.Size(880, 150)
+        $panel.Size = New-Object System.Drawing.Size(880, 180)
         $panel.Anchor = "Top,Left,Right"
         $form.Controls.Add($panel)
 
@@ -3666,7 +3670,7 @@ function Initialize-Gui {
             $controls[$item.Key] = $spinner
         }
         $x = 12
-        foreach ($item in @(@{ Key = "WifiRf"; Text = "Wi-Fi 無線"; Width = 110 }, @{ Key = "ItData"; Text = "路由／ARP／Proxy／驅動"; Width = 250 }, @{ Key = "Traceroute"; Text = "Traceroute"; Width = 110 })) {
+        foreach ($item in @(@{ Key = "WifiRf"; Text = "Wi-Fi 無線"; Width = 110 }, @{ Key = "Traceroute"; Text = "Traceroute"; Width = 110 })) {
             $check = New-Object System.Windows.Forms.CheckBox
             $check.Text = $item.Text
             $check.Location = New-Object System.Drawing.Point($x, 90)
@@ -3693,9 +3697,19 @@ function Initialize-Gui {
         $expand.Size = New-Object System.Drawing.Size(220, 24)
         $panel.Controls.Add($expand)
         $controls["ExpandDetails"] = $expand
+        $x = 12
+        foreach ($item in @(@{ Key = "RouteTable"; Text = "路由"; Width = 100 }, @{ Key = "GatewayNeighbor"; Text = "閘道 ARP"; Width = 130 }, @{ Key = "ProxySettings"; Text = "Proxy"; Width = 90 }, @{ Key = "DriverInfo"; Text = "驅動程式"; Width = 110 })) {
+            $check = New-Object System.Windows.Forms.CheckBox
+            $check.Text = $item.Text
+            $check.Location = New-Object System.Drawing.Point($x, 120)
+            $check.Size = New-Object System.Drawing.Size($item.Width, 24)
+            $panel.Controls.Add($check)
+            $controls[$item.Key] = $check
+            $x += $item.Width + 6
+        }
         $resetButton = New-Object System.Windows.Forms.Button
         $resetButton.Text = "還原設定檔"
-        $resetButton.Location = New-Object System.Drawing.Point(12, 118)
+        $resetButton.Location = New-Object System.Drawing.Point(12, 148)
         $resetButton.Size = New-Object System.Drawing.Size(140, 26)
         $panel.Controls.Add($resetButton)
         $script:OptionsPanel = $controls

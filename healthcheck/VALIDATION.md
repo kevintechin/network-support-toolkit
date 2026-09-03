@@ -33,6 +33,13 @@ Not exercised live: a virtual-only-adapter machine ("0 physical" WARN / FAIL pat
 
 Re-validation after round 1: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 64 × 2 (new: F — an IT-scoped `ERROR` and a failing IT step leave the verdict PASS and the counts untouched while a main-scope step failure still flips it; G — a virtual adapter with 50 errors is INFO, the same physical adapter is FAIL, a zero-traffic adapter is INFO; H — routes 10+100 / 20+5 / 0+50 sort as 25, 50, 110); console acceptance en-US user, en-US IT switches and zh-TW user all Overall Healthy, exit 0.
 
+**Independent review — Codex, PR #3, round 2 · 2026-09-03.** Two P2 findings on commit 7dd99a2, both accepted and fixed:
+
+1. *Counter resets on virtual adapters still warned.* The counter-reset branch emitted a main-scope `WARN` and returned before the virtual-adapter classification ran, so a VPN adapter reconnecting during the sample could turn a healthy run into "Attention Required". Fix: the classification is computed before the reset check and a reset on a virtual adapter is `INFO`.
+2. *The IT panel's aggregate checkbox overwrote per-check settings.* One "Routes / ARP / proxy / drivers" checkbox wrote its value back to all four flags on Start, overriding a configuration that enabled some and disabled others. Fix: the panel exposes one checkbox per optional check (Wi-Fi RF, traceroute, routes, gateway ARP, proxy, drivers) on a second row; each is populated from, and written back to, its own flag. Panel height 180 px.
+
+Re-validation after round 2: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 66 × 2 (new: G2 — a counter reset is INFO on a virtual adapter and WARN on a physical one); console acceptance en-US user, en-US IT switches and zh-TW user all Overall Healthy, exit 0. The reworked panel was reviewed, not exercised headlessly.
+
 ## v1.1.5 · 2026-09-03
 
 **Changes** (backlog #2 and #3):
