@@ -29,7 +29,7 @@ The tool is read-only with respect to system configuration. It does not change I
 
 The program creates safe built-in defaults, reads the JSON file, and recursively merges overrides. A missing or malformed configuration does not terminate the whole run. Built-in defaults are used, the reason is recorded as `ERROR / Unable to Check`, and other executable checks continue.
 
-Semantic validation covers IPv4 addresses, CIDRs, prefix lengths, gateways, DNS servers, DHCP Boolean state, TCP host/port values, HTTP/HTTPS URLs, DNS targets, and primary timeout values. Some inconsistent thresholds produce warnings. Since 1.1.4, every numeric threshold is parsed by a culture-invariant, non-throwing converter: a non-numeric value (Booleans, NaN and infinities included) is listed in the configuration warnings and replaced by the built-in default, and decimal thresholds (for example `2.5`) are honored instead of being rounded to integers. Semantic errors do not currently remove every affected value automatically, so an invalid setting can still make a related result meaningless; the report states this explicitly.
+Semantic validation covers IPv4 addresses, CIDRs, prefix lengths, gateways, DNS servers, DHCP Boolean state, TCP host/port values, HTTP/HTTPS URLs, DNS targets, and primary timeout values. Some inconsistent thresholds produce warnings. Since 1.1.4, every numeric threshold is parsed by a culture-invariant, non-throwing converter: a non-numeric value (Booleans, NaN and infinities included) is listed in the configuration warnings and replaced by the built-in default, and decimal thresholds (for example `2.5`) are honored instead of being rounded to integers. Count-based settings — the adapter error/discard deltas, `TcpRetransmissionCriticalCount`, `MinimumTcpSegmentsForRate`, `PingCount` and the timeouts — must be whole numbers; a decimal there is reported and replaced by the default rather than silently rounded. Semantic errors do not currently remove every affected value automatically, so an invalid setting can still make a related result meaningless; the report states this explicitly.
 
 ### 4.2 Adapter and IP discovery
 
@@ -146,7 +146,7 @@ Any `FAIL` produces Problem Detected. With no failure but at least one unexecute
 
 ## 6. Source design and comments
 
-The program consists of 59 named functions grouped into helpers, configuration, system discovery, policy comparison, active tests, counters, reporting, orchestration, and GUI.
+The program consists of 60 named functions grouped into helpers, configuration, system discovery, policy comparison, active tests, counters, reporting, orchestration, and GUI.
 
 Version 1.1.0 adds:
 
@@ -168,7 +168,7 @@ The build performed checks that do not require a Windows network environment:
 3. PowerShell/JSON use UTF-8 BOM and Windows scripts use CRLF.
 4. English PowerShell, configuration, and README contain no Chinese user-facing text.
 5. After removing strings and comments, the English and Chinese PowerShell executable skeletons are identical.
-6. Both sources expose the same 59-function set.
+6. Both sources expose the same 60-function set.
 7. Launchers reference `NetworkHealthCheck.ps1` correctly.
 8. Every SHA-256 entry is recalculated and compared.
 9. ZIP integrity tests report no damaged members.

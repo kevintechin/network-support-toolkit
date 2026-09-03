@@ -133,12 +133,16 @@ function ConvertTo-IntSafe {
         [int]$DefaultValue = 0
     )
 
-    if ($null -eq $Value -or $Value -is [bool]) {
+    if (-not (Test-IsWholeNumber $Value)) {
         return $DefaultValue
     }
 
     try {
-        return [int]$Value
+        $converted = ConvertTo-DoubleSafe $Value 0
+        if ($converted -lt [int]::MinValue -or $converted -gt [int]::MaxValue) {
+            return $DefaultValue
+        }
+        return [int]$converted
     }
     catch {
         return $DefaultValue
@@ -196,6 +200,17 @@ function Test-IsNumericValue {
     catch {
         return $false
     }
+}
+
+function Test-IsWholeNumber {
+    param([object]$Value)
+
+    if (-not (Test-IsNumericValue $Value)) {
+        return $false
+    }
+
+    $converted = ConvertTo-DoubleSafe $Value 0
+    return ([math]::Floor($converted) -eq $converted)
 }
 
 # Backlog #11：只回傳人類可讀的摘要；腳本位置與呼叫堆疊改由 Get-ExceptionDiagnostics 提供（僅寫入 JSON 報告）。
@@ -1121,15 +1136,25 @@ function Test-ConfigurationSemantics {
         [pscustomobject]@{ Name = "HttpTimeoutMs"; Value = $tests.HttpTimeoutMs },
         [pscustomobject]@{ Name = "RetransmissionSampleSeconds"; Value = $tests.RetransmissionSampleSeconds }
     )) {
-        if ((ConvertTo-IntSafe $setting.Value 0) -le 0) {
+        if ($null -ne $setting.Value -and -not (Test-IsWholeNumber $setting.Value)) {
+            [void]$warnings.Add("$($setting.Name) 必須是整數（目前值：$($setting.Value)），將改用內建預設值。")
+        }
+        elseif ((ConvertTo-IntSafe $setting.Value 0) -le 0) {
             [void]$warnings.Add("$($setting.Name) 應大於 0；程式將套用內建最低值。")
         }
     }
 
+    $countThresholdNames = @("TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")
     foreach ($thresholdName in @("PacketLossWarningPercent", "PacketLossCriticalPercent", "LatencyWarningMs", "LatencyCriticalMs", "TcpRetransmissionWarningPercent", "TcpRetransmissionCriticalPercent", "TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")) {
         $thresholdValue = Get-PropertyValue $thresholds $thresholdName
-        if ($null -ne $thresholdValue -and -not (Test-IsNumericValue $thresholdValue)) {
+        if ($null -eq $thresholdValue) {
+            continue
+        }
+        if (-not (Test-IsNumericValue $thresholdValue)) {
             [void]$warnings.Add("$thresholdName 不是數值（目前值：$thresholdValue），將改用內建預設值。")
+        }
+        elseif (($countThresholdNames -contains $thresholdName) -and -not (Test-IsWholeNumber $thresholdValue)) {
+            [void]$warnings.Add("$thresholdName 必須是整數（目前值：$thresholdValue），將改用內建預設值。")
         }
     }
 

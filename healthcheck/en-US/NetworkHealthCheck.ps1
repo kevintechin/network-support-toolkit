@@ -140,12 +140,16 @@ function ConvertTo-IntSafe {
         [int]$DefaultValue = 0
     )
 
-    if ($null -eq $Value -or $Value -is [bool]) {
+    if (-not (Test-IsWholeNumber $Value)) {
         return $DefaultValue
     }
 
     try {
-        return [int]$Value
+        $converted = ConvertTo-DoubleSafe $Value 0
+        if ($converted -lt [int]::MinValue -or $converted -gt [int]::MaxValue) {
+            return $DefaultValue
+        }
+        return [int]$converted
     }
     catch {
         return $DefaultValue
@@ -203,6 +207,17 @@ function Test-IsNumericValue {
     catch {
         return $false
     }
+}
+
+function Test-IsWholeNumber {
+    param([object]$Value)
+
+    if (-not (Test-IsNumericValue $Value)) {
+        return $false
+    }
+
+    $converted = ConvertTo-DoubleSafe $Value 0
+    return ([math]::Floor($converted) -eq $converted)
 }
 
 # Backlog #11: human-readable summary only; script location and call stack go to Get-ExceptionDiagnostics (JSON report).
@@ -1128,15 +1143,25 @@ function Test-ConfigurationSemantics {
         [pscustomobject]@{ Name = "HttpTimeoutMs"; Value = $tests.HttpTimeoutMs },
         [pscustomobject]@{ Name = "RetransmissionSampleSeconds"; Value = $tests.RetransmissionSampleSeconds }
     )) {
-        if ((ConvertTo-IntSafe $setting.Value 0) -le 0) {
+        if ($null -ne $setting.Value -and -not (Test-IsWholeNumber $setting.Value)) {
+            [void]$warnings.Add("$($setting.Name) must be a whole number (current value: $($setting.Value)); the built-in default will be used.")
+        }
+        elseif ((ConvertTo-IntSafe $setting.Value 0) -le 0) {
             [void]$warnings.Add("$($setting.Name) should be greater than 0; the built-in minimum will be applied.")
         }
     }
 
+    $countThresholdNames = @("TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")
     foreach ($thresholdName in @("PacketLossWarningPercent", "PacketLossCriticalPercent", "LatencyWarningMs", "LatencyCriticalMs", "TcpRetransmissionWarningPercent", "TcpRetransmissionCriticalPercent", "TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")) {
         $thresholdValue = Get-PropertyValue $thresholds $thresholdName
-        if ($null -ne $thresholdValue -and -not (Test-IsNumericValue $thresholdValue)) {
+        if ($null -eq $thresholdValue) {
+            continue
+        }
+        if (-not (Test-IsNumericValue $thresholdValue)) {
             [void]$warnings.Add("$thresholdName is not a number (current value: $thresholdValue); the built-in default will be used.")
+        }
+        elseif (($countThresholdNames -contains $thresholdName) -and -not (Test-IsWholeNumber $thresholdValue)) {
+            [void]$warnings.Add("$thresholdName must be a whole number (current value: $thresholdValue); the built-in default will be used.")
         }
     }
 
