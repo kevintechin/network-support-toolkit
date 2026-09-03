@@ -166,7 +166,7 @@ tools/  (repo root)
 - "0 physical adapters" is a **WARN** when a virtual adapter still carries a default gateway (VPN or virtualization) and a **FAIL** only when no physical adapter is connected at all — a refinement of the FAIL-only rule in §3, so VPN-only or VM-guest situations do not fail on classification alone. Primary-adapter selection for the company-standard comparison is unchanged.
 - The options panel ships with the extra-target boxes, ping count, sample seconds, traceroute hops, one toggle per optional check (Wi-Fi RF, traceroute, routes, gateway ARP, proxy, drivers — each preserving its configured value until changed), "Expand details" and "Reset to config"; the bottom "Start Test" button is the Run button. The "Config file / Browse" field and the "Triage Wizard" button are deferred (the wizard does not exist yet — Phase C).
 - Wi-Fi RSSI uses the real `Rssi` line when the Windows build prints it (Windows 11 24H2+) and the percentage-based estimate otherwise; the parser is value-shape based (MAC, GHz, 802.11x, percentage, numbers), not position based, because the field order differs between Windows 10 and 11.
-- Every result carries `Tag` and `Scope`; the fingerprint keys are `local`, `gateway-unreachable`, `gateway-up-internet-dead`, `dns`, `quality`, `mixed`, `incomplete`, `healthy` — the wizard's auto-answer rules (§6) can use tags instead of category / check-name matching.
+- Every result carries `Tag` and `Scope`; the fingerprint keys are `local`, `gateway-unreachable`, `gateway-up-internet-dead`, `dns`, `quality`, `attention`, `mixed`, `incomplete`, `healthy` — the wizard's auto-answer rules (§6) can use tags instead of category / check-name matching.
 
 ## 11. Open questions
 

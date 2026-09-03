@@ -66,6 +66,7 @@ $script:ConfigLoadDiagnostics = ""
 $script:UsingFallbackOutputDirectory = $false
 $script:BaseConfig = $null
 $script:RunOptions = $null
+$script:RunOptionMessages = New-Object System.Collections.ArrayList
 $script:Interactive = $false
 $script:OptionsPanel = $null
 $script:OpenJsonButton = $null
@@ -622,32 +623,33 @@ function Set-RunOptions {
     if ($null -eq $Overrides) {
         $Overrides = @{}
     }
+    $script:RunOptionMessages = New-Object System.Collections.ArrayList
     $config = ($script:BaseConfig | ConvertTo-Json -Depth 10) | ConvertFrom-Json
     $extra = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
 
-    foreach ($value in @($Overrides["PingTarget"])) {
+    foreach ($value in @(@($Overrides["PingTarget"]) | ForEach-Object { ([string]$_) -split '[,;]' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $config.Tests.PingTargets = @($config.Tests.PingTargets) + [pscustomobject][ordered]@{ Name = "額外 Ping"; Address = [string]$value; Required = $false }
         $extra.Ping += [string]$value
     }
-    foreach ($value in @($Overrides["DnsName"])) {
+    foreach ($value in @(@($Overrides["DnsName"]) | ForEach-Object { ([string]$_) -split '[,;]' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $config.Tests.DnsNames = @($config.Tests.DnsNames) + [pscustomobject][ordered]@{ Name = "額外 DNS"; Host = [string]$value; Required = $false }
         $extra.Dns += [string]$value
     }
-    foreach ($value in @($Overrides["TcpTarget"])) {
+    foreach ($value in @(@($Overrides["TcpTarget"]) | ForEach-Object { ([string]$_) -split '[,;]' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $parts = ([string]$value).Split(':')
         $port = 0
         if ($parts.Count -eq 2) { $port = ConvertTo-IntSafe $parts[1] 0 }
         if ($parts.Count -ne 2 -or $port -lt 1 -or $port -gt 65535 -or [string]::IsNullOrWhiteSpace($parts[0])) {
-            [void]$script:StartupMessages.Add("已忽略額外 TCP 目標「$value」：格式應為 host:port。")
+            [void]$script:RunOptionMessages.Add("已忽略額外 TCP 目標「$value」：格式應為 host:port。")
             continue
         }
         $config.Tests.TcpTargets = @($config.Tests.TcpTargets) + [pscustomobject][ordered]@{ Name = "額外 TCP"; Host = $parts[0]; Port = $port; Required = $false; Group = "" }
         $extra.Tcp += [string]$value
     }
-    foreach ($value in @($Overrides["HttpUrl"])) {
+    foreach ($value in @(@($Overrides["HttpUrl"]) | ForEach-Object { ([string]$_) -split '[,;]' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $config.Tests.HttpTargets = @($config.Tests.HttpTargets) + [pscustomobject][ordered]@{ Name = "額外 URL"; Url = [string]$value; Required = $false; Group = "" }
         $extra.Http += [string]$value
@@ -2820,17 +2822,21 @@ function Get-FingerprintSummary {
     $groupFail = @($results | Where-Object { $_.Tag -eq "connectivity-group" -and ($_.Status -eq "FAIL" -or $_.Status -eq "WARN") }).Count -gt 0
     $groupPass = @($results | Where-Object { $_.Tag -eq "connectivity-group" -and $_.Status -eq "PASS" }).Count -gt 0
     $dnsFail = @($results | Where-Object { $_.Tag -eq "dns" -and ($_.Status -eq "FAIL" -or $_.Status -eq "WARN") }).Count -gt 0
+    $dnsPass = @($results | Where-Object { $_.Tag -eq "dns" -and $_.Status -eq "PASS" }).Count -gt 0
     $tcpPass = @($results | Where-Object { $_.Tag -eq "tcp" -and $_.Status -eq "PASS" }).Count -gt 0
-    $qualityIssue = @($results | Where-Object { ($_.Tag -eq "ping-target" -or $_.Tag -eq "ping-gateway" -or $_.Tag -eq "tcp-retransmissions" -or $_.Tag -eq "adapter-errors") -and ($_.Status -eq "WARN" -or $_.Status -eq "FAIL") }).Count -gt 0
+    $qualityTags = @("ping-target", "ping-gateway", "tcp-retransmissions", "adapter-errors")
+    $qualityIssue = @($results | Where-Object { ($qualityTags -contains $_.Tag) -and ($_.Status -eq "WARN" -or $_.Status -eq "FAIL") }).Count -gt 0
+    $otherProblem = @($results | Where-Object { [string]$_.Scope -ne "IT" -and ($_.Status -eq "WARN" -or $_.Status -eq "FAIL") -and ($qualityTags -notcontains $_.Tag) }).Count -gt 0
 
     $key = "healthy"
     if ($adaptersFail -or $gatewayConfigFail) { $key = "local" }
     elseif ($gatewayPingBad -and -not $gatewayPingPass) { $key = "gateway-unreachable" }
     elseif ($gatewayPingPass -and $groupFail) { $key = "gateway-up-internet-dead" }
-    elseif ($dnsFail -and ($groupPass -or $tcpPass)) { $key = "dns" }
+    elseif ($dnsFail -and -not $dnsPass -and ($groupPass -or $tcpPass)) { $key = "dns" }
+    elseif ($qualityIssue -and -not $otherProblem) { $key = "quality" }
     elseif ($overall.Code -eq "FAIL") { $key = "mixed" }
     elseif ($overall.Code -eq "ERROR") { $key = "incomplete" }
-    elseif ($qualityIssue -or $overall.Code -eq "WARN") { $key = "quality" }
+    elseif ($overall.Code -eq "WARN") { $key = "attention" }
 
     $title = ""
     $lines = @()
@@ -2842,6 +2848,7 @@ function Get-FingerprintSummary {
         "quality" { $title = "連線正常但品質不佳"; $lines = @("連線可用，但封包遺失、延遲、重傳或網卡錯誤超過門檻。", "常見原因：Wi-Fi 訊號弱、線路壅塞、網路線或連接埠故障。", "問題發生時再跑一次並比較數字。") }
         "mixed" { $title = "有必要檢查未通過"; $lines = @("至少一項必要檢查未通過，請看下方失敗的項目。", "把報告原樣交給 IT。") }
         "incomplete" { $title = "部分檢查無法執行"; $lines = @("沒有發現故障，但部分步驟在這台電腦上無法完成。", "把報告原樣交給 IT，原因記錄在詳細資料中。") }
+        "attention" { $title = "有需要注意的警告"; $lines = @("沒有必要檢查失敗，但有檢查提出警告，請看標示的項目。", "把報告原樣交給 IT。") }
         default { $title = "全部通過"; $lines = @("本次執行的所有檢查都通過。", "若問題仍然存在，可能在應用程式或伺服器端，或是時好時壞；問題發生時再跑一次。") }
     }
     $lines += "把 HTML 報告（或 JSON 檔）交給 IT。報告內含電腦名稱、使用者名稱、網卡 MAC 位址與 Wi-Fi 網路名稱。"
@@ -3357,7 +3364,7 @@ function Run-AllChecks {
         Add-CheckResult -Category "程式設定" -Check "設定檔" -Status "PASS" -Message ("已載入：{0}" -f $script:EffectiveConfigPath) -Details "" -Tag "config-file" | Out-Null
     }
 
-    foreach ($startupMessage in @($script:StartupMessages)) {
+    foreach ($startupMessage in @(@($script:StartupMessages) + @($script:RunOptionMessages))) {
         Add-CheckResult -Category "程式環境" -Check "啟動提示" -Status "WARN" -Message $startupMessage -Details "" -Tag "startup" | Out-Null
     }
 
@@ -3604,8 +3611,17 @@ function Initialize-Gui {
     $form.StartPosition = "CenterScreen"
     $offset = 0
     if ($script:Interactive) { $offset = 190 }
-    $form.Size = New-Object System.Drawing.Size(940, 700 + $offset)
-    $form.MinimumSize = New-Object System.Drawing.Size(780, 560 + $offset)
+    $formHeight = 700 + $offset
+    try {
+        $workingHeight = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height
+        if ($formHeight -gt $workingHeight - 40) { $formHeight = [math]::Max(600, $workingHeight - 40) }
+    }
+    catch {
+        $formHeight = 700 + $offset
+    }
+    $bottomY = $formHeight - 116
+    $form.Size = New-Object System.Drawing.Size(940, $formHeight)
+    $form.MinimumSize = New-Object System.Drawing.Size(780, [math]::Min(560 + $offset, $formHeight))
     $form.MaximizeBox = $true
     $form.FormBorderStyle = "Sizable"
 
@@ -3748,7 +3764,7 @@ function Initialize-Gui {
 
     $log = New-Object System.Windows.Forms.RichTextBox
     $log.Location = New-Object System.Drawing.Point(22, 178 + $offset)
-    $log.Size = New-Object System.Drawing.Size(880, 390)
+    $log.Size = New-Object System.Drawing.Size(880, [math]::Max(120, $bottomY - 16 - (178 + $offset)))
     $log.Anchor = "Top,Bottom,Left,Right"
     $log.ReadOnly = $true
     $log.DetectUrls = $false
@@ -3758,14 +3774,14 @@ function Initialize-Gui {
 
     $startButton = New-Object System.Windows.Forms.Button
     $startButton.Text = "開始檢測"
-    $startButton.Location = New-Object System.Drawing.Point(22, 584 + $offset)
+    $startButton.Location = New-Object System.Drawing.Point(22, $bottomY)
     $startButton.Size = New-Object System.Drawing.Size(120, 34)
     $startButton.Anchor = "Bottom,Left"
     $form.Controls.Add($startButton)
 
     $openReportButton = New-Object System.Windows.Forms.Button
     $openReportButton.Text = "開啟報告"
-    $openReportButton.Location = New-Object System.Drawing.Point(152, 584 + $offset)
+    $openReportButton.Location = New-Object System.Drawing.Point(152, $bottomY)
     $openReportButton.Size = New-Object System.Drawing.Size(120, 34)
     $openReportButton.Anchor = "Bottom,Left"
     $openReportButton.Enabled = $false
@@ -3773,7 +3789,7 @@ function Initialize-Gui {
 
     $openFolderButton = New-Object System.Windows.Forms.Button
     $openFolderButton.Text = "開啟報告資料夾"
-    $openFolderButton.Location = New-Object System.Drawing.Point(282, 584 + $offset)
+    $openFolderButton.Location = New-Object System.Drawing.Point(282, $bottomY)
     $openFolderButton.Size = New-Object System.Drawing.Size(150, 34)
     $openFolderButton.Anchor = "Bottom,Left"
     $openFolderButton.Enabled = $false
@@ -3781,7 +3797,7 @@ function Initialize-Gui {
 
     $openJsonButton = New-Object System.Windows.Forms.Button
     $openJsonButton.Text = "開啟 JSON"
-    $openJsonButton.Location = New-Object System.Drawing.Point(442, 584 + $offset)
+    $openJsonButton.Location = New-Object System.Drawing.Point(442, $bottomY)
     $openJsonButton.Size = New-Object System.Drawing.Size(110, 34)
     $openJsonButton.Anchor = "Bottom,Left"
     $openJsonButton.Enabled = $false
@@ -3789,14 +3805,14 @@ function Initialize-Gui {
 
     $closeButton = New-Object System.Windows.Forms.Button
     $closeButton.Text = "關閉"
-    $closeButton.Location = New-Object System.Drawing.Point(782, 584 + $offset)
+    $closeButton.Location = New-Object System.Drawing.Point(782, $bottomY)
     $closeButton.Size = New-Object System.Drawing.Size(120, 34)
     $closeButton.Anchor = "Bottom,Right"
     $form.Controls.Add($closeButton)
 
     $reportPathLabel = New-Object System.Windows.Forms.Label
     $reportPathLabel.Text = "報告尚未產生"
-    $reportPathLabel.Location = New-Object System.Drawing.Point(22, 628 + $offset)
+    $reportPathLabel.Location = New-Object System.Drawing.Point(22, $bottomY + 44)
     $reportPathLabel.Size = New-Object System.Drawing.Size(880, 24)
     $reportPathLabel.Anchor = "Bottom,Left,Right"
     $reportPathLabel.AutoEllipsis = $true
