@@ -1,5 +1,5 @@
 Windows Portable Network Health Check
-Version: 1.1.5
+Version: 1.2.0
 ========================================
 
 1. Quick start
@@ -23,6 +23,15 @@ Version: 1.1.5
    - TXT: plain-text fallback
    - JSON: structured output for later processing
 
+6. IT staff: double-click Start-NetworkCheck-IT.cmd instead. The same tool opens with a
+   Run options panel (extra ping / DNS / TCP / URL targets for this run, ping count,
+   sample seconds, traceroute hops, optional checks), does not start automatically, and
+   opens the HTML report with the IT diagnostics expanded. The same options are switches
+   in text mode, for example:
+   powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -ConsoleOnly
+     -PingTarget 10.0.0.1 -TcpTarget fileserver:445 -SampleSeconds 20 -ExpandDetails
+   Run options never change NetworkHealthCheck.config.json.
+
 No installation or administrator rights are normally required. The tool reads network
 information and performs connectivity tests; it does not change IP, DNS, routes,
 firewall rules, or adapter settings.
@@ -41,6 +50,15 @@ firewall rules, or adapter settings.
 - HTTP/HTTPS connectivity using the Windows system proxy
 - During-test deltas for adapter receive/transmit errors and discarded packets
 - System-wide TCPv4/TCPv6 sent and retransmitted segment deltas and an approximate rate
+- Physical vs virtual adapter classification (virtual adapters are informational; no
+  physical adapter is a warning or a failure)
+- IT diagnostics, informational and collapsed in the HTML report: Wi-Fi radio (SSID,
+  band, channel, signal, rates), IPv4 default routes, gateway neighbor (ARP), proxy
+  settings, first-hops traceroute, adapter driver versions
+
+The HTML report starts with a "What to tell IT" summary derived from the results. The
+JSON report (schema 2) carries the run options, the fingerprint, and a Tag / Scope on
+every result for tooling.
 
 TCP retransmission results cover the entire computer during the sampling period, not a
 single application. A short sample with no retransmissions does not prove that a
@@ -120,8 +138,9 @@ for the organization's Wi-Fi, VPN, WAN, data-center, and application baselines.
 ----------------------------------------
 - Reports are not uploaded automatically.
 - Reports stay in the local program folder or Windows temporary folder.
-- Reports may contain computer name, user name, adapter/MAC/IP/gateway/DNS data, test
-  targets, and exception details. Handle them according to company policy.
+- Reports may contain computer name, user name, adapter/MAC/IP/gateway/DNS data, the
+  Wi-Fi network name (SSID) and access-point BSSID, test targets, and exception details.
+  Handle them according to company policy.
 - Default tests contact 1.1.1.1:443 and www.microsoft.com and ping 1.1.1.1. IT may
   replace these with approved targets.
 - The launcher uses a process-scoped ExecutionPolicy Bypass. AppLocker, WDAC, EDR, or

@@ -1,5 +1,76 @@
 # Validation Record — NetworkHealthCheck
 
+## v1.2.0 · 2026-09-03 — v1.2 Phase A
+
+**Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
+
+- **No modes.** Every check runs on every run. The IT entry (`Start-NetworkCheck-IT.cmd` → `-Interactive -ExpandDetails`) adds a run-options panel (extra ping / DNS / TCP / URL targets, ping count, sample seconds, traceroute hops, optional checks, expand details), does not auto-run, and gains an "Open JSON" button. The same options are console switches (`-PingTarget`, `-DnsName`, `-TcpTarget`, `-HttpUrl`, `-PingCount`, `-SampleSeconds`, `-TracerouteHops`, `-NoTraceroute`, `-NoWifi`). Options are applied to an in-memory copy of the configuration; the JSON file is never written.
+- **Adapter classification (#10)** — NetAdapter `Virtual` / `HardwareInterface`, CIM `PhysicalAdapter`, or description patterns. Virtual adapters are `INFO` rows; "Usable Network Adapters" reports physical / virtual counts (`WARN` when only virtual adapters carry a gateway, `FAIL` when no physical adapter is connected); error-counter rows for zero-traffic or virtual adapters are `INFO` (the "counters only testify when traffic flows" note).
+- **IT diagnostics (#13 and more)** — Wi-Fi radio (`netsh wlan show interfaces`, value-shape parser that handles the Windows 10 and Windows 11 layouts and localized labels, real RSSI when printed), IPv4 default routes, gateway neighbor (ARP), proxy settings, first-hops traceroute (bounded), adapter drivers. All `INFO`, `Scope = "IT"`, collapsed in the HTML, switchable under `Checks`.
+- **Report** — every result carries a language-neutral `Tag` and a `Scope`; a fingerprint (`local`, `gateway-unreachable`, `gateway-up-internet-dead`, `dns`, `quality`, `attention`, `mixed`, `incomplete`, `healthy`) drives the new "What to tell IT" section; HTML has a run-profile line, "Expand all / Collapse all", and the collapsed IT section (`-ExpandDetails` opens everything); TXT mirrors it; JSON is schema 2 with `RunOptions` and `Fingerprint`.
+- Function count 61 → 76; validator constants and required-file / CRLF lists extended to the IT launchers; both configs gain a `Checks` block.
+
+**Re-validation (Windows 11, Windows PowerShell 5.1.26100):**
+
+| Step | Result |
+|---|---|
+| PS 5.1 parser, both languages | 0 errors × 2 |
+| `validate_release.py` | 62 passed, 0 failed — skeleton identical, 76 = 76 functions, IT launchers CRLF, hashes regenerated (22 files) |
+| Helper unit tests | 89 × 2 — new: Wi-Fi parser on Windows 11 (Band / Channel before Radio type, Rssi line), Windows 10 with localized labels and decimal rates, disconnected interface, empty input; adapter classification (flags win over description patterns) |
+| Report-stage functional tests | 50 × 2 — the earlier A/B/C write-failure scenarios plus D: eight fingerprint keys from tagged results, and E: run options (extra targets appended, invalid `host:port` reported, out-of-range hops → default, `-NoWifi`, base config untouched, profile text) |
+| Acceptance, en-US user entry (console) | exit 0, Overall Healthy, 28 results (6 IT), every result tagged, fingerprint `healthy`, HTML has the tell-IT section / IT block / toggle script, ~17 s |
+| Acceptance, en-US IT entry (console switches: extra ping, DNS, TCP, 6-s sample, 4 hops, `-ExpandDetails`) | exit 0, 31 results, `RunOptions.EntryPoint = IT`, extra targets present, 25 `<details open>`, ~8 s |
+| Acceptance, zh-TW user entry (console) | exit 0, Overall Healthy, 28 results (6 IT), ~10 s |
+| Live IT diagnostics on the test machine | Wi-Fi: SSID, 5 GHz, channel 149, 468/390 Mbps, 78 % / −65 dBm (real RSSI); one default route; gateway neighbor Reachable with MAC; proxy off / direct; traceroute 3 hops (destination not reached, as expected for a public target); 1 physical adapter with driver data |
+
+Not exercised live: a virtual-only-adapter machine ("0 physical" WARN / FAIL path — covered by the classification unit tests and review), a proxy misconfiguration (would require changing the user's proxy settings), and the GUI options panel itself (WinForms; reviewed, and its option plumbing is covered by scenario E). Runtime budget: healthy run 10–17 s, well under the 45 s worst-case budget.
+
+**Independent review — Codex (`chatgpt-codex-connector`), PR #3, round 1 · 2026-09-03.** Three findings on commit b74dc71 (one P1, two P2), all accepted and fixed:
+
+1. *IT-only failures reached the overall result (P1).* An IT collector that threw (permissions, policy, missing provider) added an `ERROR` row and `Get-OverallStatus` counted every `ERROR`, so a healthy run became "Test Incomplete" with the `incomplete` fingerprint — contradicting the promise that IT rows never change the verdict. Fix: `Get-OverallStatus` and `Get-SummaryCounts` exclude `Scope = "IT"`; `Invoke-CheckStep` gained `-Scope` and the whole IT step runs in the IT scope, so even an unexpected exception inside it lands in the IT section only.
+2. *Virtual-adapter counter rows were downgraded only when they were PASS.* Deltas above a threshold had already turned the status into `WARN` / `FAIL`, so a VPN adapter could still fail the run. Fix: the virtual classification is applied first, independently of the threshold-derived status; the no-traffic rule follows.
+3. *Default routes were sorted lexicographically by route metric, then interface metric.* Windows prefers the lowest route metric + interface metric. Fix: new `Sort-DefaultRoutes` sorts by the effective metric (then route metric); the details line shows it. Function count 76 → 77.
+
+Re-validation after round 1: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 64 × 2 (new: F — an IT-scoped `ERROR` and a failing IT step leave the verdict PASS and the counts untouched while a main-scope step failure still flips it; G — a virtual adapter with 50 errors is INFO, the same physical adapter is FAIL, a zero-traffic adapter is INFO; H — routes 10+100 / 20+5 / 0+50 sort as 25, 50, 110); console acceptance en-US user, en-US IT switches and zh-TW user all Overall Healthy, exit 0.
+
+**Independent review — Codex, PR #3, round 2 · 2026-09-03.** Two P2 findings on commit 7dd99a2, both accepted and fixed:
+
+1. *Counter resets on virtual adapters still warned.* The counter-reset branch emitted a main-scope `WARN` and returned before the virtual-adapter classification ran, so a VPN adapter reconnecting during the sample could turn a healthy run into "Attention Required". Fix: the classification is computed before the reset check and a reset on a virtual adapter is `INFO`.
+2. *The IT panel's aggregate checkbox overwrote per-check settings.* One "Routes / ARP / proxy / drivers" checkbox wrote its value back to all four flags on Start, overriding a configuration that enabled some and disabled others. Fix: the panel exposes one checkbox per optional check (Wi-Fi RF, traceroute, routes, gateway ARP, proxy, drivers) on a second row; each is populated from, and written back to, its own flag. Panel height 180 px.
+
+Re-validation after round 2: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 66 × 2 (new: G2 — a counter reset is INFO on a virtual adapter and WARN on a physical one); console acceptance en-US user, en-US IT switches and zh-TW user all Overall Healthy, exit 0. The reworked panel was reviewed, not exercised headlessly.
+
+**Independent review — Codex, PR #3, round 3 · 2026-09-03.** Four findings on commit 5d25e49 (one P1, three P2), all accepted and fixed:
+
+1. *The IT form did not fit a 1366×768 working area (P1).* 700 + 190 = 890 px put the Start button and the title bar off-screen. Fix: the form height is capped against `Screen.WorkingArea` (minus 40 px), the bottom button row and the report label are placed from the actual height, and the log box absorbs the difference; the user entry is unchanged on normal screens.
+2. *Warning-only runs unrelated to link quality got the `quality` fingerprint.* Fix: `quality` is chosen only when a loss / latency / retransmission / adapter-error warning exists; other warning-only runs get the new `attention` fingerprint with generic guidance.
+3. *An optional extra `-DnsName` that failed selected the `dns` fingerprint although the main DNS check passed.* Fix: `dns` requires that no DNS check passed.
+4. *Option-validation notices accumulated across GUI re-runs.* An invalid extra TCP target was appended to the process-wide startup messages and re-emitted (and duplicated) on every Run Again. Fix: per-run `RunOptionMessages`, reset whenever options are applied; `Run-AllChecks` emits startup messages plus the current run's option notices.
+5. *(own findings while re-testing)* A run whose only failure was a quality check (18 % TCPv4 retransmissions during a live sample) got the generic `mixed` fingerprint — `quality` now also covers loss / retransmission / adapter-error **failures** when nothing else failed, and `mixed` is reserved for other failures. And because `powershell.exe -File` passes `-PingTarget a,b` as a single string, multi-value switches are now split on commas / semicolons inside `Set-RunOptions` (the launchers and the README examples use `-File`).
+
+Re-validation after round 3: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 76 × 2 (new: config warning only → `attention`; optional DNS failure with a passing DNS check → `attention`, not `dns`; invalid TCP target is a per-run notice that disappears when options are reapplied; `-PingTarget 10.0.0.1,10.0.0.2` yields two extra targets; retransmission FAIL alone → `quality`, with another failure → `mixed`); console acceptance en-US user, en-US IT switches (including an invalid `-TcpTarget bad`, reported once as a startup notice) and zh-TW user, exit 0. The form-sizing change was reviewed, not exercised headlessly.
+
+**Independent review — Codex, PR #3, round 4 · 2026-09-03.** Two P2 findings on commit f6d0d4a, both accepted and fixed:
+
+1. *The 600-px floor still overflowed very short working areas* (an 800×600 remote session with a taskbar leaves ~560 px). Fix: the form height is capped strictly at the working area minus 40 px (sanity floor 400 px), the log box may shrink to 36 px, and when even that does not fit the form turns on `AutoScroll` with the designed size as `AutoScrollMinSize`, so every control stays reachable.
+2. *CLI validation notices were lost on the first interactive Start.* `-Interactive -TcpTarget bad` recorded a notice, but the panel was populated from the accepted targets only; Start re-applied the sanitized panel values, reset the per-run notices, and the warning vanished. Fix: `RunOptions` now also carries `RawTargets` (the values as entered) and the panel is populated from them, so the invalid value stays visible and is re-validated — and re-reported — on every run until the IT user removes it.
+
+Re-validation after round 4: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 78 × 2 (new: raw targets keep the invalid value while the accepted list excludes it); console acceptance en-US user, en-US IT switches and zh-TW user, exit 0. Form sizing and the panel were reviewed, not exercised headlessly.
+
+**Independent review — Codex, PR #3, round 5 · 2026-09-03.** Three P2 findings on commit 32d93e0, all accepted and fixed:
+
+1. *`gateway-up-internet-dead` fired for any failing group.* A failing optional group (`WARN`) next to a passing required Internet group still produced the WAN / ISP guidance. Fix: the fingerprint requires a **required** group to fail (`FAIL`) and no group to pass; a required failure next to a passing group is `mixed`, an optional failure alone is `attention`.
+2. *Gateway ping execution errors were read as an unreachable gateway.* An `ERROR` (the Ping API could not run) overrode the overall `ERROR` with local-link guidance. Fix: only `FAIL` establishes `gateway-unreachable`; execution errors keep `incomplete`.
+3. *Multi-value splitting broke URLs containing commas or semicolons.* Fix: URLs (CLI `-HttpUrl` and the panel box) are separated by whitespace only; ping / DNS / TCP lists still accept commas, semicolons or spaces. Documented in the guides.
+
+Re-validation after round 5: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 83 × 2 (new: optional group failure → `attention`; required failure next to a passing group → `mixed`; gateway ping `ERROR` → `incomplete`; a URL with `,` and `;` survives as one target); console acceptance en-US user, en-US IT switches (including `-HttpUrl "https://www.microsoft.com/?ids=1,2"`) and zh-TW user, exit 0.
+
+**Independent review — Codex, PR #3, round 6 · 2026-09-03 (requested by the maintainer after the five-round limit).** One P2 finding on commit 01ff2c7, accepted and fixed:
+
+1. *CLI ping / DNS / TCP lists were split on commas and semicolons only* while the guide and the IT panel also accept spaces, so `-PingTarget "10.0.0.1 10.0.0.2"` became one invalid target. Fix: the three CLI lists now split on commas, semicolons or whitespace (`[,;\s]+`), matching the panel; URLs keep the whitespace-only rule.
+
+Re-validation after round 6: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 86 × 2 (new: whitespace and mixed separators for ping / DNS / TCP); console acceptance en-US user, en-US IT switches (`-PingTarget "8.8.8.8 9.9.9.9" -TcpTarget "1.1.1.1:53 bad"` → two pings accepted, one TCP accepted, `bad` reported once) and zh-TW user, exit 0.
+
 ## v1.1.5 · 2026-09-03
 
 **Changes** (backlog #2 and #3):
@@ -179,10 +250,10 @@ All four injected faults were detected and correctly classified at the overall-v
 7. ~~Retransmission ratio above 100 % unexplained~~ — **fixed in v1.1.3** (inline ratio note).
 8. ~~AUTO_GATEWAY placeholder leak~~ — **fixed in v1.1.3** (explanatory detail).
 9. ~~Optional-ping Information badge unexplained~~ — **fixed in v1.1.3** (inline explanation).
-10. Virtual adapters (VirtualBox / Hyper-V) earn Pass rows and inflate the adapter count; demote virtual NICs to Information and report physical vs virtual counts separately ("0 physical" should itself be a failure signal). **Design note (2026-07-29):** this applies to the error-counter check too — a zero-traffic adapter (0 cumulative bytes) reporting "0 errors" is vacuous evidence (counters only testify when traffic flows); annotate zero-traffic adapters and reuse the existing primary-adapter classification (`Get-PrimaryAdapters`) instead of inventing a new mechanism.
+10. ~~Virtual adapters (VirtualBox / Hyper-V) earn Pass rows and inflate the adapter count; demote virtual NICs to Information and report physical vs virtual counts separately ("0 physical" should itself be a failure signal). **Design note (2026-07-29):** this applies to the error-counter check too — a zero-traffic adapter (0 cumulative bytes) reporting "0 errors" is vacuous evidence (counters only testify when traffic flows); annotate zero-traffic adapters and reuse the existing primary-adapter classification (`Get-PrimaryAdapters`) instead of inventing a new mechanism.~~ — **done in v1.2.0** (2026-09-03).
 11. ~~Full PowerShell stack traces (with local file paths) render in the HTML report; keep them in JSON only, show a one-line summary in HTML.~~ — **fixed in v1.1.4** (2026-09-03).
 12. ~~Add a "Method" line to each check's details~~ — **done in v1.1.1** (2026-07-28).
-13. Wi-Fi RF data (RSSI / channel / band) for wireless adapters — needs `netsh wlan show interfaces` parsing (locale-sensitive output) or the native WLAN API; note the client-side view is inherently weaker evidence than the AP's client table.
+13. ~~Wi-Fi RF data (RSSI / channel / band) for wireless adapters — needs `netsh wlan show interfaces` parsing (locale-sensitive output) or the native WLAN API; note the client-side view is inherently weaker evidence than the AP's client table.~~ — **done in v1.2.0** (2026-09-03).
 14. OS-locale exception strings pass through verbatim into reports (e.g., a Chinese "作業逾時" inside an en-US report); consider mapping common .NET socket/web exceptions to the report language, or note the behavior in the technical guide.
 
 ### From release packaging (2026-09-03)

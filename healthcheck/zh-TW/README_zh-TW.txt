@@ -1,5 +1,5 @@
 Windows 免安裝網路健檢工具
-版本：1.1.5
+版本：1.2.0
 ========================================
 
 一、快速使用
@@ -22,6 +22,13 @@ Windows 免安裝網路健檢工具
    - TXT：純文字備用報告
    - JSON：供 IT 或其他系統後續處理
 
+6. IT 人員請改雙擊「Start-NetworkCheck-IT.cmd」。同一支工具會先顯示「執行選項」面板
+   （本次額外的 Ping／DNS／TCP／URL 目標、Ping 次數、取樣秒數、traceroute 跳數、可選檢查），
+   不會自動開始，HTML 報告會預設展開 IT 診斷資料。文字模式可用同樣的參數，例如：
+   powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -ConsoleOnly
+     -PingTarget 10.0.0.1 -TcpTarget fileserver:445 -SampleSeconds 20 -ExpandDetails
+   執行選項永遠不會改動 NetworkHealthCheck.config.json。
+
 本工具不需要安裝，也不需要系統管理員權限。它只讀取網路資訊並執行連線測試，不會修改 IP、DNS、路由、防火牆或網卡設定。
 
 
@@ -38,6 +45,12 @@ Windows 免安裝網路健檢工具
 - HTTP/HTTPS 連線；會使用 Windows 系統代理伺服器設定
 - 網卡接收／傳送錯誤與丟棄封包的檢測期間增量
 - TCPv4／TCPv6 系統級重傳增量與近似重傳比例
+- 實體與虛擬網卡分類（虛擬網卡只列為資訊；沒有實體網卡時列為注意或異常）
+- IT 診斷資料（僅供參考，HTML 報告中預設收合）：Wi-Fi 無線（SSID、頻段、頻道、訊號、速率）、
+  IPv4 預設路由、閘道鄰居（ARP）、Proxy 設定、前幾跳 traceroute、網卡驅動版本
+
+HTML 報告開頭是依結果整理的「要告訴 IT 的話」。JSON 報告（schema 2）帶有執行選項、指紋，
+以及每筆結果的 Tag／Scope，供工具使用。
 
 TCP 重傳結果是「整台電腦在本次取樣期間」的系統級統計，不只屬於單一程式。短時間樣本沒有重傳，不代表長時間一定沒有問題；最好在問題發生時執行。
 
@@ -165,7 +178,7 @@ Thresholds 可調整：
 ----------------------------------------
 - 不會自動上傳報告。
 - 報告只寫入本機程式資料夾或 Windows 暫存資料夾。
-- 報告包含電腦名稱、目前登入使用者、網卡、MAC、IP、閘道、DNS、測試目標與錯誤資訊；對外傳送報告前請依公司規定處理。
+- 報告包含電腦名稱、目前登入使用者、網卡、MAC、IP、閘道、DNS、Wi-Fi 網路名稱（SSID）與基地台 BSSID、測試目標與錯誤資訊；對外傳送報告前請依公司規定處理。
 - 預設會連線到 1.1.1.1:443、www.microsoft.com，並 Ping 1.1.1.1。IT 可在設定檔中改成公司核准的目標。
 
 

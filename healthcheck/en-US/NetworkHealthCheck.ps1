@@ -1,7 +1,18 @@
 ﻿[CmdletBinding()]
 param(
     [switch]$ConsoleOnly,
-    [string]$ConfigPath = ""
+    [string]$ConfigPath = "",
+    [switch]$Interactive,
+    [switch]$ExpandDetails,
+    [string[]]$PingTarget = @(),
+    [string[]]$DnsName = @(),
+    [string[]]$TcpTarget = @(),
+    [string[]]$HttpUrl = @(),
+    [int]$SampleSeconds = 0,
+    [int]$PingCount = 0,
+    [int]$TracerouteHops = 0,
+    [switch]$NoTraceroute,
+    [switch]$NoWifi
 )
 
 # NetworkHealthCheck.ps1
@@ -34,7 +45,7 @@ param(
 # - Traceability: exception type, message, and inner exceptions are stored in every
 #   report; script location and call stack go to the JSON report only (Diagnostics).
 
-$script:ToolVersion = "1.1.5"
+$script:ToolVersion = "1.2.0"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Results = New-Object System.Collections.ArrayList
 $script:StartupMessages = New-Object System.Collections.ArrayList
@@ -60,6 +71,12 @@ $script:Config = $null
 $script:ConfigLoadError = $null
 $script:ConfigLoadDiagnostics = ""
 $script:UsingFallbackOutputDirectory = $false
+$script:BaseConfig = $null
+$script:RunOptions = $null
+$script:RunOptionMessages = New-Object System.Collections.ArrayList
+$script:Interactive = $false
+$script:OptionsPanel = $null
+$script:OpenJsonButton = $null
 
 try {
     [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
@@ -214,6 +231,31 @@ function Test-IsWholeNumber {
 
     $converted = ConvertTo-DoubleSafe $Value 0
     return ([math]::Floor($converted) -eq $converted -and $converted -ge [int]::MinValue -and $converted -le [int]::MaxValue)
+}
+
+function Test-IsTrueFlag {
+    param([object]$Value)
+
+    return ($Value -is [bool] -and $Value)
+}
+
+function Test-IsVirtualAdapter {
+    param(
+        [string]$Description,
+        [object]$VirtualFlag,
+        [object]$HardwareFlag
+    )
+
+    if ($VirtualFlag -is [bool] -and $VirtualFlag) {
+        return $true
+    }
+    if ($HardwareFlag -is [bool]) {
+        return (-not $HardwareFlag)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Description) -and $Description -match 'virtual|vmware|virtualbox|hyper-v|vethernet|tap-|tunnel|loopback|wan miniport|npcap|wintun|wireguard|zerotier|tailscale|hamachi|docker|vpn|pseudo|isatap|teredo|6to4') {
+        return $true
+    }
+    return $false
 }
 
 # Backlog #11: human-readable summary only; script location and call stack go to Get-ExceptionDiagnostics (JSON report).
@@ -382,7 +424,9 @@ function Add-CheckResult {
         [Parameter(Mandatory = $true)][ValidateSet("PASS", "WARN", "FAIL", "INFO", "ERROR")][string]$Status,
         [Parameter(Mandatory = $true)][string]$Message,
         [string]$Details = "",
-        [string]$Diagnostics = ""
+        [string]$Diagnostics = "",
+        [string]$Tag = "",
+        [string]$Scope = "Main"
     )
 
     $item = [pscustomobject][ordered]@{
@@ -393,6 +437,8 @@ function Add-CheckResult {
         Message  = $Message
         Details     = $Details
         Diagnostics = $Diagnostics
+        Tag         = $Tag
+        Scope       = $Scope
     }
 
     [void]$script:Results.Add($item)
@@ -405,7 +451,8 @@ function Invoke-CheckStep {
         [Parameter(Mandatory = $true)][string]$Category,
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][int]$Progress,
-        [Parameter(Mandatory = $true)][scriptblock]$Action
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [string]$Scope = "Main"
     )
 
     Set-UiProgress -Percent $Progress -Text $Name
@@ -417,7 +464,7 @@ function Invoke-CheckStep {
     catch {
         $details = Get-ExceptionDetails $_
         $diagnostics = Get-ExceptionDiagnostics $_
-        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "This item could not be executed. The error has been recorded." -Details $details -Diagnostics $diagnostics | Out-Null
+        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "This item could not be executed. The error has been recorded." -Details $details -Diagnostics $diagnostics -Tag "step-error" -Scope $Scope | Out-Null
         return $null
     }
 }
@@ -496,6 +543,15 @@ function Get-DefaultConfig {
             AdapterDiscardWarningDelta        = 1
             AdapterDiscardCriticalDelta       = 100
         }
+        Checks = [pscustomobject][ordered]@{
+            WifiRf           = $true
+            RouteTable       = $true
+            GatewayNeighbor  = $true
+            ProxySettings    = $true
+            Traceroute       = $true
+            TracerouteHops   = 3
+            DriverInfo       = $true
+        }
     }
 }
 
@@ -565,6 +621,114 @@ function Load-Configuration {
         $script:ConfigLoadError = "The configuration file is invalid. Built-in defaults will be used.`r`n$(Get-ExceptionDetails $_)"
         return $defaultConfig
     }
+}
+
+# v1.2: run options come from the entry point (launcher switches) or the IT options panel; the JSON config file is never written.
+function Set-RunOptions {
+    param([hashtable]$Overrides)
+
+    if ($null -eq $Overrides) {
+        $Overrides = @{}
+    }
+    $script:RunOptionMessages = New-Object System.Collections.ArrayList
+    $config = ($script:BaseConfig | ConvertTo-Json -Depth 10) | ConvertFrom-Json
+    $extra = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
+    $raw = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
+
+    foreach ($value in @(@($Overrides["PingTarget"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
+        if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
+        $raw.Ping += [string]$value
+        $config.Tests.PingTargets = @($config.Tests.PingTargets) + [pscustomobject][ordered]@{ Name = "Extra ping"; Address = [string]$value; Required = $false }
+        $extra.Ping += [string]$value
+    }
+    foreach ($value in @(@($Overrides["DnsName"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
+        if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
+        $raw.Dns += [string]$value
+        $config.Tests.DnsNames = @($config.Tests.DnsNames) + [pscustomobject][ordered]@{ Name = "Extra DNS"; Host = [string]$value; Required = $false }
+        $extra.Dns += [string]$value
+    }
+    foreach ($value in @(@($Overrides["TcpTarget"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
+        if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
+        $raw.Tcp += [string]$value
+        $parts = ([string]$value).Split(':')
+        $port = 0
+        if ($parts.Count -eq 2) { $port = ConvertTo-IntSafe $parts[1] 0 }
+        if ($parts.Count -ne 2 -or $port -lt 1 -or $port -gt 65535 -or [string]::IsNullOrWhiteSpace($parts[0])) {
+            [void]$script:RunOptionMessages.Add("Ignored extra TCP target '$value': expected host:port.")
+            continue
+        }
+        $config.Tests.TcpTargets = @($config.Tests.TcpTargets) + [pscustomobject][ordered]@{ Name = "Extra TCP"; Host = $parts[0]; Port = $port; Required = $false; Group = "" }
+        $extra.Tcp += [string]$value
+    }
+    foreach ($value in @(@($Overrides["HttpUrl"]) | ForEach-Object { ([string]$_) -split '\s+' } | ForEach-Object { ([string]$_).Trim() })) {
+        if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
+        $raw.Http += [string]$value
+        $config.Tests.HttpTargets = @($config.Tests.HttpTargets) + [pscustomobject][ordered]@{ Name = "Extra URL"; Url = [string]$value; Required = $false; Group = "" }
+        $extra.Http += [string]$value
+    }
+
+    if ((ConvertTo-IntSafe $Overrides["SampleSeconds"] 0) -gt 0) { $config.Tests.RetransmissionSampleSeconds = ConvertTo-IntSafe $Overrides["SampleSeconds"] 0 }
+    if ((ConvertTo-IntSafe $Overrides["PingCount"] 0) -gt 0) { $config.Tests.PingCount = ConvertTo-IntSafe $Overrides["PingCount"] 0 }
+    if ((ConvertTo-IntSafe $Overrides["TracerouteHops"] 0) -gt 0) { $config.Checks.TracerouteHops = ConvertTo-IntSafe $Overrides["TracerouteHops"] 0 }
+    if ($Overrides["NoTraceroute"] -eq $true) { $config.Checks.Traceroute = $false }
+    if ($Overrides["NoWifi"] -eq $true) { $config.Checks.WifiRf = $false }
+    if ($Overrides["Checks"] -is [hashtable]) {
+        foreach ($key in @($Overrides["Checks"].Keys)) {
+            if ($null -ne $config.Checks.PSObject.Properties[[string]$key]) {
+                $config.Checks.$key = [bool]$Overrides["Checks"][$key]
+            }
+        }
+    }
+
+    $entryPoint = "User"
+    if ([string]$Overrides["EntryPoint"] -eq "IT") { $entryPoint = "IT" }
+    $hops = ConvertTo-IntSafe $config.Checks.TracerouteHops 3
+    if ($hops -lt 1 -or $hops -gt 10) { $hops = 3 }
+
+    $script:Config = $config
+    $script:RunOptions = [pscustomobject][ordered]@{
+        EntryPoint     = $entryPoint
+        ExpandDetails  = ($Overrides["ExpandDetails"] -eq $true)
+        ExtraTargets   = [pscustomobject]$extra
+        RawTargets     = [pscustomobject]$raw
+        PingCount      = [math]::Max(1, (ConvertTo-IntSafe $config.Tests.PingCount 4))
+        SampleSeconds  = [math]::Max(1, (ConvertTo-IntSafe $config.Tests.RetransmissionSampleSeconds 8))
+        TracerouteHops = $hops
+        ChecksEnabled  = [pscustomobject][ordered]@{
+            WifiRf          = Test-IsTrueFlag $config.Checks.WifiRf
+            RouteTable      = Test-IsTrueFlag $config.Checks.RouteTable
+            GatewayNeighbor = Test-IsTrueFlag $config.Checks.GatewayNeighbor
+            ProxySettings   = Test-IsTrueFlag $config.Checks.ProxySettings
+            Traceroute      = Test-IsTrueFlag $config.Checks.Traceroute
+            DriverInfo      = Test-IsTrueFlag $config.Checks.DriverInfo
+        }
+    }
+    return $script:RunOptions
+}
+
+function Get-RunProfileText {
+    $options = $script:RunOptions
+    if ($null -eq $options) {
+        return ""
+    }
+
+    $parts = @()
+    if ($options.EntryPoint -eq "IT") { $parts += "IT entry" } else { $parts += "User entry" }
+    $extras = @()
+    foreach ($value in @($options.ExtraTargets.Ping)) { $extras += "ping $value" }
+    foreach ($value in @($options.ExtraTargets.Dns)) { $extras += "dns $value" }
+    foreach ($value in @($options.ExtraTargets.Tcp)) { $extras += "tcp $value" }
+    foreach ($value in @($options.ExtraTargets.Http)) { $extras += "url $value" }
+    if ($extras.Count -gt 0) { $parts += ("extra targets: {0}" -f ($extras -join ", ")) }
+    $parts += ("ping count {0}" -f $options.PingCount)
+    $parts += ("sample {0} s" -f $options.SampleSeconds)
+    if ($options.ChecksEnabled.Traceroute) { $parts += ("traceroute {0} hops" -f $options.TracerouteHops) }
+    $disabled = @()
+    foreach ($property in $options.ChecksEnabled.PSObject.Properties) {
+        if (-not $property.Value) { $disabled += $property.Name }
+    }
+    if ($disabled.Count -gt 0) { $parts += ("disabled: {0}" -f ($disabled -join ", ")) }
+    return ($parts -join " | ")
 }
 
 function Initialize-OutputDirectory {
@@ -830,6 +994,11 @@ function Get-NetworkSnapshotFromNetCmdlets {
             Gateways        = $gateways
             DnsServers      = $dnsServers
             DhcpEnabled     = $dhcpEnabled
+            IsPhysical      = -not (Test-IsVirtualAdapter -Description ([string]$adapter.InterfaceDescription) -VirtualFlag (Get-PropertyValue $adapter "Virtual") -HardwareFlag (Get-PropertyValue $adapter "HardwareInterface"))
+            MediaType       = ConvertTo-SafeString (Get-PropertyValue $adapter "PhysicalMediaType" "")
+            DriverVersion   = ConvertTo-SafeString (Get-PropertyValue $adapter "DriverVersion" "")
+            DriverDate      = ConvertTo-SafeString (Get-PropertyValue $adapter "DriverDate" "")
+            DriverProvider  = ConvertTo-SafeString (Get-PropertyValue $adapter "DriverProvider" "")
             Source          = "NetTCPIP"
         })
     }
@@ -932,6 +1101,14 @@ function Get-NetworkSnapshotFromCim {
             $dhcpEnabled = [bool]$config.DHCPEnabled
         }
 
+        $physicalFlag = $null
+        $mediaType = ""
+        if ($null -ne $adapter) {
+            $physicalFlag = Get-PropertyValue $adapter "PhysicalAdapter"
+            $mediaType = ConvertTo-SafeString (Get-PropertyValue $adapter "AdapterType" "")
+        }
+        $isPhysical = -not (Test-IsVirtualAdapter -Description $description -VirtualFlag $null -HardwareFlag $physicalFlag)
+
         [void]$items.Add([pscustomobject][ordered]@{
             Name            = $name
             Description     = $description
@@ -947,6 +1124,11 @@ function Get-NetworkSnapshotFromCim {
             Gateways        = $gateways
             DnsServers      = @($config.DNSServerSearchOrder)
             DhcpEnabled     = $dhcpEnabled
+            IsPhysical      = $isPhysical
+            MediaType       = $mediaType
+            DriverVersion   = ""
+            DriverDate      = ""
+            DriverProvider  = ""
             Source          = "CIM/WMI"
         })
     }
@@ -963,7 +1145,7 @@ function Get-NetworkSnapshot {
             }
         }
         catch {
-            Add-CheckResult -Category "Network Adapter and IP" -Check "Data Source Fallback" -Status "WARN" -Message "Get-NetIPConfiguration could not retrieve data. CIM/WMI will be used instead." -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) | Out-Null
+            Add-CheckResult -Category "Network Adapter and IP" -Check "Data Source Fallback" -Status "WARN" -Message "Get-NetIPConfiguration could not retrieve data. CIM/WMI will be used instead." -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "data-source" | Out-Null
         }
     }
 
@@ -1147,6 +1329,18 @@ function Test-ConfigurationSemantics {
         }
     }
 
+    $checks = $script:Config.Checks
+    foreach ($flagName in @("WifiRf", "RouteTable", "GatewayNeighbor", "ProxySettings", "Traceroute", "DriverInfo")) {
+        $flagValue = Get-PropertyValue $checks $flagName
+        if ($null -ne $flagValue -and -not ($flagValue -is [bool])) {
+            [void]$warnings.Add("Checks.$flagName must be true or false (current value: $flagValue); the check is disabled.")
+        }
+    }
+    $hopsValue = Get-PropertyValue $checks "TracerouteHops"
+    if ($null -ne $hopsValue -and (-not (Test-IsWholeNumber $hopsValue) -or (ConvertTo-IntSafe $hopsValue 0) -lt 1 -or (ConvertTo-IntSafe $hopsValue 0) -gt 10)) {
+        [void]$warnings.Add("Checks.TracerouteHops must be a whole number from 1 to 10 (current value: $hopsValue); the built-in default will be used.")
+    }
+
     $countThresholdNames = @("TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")
     foreach ($thresholdName in @("PacketLossWarningPercent", "PacketLossCriticalPercent", "LatencyWarningMs", "LatencyCriticalMs", "TcpRetransmissionWarningPercent", "TcpRetransmissionCriticalPercent", "TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")) {
         $thresholdValue = Get-PropertyValue $thresholds $thresholdName
@@ -1180,14 +1374,14 @@ function Test-ConfigurationSemantics {
     }
 
     if ($errors.Count -gt 0) {
-        Add-CheckResult -Category "Program Configuration" -Check "Configuration Validation" -Status "ERROR" -Message ("The configuration file contains {0} invalid value(s). The program will continue, but related results may not be meaningful." -f $errors.Count) -Details (@($errors) -join [Environment]::NewLine) | Out-Null
+        Add-CheckResult -Category "Program Configuration" -Check "Configuration Validation" -Status "ERROR" -Message ("The configuration file contains {0} invalid value(s). The program will continue, but related results may not be meaningful." -f $errors.Count) -Details (@($errors) -join [Environment]::NewLine) -Tag "config" | Out-Null
     }
     elseif ($warnings.Count -eq 0) {
-        Add-CheckResult -Category "Program Configuration" -Check "Configuration Validation" -Status "PASS" -Message "Configuration value format validation passed." -Details "" | Out-Null
+        Add-CheckResult -Category "Program Configuration" -Check "Configuration Validation" -Status "PASS" -Message "Configuration value format validation passed." -Details "" -Tag "config" | Out-Null
     }
 
     if ($warnings.Count -gt 0) {
-        Add-CheckResult -Category "Program Configuration" -Check "Configuration Thresholds" -Status "WARN" -Message ("The configuration file contains {0} threshold value(s) that need attention." -f $warnings.Count) -Details (@($warnings) -join [Environment]::NewLine) | Out-Null
+        Add-CheckResult -Category "Program Configuration" -Check "Configuration Thresholds" -Status "WARN" -Message ("The configuration file contains {0} threshold value(s) that need attention." -f $warnings.Count) -Details (@($warnings) -join [Environment]::NewLine) -Tag "config" | Out-Null
     }
 }
 
@@ -1206,11 +1400,23 @@ function Add-NetworkSnapshotResults {
     param([object[]]$Adapters)
 
     if ($Adapters.Count -eq 0) {
-        Add-CheckResult -Category "Network Adapter and IP" -Check "Usable Network Adapters" -Status "FAIL" -Message "No connected network adapter with an IP address was found." -Details "Check the network cable, Wi-Fi, airplane mode, adapter driver, and whether the adapter is disabled." | Out-Null
+        Add-CheckResult -Category "Network Adapter and IP" -Check "Usable Network Adapters" -Status "FAIL" -Message "No connected network adapter with an IP address was found." -Details "Check the network cable, Wi-Fi, airplane mode, adapter driver, and whether the adapter is disabled." -Tag "adapters" | Out-Null
         return
     }
 
-    Add-CheckResult -Category "Network Adapter and IP" -Check "Usable Network Adapters" -Status "PASS" -Message ("Found {0} connected network adapter(s)." -f $Adapters.Count) -Details "" | Out-Null
+    $physical = @($Adapters | Where-Object { $_.IsPhysical -eq $true })
+    $virtual = @($Adapters | Where-Object { $_.IsPhysical -ne $true })
+    $anyGateway = @($Adapters | Where-Object { @($_.Gateways).Count -gt 0 }).Count -gt 0
+    $adapterSummary = "Found {0} connected network adapter(s): {1} physical, {2} virtual." -f $Adapters.Count, $physical.Count, $virtual.Count
+    if ($physical.Count -gt 0) {
+        Add-CheckResult -Category "Network Adapter and IP" -Check "Usable Network Adapters" -Status "PASS" -Message $adapterSummary -Details "" -Tag "adapters" | Out-Null
+    }
+    elseif ($anyGateway) {
+        Add-CheckResult -Category "Network Adapter and IP" -Check "Usable Network Adapters" -Status "WARN" -Message "No physical network adapter is connected; connectivity is carried only by virtual adapters (VPN or virtualization)." -Details $adapterSummary -Tag "adapters" | Out-Null
+    }
+    else {
+        Add-CheckResult -Category "Network Adapter and IP" -Check "Usable Network Adapters" -Status "FAIL" -Message "No physical network adapter is connected." -Details $adapterSummary -Tag "adapters" | Out-Null
+    }
 
     foreach ($adapter in $Adapters) {
         $dhcpText = "Unknown"
@@ -1229,6 +1435,9 @@ function Add-NetworkSnapshotResults {
             "Default Gateway: $(ConvertTo-DisplayString $adapter.Gateways)",
             "DNS: $(ConvertTo-DisplayString $adapter.DnsServers)",
             "DHCP: $dhcpText",
+            ("Adapter type: {0}" -f $(if ($adapter.IsPhysical -eq $true) { "Physical" } else { "Virtual" })),
+            ("Media: {0}" -f (ConvertTo-DisplayString $adapter.MediaType)),
+            ("Driver: {0}" -f (ConvertTo-DisplayString (@($adapter.DriverVersion, $adapter.DriverDate, $adapter.DriverProvider) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }))),
             "Data source: $($adapter.Source)"
         ) -join [Environment]::NewLine
 
@@ -1240,14 +1449,17 @@ function Add-NetworkSnapshotResults {
             }
         }
 
-        if ($hasApipa) {
-            Add-CheckResult -Category "Network Adapter and IP" -Check ("Adapter: {0}" -f $adapter.Name) -Status "FAIL" -Message "A 169.254.x.x automatic private IP address was detected, which usually means DHCP did not provide an address." -Details $details | Out-Null
+        if ($adapter.IsPhysical -ne $true) {
+            Add-CheckResult -Category "Network Adapter and IP" -Check ("Adapter: {0}" -f $adapter.Name) -Status "INFO" -Message ("Virtual adapter (not counted as physical connectivity). IPv4: {0}" -f (ConvertTo-DisplayString $adapter.IPv4WithPrefix)) -Details $details -Tag "adapter" | Out-Null
+        }
+        elseif ($hasApipa) {
+            Add-CheckResult -Category "Network Adapter and IP" -Check ("Adapter: {0}" -f $adapter.Name) -Status "FAIL" -Message "A 169.254.x.x automatic private IP address was detected, which usually means DHCP did not provide an address." -Details $details -Tag "adapter" | Out-Null
         }
         elseif (@($adapter.IPv4Addresses).Count -eq 0) {
-            Add-CheckResult -Category "Network Adapter and IP" -Check ("Adapter: {0}" -f $adapter.Name) -Status "WARN" -Message "This adapter has no IPv4 address." -Details $details | Out-Null
+            Add-CheckResult -Category "Network Adapter and IP" -Check ("Adapter: {0}" -f $adapter.Name) -Status "WARN" -Message "This adapter has no IPv4 address." -Details $details -Tag "adapter" | Out-Null
         }
         else {
-            Add-CheckResult -Category "Network Adapter and IP" -Check ("Adapter: {0}" -f $adapter.Name) -Status "PASS" -Message ("Current IPv4: {0}" -f (ConvertTo-DisplayString $adapter.IPv4WithPrefix)) -Details $details | Out-Null
+            Add-CheckResult -Category "Network Adapter and IP" -Check ("Adapter: {0}" -f $adapter.Name) -Status "PASS" -Message ("Current IPv4: {0}" -f (ConvertTo-DisplayString $adapter.IPv4WithPrefix)) -Details $details -Tag "adapter" | Out-Null
         }
     }
 
@@ -1258,10 +1470,10 @@ function Add-NetworkSnapshotResults {
     $gateways = @($gateways | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)
 
     if ($gateways.Count -eq 0) {
-        Add-CheckResult -Category "Network Adapter and IP" -Check "Default Gateway" -Status "FAIL" -Message "No IPv4 default gateway was found. Access to other networks or the internet is usually unavailable." -Details "" | Out-Null
+        Add-CheckResult -Category "Network Adapter and IP" -Check "Default Gateway" -Status "FAIL" -Message "No IPv4 default gateway was found. Access to other networks or the internet is usually unavailable." -Details "" -Tag "gateway-config" | Out-Null
     }
     else {
-        Add-CheckResult -Category "Network Adapter and IP" -Check "Default Gateway" -Status "PASS" -Message ("Configured: {0}" -f ($gateways -join ", ")) -Details "" | Out-Null
+        Add-CheckResult -Category "Network Adapter and IP" -Check "Default Gateway" -Status "PASS" -Message ("Configured: {0}" -f ($gateways -join ", ")) -Details "" -Tag "gateway-config" | Out-Null
     }
 
     $dnsServers = @()
@@ -1271,10 +1483,10 @@ function Add-NetworkSnapshotResults {
     $dnsServers = @($dnsServers | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)
 
     if ($dnsServers.Count -eq 0) {
-        Add-CheckResult -Category "Network Adapter and IP" -Check "DNS Servers" -Status "FAIL" -Message "No DNS server configuration was found." -Details "Without DNS, connections by host name usually fail, although connections by IP address may still work." | Out-Null
+        Add-CheckResult -Category "Network Adapter and IP" -Check "DNS Servers" -Status "FAIL" -Message "No DNS server configuration was found." -Details "Without DNS, connections by host name usually fail, although connections by IP address may still work." -Tag "dns-config" | Out-Null
     }
     else {
-        Add-CheckResult -Category "Network Adapter and IP" -Check "DNS Servers" -Status "PASS" -Message ("Configured: {0}" -f ($dnsServers -join ", ")) -Details "" | Out-Null
+        Add-CheckResult -Category "Network Adapter and IP" -Check "DNS Servers" -Status "PASS" -Message ("Configured: {0}" -f ($dnsServers -join ", ")) -Details "" -Tag "dns-config" | Out-Null
     }
 }
 
@@ -1294,12 +1506,12 @@ function Test-ExpectedNetworkConfiguration {
                    $allowedGateways.Count -gt 0 -or $requiredDns.Count -gt 0 -or $hasValidDhcpRule)
 
     if (-not $hasAnyRule) {
-        Add-CheckResult -Category "Company Standard Comparison" -Check "Standard Configuration" -Status "INFO" -Message "No company standard has been defined in the configuration file. The current settings can be displayed, but compliance cannot be determined." -Details "Ask IT staff to edit the Expected section of NetworkHealthCheck.config.json." | Out-Null
+        Add-CheckResult -Category "Company Standard Comparison" -Check "Standard Configuration" -Status "INFO" -Message "No company standard has been defined in the configuration file. The current settings can be displayed, but compliance cannot be determined." -Details "Ask IT staff to edit the Expected section of NetworkHealthCheck.config.json." -Tag "expected-standard" | Out-Null
         return
     }
 
     if ($Adapters.Count -eq 0) {
-        Add-CheckResult -Category "Company Standard Comparison" -Check "Standard Configuration" -Status "FAIL" -Message "No usable network adapter is available, so company-standard comparison cannot be performed." -Details "" | Out-Null
+        Add-CheckResult -Category "Company Standard Comparison" -Check "Standard Configuration" -Status "FAIL" -Message "No usable network adapter is available, so company-standard comparison cannot be performed." -Details "" -Tag "expected-standard" | Out-Null
         return
     }
 
@@ -1341,55 +1553,55 @@ function Test-ExpectedNetworkConfiguration {
         }
 
         if ($null -ne $matchedIp) {
-            Add-CheckResult -Category "Company Standard Comparison" -Check "IPv4 Address/Subnet" -Status "PASS" -Message ("Current IP $matchedIp matches the allowlist.") -Details ("Allowed IP addresses: {0}`r`nAllowed subnets: {1}" -f (ConvertTo-DisplayString $allowedIps), (ConvertTo-DisplayString $allowedCidrs)) | Out-Null
+            Add-CheckResult -Category "Company Standard Comparison" -Check "IPv4 Address/Subnet" -Status "PASS" -Message ("Current IP $matchedIp matches the allowlist.") -Details ("Allowed IP addresses: {0}`r`nAllowed subnets: {1}" -f (ConvertTo-DisplayString $allowedIps), (ConvertTo-DisplayString $allowedCidrs)) -Tag "expected-standard" | Out-Null
         }
         else {
-            Add-CheckResult -Category "Company Standard Comparison" -Check "IPv4 Address/Subnet" -Status "FAIL" -Message ("The current IP address does not match the allowlist: {0}" -f (ConvertTo-DisplayString $allIps)) -Details ("Allowed IP addresses: {0}`r`nAllowed subnets: {1}" -f (ConvertTo-DisplayString $allowedIps), (ConvertTo-DisplayString $allowedCidrs)) | Out-Null
+            Add-CheckResult -Category "Company Standard Comparison" -Check "IPv4 Address/Subnet" -Status "FAIL" -Message ("The current IP address does not match the allowlist: {0}" -f (ConvertTo-DisplayString $allIps)) -Details ("Allowed IP addresses: {0}`r`nAllowed subnets: {1}" -f (ConvertTo-DisplayString $allowedIps), (ConvertTo-DisplayString $allowedCidrs)) -Tag "expected-standard" | Out-Null
         }
     }
 
     if ($allowedPrefixes.Count -gt 0) {
         $prefixMatches = @($allPrefixes | Where-Object { $allowedPrefixes -contains [int]$_ })
         if ($prefixMatches.Count -gt 0) {
-            Add-CheckResult -Category "Company Standard Comparison" -Check "Subnet Prefix" -Status "PASS" -Message ("Current prefix length matches: /{0}" -f (($prefixMatches | Select-Object -Unique) -join ", /")) -Details ("Allowed values: /{0}" -f ($allowedPrefixes -join ", /")) | Out-Null
+            Add-CheckResult -Category "Company Standard Comparison" -Check "Subnet Prefix" -Status "PASS" -Message ("Current prefix length matches: /{0}" -f (($prefixMatches | Select-Object -Unique) -join ", /")) -Details ("Allowed values: /{0}" -f ($allowedPrefixes -join ", /")) -Tag "expected-standard" | Out-Null
         }
         else {
-            Add-CheckResult -Category "Company Standard Comparison" -Check "Subnet Prefix" -Status "FAIL" -Message ("Current prefix length does not match: /{0}" -f ($allPrefixes -join ", /")) -Details ("Allowed values: /{0}" -f ($allowedPrefixes -join ", /")) | Out-Null
+            Add-CheckResult -Category "Company Standard Comparison" -Check "Subnet Prefix" -Status "FAIL" -Message ("Current prefix length does not match: /{0}" -f ($allPrefixes -join ", /")) -Details ("Allowed values: /{0}" -f ($allowedPrefixes -join ", /")) -Tag "expected-standard" | Out-Null
         }
     }
 
     if ($allowedGateways.Count -gt 0) {
         $gatewayMatches = @($allGateways | Where-Object { $allowedGateways -contains [string]$_ })
         if ($gatewayMatches.Count -gt 0) {
-            Add-CheckResult -Category "Company Standard Comparison" -Check "Default Gateway" -Status "PASS" -Message ("Matched: {0}" -f ($gatewayMatches -join ", ")) -Details ("Allowed values: {0}" -f ($allowedGateways -join ", ")) | Out-Null
+            Add-CheckResult -Category "Company Standard Comparison" -Check "Default Gateway" -Status "PASS" -Message ("Matched: {0}" -f ($gatewayMatches -join ", ")) -Details ("Allowed values: {0}" -f ($allowedGateways -join ", ")) -Tag "expected-standard" | Out-Null
         }
         else {
-            Add-CheckResult -Category "Company Standard Comparison" -Check "Default Gateway" -Status "FAIL" -Message ("Current gateway does not match: {0}" -f (ConvertTo-DisplayString $allGateways)) -Details ("Allowed values: {0}" -f ($allowedGateways -join ", ")) | Out-Null
+            Add-CheckResult -Category "Company Standard Comparison" -Check "Default Gateway" -Status "FAIL" -Message ("Current gateway does not match: {0}" -f (ConvertTo-DisplayString $allGateways)) -Details ("Allowed values: {0}" -f ($allowedGateways -join ", ")) -Tag "expected-standard" | Out-Null
         }
     }
 
     if ($requiredDns.Count -gt 0) {
         $missingDns = @($requiredDns | Where-Object { $allDns -notcontains [string]$_ })
         if ($missingDns.Count -eq 0) {
-            Add-CheckResult -Category "Company Standard Comparison" -Check "DNS Servers" -Status "PASS" -Message "All required DNS servers are present." -Details ("Required values: {0}`r`nCurrent values: {1}" -f ($requiredDns -join ", "), (ConvertTo-DisplayString $allDns)) | Out-Null
+            Add-CheckResult -Category "Company Standard Comparison" -Check "DNS Servers" -Status "PASS" -Message "All required DNS servers are present." -Details ("Required values: {0}`r`nCurrent values: {1}" -f ($requiredDns -join ", "), (ConvertTo-DisplayString $allDns)) -Tag "expected-standard" | Out-Null
         }
         else {
-            Add-CheckResult -Category "Company Standard Comparison" -Check "DNS Servers" -Status "FAIL" -Message ("Missing required DNS servers: {0}" -f ($missingDns -join ", ")) -Details ("Required values: {0}`r`nCurrent values: {1}" -f ($requiredDns -join ", "), (ConvertTo-DisplayString $allDns)) | Out-Null
+            Add-CheckResult -Category "Company Standard Comparison" -Check "DNS Servers" -Status "FAIL" -Message ("Missing required DNS servers: {0}" -f ($missingDns -join ", ")) -Details ("Required values: {0}`r`nCurrent values: {1}" -f ($requiredDns -join ", "), (ConvertTo-DisplayString $allDns)) -Tag "expected-standard" | Out-Null
         }
     }
 
     if ($hasValidDhcpRule) {
         $expectedBool = [bool]$expectedDhcp
         if ($allDhcp.Count -eq 0) {
-            Add-CheckResult -Category "Company Standard Comparison" -Check "DHCP Mode" -Status "ERROR" -Message "The current DHCP state could not be retrieved." -Details ("Expected value: {0}" -f $(if ($expectedBool) { "Enabled" } else { "Disabled" })) | Out-Null
+            Add-CheckResult -Category "Company Standard Comparison" -Check "DHCP Mode" -Status "ERROR" -Message "The current DHCP state could not be retrieved." -Details ("Expected value: {0}" -f $(if ($expectedBool) { "Enabled" } else { "Disabled" })) -Tag "expected-standard" | Out-Null
         }
         else {
             $mismatches = @($allDhcp | Where-Object { [bool]$_ -ne $expectedBool })
             if ($mismatches.Count -eq 0) {
-                Add-CheckResult -Category "Company Standard Comparison" -Check "DHCP Mode" -Status "PASS" -Message ("Matches expected value: {0}" -f $(if ($expectedBool) { "Enabled" } else { "Disabled (static IP)" })) -Details "" | Out-Null
+                Add-CheckResult -Category "Company Standard Comparison" -Check "DHCP Mode" -Status "PASS" -Message ("Matches expected value: {0}" -f $(if ($expectedBool) { "Enabled" } else { "Disabled (static IP)" })) -Details "" -Tag "expected-standard" | Out-Null
             }
             else {
-                Add-CheckResult -Category "Company Standard Comparison" -Check "DHCP Mode" -Status "FAIL" -Message ("The DHCP mode does not match. Expected: {0}" -f $(if ($expectedBool) { "Enabled" } else { "Disabled (static IP)" })) -Details ("Current state: {0}" -f (($allDhcp | ForEach-Object { if ($_){"Enabled"}else{"Disabled"} }) -join ", ")) | Out-Null
+                Add-CheckResult -Category "Company Standard Comparison" -Check "DHCP Mode" -Status "FAIL" -Message ("The DHCP mode does not match. Expected: {0}" -f $(if ($expectedBool) { "Enabled" } else { "Disabled (static IP)" })) -Details ("Current state: {0}" -f (($allDhcp | ForEach-Object { if ($_){"Enabled"}else{"Disabled"} }) -join ", ")) -Tag "expected-standard" | Out-Null
             }
         }
     }
@@ -1506,6 +1718,8 @@ function Test-PingTargets {
 
         $name = ConvertTo-SafeString (Get-PropertyValue $targetConfig "Name" "Ping")
         $address = ConvertTo-SafeString (Get-PropertyValue $targetConfig "Address" "")
+        $pingTag = "ping-target"
+        if ($address -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
         $required = [bool](Get-PropertyValue $targetConfig "Required" $false)
         $targets = @(Resolve-PingTargets -Address $address -PrimaryAdapters $PrimaryAdapters)
 
@@ -1515,7 +1729,7 @@ function Test-PingTargets {
             if ($address -eq "AUTO_GATEWAY") {
                 $noTargetDetail = "Configured value: AUTO_GATEWAY - this placeholder resolves to the current IPv4 default gateway, and none exists right now (usually the local link is down)."
             }
-            Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status $status -Message "No testable target was found." -Details ($noTargetDetail + [Environment]::NewLine + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms." -f $count, $timeout) + [Environment]::NewLine + "Manual check: ping -n $count <target-ip>") | Out-Null
+            Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status $status -Message "No testable target was found." -Details ($noTargetDetail + [Environment]::NewLine + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms." -f $count, $timeout) + [Environment]::NewLine + "Manual check: ping -n $count <target-ip>") -Tag $pingTag | Out-Null
             continue
         }
 
@@ -1551,11 +1765,11 @@ function Test-PingTargets {
                 if ($status -eq "INFO") {
                     $details += [Environment]::NewLine + "Informational: this optional target may simply block ICMP - see the Connectivity group for the authoritative internet verdict."
                 }
-                Add-CheckResult -Category "Latency and Packet Loss" -Check ("{0}: {1}" -f $name, $target) -Status $status -Message $message -Details $details | Out-Null
+                Add-CheckResult -Category "Latency and Packet Loss" -Check ("{0}: {1}" -f $name, $target) -Status $status -Message $message -Details $details -Tag $pingTag | Out-Null
             }
             catch {
                 $status = if ($required) { "ERROR" } else { "INFO" }
-                Add-CheckResult -Category "Latency and Packet Loss" -Check ("{0}: {1}" -f $name, $target) -Status $status -Message "The ping test could not be performed." -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) | Out-Null
+                Add-CheckResult -Category "Latency and Packet Loss" -Check ("{0}: {1}" -f $name, $target) -Status $status -Message "The ping test could not be performed." -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) -Tag $pingTag | Out-Null
             }
         }
     }
@@ -1611,16 +1825,16 @@ function Test-DnsNames {
         try {
             $result = Invoke-DnsLookup -HostName $hostName -TimeoutMs $timeout
             if ($result.Addresses.Count -gt 0) {
-                Add-CheckResult -Category "DNS" -Check $name -Status "PASS" -Message ("{0} resolved to {1} ({2} ms)." -f $hostName, ($result.Addresses -join ", "), $result.ElapsedMs) -Details ($methodText + [Environment]::NewLine + "Manual check: nslookup $hostName") | Out-Null
+                Add-CheckResult -Category "DNS" -Check $name -Status "PASS" -Message ("{0} resolved to {1} ({2} ms)." -f $hostName, ($result.Addresses -join ", "), $result.ElapsedMs) -Details ($methodText + [Environment]::NewLine + "Manual check: nslookup $hostName") -Tag "dns" | Out-Null
             }
             else {
                 $status = if ($required) { "FAIL" } else { "WARN" }
-                Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("$hostName returned no IP address.") -Details ($methodText + [Environment]::NewLine + "Manual check: nslookup $hostName") | Out-Null
+                Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("$hostName returned no IP address.") -Details ($methodText + [Environment]::NewLine + "Manual check: nslookup $hostName") -Tag "dns" | Out-Null
             }
         }
         catch {
             $status = if ($required) { "FAIL" } else { "WARN" }
-            Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("Unable to resolve $hostName.") -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + $methodText + [Environment]::NewLine + "Manual check: nslookup $hostName") -Diagnostics (Get-ExceptionDiagnostics $_) | Out-Null
+            Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("Unable to resolve $hostName.") -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + $methodText + [Environment]::NewLine + "Manual check: nslookup $hostName") -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "dns" | Out-Null
         }
     }
 }
@@ -1777,19 +1991,19 @@ function Add-ConnectivityGroupResult {
 
     if ($entries.Count -eq 0) {
         $status = if ($Required) { "ERROR" } else { "INFO" }
-        Add-CheckResult -Category "Connectivity" -Check ("Group: $GroupName") -Status $status -Message "This group has no executable test items." -Details "Check the Group names and test targets in the configuration file." | Out-Null
+        Add-CheckResult -Category "Connectivity" -Check ("Group: $GroupName") -Status $status -Message "This group has no executable test items." -Details "Check the Group names and test targets in the configuration file." -Tag "connectivity-group" | Out-Null
         return
     }
 
     $successful = @($entries | Where-Object { $_.Success })
     if ($successful.Count -gt 0) {
         $names = @($successful | ForEach-Object { $_.Name })
-        Add-CheckResult -Category "Connectivity" -Check ("Group: $GroupName") -Status "PASS" -Message ("At least one connectivity method succeeded: {0}" -f ($names -join ", ")) -Details (("{0}/{1} item(s) succeeded." -f $successful.Count, $entries.Count) + [Environment]::NewLine + "Method: the group passes if at least one member connectivity test succeeds.") | Out-Null
+        Add-CheckResult -Category "Connectivity" -Check ("Group: $GroupName") -Status "PASS" -Message ("At least one connectivity method succeeded: {0}" -f ($names -join ", ")) -Details (("{0}/{1} item(s) succeeded." -f $successful.Count, $entries.Count) + [Environment]::NewLine + "Method: the group passes if at least one member connectivity test succeeds.") -Tag "connectivity-group" | Out-Null
     }
     else {
         $status = if ($Required) { "FAIL" } else { "WARN" }
         $details = (@($entries | ForEach-Object { "{0}: {1}" -f $_.Name, $_.Error }) + "Method: the group passes if at least one member connectivity test succeeds.") -join [Environment]::NewLine
-        Add-CheckResult -Category "Connectivity" -Check ("Group: $GroupName") -Status $status -Message "All connectivity methods failed." -Details $details | Out-Null
+        Add-CheckResult -Category "Connectivity" -Check ("Group: $GroupName") -Status $status -Message "All connectivity methods failed." -Details $details -Tag "connectivity-group" | Out-Null
     }
 }
 
@@ -1811,18 +2025,18 @@ function Test-ConnectivityTargets {
 
         if ([string]::IsNullOrWhiteSpace($hostName) -or $port -lt 1 -or $port -gt 65535) {
             if ($required) {
-                Add-CheckResult -Category "TCP Connection" -Check $name -Status "ERROR" -Message "The configured host or port is invalid." -Details ("Host=$hostName, Port=$port") | Out-Null
+                Add-CheckResult -Category "TCP Connection" -Check $name -Status "ERROR" -Message "The configured host or port is invalid." -Details ("Host=$hostName, Port=$port") -Tag "tcp" | Out-Null
             }
             continue
         }
 
         $result = Invoke-TcpConnectionTest -HostName $hostName -Port $port -TimeoutMs $tcpTimeout
         if ($result.Success) {
-            Add-CheckResult -Category "TCP Connection" -Check $name -Status "PASS" -Message ("Connected to {0}:{1} in {2} ms." -f $hostName, $port, $result.ElapsedMs) -Details ($tcpMethod + [Environment]::NewLine + "Manual check: Test-NetConnection $hostName -Port $port") | Out-Null
+            Add-CheckResult -Category "TCP Connection" -Check $name -Status "PASS" -Message ("Connected to {0}:{1} in {2} ms." -f $hostName, $port, $result.ElapsedMs) -Details ($tcpMethod + [Environment]::NewLine + "Manual check: Test-NetConnection $hostName -Port $port") -Tag "tcp" | Out-Null
         }
         else {
             $status = if ($required) { "FAIL" } else { "INFO" }
-            Add-CheckResult -Category "TCP Connection" -Check $name -Status $status -Message ("Unable to connect to {0}:{1}." -f $hostName, $port) -Details ($result.Error + [Environment]::NewLine + $tcpMethod + [Environment]::NewLine + "Manual check: Test-NetConnection $hostName -Port $port") | Out-Null
+            Add-CheckResult -Category "TCP Connection" -Check $name -Status $status -Message ("Unable to connect to {0}:{1}." -f $hostName, $port) -Details ($result.Error + [Environment]::NewLine + $tcpMethod + [Environment]::NewLine + "Manual check: Test-NetConnection $hostName -Port $port") -Tag "tcp" | Out-Null
         }
 
         if (-not [string]::IsNullOrWhiteSpace($group)) {
@@ -1847,18 +2061,18 @@ function Test-ConnectivityTargets {
 
         if ([string]::IsNullOrWhiteSpace($url)) {
             if ($required) {
-                Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "The configured URL is blank." -Details "" | Out-Null
+                Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "The configured URL is blank." -Details "" -Tag "http" | Out-Null
             }
             continue
         }
 
         $result = Invoke-HttpConnectionTest -Url $url -TimeoutMs $httpTimeout
         if ($result.Success) {
-            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "PASS" -Message ("HTTP {0}, elapsed {1} ms." -f $result.StatusCode, $result.ElapsedMs) -Details ("Original URL: {0}`r`nFinal URL: {1}`r`nStatus: {2}`r`n{3}`r`nManual check: Invoke-WebRequest {0} -UseBasicParsing" -f $url, $result.FinalUrl, $result.StatusText, $httpMethod) | Out-Null
+            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "PASS" -Message ("HTTP {0}, elapsed {1} ms." -f $result.StatusCode, $result.ElapsedMs) -Details ("Original URL: {0}`r`nFinal URL: {1}`r`nStatus: {2}`r`n{3}`r`nManual check: Invoke-WebRequest {0} -UseBasicParsing" -f $url, $result.FinalUrl, $result.StatusText, $httpMethod) -Tag "http" | Out-Null
         }
         else {
             $status = if ($required) { "FAIL" } else { "INFO" }
-            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status $status -Message ("Unable to connect: $url") -Details ($result.Error + [Environment]::NewLine + $httpMethod + [Environment]::NewLine + "Manual check: Invoke-WebRequest $url -UseBasicParsing") | Out-Null
+            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status $status -Message ("Unable to connect: $url") -Details ($result.Error + [Environment]::NewLine + $httpMethod + [Environment]::NewLine + "Manual check: Invoke-WebRequest $url -UseBasicParsing") -Tag "http" | Out-Null
         }
 
         if (-not [string]::IsNullOrWhiteSpace($group)) {
@@ -1930,18 +2144,28 @@ function Compare-AdapterStatistics {
     $criticalDiscards = [uint64][math]::Max($warningDiscards, (ConvertTo-IntSafe $script:Config.Thresholds.AdapterDiscardCriticalDelta 100))
 
     $adapterNames = @($Adapters | ForEach-Object { [string]$_.Name } | Select-Object -Unique)
+    $adapterByName = @{}
+    foreach ($adapterItem in @($Adapters)) {
+        if ($null -ne $adapterItem -and -not [string]::IsNullOrWhiteSpace([string]$adapterItem.Name)) {
+            $adapterByName[[string]$adapterItem.Name] = $adapterItem
+        }
+    }
     if ($adapterNames.Count -eq 0) {
         $adapterNames = @($After.Keys)
     }
 
     foreach ($name in $adapterNames) {
         if (-not $Before.ContainsKey($name) -or -not $After.ContainsKey($name)) {
-            Add-CheckResult -Category "Network Adapter Error Counters" -Check $name -Status "INFO" -Message "Complete before-and-after comparison data could not be retrieved." -Details "The adapter may have switched, reconnected, or changed name during the test." | Out-Null
+            Add-CheckResult -Category "Network Adapter Error Counters" -Check $name -Status "INFO" -Message "Complete before-and-after comparison data could not be retrieved." -Details "The adapter may have switched, reconnected, or changed name during the test." -Tag "adapter-errors" | Out-Null
             continue
         }
 
         $beforeItem = $Before[$name]
         $afterItem = $After[$name]
+        $isVirtualAdapter = $false
+        if ($adapterByName.ContainsKey($name)) {
+            $isVirtualAdapter = ($adapterByName[$name].IsPhysical -ne $true)
+        }
 
         $counterReset = (
             [double]$afterItem.ReceivedPacketErrors -lt [double]$beforeItem.ReceivedPacketErrors -or
@@ -1957,7 +2181,9 @@ function Compare-AdapterStatistics {
                 "Start: RxErrors=$($beforeItem.ReceivedPacketErrors), TxErrors=$($beforeItem.OutboundPacketErrors), RxDiscards=$($beforeItem.ReceivedDiscardedPackets), TxDiscards=$($beforeItem.OutboundDiscardedPackets), RxBytes=$($beforeItem.ReceivedBytes), TxBytes=$($beforeItem.SentBytes)",
                 "End: RxErrors=$($afterItem.ReceivedPacketErrors), TxErrors=$($afterItem.OutboundPacketErrors), RxDiscards=$($afterItem.ReceivedDiscardedPackets), TxDiscards=$($afterItem.OutboundDiscardedPackets), RxBytes=$($afterItem.ReceivedBytes), TxBytes=$($afterItem.SentBytes)"
             ) -join [Environment]::NewLine
-            Add-CheckResult -Category "Network Adapter Error Counters" -Check $name -Status "WARN" -Message "The adapter counters were reset during the test, possibly because the adapter reconnected or restarted; a reliable delta cannot be calculated." -Details $resetDetails | Out-Null
+            $resetStatus = "WARN"
+            if ($isVirtualAdapter) { $resetStatus = "INFO" }
+            Add-CheckResult -Category "Network Adapter Error Counters" -Check $name -Status $resetStatus -Message "The adapter counters were reset during the test, possibly because the adapter reconnected or restarted; a reliable delta cannot be calculated." -Details $resetDetails -Tag "adapter-errors" | Out-Null
             continue
         }
 
@@ -1977,6 +2203,15 @@ function Compare-AdapterStatistics {
         }
 
         $message = "During the test, errors increased by {0} and discards increased by {1}." -f $errorDelta, $discardDelta
+        $trafficDelta = ([double]$afterItem.ReceivedBytes - [double]$beforeItem.ReceivedBytes) + ([double]$afterItem.SentBytes - [double]$beforeItem.SentBytes)
+        if ($isVirtualAdapter) {
+            $status = "INFO"
+            $message = "Virtual adapter: errors increased by {0} and discards by {1} (informational)." -f $errorDelta, $discardDelta
+        }
+        elseif ($status -eq "PASS" -and $trafficDelta -le 0) {
+            $status = "INFO"
+            $message = "No traffic passed through this adapter during the sample, so its error counters cannot testify (0 errors is vacuous)."
+        }
         $details = @(
             "Receive error delta: $rxErrorDelta (cumulative $($afterItem.ReceivedPacketErrors))",
             "Send error delta: $txErrorDelta (cumulative $($afterItem.OutboundPacketErrors))",
@@ -1984,12 +2219,393 @@ function Compare-AdapterStatistics {
             "Send discard delta: $txDiscardDelta (cumulative $($afterItem.OutboundDiscardedPackets))",
             "Cumulative received bytes: $($afterItem.ReceivedBytes)",
             "Cumulative sent bytes: $($afterItem.SentBytes)",
+            ("Traffic during sample: {0} bytes" -f [uint64][math]::Max(0, $trafficDelta)),
             "Method: Get-NetAdapterStatistics sampled before and after the test; deltas shown.",
             "Manual check: Get-NetAdapterStatistics -Name '$name'"
         ) -join [Environment]::NewLine
 
-        Add-CheckResult -Category "Network Adapter Error Counters" -Check $name -Status $status -Message $message -Details $details | Out-Null
+        Add-CheckResult -Category "Network Adapter Error Counters" -Check $name -Status $status -Message $message -Details $details -Tag "adapter-errors" | Out-Null
     }
+}
+
+# v1.2 IT diagnostics: informational data for IT (never changes the overall result), shown in the collapsed IT section.
+function ConvertFrom-NetshWlanOutput {
+    param([string[]]$Lines)
+
+    $pairs = New-Object System.Collections.ArrayList
+    foreach ($rawLine in @($Lines)) {
+        $line = [string]$rawLine
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $separator = $line.IndexOf(':')
+        $wide = $line.IndexOf([char]0xFF1A)
+        if ($separator -lt 1 -or ($wide -ge 1 -and $wide -lt $separator)) { $separator = $wide }
+        if ($separator -lt 1) { continue }
+        [void]$pairs.Add([pscustomobject]@{ Label = $line.Substring(0, $separator).Trim(); Value = $line.Substring($separator + 1).Trim() })
+    }
+
+    $guidPattern = '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'
+    $macPattern = '^[0-9a-fA-F]{2}([:-][0-9a-fA-F]{2}){5}$'
+    $starts = @()
+    for ($i = 0; $i -lt $pairs.Count; $i++) {
+        if ($pairs[$i].Value -match $guidPattern -and $i -ge 2) { $starts += ($i - 2) }
+    }
+
+    $interfaces = New-Object System.Collections.ArrayList
+    for ($b = 0; $b -lt $starts.Count; $b++) {
+        $from = $starts[$b]
+        $to = $pairs.Count - 1
+        if ($b + 1 -lt $starts.Count) { $to = $starts[$b + 1] - 1 }
+        $block = @($pairs[$from..$to])
+
+        # Values are matched by shape (MAC, percentage, 802.11x, GHz, plain numbers) because labels are localized
+        # and their order differs between Windows 10 and Windows 11 builds.
+        $macs = @($block | Where-Object { $_.Value -match $macPattern })
+        $bssidIndex = -1
+        for ($k = 0; $k -lt $block.Count; $k++) {
+            if ($block[$k].Value -match $macPattern -and $macs.Count -ge 2 -and $block[$k].Value -eq $macs[1].Value) { $bssidIndex = $k; break }
+        }
+        $ssid = ""
+        if ($bssidIndex -gt 0) { $ssid = $block[$bssidIndex - 1].Value }
+
+        $signalIndex = -1
+        $signal = $null
+        $rssiIndex = -1
+        $rssi = $null
+        $radio = ""
+        $band = ""
+        for ($k = 0; $k -lt $block.Count; $k++) {
+            $value = $block[$k].Value
+            if ($signalIndex -lt 0 -and $value -match '^\d{1,3}\s*%$') { $signalIndex = $k; $signal = ConvertTo-IntSafe ($value -replace '[^0-9]', '') 0 }
+            elseif ($rssiIndex -lt 0 -and $value -match '^-\d{1,3}$') { $rssiIndex = $k; $rssi = ConvertTo-IntSafe $value 0 }
+            elseif ([string]::IsNullOrWhiteSpace($radio) -and $value -match '^802\.11') { $radio = $value }
+            elseif ([string]::IsNullOrWhiteSpace($band) -and $value -match '^\d(\.\d)?\s*GHz$') { $band = $value }
+        }
+
+        $channel = $null
+        $receive = $null
+        $transmit = $null
+        $profile = ""
+        if ($bssidIndex -ge 0) {
+            $upper = $block.Count
+            if ($signalIndex -ge 0) { $upper = $signalIndex }
+            $numeric = @()
+            for ($k = $bssidIndex + 1; $k -lt $upper; $k++) {
+                if ($block[$k].Value -match '^\d+(\.\d+)?$') { $numeric += $block[$k].Value }
+            }
+            if ($numeric.Count -ge 2) {
+                $receive = ConvertTo-DoubleSafe $numeric[$numeric.Count - 2] 0
+                $transmit = ConvertTo-DoubleSafe $numeric[$numeric.Count - 1] 0
+            }
+            if ($numeric.Count -ge 3 -or $numeric.Count -eq 1) { $channel = ConvertTo-IntSafe $numeric[0] 0 }
+            if ([string]::IsNullOrWhiteSpace($band) -and $null -ne $channel) {
+                if ($channel -le 14) { $band = "2.4 GHz" } else { $band = "5 GHz" }
+            }
+            $profileFrom = [math]::Max($signalIndex, $rssiIndex) + 1
+            if ($profileFrom -gt 0) {
+                for ($k = $profileFrom; $k -lt $block.Count; $k++) {
+                    $value = $block[$k].Value
+                    if ($value -match '^-?\d+(\.\d+)?$' -or $value -match '^\d{1,3}\s*%$') { continue }
+                    $profile = $value
+                    break
+                }
+            }
+        }
+
+        [void]$interfaces.Add([pscustomobject][ordered]@{
+            Name             = $block[0].Value
+            Description      = $block[1].Value
+            PhysicalAddress  = $(if ($macs.Count -ge 1) { $macs[0].Value } else { "" })
+            Connected        = ($bssidIndex -ge 0)
+            Ssid             = $ssid
+            Bssid            = $(if ($bssidIndex -ge 0) { $block[$bssidIndex].Value } else { "" })
+            RadioType        = $radio
+            Band             = $band
+            Channel          = $channel
+            ReceiveRateMbps  = $receive
+            TransmitRateMbps = $transmit
+            SignalPercent    = $signal
+            Rssi             = $rssi
+            Profile          = $profile
+        })
+    }
+
+    return @($interfaces)
+}
+
+function Add-WifiRfResult {
+    if (-not (Test-IsTrueFlag $script:Config.Checks.WifiRf)) { return }
+
+    $netsh = Join-Path $env:SystemRoot "System32\netsh.exe"
+    if (-not (Test-Path -LiteralPath $netsh)) {
+        Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message "netsh.exe was not found; Wi-Fi radio data is unavailable." -Details "" -Tag "wifi" -Scope "IT" | Out-Null
+        return
+    }
+
+    $lines = @()
+    try {
+        $lines = @(& $netsh wlan show interfaces 2>&1 | ForEach-Object { [string]$_ })
+    }
+    catch {
+        Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "ERROR" -Message "Wi-Fi radio data could not be read." -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "wifi" -Scope "IT" | Out-Null
+        return
+    }
+
+    $interfaces = @(ConvertFrom-NetshWlanOutput -Lines $lines)
+    $connected = @($interfaces | Where-Object { $_.Connected })
+    if ($connected.Count -eq 0) {
+        Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message "No connected Wi-Fi interface (wired connection, Wi-Fi off, or no wireless adapter)." -Details (("Wireless interfaces reported by netsh: {0}" -f $interfaces.Count) + [Environment]::NewLine + "Manual check: netsh wlan show interfaces") -Tag "wifi" -Scope "IT" | Out-Null
+        return
+    }
+
+    foreach ($wifi in $connected) {
+        $rssi = "?"
+        if ($null -ne $wifi.SignalPercent) { $rssi = [math]::Round(($wifi.SignalPercent / 2.0) - 100, 0) }
+        if ($null -ne $wifi.Rssi) { $rssi = $wifi.Rssi }
+        $message = "SSID {0}: signal {1}% (about {2} dBm), {3} {4}, channel {5}, {6}/{7} Mbps." -f $wifi.Ssid, (ConvertTo-DisplayString $wifi.SignalPercent), $rssi, $wifi.RadioType, $wifi.Band, (ConvertTo-DisplayString $wifi.Channel), (ConvertTo-DisplayString $wifi.ReceiveRateMbps), (ConvertTo-DisplayString $wifi.TransmitRateMbps)
+        $details = @(
+            ("Interface: {0}" -f $wifi.Name),
+            ("BSSID: {0}" -f (ConvertTo-DisplayString $wifi.Bssid)),
+            ("Radio: {0}, band {1}, channel {2}" -f $wifi.RadioType, (ConvertTo-DisplayString $wifi.Band), (ConvertTo-DisplayString $wifi.Channel)),
+            ("Rates: receive {0} Mbps, transmit {1} Mbps" -f (ConvertTo-DisplayString $wifi.ReceiveRateMbps), (ConvertTo-DisplayString $wifi.TransmitRateMbps)),
+            ("Signal: {0}% (about {1} dBm)" -f (ConvertTo-DisplayString $wifi.SignalPercent), $rssi),
+            ("Profile: {0}" -f (ConvertTo-DisplayString $wifi.Profile)),
+            "Method: netsh wlan show interfaces, parsed by field position because labels are localized; dBm is estimated from the signal percentage.",
+            "Manual check: netsh wlan show interfaces",
+            "Note: the client-side view is weaker evidence than the access point's client table."
+        ) -join [Environment]::NewLine
+        Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message $message -Details $details -Tag "wifi" -Scope "IT" | Out-Null
+    }
+}
+
+function Sort-DefaultRoutes {
+    param([object[]]$Routes)
+
+    return @($Routes | Sort-Object @{ Expression = { (ConvertTo-IntSafe $_.RouteMetric 0) + (ConvertTo-IntSafe $_.InterfaceMetric 0) } }, @{ Expression = { ConvertTo-IntSafe $_.RouteMetric 0 } })
+}
+
+function Add-RouteTableResult {
+    if (-not (Test-IsTrueFlag $script:Config.Checks.RouteTable)) { return }
+
+    if (-not (Get-Command Get-NetRoute -ErrorAction SilentlyContinue)) {
+        Add-CheckResult -Category "IT Diagnostics" -Check "IPv4 default routes" -Status "INFO" -Message "Get-NetRoute is not available; the route table was not read." -Details "Manual check: route print -4" -Tag "routes" -Scope "IT" | Out-Null
+        return
+    }
+
+    $routes = @()
+    try {
+        $routes = @(Sort-DefaultRoutes -Routes @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop))
+    }
+    catch {
+        Add-CheckResult -Category "IT Diagnostics" -Check "IPv4 default routes" -Status "ERROR" -Message "The route table could not be read." -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + "Manual check: route print -4") -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "routes" -Scope "IT" | Out-Null
+        return
+    }
+
+    if ($routes.Count -eq 0) {
+        Add-CheckResult -Category "IT Diagnostics" -Check "IPv4 default routes" -Status "INFO" -Message "No IPv4 default route exists." -Details ("Method: Get-NetRoute -AddressFamily IPv4 -DestinationPrefix 0.0.0.0/0" + [Environment]::NewLine + "Manual check: route print -4") -Tag "routes" -Scope "IT" | Out-Null
+        return
+    }
+
+    $lines = @()
+    foreach ($route in $routes) {
+        $lines += ("{0} via {1} (ifIndex {2}), route metric {3}, interface metric {4}, effective metric {5}, {6}" -f $route.NextHop, $route.InterfaceAlias, $route.InterfaceIndex, $route.RouteMetric, $route.InterfaceMetric, ((ConvertTo-IntSafe $route.RouteMetric 0) + (ConvertTo-IntSafe $route.InterfaceMetric 0)), $route.State)
+    }
+    $interfaceCount = @($routes | ForEach-Object { [string]$_.InterfaceIndex } | Select-Object -Unique).Count
+    if ($interfaceCount -gt 1) { $lines += "Multiple default routes: Windows prefers the lowest combined metric; check for VPN split-tunnel or a second connection." }
+    $lines += "Method: Get-NetRoute -AddressFamily IPv4 -DestinationPrefix 0.0.0.0/0"
+    $lines += "Manual check: route print -4"
+    $message = "{0} IPv4 default route(s); preferred: {1} via {2}." -f $routes.Count, $routes[0].NextHop, $routes[0].InterfaceAlias
+    Add-CheckResult -Category "IT Diagnostics" -Check "IPv4 default routes" -Status "INFO" -Message $message -Details ($lines -join [Environment]::NewLine) -Tag "routes" -Scope "IT" | Out-Null
+}
+
+function Add-GatewayNeighborResult {
+    param([object[]]$PrimaryAdapters)
+
+    if (-not (Test-IsTrueFlag $script:Config.Checks.GatewayNeighbor)) { return }
+
+    $gateways = @(Resolve-PingTargets -Address "AUTO_GATEWAY" -PrimaryAdapters $PrimaryAdapters)
+    if ($gateways.Count -eq 0) {
+        Add-CheckResult -Category "IT Diagnostics" -Check "Gateway neighbor (ARP)" -Status "INFO" -Message "No IPv4 default gateway to look up." -Details "Manual check: arp -a" -Tag "gateway-neighbor" -Scope "IT" | Out-Null
+        return
+    }
+
+    foreach ($gateway in $gateways) {
+        $state = "(unknown)"
+        $mac = ""
+        try {
+            if (Get-Command Get-NetNeighbor -ErrorAction SilentlyContinue) {
+                $neighbor = Get-NetNeighbor -IPAddress ([string]$gateway) -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($null -ne $neighbor) {
+                    $state = [string]$neighbor.State
+                    $mac = [string]$neighbor.LinkLayerAddress
+                }
+            }
+            else {
+                $arpLines = @(& arp -a 2>&1 | ForEach-Object { [string]$_ } | Where-Object { $_ -match ('\s' + [regex]::Escape([string]$gateway) + '\s') })
+                if ($arpLines.Count -gt 0 -and $arpLines[0] -match '([0-9a-fA-F]{2}[-:]){5}[0-9a-fA-F]{2}') {
+                    $mac = $matches[0]
+                    $state = "arp"
+                }
+            }
+        }
+        catch {
+            Add-CheckResult -Category "IT Diagnostics" -Check "Gateway neighbor (ARP)" -Status "ERROR" -Message "The neighbor table could not be read." -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + "Manual check: arp -a") -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "gateway-neighbor" -Scope "IT" | Out-Null
+            continue
+        }
+
+        $lines = @()
+        if ([string]::IsNullOrWhiteSpace($mac) -or $mac -match '^(00[-:]){5}00$' -or $state -match 'Unreachable|Incomplete') { $lines += "The gateway has no resolved MAC address; Layer 2 to the router may be broken (the gateway ping above is the authoritative test)." }
+        $lines += "Method: Get-NetNeighbor -AddressFamily IPv4 (fallback: arp -a)"
+        $lines += "Manual check: arp -a"
+        $message = "Gateway {0}: neighbor state {1}, MAC {2}." -f $gateway, $state, (ConvertTo-DisplayString $mac)
+        Add-CheckResult -Category "IT Diagnostics" -Check "Gateway neighbor (ARP)" -Status "INFO" -Message $message -Details ($lines -join [Environment]::NewLine) -Tag "gateway-neighbor" -Scope "IT" | Out-Null
+    }
+}
+
+function Add-ProxySettingsResult {
+    if (-not (Test-IsTrueFlag $script:Config.Checks.ProxySettings)) { return }
+
+    $lines = @()
+    $userProxy = "off"
+    try {
+        $registry = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -ErrorAction Stop
+        $enabled = ((ConvertTo-IntSafe (Get-PropertyValue $registry "ProxyEnable" 0) 0) -eq 1)
+        $server = ConvertTo-SafeString (Get-PropertyValue $registry "ProxyServer" "")
+        $pac = ConvertTo-SafeString (Get-PropertyValue $registry "AutoConfigURL" "")
+        if ($enabled -and -not [string]::IsNullOrWhiteSpace($server)) { $userProxy = $server }
+        elseif (-not [string]::IsNullOrWhiteSpace($pac)) { $userProxy = "PAC " + $pac }
+        $lines += ("User proxy enabled: {0}, server: {1}, PAC URL: {2}" -f $enabled, (ConvertTo-DisplayString $server), (ConvertTo-DisplayString $pac))
+    }
+    catch {
+        $lines += ("User proxy settings could not be read: {0}" -f $_.Exception.Message)
+    }
+
+    $probeUrl = "https://www.microsoft.com/"
+    foreach ($target in @($script:Config.Tests.HttpTargets)) {
+        $candidate = ConvertTo-SafeString (Get-PropertyValue $target "Url" "")
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) { $probeUrl = $candidate; break }
+    }
+    $effective = "direct"
+    try {
+        $probe = New-Object System.Uri($probeUrl)
+        $resolved = [System.Net.WebRequest]::GetSystemWebProxy().GetProxy($probe)
+        if ($null -ne $resolved -and $resolved.AbsoluteUri -ne $probe.AbsoluteUri) { $effective = $resolved.AbsoluteUri }
+    }
+    catch {
+        $effective = "(unknown)"
+    }
+    $lines += ("Effective proxy for {0}: {1}" -f $probeUrl, $effective)
+
+    try {
+        $winhttp = @(& netsh winhttp show proxy 2>&1 | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($winhttp.Count -gt 0) { $lines += ("WinHTTP: {0}" -f (($winhttp | Select-Object -First 3) -join " / ")) }
+    }
+    catch {
+        # WinHTTP information is optional.
+    }
+    $lines += "A proxy explains cases where TCP to port 443 passes but HTTPS fails."
+    $lines += "Method: HKCU Internet Settings registry values, WebRequest.GetSystemWebProxy, netsh winhttp show proxy"
+    $lines += "Manual check: netsh winhttp show proxy"
+    Add-CheckResult -Category "IT Diagnostics" -Check "Proxy settings" -Status "INFO" -Message ("User proxy: {0}; effective proxy for HTTPS: {1}." -f $userProxy, $effective) -Details ($lines -join [Environment]::NewLine) -Tag "proxy" -Scope "IT" | Out-Null
+}
+
+function Invoke-TraceRoute {
+    param(
+        [string]$Target,
+        [int]$MaxHops,
+        [int]$TimeoutMs
+    )
+
+    $hops = New-Object System.Collections.ArrayList
+    $ping = New-Object System.Net.NetworkInformation.Ping
+    $buffer = New-Object byte[] 32
+    try {
+        for ($ttl = 1; $ttl -le $MaxHops; $ttl++) {
+            $options = New-Object System.Net.NetworkInformation.PingOptions($ttl, $true)
+            $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+            $address = "*"
+            $status = "TimedOut"
+            $reached = $false
+            try {
+                $reply = $ping.Send($Target, $TimeoutMs, $buffer, $options)
+                $stopwatch.Stop()
+                $status = [string]$reply.Status
+                if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::TtlExpired -or $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
+                    $address = [string]$reply.Address
+                }
+                if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $reached = $true }
+            }
+            catch {
+                $stopwatch.Stop()
+                $status = $_.Exception.Message
+            }
+            [void]$hops.Add([pscustomobject][ordered]@{
+                Hop       = $ttl
+                Address   = $address
+                Status    = $status
+                ElapsedMs = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
+                Reached   = $reached
+            })
+            if ($reached) { break }
+            if ($script:GuiAvailable) {
+                [System.Windows.Forms.Application]::DoEvents()
+            }
+        }
+    }
+    finally {
+        $ping.Dispose()
+    }
+    return @($hops)
+}
+
+function Add-TracerouteResult {
+    if (-not (Test-IsTrueFlag $script:Config.Checks.Traceroute)) { return }
+
+    $maxHops = ConvertTo-IntSafe $script:Config.Checks.TracerouteHops 3
+    if ($maxHops -lt 1 -or $maxHops -gt 10) { $maxHops = 3 }
+    $target = "1.1.1.1"
+    foreach ($candidate in @($script:Config.Tests.PingTargets)) {
+        $address = ConvertTo-SafeString (Get-PropertyValue $candidate "Address" "")
+        if (-not [string]::IsNullOrWhiteSpace($address) -and $address -ne "AUTO_GATEWAY" -and $address -ne "AUTO_DNS") { $target = $address; break }
+    }
+
+    $hops = @()
+    try {
+        $hops = @(Invoke-TraceRoute -Target $target -MaxHops $maxHops -TimeoutMs 1000)
+    }
+    catch {
+        Add-CheckResult -Category "IT Diagnostics" -Check "Traceroute (first hops)" -Status "ERROR" -Message "Traceroute could not run." -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "traceroute" -Scope "IT" | Out-Null
+        return
+    }
+
+    $lines = @()
+    foreach ($hop in $hops) {
+        $lines += ("Hop {0}: {1} ({2}) {3} ms" -f $hop.Hop, $hop.Address, $hop.Status, $hop.ElapsedMs)
+    }
+    $lines += ("Method: .NET Ping with TTL 1..{0}, 1000 ms per hop; hops that stay silent show as *." -f $maxHops)
+    $lines += ("Manual check: tracert -d -h {0} {1}" -f $maxHops, $target)
+    $reachedText = "no"
+    if (@($hops | Where-Object { $_.Reached }).Count -gt 0) { $reachedText = "yes" }
+    Add-CheckResult -Category "IT Diagnostics" -Check "Traceroute (first hops)" -Status "INFO" -Message ("{0}: {1} hop(s) probed, destination reached: {2}." -f $target, $hops.Count, $reachedText) -Details ($lines -join [Environment]::NewLine) -Tag "traceroute" -Scope "IT" | Out-Null
+}
+
+function Add-DriverInfoResult {
+    param([object[]]$Adapters)
+
+    if (-not (Test-IsTrueFlag $script:Config.Checks.DriverInfo)) { return }
+
+    $physical = @($Adapters | Where-Object { $_.IsPhysical -eq $true })
+    if ($physical.Count -eq 0) {
+        Add-CheckResult -Category "IT Diagnostics" -Check "Adapter drivers" -Status "INFO" -Message "No physical adapter is connected; no driver information." -Details "Manual check: Get-NetAdapter | Format-List Name, DriverVersion, DriverDate" -Tag "drivers" -Scope "IT" | Out-Null
+        return
+    }
+
+    $lines = @()
+    foreach ($adapter in $physical) {
+        $lines += ("{0}: {1} - driver {2} ({3}, {4}), media {5}" -f $adapter.Name, $adapter.Description, (ConvertTo-DisplayString $adapter.DriverVersion), (ConvertTo-DisplayString $adapter.DriverDate), (ConvertTo-DisplayString $adapter.DriverProvider), (ConvertTo-DisplayString $adapter.MediaType))
+    }
+    $lines += "Method: Get-NetAdapter DriverVersion / DriverDate / DriverProvider"
+    $lines += "Manual check: Get-NetAdapter | Format-List Name, DriverVersion, DriverDate"
+    Add-CheckResult -Category "IT Diagnostics" -Check "Adapter drivers" -Status "INFO" -Message ("{0} physical adapter(s); driver versions are listed in the details." -f $physical.Count) -Details ($lines -join [Environment]::NewLine) -Tag "drivers" -Scope "IT" | Out-Null
 }
 
 function Get-CimOrWmiInstance {
@@ -2053,7 +2669,7 @@ function Compare-TcpCounters {
     )
 
     if ($null -eq $Before -or $null -eq $After) {
-        Add-CheckResult -Category "TCP Retransmissions" -Check "System Counters" -Status "ERROR" -Message "Complete before-and-after TCP counter data is unavailable." -Details "" | Out-Null
+        Add-CheckResult -Category "TCP Retransmissions" -Check "System Counters" -Status "ERROR" -Message "Complete before-and-after TCP counter data is unavailable." -Details "" -Tag "tcp-retransmissions" | Out-Null
         return
     }
 
@@ -2061,7 +2677,7 @@ function Compare-TcpCounters {
     $counterErrors += @($Before.Errors)
     $counterErrors += @($After.Errors)
     foreach ($errorItem in $counterErrors) {
-        Add-CheckResult -Category "TCP Retransmissions" -Check ("{0} counters" -f $errorItem.Protocol) -Status "ERROR" -Message "The TCP retransmission counter could not be read." -Details $errorItem.Error -Diagnostics $errorItem.Diagnostics | Out-Null
+        Add-CheckResult -Category "TCP Retransmissions" -Check ("{0} counters" -f $errorItem.Protocol) -Status "ERROR" -Message "The TCP retransmission counter could not be read." -Details $errorItem.Error -Diagnostics $errorItem.Diagnostics -Tag "tcp-retransmissions" | Out-Null
     }
 
     $warningPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionWarningPercent" 2) 2
@@ -2080,7 +2696,7 @@ function Compare-TcpCounters {
         $retransDeltaDouble = [double]$end.Retransmitted - [double]$start.Retransmitted
 
         if ($sentDeltaDouble -lt 0 -or $retransDeltaDouble -lt 0) {
-            Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "ERROR" -Message "The counter was reset or overflowed during the test, so the delta cannot be calculated." -Details ("Start Sent={0}, Retrans={1}; end Sent={2}, Retrans={3}" -f $start.SegmentsSent, $start.Retransmitted, $end.SegmentsSent, $end.Retransmitted) | Out-Null
+            Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "ERROR" -Message "The counter was reset or overflowed during the test, so the delta cannot be calculated." -Details ("Start Sent={0}, Retrans={1}; end Sent={2}, Retrans={3}" -f $start.SegmentsSent, $start.Retransmitted, $end.SegmentsSent, $end.Retransmitted) -Tag "tcp-retransmissions" | Out-Null
             continue
         }
 
@@ -2109,16 +2725,16 @@ function Compare-TcpCounters {
         }
 
         if ($sentDelta -eq 0 -and $retransDelta -eq 0) {
-            Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "INFO" -Message "There was not enough TCP send traffic during the sample. No retransmissions were observed, but this does not establish the long-term condition." -Details $details | Out-Null
+            Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "INFO" -Message "There was not enough TCP send traffic during the sample. No retransmissions were observed, but this does not establish the long-term condition." -Details $details -Tag "tcp-retransmissions" | Out-Null
             continue
         }
 
         if ($sentDelta -lt $minimumSegments) {
             if ($retransDelta -gt 0) {
-                Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "WARN" -Message ("The traffic sample is small, but {0} retransmission(s) were observed (approximately {1}%)." -f $retransDelta, $rate) -Details $details | Out-Null
+                Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "WARN" -Message ("The traffic sample is small, but {0} retransmission(s) were observed (approximately {1}%)." -f $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" | Out-Null
             }
             else {
-                Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "INFO" -Message ("The sample contains only {0} sent segment(s); no retransmissions were observed." -f $sentDelta) -Details $details | Out-Null
+                Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "INFO" -Message ("The sample contains only {0} sent segment(s); no retransmissions were observed." -f $sentDelta) -Details $details -Tag "tcp-retransmissions" | Out-Null
             }
             continue
         }
@@ -2131,7 +2747,7 @@ function Compare-TcpCounters {
             $status = "WARN"
         }
 
-        Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status $status -Message ("Sent {0}, retransmitted {1}, approximate retransmission rate {2}%." -f $sentDelta, $retransDelta, $rate) -Details $details | Out-Null
+        Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status $status -Message ("Sent {0}, retransmitted {1}, approximate retransmission rate {2}%." -f $sentDelta, $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" | Out-Null
     }
 }
 
@@ -2160,9 +2776,9 @@ function Wait-ForMinimumTcpSample {
 # Result aggregation: overall precedence is FAIL > ERROR > WARN > PASS.
 # -----------------------------------------------------------------------------
 function Get-OverallStatus {
-    $failCount = @($script:Results | Where-Object { $_.Status -eq "FAIL" }).Count
-    $errorCount = @($script:Results | Where-Object { $_.Status -eq "ERROR" }).Count
-    $warnCount = @($script:Results | Where-Object { $_.Status -eq "WARN" }).Count
+    $failCount = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "FAIL" }).Count
+    $errorCount = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "ERROR" }).Count
+    $warnCount = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "WARN" }).Count
 
     if ($failCount -gt 0) {
         return [pscustomobject]@{
@@ -2193,19 +2809,70 @@ function Get-OverallStatus {
 }
 
 function Get-SummaryCounts {
+    $mainResults = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" })
     return [pscustomobject][ordered]@{
-        Pass  = @($script:Results | Where-Object { $_.Status -eq "PASS" }).Count
-        Warn  = @($script:Results | Where-Object { $_.Status -eq "WARN" }).Count
-        Fail  = @($script:Results | Where-Object { $_.Status -eq "FAIL" }).Count
-        Info  = @($script:Results | Where-Object { $_.Status -eq "INFO" }).Count
-        Error = @($script:Results | Where-Object { $_.Status -eq "ERROR" }).Count
-        Total = $script:Results.Count
+        Pass  = @($mainResults | Where-Object { $_.Status -eq "PASS" }).Count
+        Warn  = @($mainResults | Where-Object { $_.Status -eq "WARN" }).Count
+        Fail  = @($mainResults | Where-Object { $_.Status -eq "FAIL" }).Count
+        Info  = @($mainResults | Where-Object { $_.Status -eq "INFO" }).Count
+        Error = @($mainResults | Where-Object { $_.Status -eq "ERROR" }).Count
+        Total = $mainResults.Count
     }
 }
 
 # -----------------------------------------------------------------------------
 # Reporting: generate HTML, text, and JSON; preserve detailed exceptions on write failures.
 # -----------------------------------------------------------------------------
+# v1.2: language-neutral fingerprint over result tags; feeds the "What to tell IT" section and the wizard.
+function Get-FingerprintSummary {
+    $results = @($script:Results)
+    $overall = Get-OverallStatus
+
+    $adaptersFail = @($results | Where-Object { $_.Tag -eq "adapters" -and $_.Status -eq "FAIL" }).Count -gt 0
+    $gatewayConfigFail = @($results | Where-Object { $_.Tag -eq "gateway-config" -and $_.Status -eq "FAIL" }).Count -gt 0
+    $gatewayPingPass = @($results | Where-Object { $_.Tag -eq "ping-gateway" -and $_.Status -eq "PASS" }).Count -gt 0
+    $gatewayPingBad = @($results | Where-Object { $_.Tag -eq "ping-gateway" -and $_.Status -eq "FAIL" }).Count -gt 0
+    $groupFail = @($results | Where-Object { $_.Tag -eq "connectivity-group" -and $_.Status -eq "FAIL" }).Count -gt 0
+    $groupPass = @($results | Where-Object { $_.Tag -eq "connectivity-group" -and $_.Status -eq "PASS" }).Count -gt 0
+    $dnsFail = @($results | Where-Object { $_.Tag -eq "dns" -and ($_.Status -eq "FAIL" -or $_.Status -eq "WARN") }).Count -gt 0
+    $dnsPass = @($results | Where-Object { $_.Tag -eq "dns" -and $_.Status -eq "PASS" }).Count -gt 0
+    $tcpPass = @($results | Where-Object { $_.Tag -eq "tcp" -and $_.Status -eq "PASS" }).Count -gt 0
+    $qualityTags = @("ping-target", "ping-gateway", "tcp-retransmissions", "adapter-errors")
+    $qualityIssue = @($results | Where-Object { ($qualityTags -contains $_.Tag) -and ($_.Status -eq "WARN" -or $_.Status -eq "FAIL") }).Count -gt 0
+    $otherProblem = @($results | Where-Object { [string]$_.Scope -ne "IT" -and ($_.Status -eq "WARN" -or $_.Status -eq "FAIL") -and ($qualityTags -notcontains $_.Tag) }).Count -gt 0
+
+    $key = "healthy"
+    if ($adaptersFail -or $gatewayConfigFail) { $key = "local" }
+    elseif ($gatewayPingBad -and -not $gatewayPingPass) { $key = "gateway-unreachable" }
+    elseif ($gatewayPingPass -and $groupFail -and -not $groupPass) { $key = "gateway-up-internet-dead" }
+    elseif ($dnsFail -and -not $dnsPass -and ($groupPass -or $tcpPass)) { $key = "dns" }
+    elseif ($qualityIssue -and -not $otherProblem) { $key = "quality" }
+    elseif ($overall.Code -eq "FAIL") { $key = "mixed" }
+    elseif ($overall.Code -eq "ERROR") { $key = "incomplete" }
+    elseif ($overall.Code -eq "WARN") { $key = "attention" }
+
+    $title = ""
+    $lines = @()
+    switch ($key) {
+        "local" { $title = "Local link problem"; $lines = @("No working network adapter or no default gateway was found.", "The fault is on this computer or its link: cable, Wi-Fi association, adapter disabled, or DHCP not answering.", "Try another device on the same network to see whether only this computer is affected.") }
+        "gateway-unreachable" { $title = "Gateway does not answer"; $lines = @("The default gateway is configured but does not answer pings.", "The fault is between this computer and the router: link, Wi-Fi, switch, or the router itself.", "Check the link light or Wi-Fi signal and whether other devices reach the router.") }
+        "gateway-up-internet-dead" { $title = "Gateway answers, internet does not"; $lines = @("The router answers, but connections beyond it fail.", "The fault is at or beyond the router: WAN link, ISP, or an upstream firewall.", "Check the router's WAN status and whether other devices lose the internet too.") }
+        "dns" { $title = "Name resolution fails"; $lines = @("Direct connections by IP address work, but host names do not resolve.", "The fault is DNS: the configured DNS servers, a filtering service, or the name itself.", "Compare the DNS servers in this report with the expected company settings.") }
+        "quality" { $title = "Connected, but quality is poor"; $lines = @("Connectivity works, but packet loss, latency, retransmissions, or adapter errors were above the thresholds.", "Typical causes: weak Wi-Fi, a congested link, or a faulty cable or port.", "Run the tool again while the problem is occurring and compare the numbers.") }
+        "mixed" { $title = "A required check failed"; $lines = @("At least one required check failed; see the failed rows below.", "Send the report to IT as it is.") }
+        "incomplete" { $title = "Some checks could not run"; $lines = @("No failure was found, but some steps could not be completed on this computer.", "Send the report to IT as it is; the reasons are recorded in the details.") }
+        "attention" { $title = "Warnings to review"; $lines = @("No required check failed, but some checks raised warnings; see the highlighted rows.", "Send the report to IT as it is.") }
+        default { $title = "Everything passed"; $lines = @("All checks passed during this run.", "If the problem persists, it is likely on the application or server side, or it comes and goes; run the tool again while it is happening.") }
+    }
+    $lines += "Send the HTML report (or the JSON file) to IT. It contains the computer name, user name, adapter MAC addresses and the Wi-Fi network name."
+
+    return [pscustomobject][ordered]@{
+        Key   = $key
+        Title = $title
+        Lines = @($lines)
+    }
+}
+
 function New-HtmlReportContent {
     param(
         [object]$SystemSummary,
@@ -2219,6 +2886,13 @@ function New-HtmlReportContent {
     }
 
     $rows = New-Object System.Text.StringBuilder
+    $itRows = New-Object System.Text.StringBuilder
+    $itCount = 0
+    $detailsOpen = ""
+    if ($null -ne $script:RunOptions -and $script:RunOptions.ExpandDetails) { $detailsOpen = " open" }
+    $fingerprint = Get-FingerprintSummary
+    $fingerprintItems = (@($fingerprint.Lines | ForEach-Object { "      <li>" + (ConvertTo-HtmlEncoded $_) + "</li>" }) -join [Environment]::NewLine)
+    $runProfile = ConvertTo-HtmlEncoded (Get-RunProfileText)
     foreach ($result in $script:Results) {
         $statusClass = ([string]$result.Status).ToLowerInvariant()
         $detailsHtml = ""
@@ -2234,7 +2908,7 @@ function New-HtmlReportContent {
         }
         if (-not [string]::IsNullOrWhiteSpace($detailsText)) {
             $detailsEncoded = ConvertTo-HtmlEncoded $detailsText
-            $detailsHtml = "<details><summary>Show Details</summary><pre>$detailsEncoded</pre></details>"
+            $detailsHtml = "<details$detailsOpen><summary>Show Details</summary><pre>$detailsEncoded</pre></details>"
         }
 
         $rowHtml = @"
@@ -2246,7 +2920,13 @@ function New-HtmlReportContent {
   <td>$(ConvertTo-HtmlEncoded $result.Message)$detailsHtml</td>
 </tr>
 "@
-        [void]$rows.AppendLine($rowHtml)
+        if ([string]$result.Scope -eq "IT") {
+            [void]$itRows.AppendLine($rowHtml)
+            $itCount++
+        }
+        else {
+            [void]$rows.AppendLine($rowHtml)
+        }
     }
 
     $overallClass = $Overall.Code.ToLowerInvariant()
@@ -2300,6 +2980,9 @@ summary { cursor: pointer; color: #2b6cb0; }
 pre { white-space: pre-wrap; word-break: break-word; background: #f7fafc; padding: 10px; border-radius: 6px; border: 1px solid #e2e8f0; }
 .notice { border-left: 5px solid #3182ce; background: #ebf8ff; padding: 12px 14px; border-radius: 6px; }
 footer { color: #718096; font-size: 13px; margin-top: 16px; }
+.tools { margin-bottom: 8px; } .tools button { border: 1px solid #cbd5e0; background: #edf2f7; border-radius: 6px; padding: 5px 12px; cursor: pointer; font: inherit; }
+.tell ul { margin: 6px 0 0 18px; } .tell li { margin: 3px 0; }
+details.itblock > summary { cursor: pointer; } .ith2 { font-size: 19px; font-weight: 700; }
 @media (max-width: 800px) { .cards { grid-template-columns: repeat(3, 1fr); } .meta { grid-template-columns: 1fr; } table { display: block; overflow-x: auto; } }
 </style>
 </head>
@@ -2308,6 +2991,7 @@ footer { color: #718096; font-size: 13px; margin-top: 16px; }
   <h1>Network Health Check Report</h1>
   <p>Organization: $(ConvertTo-HtmlEncoded $organization) &nbsp;|&nbsp; Computer: $(ConvertTo-HtmlEncoded $SystemSummary.ComputerName)</p>
   <p>Generated: $(ConvertTo-HtmlEncoded $generatedAt) &nbsp;|&nbsp; Test duration: approximately $(ConvertTo-HtmlEncoded $duration) seconds</p>
+  <p>Run profile: $runProfile</p>
 </header>
 <main>
   <div class="overall $overallClass">
@@ -2324,6 +3008,14 @@ footer { color: #718096; font-size: 13px; margin-top: 16px; }
     <div class="card">Total<strong>$($Counts.Total)</strong></div>
   </div>
 
+  <section class="tell">
+    <h2>What to tell IT</h2>
+    <p><strong>$(ConvertTo-HtmlEncoded $fingerprint.Title)</strong></p>
+    <ul>
+$fingerprintItems
+    </ul>
+  </section>
+
   <section>
     <h2>Computer and Run Information</h2>
     <div class="meta">
@@ -2339,6 +3031,7 @@ footer { color: #718096; font-size: 13px; margin-top: 16px; }
 
   <section>
     <h2>Test Results</h2>
+    <div class="tools"><button type="button" onclick="nhcToggle(true)">Expand all</button> <button type="button" onclick="nhcToggle(false)">Collapse all</button></div>
     <div class="notice">"Unable to Check" means the step could not be completed because of permissions, missing system components, company policy, or an execution error. It does not necessarily mean the network is faulty. The TCP retransmission rate is an approximate system-wide value for this sampling period.</div>
     <div style="overflow-x:auto; margin-top:14px;">
       <table>
@@ -2350,8 +3043,24 @@ $($rows.ToString())
     </div>
   </section>
 
+  <section>
+    <details class="itblock"$detailsOpen>
+      <summary><span class="ith2">$(ConvertTo-HtmlEncoded ("IT diagnostics ({0} items)" -f $itCount))</span></summary>
+      <div class="notice" style="margin-top:12px;">Informational data for IT (routes, gateway neighbor, proxy, traceroute, Wi-Fi radio, drivers). These rows never change the overall result.</div>
+      <div style="overflow-x:auto; margin-top:14px;">
+        <table>
+        <thead><tr><th>Time</th><th>Category</th><th>Check</th><th>Result</th><th>Description</th></tr></thead>
+          <tbody>
+$($itRows.ToString())
+          </tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
   <footer>NetworkHealthCheck $($script:ToolVersion). This tool only reads system information and performs connectivity tests. It does not modify IP, DNS, routing, or firewall settings.</footer>
 </main>
+<script>function nhcToggle(open){var items=document.querySelectorAll('details');for(var i=0;i<items.length;i++){items[i].open=open;}}</script>
 </body>
 </html>
 "@
@@ -2379,9 +3088,21 @@ function New-TextReportContent {
     [void]$builder.AppendLine("Configuration file: $($SystemSummary.ConfigPath)")
     [void]$builder.AppendLine("Report directory: $($SystemSummary.ReportDirectory)")
     [void]$builder.AppendLine("Summary: Pass $($Counts.Pass), Warning $($Counts.Warn), Fail $($Counts.Fail), Unable to Check $($Counts.Error), Information $($Counts.Info), Total $($Counts.Total)")
+    [void]$builder.AppendLine("Run profile: $(Get-RunProfileText)")
+    $fingerprint = Get-FingerprintSummary
+    [void]$builder.AppendLine("What to tell IT: $($fingerprint.Title)")
+    foreach ($line in @($fingerprint.Lines)) {
+        [void]$builder.AppendLine("  - $line")
+    }
+    $itHeaderWritten = $false
     [void]$builder.AppendLine("")
 
-    foreach ($result in $script:Results) {
+    foreach ($result in @(@($script:Results | Where-Object { [string]$_.Scope -ne "IT" }) + @($script:Results | Where-Object { [string]$_.Scope -eq "IT" }))) {
+        if ([string]$result.Scope -eq "IT" -and -not $itHeaderWritten) {
+            [void]$builder.AppendLine("IT diagnostics")
+            [void]$builder.AppendLine("-" * 40)
+            $itHeaderWritten = $true
+        }
         [void]$builder.AppendLine(("[{0}] [{1}] {2} / {3}" -f (Get-StatusText $result.Status), $result.Time.ToString("HH:mm:ss"), $result.Category, $result.Check))
         [void]$builder.AppendLine("  $($result.Message)")
         if (-not [string]::IsNullOrWhiteSpace([string]$result.Details)) {
@@ -2414,8 +3135,10 @@ function Save-Reports {
     $jsonPath = Join-Path $script:OutputDirectory ($baseName + ".json")
 
     $reportObject = [pscustomobject][ordered]@{
-        SchemaVersion = 1
+        SchemaVersion = 2
         ToolVersion   = $script:ToolVersion
+        RunOptions    = $script:RunOptions
+        Fingerprint   = (Get-FingerprintSummary)
         Overall       = $overall
         Counts        = $counts
         System        = $systemSummary
@@ -2507,6 +3230,7 @@ function Complete-ReportStage {
         if ($script:GuiAvailable) {
             $script:ReportPathLabel.Text = "Report: $primary"
             $script:OpenReportButton.Enabled = $true
+            $script:OpenJsonButton.Enabled = (-not [string]::IsNullOrWhiteSpace([string]$SaveResult.Json))
             $script:OpenFolderButton.Enabled = $true
             [System.Windows.Forms.MessageBox]::Show(("{0} of 3 report formats could not be written ({1}). The report was saved as: {2}" -f $failedFormats.Count, ($failedFormats -join ", "), $primary), "Network Health Check Warning", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
         }
@@ -2518,6 +3242,7 @@ function Complete-ReportStage {
         if ($script:GuiAvailable) {
             $script:ReportPathLabel.Text = "Report: $primary"
             $script:OpenReportButton.Enabled = $true
+            $script:OpenJsonButton.Enabled = (-not [string]::IsNullOrWhiteSpace([string]$SaveResult.Json))
             $script:OpenFolderButton.Enabled = $true
         }
     }
@@ -2636,6 +3361,7 @@ function Run-AllChecks {
         $script:StartButton.Enabled = $false
         $script:OpenReportButton.Enabled = $false
         $script:OpenFolderButton.Enabled = $false
+        $script:OpenJsonButton.Enabled = $false
         $script:OverallLabel.Text = "Result: Test in progress"
         $script:OverallLabel.ForeColor = [System.Drawing.Color]::FromArgb(31, 41, 51)
         $script:ReportPathLabel.Text = "Report has not been generated"
@@ -2645,14 +3371,14 @@ function Run-AllChecks {
     Set-UiProgress -Percent 2 -Text "Initializing"
 
     if ($null -ne $script:ConfigLoadError) {
-        Add-CheckResult -Category "Program Configuration" -Check "Configuration File" -Status "ERROR" -Message "The configuration file could not be loaded. Built-in defaults were used." -Details $script:ConfigLoadError -Diagnostics $script:ConfigLoadDiagnostics | Out-Null
+        Add-CheckResult -Category "Program Configuration" -Check "Configuration File" -Status "ERROR" -Message "The configuration file could not be loaded. Built-in defaults were used." -Details $script:ConfigLoadError -Diagnostics $script:ConfigLoadDiagnostics -Tag "config-file" | Out-Null
     }
     else {
-        Add-CheckResult -Category "Program Configuration" -Check "Configuration File" -Status "PASS" -Message ("Loaded: {0}" -f $script:EffectiveConfigPath) -Details "" | Out-Null
+        Add-CheckResult -Category "Program Configuration" -Check "Configuration File" -Status "PASS" -Message ("Loaded: {0}" -f $script:EffectiveConfigPath) -Details "" -Tag "config-file" | Out-Null
     }
 
-    foreach ($startupMessage in @($script:StartupMessages)) {
-        Add-CheckResult -Category "Program Environment" -Check "Startup Notice" -Status "WARN" -Message $startupMessage -Details "" | Out-Null
+    foreach ($startupMessage in @(@($script:StartupMessages) + @($script:RunOptionMessages))) {
+        Add-CheckResult -Category "Program Environment" -Check "Startup Notice" -Status "WARN" -Message $startupMessage -Details "" -Tag "startup" | Out-Null
     }
 
     Invoke-CheckStep -Category "Program Configuration" -Name "Validate Configuration" -Progress 4 -Action {
@@ -2660,23 +3386,23 @@ function Run-AllChecks {
     } | Out-Null
 
     if (-not (Test-IsWindowsPlatform)) {
-        Add-CheckResult -Category "Program Environment" -Check "Operating System" -Status "FAIL" -Message "This version supports only Windows 10/11 or compatible Windows Server versions." -Details ([System.Environment]::OSVersion.VersionString) | Out-Null
+        Add-CheckResult -Category "Program Environment" -Check "Operating System" -Status "FAIL" -Message "This version supports only Windows 10/11 or compatible Windows Server versions." -Details ([System.Environment]::OSVersion.VersionString) -Tag "environment" | Out-Null
         $script:RunFinishedAt = Get-Date
         return (Complete-ReportStage -SaveResult (Save-Reports))
     }
 
     if ($PSVersionTable.PSVersion.Major -lt 5) {
-        Add-CheckResult -Category "Program Environment" -Check "PowerShell Version" -Status "FAIL" -Message "PowerShell 5.1 or later is required." -Details ("Current version: {0}" -f $PSVersionTable.PSVersion) | Out-Null
+        Add-CheckResult -Category "Program Environment" -Check "PowerShell Version" -Status "FAIL" -Message "PowerShell 5.1 or later is required." -Details ("Current version: {0}" -f $PSVersionTable.PSVersion) -Tag "environment" | Out-Null
         $script:RunFinishedAt = Get-Date
         return (Complete-ReportStage -SaveResult (Save-Reports))
     }
     else {
-        Add-CheckResult -Category "Program Environment" -Check "PowerShell Version" -Status "PASS" -Message ("Current version: {0}" -f $PSVersionTable.PSVersion) -Details "" | Out-Null
+        Add-CheckResult -Category "Program Environment" -Check "PowerShell Version" -Status "PASS" -Message ("Current version: {0}" -f $PSVersionTable.PSVersion) -Details "" -Tag "environment" | Out-Null
     }
 
     Invoke-CheckStep -Category "System Information" -Name "Get Computer and Operating System Information" -Progress 7 -Action {
         $summary = Get-SystemSummary
-        Add-CheckResult -Category "System Information" -Check "Computer" -Status "INFO" -Message ("{0}, user {1}." -f $summary.ComputerName, $summary.UserName) -Details ("Operating system: {0} ({1})`r`nPowerShell: {2}" -f $summary.OperatingSystem, $summary.OperatingVersion, $summary.PowerShellVersion) | Out-Null
+        Add-CheckResult -Category "System Information" -Check "Computer" -Status "INFO" -Message ("{0}, user {1}." -f $summary.ComputerName, $summary.UserName) -Details ("Operating system: {0} ({1})`r`nPowerShell: {2}" -f $summary.OperatingSystem, $summary.OperatingVersion, $summary.PowerShellVersion) -Tag "system" | Out-Null
     } | Out-Null
 
     $tcpBaseline = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Get TCP Retransmission Baseline" -Progress 10 -Action {
@@ -2724,6 +3450,15 @@ function Run-AllChecks {
         Test-ConnectivityTargets
     } | Out-Null
 
+    Invoke-CheckStep -Category "IT Diagnostics" -Name "Collect IT diagnostics (Wi-Fi, routes, gateway neighbor, proxy, traceroute, drivers)" -Progress 74 -Scope "IT" -Action {
+        Add-WifiRfResult
+        Add-RouteTableResult
+        Add-GatewayNeighborResult -PrimaryAdapters $script:PrimaryAdapters
+        Add-ProxySettingsResult
+        Add-TracerouteResult
+        Add-DriverInfoResult -Adapters $networkSnapshot
+    } | Out-Null
+
     $minimumSampleSeconds = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.RetransmissionSampleSeconds 8))
     Wait-ForMinimumTcpSample -StartTime $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
 
@@ -2733,7 +3468,7 @@ function Run-AllChecks {
 
     Invoke-CheckStep -Category "Network Adapter Error Counters" -Name "Analyze Adapter Errors and Discards" -Progress 85 -Action {
         if ($null -eq $adapterStatsBefore -or $null -eq $adapterStatsAfter) {
-            Add-CheckResult -Category "Network Adapter Error Counters" -Check "Before/After Comparison" -Status "ERROR" -Message "The baseline or ending value is missing, so the error delta cannot be calculated." -Details "" | Out-Null
+            Add-CheckResult -Category "Network Adapter Error Counters" -Check "Before/After Comparison" -Status "ERROR" -Message "The baseline or ending value is missing, so the error delta cannot be calculated." -Details "" -Tag "adapter-errors" | Out-Null
         }
         else {
             Compare-AdapterStatistics -Before $adapterStatsBefore -After $adapterStatsAfter -Adapters $networkSnapshot
@@ -2823,6 +3558,52 @@ function Start-ConsoleMode {
 # -----------------------------------------------------------------------------
 # User interface: Windows Forms GUI; the outer entry point falls back to console mode if unavailable.
 # -----------------------------------------------------------------------------
+function Set-OptionsPanelValues {
+    $controls = $script:OptionsPanel
+    $options = $script:RunOptions
+    if ($null -eq $controls -or $null -eq $options) {
+        return
+    }
+
+    $controls["PingTarget"].Text = (@($options.RawTargets.Ping) -join ", ")
+    $controls["DnsName"].Text = (@($options.RawTargets.Dns) -join ", ")
+    $controls["TcpTarget"].Text = (@($options.RawTargets.Tcp) -join ", ")
+    $controls["HttpUrl"].Text = (@($options.RawTargets.Http) -join " ")
+    $controls["PingCount"].Value = [math]::Min(20, [math]::Max(1, $options.PingCount))
+    $controls["SampleSeconds"].Value = [math]::Min(120, [math]::Max(1, $options.SampleSeconds))
+    $controls["TracerouteHops"].Value = [math]::Min(10, [math]::Max(1, $options.TracerouteHops))
+    $controls["WifiRf"].Checked = [bool]$options.ChecksEnabled.WifiRf
+    $controls["RouteTable"].Checked = [bool]$options.ChecksEnabled.RouteTable
+    $controls["GatewayNeighbor"].Checked = [bool]$options.ChecksEnabled.GatewayNeighbor
+    $controls["ProxySettings"].Checked = [bool]$options.ChecksEnabled.ProxySettings
+    $controls["DriverInfo"].Checked = [bool]$options.ChecksEnabled.DriverInfo
+    $controls["Traceroute"].Checked = [bool]$options.ChecksEnabled.Traceroute
+    $controls["ExpandDetails"].Checked = [bool]$options.ExpandDetails
+}
+
+function Get-RunOptionsFromPanel {
+    $controls = $script:OptionsPanel
+    return @{
+        EntryPoint     = "IT"
+        ExpandDetails  = [bool]$controls["ExpandDetails"].Checked
+        PingTarget     = @(([string]$controls["PingTarget"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        DnsName        = @(([string]$controls["DnsName"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        TcpTarget      = @(([string]$controls["TcpTarget"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        HttpUrl        = @(([string]$controls["HttpUrl"].Text) -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        PingCount      = [int]$controls["PingCount"].Value
+        SampleSeconds  = [int]$controls["SampleSeconds"].Value
+        TracerouteHops = [int]$controls["TracerouteHops"].Value
+        Checks         = @{
+            WifiRf          = [bool]$controls["WifiRf"].Checked
+            Traceroute      = [bool]$controls["Traceroute"].Checked
+            RouteTable      = [bool]$controls["RouteTable"].Checked
+            GatewayNeighbor = [bool]$controls["GatewayNeighbor"].Checked
+            ProxySettings   = [bool]$controls["ProxySettings"].Checked
+            DriverInfo      = [bool]$controls["DriverInfo"].Checked
+        }
+    }
+}
+
 function Initialize-Gui {
     try {
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
@@ -2839,9 +3620,21 @@ function Initialize-Gui {
     try {
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "Network Health Check Tool $($script:ToolVersion)"
+    if ($script:Interactive) { $form.Text += " - IT" }
     $form.StartPosition = "CenterScreen"
-    $form.Size = New-Object System.Drawing.Size(940, 700)
-    $form.MinimumSize = New-Object System.Drawing.Size(780, 560)
+    $offset = 0
+    if ($script:Interactive) { $offset = 190 }
+    $formHeight = 700 + $offset
+    try {
+        $workingHeight = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height
+        if ($formHeight -gt $workingHeight - 40) { $formHeight = [math]::Max(400, $workingHeight - 40) }
+    }
+    catch {
+        $formHeight = 700 + $offset
+    }
+    $bottomY = $formHeight - 116
+    $form.Size = New-Object System.Drawing.Size(940, $formHeight)
+    $form.MinimumSize = New-Object System.Drawing.Size(780, [math]::Min(560 + $offset, $formHeight))
     $form.MaximizeBox = $true
     $form.FormBorderStyle = "Sizable"
 
@@ -2865,24 +3658,116 @@ function Initialize-Gui {
     $subtitle.Location = New-Object System.Drawing.Point(22, 54)
     $form.Controls.Add($subtitle)
 
+    $script:OptionsPanel = $null
+    if ($script:Interactive) {
+        $panel = New-Object System.Windows.Forms.GroupBox
+        $panel.Text = "Run options (IT)"
+        $panel.Location = New-Object System.Drawing.Point(22, 84)
+        $panel.Size = New-Object System.Drawing.Size(880, 180)
+        $panel.Anchor = "Top,Left,Right"
+        $form.Controls.Add($panel)
+
+        $controls = @{}
+        foreach ($item in @(
+            @{ Text = "Extra ping"; X = 12; Y = 26 },
+            @{ Text = "Extra DNS"; X = 320; Y = 26 },
+            @{ Text = "Ping count"; X = 630; Y = 26 },
+            @{ Text = "Extra TCP (host:port)"; X = 12; Y = 58 },
+            @{ Text = "Extra URL"; X = 320; Y = 58 },
+            @{ Text = "Sample seconds"; X = 630; Y = 58 }
+        )) {
+            $label = New-Object System.Windows.Forms.Label
+            $label.Text = $item.Text
+            $label.Location = New-Object System.Drawing.Point($item.X, $item.Y)
+            $label.Size = New-Object System.Drawing.Size(100, 22)
+            $panel.Controls.Add($label)
+        }
+        foreach ($item in @(@{ Key = "PingTarget"; X = 115; Y = 23 }, @{ Key = "DnsName"; X = 423; Y = 23 }, @{ Key = "TcpTarget"; X = 115; Y = 55 }, @{ Key = "HttpUrl"; X = 423; Y = 55 })) {
+            $box = New-Object System.Windows.Forms.TextBox
+            $box.Location = New-Object System.Drawing.Point($item.X, $item.Y)
+            $box.Size = New-Object System.Drawing.Size(195, 24)
+            $panel.Controls.Add($box)
+            $controls[$item.Key] = $box
+        }
+        foreach ($item in @(@{ Key = "PingCount"; X = 735; Y = 23; Min = 1; Max = 20 }, @{ Key = "SampleSeconds"; X = 735; Y = 55; Min = 1; Max = 120 })) {
+            $spinner = New-Object System.Windows.Forms.NumericUpDown
+            $spinner.Location = New-Object System.Drawing.Point($item.X, $item.Y)
+            $spinner.Size = New-Object System.Drawing.Size(70, 24)
+            $spinner.Minimum = $item.Min
+            $spinner.Maximum = $item.Max
+            $panel.Controls.Add($spinner)
+            $controls[$item.Key] = $spinner
+        }
+        $x = 12
+        foreach ($item in @(@{ Key = "WifiRf"; Text = "Wi-Fi RF"; Width = 110 }, @{ Key = "Traceroute"; Text = "Traceroute"; Width = 110 })) {
+            $check = New-Object System.Windows.Forms.CheckBox
+            $check.Text = $item.Text
+            $check.Location = New-Object System.Drawing.Point($x, 90)
+            $check.Size = New-Object System.Drawing.Size($item.Width, 24)
+            $panel.Controls.Add($check)
+            $controls[$item.Key] = $check
+            $x += $item.Width + 6
+        }
+        $hopsLabel = New-Object System.Windows.Forms.Label
+        $hopsLabel.Text = "Traceroute hops"
+        $hopsLabel.Location = New-Object System.Drawing.Point($x, 92)
+        $hopsLabel.Size = New-Object System.Drawing.Size(115, 22)
+        $panel.Controls.Add($hopsLabel)
+        $hops = New-Object System.Windows.Forms.NumericUpDown
+        $hops.Location = New-Object System.Drawing.Point(($x + 118), 89)
+        $hops.Size = New-Object System.Drawing.Size(55, 24)
+        $hops.Minimum = 1
+        $hops.Maximum = 10
+        $panel.Controls.Add($hops)
+        $controls["TracerouteHops"] = $hops
+        $expand = New-Object System.Windows.Forms.CheckBox
+        $expand.Text = "Expand details in HTML"
+        $expand.Location = New-Object System.Drawing.Point(($x + 185), 90)
+        $expand.Size = New-Object System.Drawing.Size(220, 24)
+        $panel.Controls.Add($expand)
+        $controls["ExpandDetails"] = $expand
+        $x = 12
+        foreach ($item in @(@{ Key = "RouteTable"; Text = "Routes"; Width = 100 }, @{ Key = "GatewayNeighbor"; Text = "Gateway ARP"; Width = 130 }, @{ Key = "ProxySettings"; Text = "Proxy"; Width = 90 }, @{ Key = "DriverInfo"; Text = "Drivers"; Width = 110 })) {
+            $check = New-Object System.Windows.Forms.CheckBox
+            $check.Text = $item.Text
+            $check.Location = New-Object System.Drawing.Point($x, 120)
+            $check.Size = New-Object System.Drawing.Size($item.Width, 24)
+            $panel.Controls.Add($check)
+            $controls[$item.Key] = $check
+            $x += $item.Width + 6
+        }
+        $resetButton = New-Object System.Windows.Forms.Button
+        $resetButton.Text = "Reset to config"
+        $resetButton.Location = New-Object System.Drawing.Point(12, 148)
+        $resetButton.Size = New-Object System.Drawing.Size(140, 26)
+        $panel.Controls.Add($resetButton)
+        $script:OptionsPanel = $controls
+        Set-OptionsPanelValues
+        $resetButton.Add_Click({
+            Set-RunOptions -Overrides @{ EntryPoint = "IT"; ExpandDetails = $true } | Out-Null
+            Set-OptionsPanelValues
+        })
+    }
+
     $overall = New-Object System.Windows.Forms.Label
     $overall.Text = "Result: Not started"
     $overall.Font = New-Object System.Drawing.Font($form.Font.FontFamily, 11, [System.Drawing.FontStyle]::Bold)
     $overall.AutoSize = $false
-    $overall.Location = New-Object System.Drawing.Point(22, 84)
+    $overall.Location = New-Object System.Drawing.Point(22, 84 + $offset)
     $overall.Size = New-Object System.Drawing.Size(880, 28)
     $overall.Anchor = "Top,Left,Right"
     $form.Controls.Add($overall)
 
     $progressLabel = New-Object System.Windows.Forms.Label
     $progressLabel.Text = "Ready"
-    $progressLabel.Location = New-Object System.Drawing.Point(22, 119)
+    if ($script:Interactive) { $progressLabel.Text = "Ready - adjust the options, then select Start Test" }
+    $progressLabel.Location = New-Object System.Drawing.Point(22, 119 + $offset)
     $progressLabel.Size = New-Object System.Drawing.Size(880, 22)
     $progressLabel.Anchor = "Top,Left,Right"
     $form.Controls.Add($progressLabel)
 
     $progress = New-Object System.Windows.Forms.ProgressBar
-    $progress.Location = New-Object System.Drawing.Point(22, 143)
+    $progress.Location = New-Object System.Drawing.Point(22, 143 + $offset)
     $progress.Size = New-Object System.Drawing.Size(880, 22)
     $progress.Minimum = 0
     $progress.Maximum = 100
@@ -2891,8 +3776,14 @@ function Initialize-Gui {
     $form.Controls.Add($progress)
 
     $log = New-Object System.Windows.Forms.RichTextBox
-    $log.Location = New-Object System.Drawing.Point(22, 178)
-    $log.Size = New-Object System.Drawing.Size(880, 390)
+    $log.Location = New-Object System.Drawing.Point(22, 178 + $offset)
+    $logHeight = $bottomY - 16 - (178 + $offset)
+    if ($logHeight -lt 36) {
+        $logHeight = 36
+        $form.AutoScroll = $true
+        $form.AutoScrollMinSize = New-Object System.Drawing.Size(900, 700 + $offset)
+    }
+    $log.Size = New-Object System.Drawing.Size(880, $logHeight)
     $log.Anchor = "Top,Bottom,Left,Right"
     $log.ReadOnly = $true
     $log.DetectUrls = $false
@@ -2902,14 +3793,14 @@ function Initialize-Gui {
 
     $startButton = New-Object System.Windows.Forms.Button
     $startButton.Text = "Start Test"
-    $startButton.Location = New-Object System.Drawing.Point(22, 584)
+    $startButton.Location = New-Object System.Drawing.Point(22, $bottomY)
     $startButton.Size = New-Object System.Drawing.Size(120, 34)
     $startButton.Anchor = "Bottom,Left"
     $form.Controls.Add($startButton)
 
     $openReportButton = New-Object System.Windows.Forms.Button
     $openReportButton.Text = "Open Report"
-    $openReportButton.Location = New-Object System.Drawing.Point(152, 584)
+    $openReportButton.Location = New-Object System.Drawing.Point(152, $bottomY)
     $openReportButton.Size = New-Object System.Drawing.Size(120, 34)
     $openReportButton.Anchor = "Bottom,Left"
     $openReportButton.Enabled = $false
@@ -2917,22 +3808,30 @@ function Initialize-Gui {
 
     $openFolderButton = New-Object System.Windows.Forms.Button
     $openFolderButton.Text = "Open Report Folder"
-    $openFolderButton.Location = New-Object System.Drawing.Point(282, 584)
+    $openFolderButton.Location = New-Object System.Drawing.Point(282, $bottomY)
     $openFolderButton.Size = New-Object System.Drawing.Size(150, 34)
     $openFolderButton.Anchor = "Bottom,Left"
     $openFolderButton.Enabled = $false
     $form.Controls.Add($openFolderButton)
 
+    $openJsonButton = New-Object System.Windows.Forms.Button
+    $openJsonButton.Text = "Open JSON"
+    $openJsonButton.Location = New-Object System.Drawing.Point(442, $bottomY)
+    $openJsonButton.Size = New-Object System.Drawing.Size(110, 34)
+    $openJsonButton.Anchor = "Bottom,Left"
+    $openJsonButton.Enabled = $false
+    $form.Controls.Add($openJsonButton)
+
     $closeButton = New-Object System.Windows.Forms.Button
     $closeButton.Text = "Close"
-    $closeButton.Location = New-Object System.Drawing.Point(782, 584)
+    $closeButton.Location = New-Object System.Drawing.Point(782, $bottomY)
     $closeButton.Size = New-Object System.Drawing.Size(120, 34)
     $closeButton.Anchor = "Bottom,Right"
     $form.Controls.Add($closeButton)
 
     $reportPathLabel = New-Object System.Windows.Forms.Label
     $reportPathLabel.Text = "Report has not been generated"
-    $reportPathLabel.Location = New-Object System.Drawing.Point(22, 628)
+    $reportPathLabel.Location = New-Object System.Drawing.Point(22, $bottomY + 44)
     $reportPathLabel.Size = New-Object System.Drawing.Size(880, 24)
     $reportPathLabel.Anchor = "Bottom,Left,Right"
     $reportPathLabel.AutoEllipsis = $true
@@ -2946,10 +3845,14 @@ function Initialize-Gui {
     $script:StartButton = $startButton
     $script:OpenReportButton = $openReportButton
     $script:OpenFolderButton = $openFolderButton
+    $script:OpenJsonButton = $openJsonButton
     $script:ReportPathLabel = $reportPathLabel
 
     $startButton.Add_Click({
         try {
+            if ($script:Interactive -and $null -ne $script:OptionsPanel) {
+                Set-RunOptions -Overrides (Get-RunOptionsFromPanel) | Out-Null
+            }
             [void](Run-AllChecks)
         }
         catch {
@@ -3003,6 +3906,20 @@ function Initialize-Gui {
         }
     })
 
+    $openJsonButton.Add_Click({
+        try {
+            if ($null -ne $script:LastJsonReport -and (Test-Path -LiteralPath $script:LastJsonReport)) {
+                Start-Process -FilePath "notepad.exe" -ArgumentList ('"{0}"' -f $script:LastJsonReport) -ErrorAction Stop
+            }
+            else {
+                throw "The JSON report was not found."
+            }
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show(("Unable to open the JSON report: {0}" -f $_.Exception.Message), "Open JSON Failed", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        }
+    })
+
     $closeButton.Add_Click({
         if (-not $script:IsRunning) {
             $form.Close()
@@ -3017,6 +3934,7 @@ function Initialize-Gui {
     })
 
     $form.Add_Shown({
+        if ($script:Interactive) { return }
         $timer = New-Object System.Windows.Forms.Timer
         $timer.Interval = 600
         $timer.Add_Tick({
@@ -3041,7 +3959,16 @@ function Initialize-Gui {
 $exitCode = 0
 
 try {
-    $script:Config = Load-Configuration -RequestedPath $ConfigPath
+    $script:Interactive = [bool]$Interactive
+    $script:BaseConfig = Load-Configuration -RequestedPath $ConfigPath
+    $entryPoint = "User"
+    if ($Interactive -or $ExpandDetails) { $entryPoint = "IT" }
+    Set-RunOptions -Overrides @{
+        EntryPoint = $entryPoint; ExpandDetails = [bool]$ExpandDetails
+        PingTarget = @($PingTarget); DnsName = @($DnsName); TcpTarget = @($TcpTarget); HttpUrl = @($HttpUrl)
+        SampleSeconds = $SampleSeconds; PingCount = $PingCount; TracerouteHops = $TracerouteHops
+        NoTraceroute = [bool]$NoTraceroute; NoWifi = [bool]$NoWifi
+    } | Out-Null
     Initialize-OutputDirectory
 
     if ($ConsoleOnly) {

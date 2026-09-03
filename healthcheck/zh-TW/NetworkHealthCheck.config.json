@@ -56,6 +56,15 @@
       "Internet"
     ]
   },
+  "Checks": {
+    "WifiRf": true,
+    "RouteTable": true,
+    "GatewayNeighbor": true,
+    "ProxySettings": true,
+    "Traceroute": true,
+    "TracerouteHops": 3,
+    "DriverInfo": true
+  },
   "Thresholds": {
     "PacketLossWarningPercent": 5,
     "PacketLossCriticalPercent": 20,

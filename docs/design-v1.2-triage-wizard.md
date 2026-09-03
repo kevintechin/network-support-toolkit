@@ -1,6 +1,6 @@
 # Design — NetworkHealthCheck v1.2 and the SOP triage wizard
 
-Status: proposal · 2026-09-03 · applies to NetworkHealthCheck 1.1.5 (PR #2) and SOP v1.1
+Status: Phase A implemented in NetworkHealthCheck 1.2.0 (2026-09-03); Phases B and C open · applies to SOP v1.1
 Supersedes the earlier roadmap line "NHC v1.2 — separate User / IT modes".
 
 ## 1. Decisions
@@ -161,7 +161,14 @@ tools/  (repo root)
 | `.gitattributes` | No change for `healthcheck/**` (CRLF); wizard files under `sop/` stay LF |
 | Release notes | Asset list (unchanged: one ZIP), schema 2 note, IT entry note |
 
-## 10. Open questions
+## 10. Implementation notes — v1.2.0 (Phase A as shipped)
+
+- "0 physical adapters" is a **WARN** when a virtual adapter still carries a default gateway (VPN or virtualization) and a **FAIL** only when no physical adapter is connected at all — a refinement of the FAIL-only rule in §3, so VPN-only or VM-guest situations do not fail on classification alone. Primary-adapter selection for the company-standard comparison is unchanged.
+- The options panel ships with the extra-target boxes, ping count, sample seconds, traceroute hops, one toggle per optional check (Wi-Fi RF, traceroute, routes, gateway ARP, proxy, drivers — each preserving its configured value until changed), "Expand details" and "Reset to config"; the bottom "Start Test" button is the Run button. The "Config file / Browse" field and the "Triage Wizard" button are deferred (the wizard does not exist yet — Phase C).
+- Wi-Fi RSSI uses the real `Rssi` line when the Windows build prints it (Windows 11 24H2+) and the percentage-based estimate otherwise; the parser is value-shape based (MAC, GHz, 802.11x, percentage, numbers), not position based, because the field order differs between Windows 10 and 11.
+- Every result carries `Tag` and `Scope`; the fingerprint keys are `local`, `gateway-unreachable`, `gateway-up-internet-dead`, `dns`, `quality`, `attention`, `mixed`, `incomplete`, `healthy` — the wizard's auto-answer rules (§6) can use tags instead of category / check-name matching.
+
+## 11. Open questions
 
 1. Traceroute default: on (more evidence, +3 s) or off (faster, IT enables it). Proposal: on, 3 hops.
 2. Wi-Fi source: `netsh` parsing (locale-sensitive but dependency-free) vs the native WLAN API through P/Invoke (robust but adds unmanaged code to a script that is reviewed for being plain PowerShell). Proposal: `netsh` with position-based parsing and a documented limitation.
