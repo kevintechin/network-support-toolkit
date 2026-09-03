@@ -70,10 +70,28 @@ for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     ok('version '+TOOL_VERSION+' '+rel,'$script:ToolVersion = "'+TOOL_VERSION+'"' in read_text(ROOT/rel))
 # New-Object argument lists are parsed in expression mode, where the comma binds tighter than + (v1.2.0 shipped
 # `Point(22, 84 + $offset)` = three arguments, and the GUI fell back to console mode): arithmetic must be parenthesized.
+def strip_line_comment(line, blank_single=False):
+    # Drop <# ... #> and a trailing # comment that is outside single / double quotes, so comments never hide or fake a
+    # pattern; with blank_single the contents of single-quoted strings are dropped too (nothing expands inside them).
+    line=re.sub(r'<#.*?#>','',line); out=[]; q=None; i=0
+    while i<len(line):
+        c=line[i]
+        if q:
+            if q=='"' and c=='`': out.append(line[i:i+2]); i+=2; continue
+            if q=="'" and c=="'" and line[i+1:i+2]=="'":
+                if not blank_single: out.append("''")
+                i+=2; continue
+            if c==q: q=None; out.append(c); i+=1; continue
+            if not (q=="'" and blank_single): out.append(c)
+            i+=1; continue
+        if c=='"' or c=="'": q=c
+        elif c=='#': break
+        out.append(c); i+=1
+    return ''.join(out)
 def unparenthesized_arithmetic(text):
     hits=[]
     for n,line in enumerate(text.splitlines(),1):
-        m=re.search(r'New-Object [A-Za-z.]+\((.*)\)\s*$',line)
+        m=re.search(r'New-Object [A-Za-z.]+\((.*)\)\s*$',strip_line_comment(line).rstrip())
         if not m: continue
         depth=0; prev=''
         for c in m.group(1):
@@ -86,12 +104,13 @@ for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     hits=unparenthesized_arithmetic(read_text(ROOT/rel)); ok('New-Object arguments parenthesized '+rel,not hits,'lines '+', '.join(map(str,hits)) if hits else '')
 # A script's top-level scope and its $script: scope are the same variable table, so a top-level
 # `$script:<Parameter> = <literal>` overwrites the bound parameter (v1.2.0 wrote `$script:Interactive = $false` and
-# the IT launcher opened the user layout): such a line, at any indentation, must derive its value from the parameter itself.
+# the IT launcher opened the user layout): such a line, at any indentation, must use the parameter's own token on the right-hand side.
 def overwritten_parameters(text):
     head=text.split('\n)',1)[0]; params=re.findall(r'\[[\w\[\].]+\]\$(\w+)',head); hits=[]
     for n,line in enumerate(text.splitlines(),1):
-        m=re.match(r'^\s*\$script:(\w+)\s*=\s*(.*)$',line)   # any indentation: top-level try/if blocks create no scope, and a function would clobber the parameter just the same
-        if m and m.group(1) in params and ('$'+m.group(1)) not in m.group(2): hits.append(f'{n} (${m.group(1)})')
+        m=re.match(r'^\s*\$script:(\w+)\s*=\s*(.*)$',strip_line_comment(line,blank_single=True))   # any indentation: top-level try/if blocks create no scope, and a function would clobber the parameter just the same
+        # The assigned expression must contain the complete parameter token ($Name or ${Name}) outside comments and single quotes; a longer name such as $NameBackup does not count.
+        if m and m.group(1) in params and not re.search(r'\$\{?'+re.escape(m.group(1))+r'\}?(?!\w)',m.group(2)): hits.append(f'{n} (${m.group(1)})')
     return hits
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     hits=overwritten_parameters(read_text(ROOT/rel)); ok('parameters not overwritten at script scope '+rel,not hits,'lines '+', '.join(hits) if hits else '')

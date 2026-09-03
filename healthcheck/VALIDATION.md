@@ -32,6 +32,12 @@ Lesson: "reviewed, not exercised headlessly" was not enough for WinForms code �
 
 Re-validation after round 1 (the scripts are unchanged since the UI Automation runs; only the validator and the manifest changed): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 2 · 2026-09-03.** One P2 finding on commit fab12bc, accepted and fixed:
+
+1. *The parameter guard accepted any right-hand side that merely contained the parameter name.* `$script:Interactive = $false # $Interactive` and `$script:Interactive = $InteractiveBackup` both passed. Fix: the line is stripped of comments (`#` outside quotes, `<# ... #>`) and of the contents of single-quoted strings (nothing expands there), and the assigned expression must contain the complete token `$Name` or `${Name}` (word boundary, so `$NameBackup` does not count). The arithmetic guard ignores comments the same way. Self-tests: v1.2.0 line 77 / 70 still flagged; a commented, a single-quoted and a longer-name reference are flagged; `[bool]$Interactive`, `${Interactive}`, `$Interactive.IsPresent`, `"$ConfigPath"` and `'a' + $ConfigPath` pass; 1.2.1 is clean.
+
+Re-validation after round 2 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
