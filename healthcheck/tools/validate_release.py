@@ -70,8 +70,9 @@ for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     ok('version '+TOOL_VERSION+' '+rel,'$script:ToolVersion = "'+TOOL_VERSION+'"' in read_text(ROOT/rel))
 # New-Object argument lists are parsed in expression mode, where the comma binds tighter than + (v1.2.0 shipped
 # `Point(22, 84 + $offset)` = three arguments, and the GUI fell back to console mode): arithmetic must be parenthesized.
-# Both guards below work on the comment-free text of the whole file; code inside here-strings or built dynamically
-# (Invoke-Expression, splatted argument lists) is outside their scope by design.
+# Both guards below work on the comment-free logical lines of the whole file (block and line comments removed, backtick
+# continuations joined); code inside here-strings or built dynamically (Invoke-Expression, splatted argument lists) is
+# outside their scope by design.
 def strip_block_comments(text):
     # <# ... #> may span lines; it is replaced by the newlines it contained so that reported line numbers stay valid.
     # PowerShell block comments do not nest (language specification 2.2.3, 'Comments do not nest'; verified on Windows
@@ -95,12 +96,25 @@ def strip_line_comment(line, blank_single=False):
         elif c=='#': break
         out.append(c); i+=1
     return ''.join(out)
+def logical_lines(text, blank_single=False):
+    # (first physical line number, text) per logical line: block comments removed (newlines kept), line comments removed,
+    # and a physical line that ends with a backtick joined with the next one (PowerShell's explicit line continuation).
+    out=[]; pending=None
+    for i,raw in enumerate(strip_block_comments(text).splitlines(),1):
+        line=strip_line_comment(raw,blank_single)
+        if pending is None: pending=[i,line]
+        else: pending[1]+=' '+line.lstrip()
+        if pending[1].rstrip().endswith('`'): pending[1]=pending[1].rstrip()[:-1]; continue
+        out.append((pending[0],pending[1])); pending=None
+    if pending is not None: out.append((pending[0],pending[1]))
+    return out
 def unparenthesized_arithmetic(text):
-    # Whole comment-free text (block comments removed across lines, line comments per line), so a call wrapped over
-    # several lines or a backtick continuation is analysed as one balanced group; string contents are skipped.
-    code='\n'.join(strip_line_comment(l) for l in strip_block_comments(text).splitlines()); hits=[]
-    for m in re.finditer(r'\bnew-object\s+(?:-typename\s+)?[\w.\[\]]+\s*\(|\bnew-object\b(?:[^()\n]|`\r?\n)*-argumentlist\s*\(',code,re.I):
-        depth=0; prev=''; q=None; i=m.end()
+    # Command names are case-insensitive. The argument list is `Type(...)` right after the type name, `-ArgumentList (...)`
+    # (the balanced group, across lines), or an unparenthesized `-ArgumentList a, b ...` read up to the next parameter or end
+    # of statement; string contents are skipped. A `+` at top level of any of these is the v1.2.0 mistake.
+    lines=logical_lines(text); code='\n'.join(t for _,t in lines); hits=[]
+    def scan(i,bare):
+        depth=0; prev=''; q=None
         while i<len(code):
             c=code[i]
             if q:
@@ -111,11 +125,16 @@ def unparenthesized_arithmetic(text):
             if c=='"' or c=="'": q=c
             elif c in '([': depth+=1
             elif c in ')]':
-                if depth==0: break
+                if depth==0: return False
                 depth-=1
-            elif depth==0 and (c in '+*/' or (c=='-' and prev not in '(, ')): hits.append(code.count('\n',0,m.start())+1); break
+            elif depth==0 and bare and (c in ';|}\n' or (c=='-' and code[i-1:i].isspace() and code[i+1:i+2].isalpha())): return False
+            elif depth==0 and (c in '+*/' or (c=='-' and prev not in '(, ')): return True
             if not c.isspace(): prev=c
             i+=1
+        return False
+    for m in re.finditer(r'\bnew-object\s+(?:-typename\s+)?[\w.\[\]]+\s*\(|\bnew-object\b[^()\n]*-argumentlist\s*(\()?',code,re.I):
+        bare=m.group(0).rstrip().lower().endswith('-argumentlist')
+        if scan(m.end(),bare): hits.append(lines[code.count('\n',0,m.start())][0])
     return hits
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     hits=unparenthesized_arithmetic(read_text(ROOT/rel)); ok('New-Object arguments parenthesized '+rel,not hits,'lines '+', '.join(map(str,hits)) if hits else '')
@@ -124,21 +143,19 @@ for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
 # the IT launcher opened the user layout): such a line, at any indentation, must use the parameter's own token on the right-hand
 # side. Outside a function the same holds for unscoped assignments and for Set-Variable / New-Variable without -Scope.
 def overwritten_parameters(text):
-    text=strip_block_comments(text)   # block comments may span lines (`#> $script:X = ...` is code); newlines are kept
     head=text.split('\n)',1)[0]; params={x.lower() for x in re.findall(r'\[[\w\[\].]+\]\$(\w+)',head)}
     param_end=head.count('\n')+2   # the line holding the param block's closing ')'; defaults inside the block are not overwrites
     hits=[]; in_function=False
     token=lambda name,expr: re.search(r'\$\{?'+re.escape(name)+r'\}?(?!\w)',expr,re.I)   # complete $Name / ${Name} token, any case
-    for n,line in enumerate(text.splitlines(),1):
+    for n,code in logical_lines(text,blank_single=True):   # comment-free, backtick continuations joined, single quotes blanked
         if n<=param_end: continue
         # Every function in these files opens with `function Name {` and closes with a column-0 `}`; everything else is
         # top level, where try / if / foreach blocks create no scope, so "local" means the script scope there.
-        if re.match(r'^function\s',line):
+        if re.match(r'^function\s',code):
             # A one-line `function F { ... }` is closed on its own line and its body is local: nothing on that line is scanned.
-            in_function=('{' not in line) or (line.count('{')!=line.count('}'))
+            in_function=('{' not in code) or (code.count('{')!=code.count('}'))
             continue
-        elif line.rstrip()=='}': in_function=False
-        code=strip_line_comment(line,blank_single=True)
+        elif code.rstrip()=='}': in_function=False
         # Assignment statements at every statement start of the line (line start, after `{`, after `;` - if / try / foreach
         # blocks create no scope): $Name, ${Name}, $script:Name, $Script:Name, ${script:Name}, $global:Name, $local:Name ...,
         # with or without type constraints / attributes in front ([bool]$script:Name = ..., [ValidateNotNull()][string[]]$Name = ...).

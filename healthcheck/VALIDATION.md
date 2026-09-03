@@ -83,6 +83,15 @@ Review loop closed: eight Codex passes on PR #4, eight findings fixed in seven r
 
 Re-validation after round 8 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 10 · 2026-09-03 (requested by the maintainer).** Two P2 findings on commit f454f3f, both accepted and fixed:
+
+1. *An unparenthesized `-ArgumentList 22, 84 + $offset` was not scanned.* On Windows PowerShell 5.1 this form never reaches the constructor — argument mode does not evaluate `+`, so the call fails with "a positional parameter cannot be found that accepts argument '+'" — but it is the same mistake and the same exception path into console mode. Fix: an unparenthesized `-ArgumentList` value is scanned up to the next parameter (` -Name`) or end of statement (`;`, `|`, `}`, line end); the parenthesized and `Type(...)` forms are unchanged.
+2. *A backtick-continued assignment was not matched.* `$script:Interactive` + backtick, then `= $false` on the next line, executes as one statement (verified on 5.1). Fix: both guards now work on comment-free logical lines — block comments removed, line comments removed, a physical line ending with a backtick joined with the next one — each keeping its first physical line number, so reported lines are unchanged (self-test asserts 77 / 70 and the six constructor lines of the v1.2.0 files).
+
+Self-tests extended (a bare `-ArgumentList` with and without parentheses around the sum, a following `-Property`, a negative number, a backtick before `-ArgumentList`, continued assignments before and after `=`, a continued `;` statement, a continued local inside a function); 1.2.1 clean.
+
+Re-validation after round 9 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
