@@ -134,8 +134,9 @@ def logical_lines(text, blank_single=False):
     return out
 def unparenthesized_arithmetic(text):
     # Command names are case-insensitive. The argument list is `Type(...)` right after the type name, `-ArgumentList (...)`
-    # (the balanced group, across lines), or an unparenthesized `-ArgumentList a, b ...` read up to the next parameter or end
-    # of statement; string contents are skipped. A `+` at top level of any of these is the v1.2.0 mistake.
+    # (the balanced group, across lines), an unparenthesized `-ArgumentList a, b ...` or positional values after the type
+    # name, both read up to the next parameter or end of statement; string contents are skipped. A `+` at top level of any
+    # of these is the v1.2.0 mistake.
     lines=logical_lines(text); code='\n'.join(t for _,t in lines); hits=[]
     def scan(i,bare):
         depth=0; prev=''; q=None
@@ -156,7 +157,9 @@ def unparenthesized_arithmetic(text):
             if not c.isspace(): prev=c
             i+=1
         return False
-    for m in re.finditer(r'\bnew-object\s+(?:'+abbr('typename')+r'\s+)?[\w.\[\]]+\s*\(|\bnew-object\b[^()\n]*'+abbr('argumentlist')+r'\s*(\()?',code,re.I):
+    # Three shapes: `Type(...)` / `Type (...)`, a named `-ArgumentList` with or without parentheses, and positional values
+    # right after the type name (`New-Object Type 22, 84 + $x`: spaces, then something that is neither `-`, `(` nor a line break).
+    for m in re.finditer(r'\bnew-object\s+(?:'+abbr('typename')+r'\s+)?[\w.\[\]]+\s*\(|\bnew-object\b[^()\n]*'+abbr('argumentlist')+r'\s*(\()?|\bnew-object\s+(?:'+abbr('typename')+r'\s+)?[\w.\[\]]+[ \t]+(?![-(\s])',code,re.I):
         bare=not m.group(0).rstrip().endswith('(')   # an -ArgumentList value without parentheses
         if scan(m.end(),bare): hits.append(lines[code.count('\n',0,m.start())][0])
     return hits
@@ -200,9 +203,9 @@ def overwritten_parameters(text):
             if overwrite((m.group(1) or '').lower(),m.group(2)): hits.append(f'{n} (${m.group(2)})')
         # Set-Variable / New-Variable reach the same variable through the cmdlet interface: -Scope Script / Global (or a
         # numeric parent scope) anywhere, or no -Scope / -Scope Local at the top level. -Name may be positional; -Name and
-        # -Scope may be abbreviated.
-        if re.search(r'\b(Set|New)-Variable\b',code,re.I):
-            nm=re.search(abbr('name')+r'\s+["\']?(\w+)',code,re.I) or re.search(r'\b(?:Set|New)-Variable\s+(?!-)["\']?(\w+)',code,re.I)
+        # -Scope may be abbreviated; the aliases sv / nv count as the cmdlets.
+        if re.search(r'(?<![\w$])(?:(?:Set|New)-Variable|sv|nv)\b',code,re.I):   # cmdlet or its built-in alias
+            nm=re.search(abbr('name')+r'\s+["\']?(\w+)',code,re.I) or re.search(r'(?<![\w$])(?:(?:Set|New)-Variable|sv|nv)\s+(?!-)["\']?(\w+)',code,re.I)
             sc=re.search(abbr('scope')+r'\s+["\']?(\w+)',code,re.I); scope=(sc.group(1).lower() if sc else '')
             if nm and nm.group(1).lower() in params and (scope in ('script','global') or scope.isdigit() or (scope in ('','local') and not local)):
                 hits.append(f'{n} (Set-Variable {nm.group(1)})')
