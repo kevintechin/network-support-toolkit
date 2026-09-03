@@ -1,5 +1,176 @@
 # Validation Record — NetworkHealthCheck
 
+## v1.2.1 · 2026-09-03 — IT panel keeps configured values; two 1.2.0 GUI regressions
+
+**Changes** (PR #4). The first item is the seventh Codex pass on PR #3; the other two were found by the first real GUI runs of 1.2.0 — the earlier chain exercised the WinForms code by review only.
+
+1. **IT panel truncated configured sampling values (Codex, PR #3 round 7 — P2).** `Set-OptionsPanelValues` clamped `PingCount` to the spinner's 1–20 range and `RetransmissionSampleSeconds` to 1–120, and Start wrote the clamped values back through `Get-RunOptionsFromPanel` even when nothing was touched, while configuration validation accepts any positive Int32 — so `PingCount: 30` ran as 30 from the user entry and the console but as 20 from the IT launcher (300 s → 120 s likewise). Fix: the spinner's `Maximum` is raised to the configured value before the value is assigned (`max(20, configured)` / `max(120, configured)`); the default ranges are unchanged for configurations within them, a panel edit still wins, and "Reset to config" restores both value and range. `TracerouteHops` was already consistent (configuration and panel both enforce 1–10).
+2. **The GUI fell back to console mode for both entries (1.2.0 regression, P1).** Six control positions were written as `New-Object System.Drawing.Point(22, 84 + $offset)` (also `Size(900, 700 + $offset)` and `Point(22, $bottomY + 44)`). A `New-Object` argument list is parsed in expression mode, where the comma binds tighter than `+`, so `(22, 84 + $offset)` is the three-element array `22, 84, $offset` and the constructor threw "cannot find an overload for Point and the argument count 3". `Initialize-Gui` caught it, logged "The graphical interface could not be started. Console mode will be used.", and every double-click of `Start-NetworkCheck.cmd` or `Start-NetworkCheck-IT.cmd` ran in a console window. Introduced by v1.2.0 — up to 1.1.5 those lines were literals. Fix: the arithmetic is parenthesized.
+3. **The IT launcher opened the user layout (1.2.0 regression, P1).** The top-level line `$script:Interactive = $false` ran after parameter binding and overwrote the bound `-Interactive` switch — a script's top-level scope and its `$script:` scope are the same variable table — so once the GUI could start at all, `Start-NetworkCheck-IT.cmd` showed the user window (no run-options panel, auto-start) with only `-ExpandDetails` in effect. Fix: the variable is initialized from the parameter and the redundant re-assignment in the entry block is removed.
+4. **Validator** — two new guards per language file: no unparenthesized arithmetic inside a `New-Object` argument list, and no top-level `$script:<Parameter> = <literal>`; both flag the v1.2.0 files (six lines, and line 77 / 70) and pass on 1.2.1 — 62 → 66 checks. Version 1.2.1 in both scripts, READMEs, guides (§4.10 documents the panel-range rule, §7.2 the history); function count unchanged (77).
+
+**Re-validation (Windows 11, Windows PowerShell 5.1.26100):**
+
+| Step | Result |
+|---|---|
+| PS 5.1 parser, both languages | 0 errors × 2 |
+| `validate_release.py` | 66 passed, 0 failed — skeleton identical, 77 = 77 functions, both new guards pass (and flag the v1.2.0 files when run against them), hashes regenerated (22 files) |
+| Helper unit tests | 89 × 2 (unchanged) |
+| Report-stage functional tests | 103 × 2 — new I: real WinForms panel controls created headless (no form): a configured 30 pings / 300 s is shown, the spinner ranges widen to 30 / 300, an untouched Start keeps 30 / 300 in the effective configuration and the profile text; a panel edit (12 / 45) still wins; "Reset to config" restores 30 / 300; the default configuration keeps the 1–20 / 1–120 ranges and shows 4 / 8; a CLI `-PingCount 25` is shown, not clamped; traceroute hops keep 1–10 |
+| Headless `Initialize-Gui` (the function body executed without showing the form, both entries × both languages) | before the fix: all four threw at `$overall.Location = New-Object System.Drawing.Point(22, 84 + $offset)`; after: user form 940×700, IT form 940×872 with the panel populated |
+| **GUI, user entry — real window (UI Automation)** | en-US and zh-TW: the window opens, the run starts by itself, JSON `EntryPoint = User`, ping count 4, sample 8 s, Overall Healthy, 28 results; closed with the Close button, exit 0 |
+| **GUI, IT entry — real window (UI Automation)**, configuration `PingCount: 30`, `RetransmissionSampleSeconds: 125` | en-US and zh-TW: the title carries "- IT", the window is the panel layout (872 px logical), the run does not start by itself; Start clicked with the panel untouched → JSON `EntryPoint = IT`, `PingCount = 30`, `SampleSeconds = 125`, gateway ping 30/30, Overall Healthy, 28 results; closed with the Close button, exit 0. Before the fixes the same launch fell back to console mode, and with fix 2 alone it opened the user layout (title without "- IT", 700 px, auto-start) — both also reproduced through `Start-NetworkCheck-IT.cmd` itself |
+| Acceptance, en-US user entry (console) | exit 0, Overall Healthy, 28 results (6 IT), fingerprint `healthy`, ~12 s |
+| Acceptance, en-US IT entry (console switches: `-PingCount 6 -SampleSeconds 6 -PingTarget 8.8.8.8 -TcpTarget 1.1.1.1:53 -TracerouteHops 4 -ExpandDetails`) | exit 0, 30 results, `EntryPoint = IT`, ping count 6, sample 6 s, 4 hops, extra targets present, ~8 s |
+| Acceptance, zh-TW user entry (console) | exit 0, Overall Healthy, 28 results (6 IT), ~10 s |
+
+Lesson: "reviewed, not exercised headlessly" was not enough for WinForms code — the 1.2.0 GUI never opened on a real machine during its six review rounds because every acceptance run used `-ConsoleOnly`. From 1.2.1 the chain includes the headless `Initialize-Gui` smoke test and a UI Automation run of both entries in both languages (backlog #16 is about committing those driver scripts). The panel's spinner values cannot be read back through UI Automation (WinForms `NumericUpDown` exposes no value pattern here); the JSON run options are the evidence instead.
+
+**Independent review — Codex, PR #4, round 1 · 2026-09-03.** One P2 finding on commit ade80fd, accepted and fixed:
+
+1. *The new parameter guard only matched column 1.* A top-level `try` / `if` block creates no PowerShell scope but its statements are indented, so an indented `$script:Interactive = $false` inside the program-entry `try` block — the very regression the guard exists for — would have passed. Fix: the guard matches `$script:<Parameter> = …` at any indentation (a function assigning a literal would clobber the bound parameter just the same, so it is flagged too). Self-tests: the v1.2.0 files still flag line 77 / 70, an indented literal inside the entry `try` and a literal inside a function are flagged, and 1.2.1 is clean.
+
+Re-validation after round 1 (the scripts are unchanged since the UI Automation runs; only the validator and the manifest changed): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 2 · 2026-09-03.** One P2 finding on commit fab12bc, accepted and fixed:
+
+1. *The parameter guard accepted any right-hand side that merely contained the parameter name.* `$script:Interactive = $false # $Interactive` and `$script:Interactive = $InteractiveBackup` both passed. Fix: the line is stripped of comments (`#` outside quotes, `<# ... #>`) and of the contents of single-quoted strings (nothing expands there), and the assigned expression must contain the complete token `$Name` or `${Name}` (word boundary, so `$NameBackup` does not count). The arithmetic guard ignores comments the same way. Self-tests: v1.2.0 line 77 / 70 still flagged; a commented, a single-quoted and a longer-name reference are flagged; `[bool]$Interactive`, `${Interactive}`, `$Interactive.IsPresent`, `"$ConfigPath"` and `'a' + $ConfigPath` pass; 1.2.1 is clean.
+
+Re-validation after round 2 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 3 · 2026-09-03.** One P2 finding on commit 1004156, accepted and fixed:
+
+1. *The parameter guard compared names case-sensitively.* PowerShell variable names are not, so `$script:interactive = $false` would have passed. Fix: parameter names, the `$script:` prefix and the right-hand-side token are matched case-insensitively, the `${script:Name}` spelling is recognised, and `Set-Variable` / `New-Variable` targeting a parameter at script or global scope is flagged as well. Self-tests extended accordingly (`$script:interactive = $false`, `${script:Interactive} = $false` and `Set-Variable -Scope Script -Name Interactive` are flagged; `$Script:Interactive = [bool]$interactive` and `${script:Interactive} = ${Interactive}` pass); v1.2.0 line 77 / 70 still flagged; 1.2.1 clean.
+
+Re-validation after round 3 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 4 · 2026-09-03.** One P2 finding on commit e98eaba, accepted and fixed:
+
+1. *`Set-Variable` / `New-Variable` without `-Scope` was not flagged.* At the top level the cmdlet operates in the script scope, so `Set-Variable -Name Interactive -Value $false` would have overwritten the parameter unnoticed. Fix: the guard now tracks whether a line is inside a function (every function in these files opens with `function Name {` and closes with a column-0 `}`); outside a function an unscoped or `-Scope Local` cmdlet call, and likewise an unscoped assignment `$Interactive = ...` or `$local:Interactive = ...`, counts as an overwrite, while inside a function those are locals and are ignored; `$script:` / `$global:` forms and explicit script / global / numeric scopes are flagged anywhere; a positional `-Name` is recognised; the script's own param block is skipped. Self-tests: 30 top-level and 7 function-local cases, including the finding's example; v1.2.0 line 77 / 70 still flagged; 1.2.1 clean.
+
+Re-validation after round 4 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 5 · 2026-09-03.** One P2 finding on commit 61ab9a0, accepted and fixed:
+
+1. *The arithmetic guard matched `New-Object` case-sensitively.* Command names are not, so `new-object System.Drawing.Point(22, 84 + $offset)` would have passed. Fix: the command is matched case-insensitively; the guard also covers the `New-Object -TypeName T -ArgumentList (...)` form (the same precedence pitfall) and analyses the balanced argument group even when more code follows on the line. Self-tests extended (lower-case and upper-case spellings, `-ArgumentList` with and without parentheses, trailing code, a `-Property` hashtable, nested `[math]::Min(560 + $offset, ...)`); the six v1.2.0 lines still flagged; 1.2.1 clean.
+
+Re-validation after round 5 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy. This is the fifth fix round of the review loop; per the agreed limit, a finding from the next pass is assessed and left for the maintainer's decision.
+
+**Independent review — Codex, PR #4, round 6 · 2026-09-03 (requested by the maintainer after the five-round limit).** One P2 finding on commit a8e2f1b, accepted and fixed:
+
+1. *A type-constrained assignment escaped the parameter guard.* The regex required `$` right after the indentation, so `[bool]$script:Interactive = $false` would have passed. Fix: the assignment pattern accepts any number of `[type]` / `[Attribute()]` prefixes (`[bool]$script:Interactive = ...`, `[ValidateNotNull()][string[]]$PingTarget = ...`); the script's own param block stays excluded, and a typed local inside a function stays a local. Self-tests extended (typed script-scope and unscoped assignments at the top level are flagged, the same with the parameter's own token or inside a function pass); v1.2.0 line 77 / 70 still flagged; 1.2.1 clean.
+
+Re-validation after round 6 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 7 · 2026-09-03 (requested by the maintainer).** Two P2 findings on commit 17f33b4, both accepted and fixed:
+
+1. *Block comments were stripped per line.* A `<# ... #>` spanning lines left `#> $script:Interactive = $false` (code after the closing marker) unscanned, and code-looking text inside such a comment could be reported. Fix: block comments are removed from the whole text first, replaced by the newlines they contained so that reported line numbers stay valid; both guards then work on the comment-free text.
+2. *A `New-Object` argument group split over several lines was scanned on its opening line only.* Fix: the balanced group is scanned across line boundaries (including a backtick continuation before `-ArgumentList`), and string contents are skipped so that `"a+b"` inside an argument is not reported.
+
+The guards' remaining boundary is stated in the validator: code inside here-strings or built dynamically (`Invoke-Expression`, splatted argument lists) is outside their scope by design. Self-tests extended (a wrapped call is flagged, a wrapped call with parentheses passes, a call inside a block comment passes, code after `#>` is flagged, strings with operators pass) and now assert the exact v1.2.0 line numbers (77 / 70; the six constructor lines) so the whole-text rewrite is known to preserve them; 1.2.1 clean.
+
+Re-validation after round 7 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 8 · 2026-09-03.** One P2 finding on commit ecdd32c, rejected with evidence:
+
+1. *"Strip block comments with nesting-aware state; the first `#>` should not close a nested `<#`."* PowerShell block comments do not nest — the language specification (2.2.3, "Comments do not nest") and Windows PowerShell 5.1 agree: in a file containing `<# outer <# inner #>` followed by `$x = 1` and a closing `#>` line, the assignment executes (`x = 1`) and `PSParser.Tokenize` reports the comment as ending at the first `#>`. The guard's non-greedy match therefore models the real parser; a nesting-aware stripper would classify executable code as a comment and hide exactly the overwrite the guard exists to catch. The validator now states this next to `strip_block_comments` (comment only; manifest regenerated).
+
+Review loop closed: eight Codex passes on PR #4, eight findings fixed in seven rounds (rounds 6 and 7 requested by the maintainer after the five-round limit), one finding rejected with evidence. The shipped scripts are unchanged since the UI Automation runs of commit ade80fd.
+
+**Independent review — Codex, PR #4, round 9 · 2026-09-03 (requested by the maintainer).** One P2 finding on commit 4a50e02, accepted and fixed:
+
+1. *The parameter guard only saw assignments that begin a physical line.* A top-level one-line block such as `if ($c) { $script:Interactive = $false }`, or a second statement after `;`, was not scanned although `if` / `try` / `foreach` create no scope. Fix: assignment statements are matched at every statement start of the comment-free line (line start, after `{`, after `;`), the assigned expression is read up to the next `;` or `}`, and a one-line `function F { ... }` is treated as closed on its line with a local body. The guard is now independent of statement position; hashtable keys (`@{ Interactive = ... }`), index and property assignments (`$h[$script:X] = ...`, `$script:X.Value = ...`) are not reported. Self-tests extended (twelve top-level and three function-local cases); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 8 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 10 · 2026-09-03 (requested by the maintainer).** Two P2 findings on commit f454f3f, both accepted and fixed:
+
+1. *An unparenthesized `-ArgumentList 22, 84 + $offset` was not scanned.* On Windows PowerShell 5.1 this form never reaches the constructor — argument mode does not evaluate `+`, so the call fails with "a positional parameter cannot be found that accepts argument '+'" — but it is the same mistake and the same exception path into console mode. Fix: an unparenthesized `-ArgumentList` value is scanned up to the next parameter (` -Name`) or end of statement (`;`, `|`, `}`, line end); the parenthesized and `Type(...)` forms are unchanged.
+2. *A backtick-continued assignment was not matched.* `$script:Interactive` + backtick, then `= $false` on the next line, executes as one statement (verified on 5.1). Fix: both guards now work on comment-free logical lines — block comments removed, line comments removed, a physical line ending with a backtick joined with the next one — each keeping its first physical line number, so reported lines are unchanged (self-test asserts 77 / 70 and the six constructor lines of the v1.2.0 files).
+
+Self-tests extended (a bare `-ArgumentList` with and without parentheses around the sum, a following `-Property`, a negative number, a backtick before `-ArgumentList`, continued assignments before and after `=`, a continued `;` statement, a continued local inside a function); 1.2.1 clean.
+
+Re-validation after round 9 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 11 · 2026-09-03 (requested by the maintainer).** One P2 finding on commit 1d07458, accepted and fixed:
+
+1. *The parameter guard accepted any initializer that contained the parameter's token.* `$script:Interactive = $Interactive -and $false` (always false) passed. Fix: the only accepted initializer of a script-scope copy is the parameter itself — `$Name` or `${Name}`, optionally inside `( )` or `@( )`, with at most one `[type]` cast outside or inside the parentheses and an optional `.IsPresent`; every other expression (a literal, `$Name -and $false`, `-not $Name`, `"$Name"`, `$Name.Trim()`, `'a' + $Name`, `$Name + 1`, a conditional) is treated as an overwrite, so a transformed value has to live in a script variable with a different name. The files' only such line, `$script:Interactive = [bool]$Interactive`, passes. Self-tests adjusted (four former "clean" transformations now flagged by design) and extended (eleven cases); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 10 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 12 · 2026-09-03 (requested by the maintainer).** One P2 finding on commit 2d6e64e, accepted and fixed:
+
+1. *A one-line function declaration was skipped by the parameter guard.* Since round 8 the `function` line itself was not scanned, so `function Reset-Interactive { $script:Interactive = $false }` passed although an explicit `$script:` reference targets the script scope from inside a function. Fix: the declaration line is scanned like a function-body line — explicitly script- / global-scoped assignments and `Set-Variable -Scope Script / Global` on it are flagged, unscoped ones are locals — and a one-line function still counts as closed on its line. Self-tests extended (six cases); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 11 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 13 · 2026-09-03 (requested by the maintainer).** Two P2 findings on commit 89b4bb7, both accepted and fixed:
+
+1. *Compound assignments and increments were not recognised.* `$script:PingCount += 1`, `$script:PingCount++` and `++$script:PingCount` change the bound parameter but the guard only matched a plain `=`. Fix: `+=`, `-=`, `*=`, `/=`, `%=` and prefix or postfix `++` / `--` on a parameter name are overwrites whatever follows, under the same scope rules; a bare read at a statement start (`$script:PingCount | Out-Null`) and a read inside an expression are not reported.
+2. *Modulo was missing from the arithmetic guard.* `New-Object System.Drawing.Point(22, 84 % $offset)` has the same argument-mode hazard. Fix: `%` joins `+`, `*`, `/` and binary `-` in the top-level operator set; `"50%"` inside a string stays clean.
+
+Self-tests extended (thirteen assignment cases, three constructor cases); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 12 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 14 · 2026-09-03 (requested by the maintainer).** One P2 finding on commit f5e63af, accepted and fixed:
+
+1. *Block comments were stripped with a regex that ignored quotes.* A `<#` inside a string (`$a = "<#"`) followed later by a `"#>"` string would have hidden the code between them from both guards, although PowerShell treats quoted delimiters as data. Fix: block comments are removed by a lexical scan that tracks single- and double-quoted strings (doubled quotes and backtick escapes included) and copies line comments verbatim, so a `<#` inside a string or a line comment never starts a block; newlines are still kept. The line-comment stripper honours doubled quotes the same way. Self-tests extended (quoted delimiters in both quote styles, doubled and backtick-escaped quotes, a `<#` inside a line comment, a real block comment, the constructor guard behind a quoted `<#`); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 13 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 15 · 2026-09-03 (requested by the maintainer).** One P2 finding on commit c093263, accepted and fixed:
+
+1. *A backtick-escaped `#` outside a string started a line comment in both scanners.* `Write-Output `#; $script:Interactive = $false` executes the overwrite after the semicolon, but the scanners discarded everything from the `#`. Fix: outside strings a backtick escapes the next character in `strip_line_comment` and in the line-comment branch of `strip_block_comments`. The per-line, quote-blind `<# ... #>` regex that `strip_line_comment` still carried is removed as well — block comments are handled only by the quote-aware whole-text scan, which closes the single-line variant `$a = "<#"; $script:Interactive = $false; $b = "#>"`. Self-tests extended (escaped `#` before an overwrite, before a legitimate copy and inside a real comment; the single-line quoted delimiters; the constructor guard behind an escaped `#`); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 14 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 16 · 2026-09-03 (requested by the maintainer).** Two P2 findings on commit 5a5200c, both accepted and fixed:
+
+1. *Abbreviated `-TypeName` / `-ArgumentList` were not recognised.* PowerShell accepts any unambiguous prefix of a parameter name, so `New-Object -Type System.Drawing.Point(22, 84 + $offset)` or `-T ... -Arg (...)` escaped the arithmetic guard.
+2. *Abbreviated `-Name` / `-Scope` were not recognised.* `Set-Variable -Na Interactive -Value $false` escaped the parameter guard.
+
+Fix: a helper builds the pattern for every non-empty prefix of a parameter name (longest first, word boundary) and is used wherever the guards spell `-TypeName`, `-ArgumentList`, `-Name` and `-Scope`. Self-tests extended (five constructor spellings, four `Set-Variable` spellings at the top level and two inside a function); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 15 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 17 · 2026-09-03 (requested by the maintainer).** Two P2 findings on commit b3845ed, both accepted and fixed:
+
+1. *Positional argument lists were not scanned.* `New-Object System.Drawing.Point 22, 84 + $offset` binds the trailing values to `-ArgumentList` without naming it. Fix: a third shape — positional values right after the type name (spaces, then something that is neither `-`, `(` nor a line break) — is scanned like a bare `-ArgumentList`, up to the next parameter or end of statement; a type name followed by a line break or by a parameter starts no scan.
+2. *The `sv` / `nv` aliases were ignored.* `sv Interactive $false` at the top level overwrites the parameter like `Set-Variable` does. Fix: the aliases (not preceded by `$`) count as the cmdlets in the gate and in the positional-name pattern.
+
+Self-tests extended (eight constructor cases, seven `sv` / `nv` cases at the top level and inside a function); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 16 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 18 · 2026-09-03 (requested by the maintainer).** One P2 finding on commit ff20e3f, accepted and fixed:
+
+1. *Quoted variable names escaped the cmdlet check.* The parameter guard blanked single-quoted string contents before matching, which also erased the name in `Set-Variable -Name 'Interactive' -Value $false` or `sv 'Interactive' $false`. Fix: string contents (single- and double-quoted alike) are now masked with spaces of the same length for the assignment check and the cmdlet gate — so a `$Name`, a `sv` or a `$script:X =` inside a string is text — while the cmdlet's `-Name` / `-Scope` values and a positional name are read from the intact logical line starting at the cmdlet's own offset. Self-tests extended (quoted names in both styles, a quoted `-Scope`, cmdlet words and assignments inside strings, a real cmdlet after a string that mentions one); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 17 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 19 · 2026-09-03 (requested by the maintainer).** Two P2 findings on commit 35492bc, both accepted and fixed:
+
+1. *Assignments in expression context were not scanned.* `($script:Interactive = $false)` and a `for` initializer start after `(`, which was not a statement start for the guard. Fix: `(` joins the line start, `{` and `;` as a statement start for assignments and for prefix increments.
+2. *Only the first variable cmdlet on a logical line was checked.* `Set-Variable -Name Tmp -Value 1; Set-Variable -Name Interactive -Value $false` was judged by the first invocation only. Fix: every `Set-Variable` / `New-Variable` / `sv` / `nv` occurrence is checked with its own segment, cut at the next `;` (string semicolons are masked, so they do not split); duplicate hits on one line are reported once.
+
+Self-tests extended (assignment in parentheses with and without the parameter itself, a `for` initializer, two cmdlets on one line with the parameter first, second or absent, and the same inside a function); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 18 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 20 · 2026-09-03 (requested by the maintainer).** Two P2 findings on commit 46b8f10, both accepted and fixed:
+
+1. *`-Scope 0` inside a function was reported as an overwrite.* Numeric scope 0 is the current scope, so `Set-Variable -Name PingCount -Scope 0 -Value 1` in a helper is a local (a false positive). Fix: `0` follows the rules of an unscoped call — local inside a function, the script scope at the top level — while `1` and higher stay parent-scope overwrites.
+2. *Variable-provider writes were not covered.* `Set-Item -Path Variable:Interactive -Value $false` (also `Set-Content`, `New-Item`, `Clear-Item`, `Remove-Item` and their aliases with a `Variable:` path) changes the bound variable at the top level. Fix: a second gate for item cmdlets whose segment carries a `Variable:<Parameter>` path, treated like an unscoped variable cmdlet (quoted paths read from the intact text; `Get-Item` and other drives are not reported).
+
+Self-tests extended (`-Scope 0` and `-Scope 1` at both levels, seven provider cases at the top level and one inside a function); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 19 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
+**Independent review — Codex, PR #4, round 21 · 2026-09-03: three P2 findings assessed and deferred, review loop closed.** The twenty-first pass on commit e7cdd3f reported the `New` alias of `New-Object`, PowerShell's multiple-assignment syntax (`$tmp, $script:Interactive = 1, $false`) and the `Clear-Variable` / `Remove-Variable` cmdlets. All three are valid and all three are further syntax variants of the same two mistakes, in shapes that occur nowhere in either language file. They are not fixed here: the regex guards have absorbed nineteen rounds of such variants, and the remedy is the rewrite recorded as backlog #17, not a twentieth. See the assessment on the pull request.
+
+**Review loop summary, PR #4:** 21 Codex passes, 30 findings — 26 accepted and fixed in 19 rounds, 1 rejected with evidence (block comments do not nest; verified on Windows PowerShell 5.1), 3 assessed and deferred to backlog #17. One finding concerned shipped behaviour (the IT panel truncating configured sampling values, from the seventh pass on PR #3) and was fixed in the first commit; every other round changed `tools/validate_release.py`, its manifest entry and this record only. **The two shipped scripts are byte-identical to commit ade80fd, the state that passed the real-window UI Automation runs.**
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
@@ -70,6 +241,12 @@ Re-validation after round 5: parser 0 errors × 2; validator 62/62; unit tests 8
 1. *CLI ping / DNS / TCP lists were split on commas and semicolons only* while the guide and the IT panel also accept spaces, so `-PingTarget "10.0.0.1 10.0.0.2"` became one invalid target. Fix: the three CLI lists now split on commas, semicolons or whitespace (`[,;\s]+`), matching the panel; URLs keep the whitespace-only rule.
 
 Re-validation after round 6: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 86 × 2 (new: whitespace and mixed separators for ping / DNS / TCP); console acceptance en-US user, en-US IT switches (`-PingTarget "8.8.8.8 9.9.9.9" -TcpTarget "1.1.1.1:53 bad"` → two pings accepted, one TCP accepted, `bad` reported once) and zh-TW user, exit 0.
+
+**Independent review — Codex, PR #3, round 7 · 2026-09-03 (the pass on 08fa353 completed at 15:04, five minutes after the PR was merged at 14:59).** One P2 finding, accepted and fixed in v1.2.1 (PR #4 — see the entry above):
+
+1. *Configured sampling values above the IT panel's spinner range were silently truncated.* `Set-OptionsPanelValues` clamped `PingCount` to 1–20 and `RetransmissionSampleSeconds` to 1–120 and Start wrote the clamped values back, so a valid configuration ran with different sampling through the IT launcher (30 pings → 20, 300 s → 120 s).
+
+The same release fixes two 1.2.0 GUI regressions that the seven review rounds could not see because the GUI was never opened during validation (the "reviewed, not exercised headlessly" rows above).
 
 ## v1.1.5 · 2026-09-03
 
@@ -259,3 +436,9 @@ All four injected faults were detected and correctly classified at the overall-v
 ### From release packaging (2026-09-03)
 
 15. ~~GitHub *Code → Download ZIP* shipped LF line endings — the auto-generated archive failed the validator (all 8 CRLF checks, all 19 SHA256 manifest entries) and was therefore not the validated package~~ — **fixed 2026-09-03** (`.gitattributes`: `healthcheck/** text eol=crlf`, re-simulated archive 54/54; the v1.1.3 release asset is built from tracked files only — see the Packaging entry at the top).
+
+### From the v1.2.1 GUI runs (2026-09-03)
+
+16. The unit, functional, headless-GUI and UI Automation test scripts live outside the repository (session scratchpad); commit them — e.g. a top-level `tests/` folder outside the shipped `healthcheck/` package — so the full chain, including the real-window run that caught the two 1.2.0 GUI regressions, is reproducible from a fresh checkout.
+
+17. Rewrite the validator's two PowerShell guards (`unparenthesized_arithmetic`, `overwritten_parameters`) on the PowerShell AST instead of regular expressions over text, and move them out of `tools/validate_release.py` into the committed test folder of #16. Probed on Windows PowerShell 5.1 (2026-09-03): the constructor mistake has a single AST signature — a `ParenExpressionAst` whose top-level node is a `BinaryExpressionAst` whose `Left` is an `ArrayLiteralAst`, i.e. `(22, 84 + $offset)` really parses as `@(22, 84) + $offset`, which is why the runtime reports an argument count of 3; the parenthesized form, a nested `[math]::Min(560 + $offset, $h)` and a legitimate `Write-Output (1 + 2)` all fail that test. The unparenthesized `-ArgumentList` form is caught by `StaticParameterBinder::BindCommand` reporting binding exceptions for the stray operator. Parameter overwrites reduce to `AssignmentStatementAst` (unwrapping `ConvertExpressionAst` for a type constraint and `ArrayLiteralAst` for a multiple assignment) plus `UnaryExpressionAst` with `PlusPlus` / `MinusMinus` / `PostfixPlusPlus` / `PostfixMinusMinus`, with the scope read from `VariablePath.IsScript` / `IsGlobal` / `IsUnqualified` and function nesting from the parent chain; `StaticParameterBinder` resolves abbreviated parameters, positional arguments, quoted names and the `sv` alias without a pattern per spelling. All 21 assignment variants and both false-positive shapes (a hashtable key, a property assignment) behave correctly in the probe, and text inside a string produces no node at all. Genuinely dynamic code (`Invoke-Expression`, a command name in a variable, splatting, a `Variable:` path built at runtime) stays out of scope by design. Acceptance: the existing self-test corpus and the two anchors — the v1.2.0 files must flag line 77 / 70 and the six constructor lines, the 1.2.1 files must be clean — before the regex guards are removed (validator 66 → 62 checks).

@@ -38,7 +38,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：報告保存例外類型、訊息與內部例外；腳本位置與呼叫堆疊只寫入 JSON 報告（Diagnostics）。
 
-$script:ToolVersion = "1.2.0"
+$script:ToolVersion = "1.2.1"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Results = New-Object System.Collections.ArrayList
 $script:StartupMessages = New-Object System.Collections.ArrayList
@@ -67,7 +67,8 @@ $script:UsingFallbackOutputDirectory = $false
 $script:BaseConfig = $null
 $script:RunOptions = $null
 $script:RunOptionMessages = New-Object System.Collections.ArrayList
-$script:Interactive = $false
+# 腳本層級變數與已繫結的參數同屬頂層作用域：這裡絕不能把參數同名變數重設為常值（v1.2.0 寫成 $false，IT 入口因此開成使用者版面；v1.2.1 修正）。
+$script:Interactive = [bool]$Interactive
 $script:OptionsPanel = $null
 $script:OpenJsonButton = $null
 
@@ -3562,8 +3563,11 @@ function Set-OptionsPanelValues {
     $controls["DnsName"].Text = (@($options.RawTargets.Dns) -join ", ")
     $controls["TcpTarget"].Text = (@($options.RawTargets.Tcp) -join ", ")
     $controls["HttpUrl"].Text = (@($options.RawTargets.Http) -join " ")
-    $controls["PingCount"].Value = [math]::Min(20, [math]::Max(1, $options.PingCount))
-    $controls["SampleSeconds"].Value = [math]::Min(120, [math]::Max(1, $options.SampleSeconds))
+    # 設定值超過旋轉鈕預設範圍（Ping 20 次、取樣 120 秒）時放寬範圍而不截斷，未更動就開始也會以設定值執行（v1.2.1）。
+    $controls["PingCount"].Maximum = [math]::Max(20, $options.PingCount)
+    $controls["PingCount"].Value = [math]::Max(1, $options.PingCount)
+    $controls["SampleSeconds"].Maximum = [math]::Max(120, $options.SampleSeconds)
+    $controls["SampleSeconds"].Value = [math]::Max(1, $options.SampleSeconds)
     $controls["TracerouteHops"].Value = [math]::Min(10, [math]::Max(1, $options.TracerouteHops))
     $controls["WifiRf"].Checked = [bool]$options.ChecksEnabled.WifiRf
     $controls["RouteTable"].Checked = [bool]$options.ChecksEnabled.RouteTable
@@ -3746,7 +3750,8 @@ function Initialize-Gui {
     $overall.Text = "結果：尚未開始"
     $overall.Font = New-Object System.Drawing.Font($form.Font.FontFamily, 11, [System.Drawing.FontStyle]::Bold)
     $overall.AutoSize = $false
-    $overall.Location = New-Object System.Drawing.Point(22, 84 + $offset)
+    # New-Object 的引數以運算式模式解析，逗號優先於「+」：算術運算一律另外加括號（v1.2.1）。
+    $overall.Location = New-Object System.Drawing.Point(22, (84 + $offset))
     $overall.Size = New-Object System.Drawing.Size(880, 28)
     $overall.Anchor = "Top,Left,Right"
     $form.Controls.Add($overall)
@@ -3754,13 +3759,13 @@ function Initialize-Gui {
     $progressLabel = New-Object System.Windows.Forms.Label
     $progressLabel.Text = "準備中"
     if ($script:Interactive) { $progressLabel.Text = "就緒，調整選項後按「開始檢測」" }
-    $progressLabel.Location = New-Object System.Drawing.Point(22, 119 + $offset)
+    $progressLabel.Location = New-Object System.Drawing.Point(22, (119 + $offset))
     $progressLabel.Size = New-Object System.Drawing.Size(880, 22)
     $progressLabel.Anchor = "Top,Left,Right"
     $form.Controls.Add($progressLabel)
 
     $progress = New-Object System.Windows.Forms.ProgressBar
-    $progress.Location = New-Object System.Drawing.Point(22, 143 + $offset)
+    $progress.Location = New-Object System.Drawing.Point(22, (143 + $offset))
     $progress.Size = New-Object System.Drawing.Size(880, 22)
     $progress.Minimum = 0
     $progress.Maximum = 100
@@ -3769,12 +3774,12 @@ function Initialize-Gui {
     $form.Controls.Add($progress)
 
     $log = New-Object System.Windows.Forms.RichTextBox
-    $log.Location = New-Object System.Drawing.Point(22, 178 + $offset)
+    $log.Location = New-Object System.Drawing.Point(22, (178 + $offset))
     $logHeight = $bottomY - 16 - (178 + $offset)
     if ($logHeight -lt 36) {
         $logHeight = 36
         $form.AutoScroll = $true
-        $form.AutoScrollMinSize = New-Object System.Drawing.Size(900, 700 + $offset)
+        $form.AutoScrollMinSize = New-Object System.Drawing.Size(900, (700 + $offset))
     }
     $log.Size = New-Object System.Drawing.Size(880, $logHeight)
     $log.Anchor = "Top,Bottom,Left,Right"
@@ -3824,7 +3829,7 @@ function Initialize-Gui {
 
     $reportPathLabel = New-Object System.Windows.Forms.Label
     $reportPathLabel.Text = "報告尚未產生"
-    $reportPathLabel.Location = New-Object System.Drawing.Point(22, $bottomY + 44)
+    $reportPathLabel.Location = New-Object System.Drawing.Point(22, ($bottomY + 44))
     $reportPathLabel.Size = New-Object System.Drawing.Size(880, 24)
     $reportPathLabel.Anchor = "Bottom,Left,Right"
     $reportPathLabel.AutoEllipsis = $true
@@ -3952,7 +3957,6 @@ function Initialize-Gui {
 $exitCode = 0
 
 try {
-    $script:Interactive = [bool]$Interactive
     $script:BaseConfig = Load-Configuration -RequestedPath $ConfigPath
     $entryPoint = "User"
     if ($Interactive -or $ExpandDetails) { $entryPoint = "IT" }

@@ -3,7 +3,7 @@ from pathlib import Path
 import sys, json, hashlib, re
 
 ROOT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
-TOOL_VERSION = '1.2.0'
+TOOL_VERSION = '1.2.1'
 FUNCTION_COUNT = 77
 failures=[]; passes=[]
 
@@ -68,6 +68,159 @@ for rel in ['en-US/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.config.json
     ok('English file has no CJK '+rel,not cjk(read_text(ROOT/rel)))
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     ok('version '+TOOL_VERSION+' '+rel,'$script:ToolVersion = "'+TOOL_VERSION+'"' in read_text(ROOT/rel))
+# New-Object argument lists are parsed in expression mode, where the comma binds tighter than + (v1.2.0 shipped
+# `Point(22, 84 + $offset)` = three arguments, and the GUI fell back to console mode): arithmetic must be parenthesized.
+# Both guards below work on the comment-free logical lines of the whole file (block and line comments removed, backtick
+# continuations joined); code inside here-strings or built dynamically (Invoke-Expression, splatted argument lists) is
+# outside their scope by design.
+def strip_block_comments(text):
+    # <# ... #> may span lines and is removed only outside single / double quotes (a quoted "<#" is string data) and outside
+    # line comments; the newlines it contained are kept so that reported line numbers stay valid. Line comments are copied
+    # verbatim here and removed per line by strip_line_comment. PowerShell block comments do not nest (language
+    # specification 2.2.3, 'Comments do not nest'; verified on Windows PowerShell 5.1: the first #> ends the comment).
+    out=[]; q=None; i=0; n=len(text)
+    while i<n:
+        c=text[i]
+        if q:
+            if q=='"' and c=='`': out.append(text[i:i+2]); i+=2; continue
+            if c==q and text[i+1:i+2]==q: out.append(q+q); i+=2; continue
+            if c==q: q=None
+            out.append(c); i+=1; continue
+        if c=='"' or c=="'": q=c; out.append(c); i+=1; continue
+        if c=='<' and text[i+1:i+2]=='#':
+            e=text.find('#>',i+2); e=n if e<0 else e+2
+            out.append('\n'*text.count('\n',i,e)); i=e; continue
+        if c=='`': out.append(text[i:i+2]); i+=2; continue   # a backtick escapes the next character (`# is a literal #)
+        if c=='#':
+            e=text.find('\n',i); e=n if e<0 else e
+            out.append(text[i:e]); i=e; continue
+        out.append(c); i+=1
+    return ''.join(out)
+def strip_line_comment(line, blank_single=False, blank_double=False):
+    # Drop a trailing # comment that is outside single / double quotes (a backtick-escaped # is a literal), so comments
+    # never hide or fake a pattern; with blank_single / blank_double the contents of such strings are replaced by spaces
+    # of the same length, so a $Name or a command word inside a string is not taken for code and offsets stay aligned.
+    out=[]; q=None; i=0   # block comments were already removed by strip_block_comments (quote-aware, whole text)
+    while i<len(line):
+        c=line[i]
+        if q:
+            blank=(q=="'" and blank_single) or (q=='"' and blank_double)
+            if q=='"' and c=='`': out.append('  ' if blank else line[i:i+2]); i+=2; continue
+            if c==q and line[i+1:i+2]==q:   # doubled quote inside a string ('' or "")
+                out.append('  ' if blank else q+q); i+=2; continue
+            if c==q: q=None; out.append(c); i+=1; continue
+            out.append(' ' if blank else c); i+=1; continue
+        if c=='`': out.append(line[i:i+2]); i+=2; continue   # escaped character outside a string
+        if c=='"' or c=="'": q=c
+        elif c=='#': break
+        out.append(c); i+=1
+    return ''.join(out)
+def abbr(full):
+    # PowerShell accepts any unambiguous prefix of a parameter name (-Type or -T for -TypeName, -Na for -Name): a pattern
+    # for every non-empty prefix, longest first, ending at a word boundary.
+    return '-(?:'+'|'.join(re.escape(full[:k]) for k in range(len(full),0,-1))+r')\b'
+def logical_lines(text, blank_single=False, blank_double=False):
+    # (first physical line number, text) per logical line: block comments removed (newlines kept), line comments removed,
+    # and a physical line that ends with a backtick joined with the next one (PowerShell's explicit line continuation).
+    out=[]; pending=None
+    for i,raw in enumerate(strip_block_comments(text).splitlines(),1):
+        line=strip_line_comment(raw,blank_single,blank_double)
+        if pending is None: pending=[i,line]
+        else: pending[1]+=' '+line.lstrip()
+        if pending[1].rstrip().endswith('`'): pending[1]=pending[1].rstrip()[:-1]; continue
+        out.append((pending[0],pending[1])); pending=None
+    if pending is not None: out.append((pending[0],pending[1]))
+    return out
+def unparenthesized_arithmetic(text):
+    # Command names are case-insensitive. The argument list is `Type(...)` right after the type name, `-ArgumentList (...)`
+    # (the balanced group, across lines), an unparenthesized `-ArgumentList a, b ...` or positional values after the type
+    # name, both read up to the next parameter or end of statement; string contents are skipped. A `+` at top level of any
+    # of these is the v1.2.0 mistake.
+    lines=logical_lines(text); code='\n'.join(t for _,t in lines); hits=[]
+    def scan(i,bare):
+        depth=0; prev=''; q=None
+        while i<len(code):
+            c=code[i]
+            if q:
+                if q=='"' and c=='`': i+=2; continue
+                if q=="'" and c=="'" and code[i+1:i+2]=="'": i+=2; continue
+                if c==q: q=None
+                i+=1; continue
+            if c=='"' or c=="'": q=c
+            elif c in '([': depth+=1
+            elif c in ')]':
+                if depth==0: return False
+                depth-=1
+            elif depth==0 and bare and (c in ';|}\n' or (c=='-' and code[i-1:i].isspace() and code[i+1:i+2].isalpha())): return False
+            elif depth==0 and (c in '+*/%' or (c=='-' and prev not in '(, ')): return True
+            if not c.isspace(): prev=c
+            i+=1
+        return False
+    # Three shapes: `Type(...)` / `Type (...)`, a named `-ArgumentList` with or without parentheses, and positional values
+    # right after the type name (`New-Object Type 22, 84 + $x`: spaces, then something that is neither `-`, `(` nor a line break).
+    for m in re.finditer(r'\bnew-object\s+(?:'+abbr('typename')+r'\s+)?[\w.\[\]]+\s*\(|\bnew-object\b[^()\n]*'+abbr('argumentlist')+r'\s*(\()?|\bnew-object\s+(?:'+abbr('typename')+r'\s+)?[\w.\[\]]+[ \t]+(?![-(\s])',code,re.I):
+        bare=not m.group(0).rstrip().endswith('(')   # an -ArgumentList value without parentheses
+        if scan(m.end(),bare): hits.append(lines[code.count('\n',0,m.start())][0])
+    return hits
+for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
+    hits=unparenthesized_arithmetic(read_text(ROOT/rel)); ok('New-Object arguments parenthesized '+rel,not hits,'lines '+', '.join(map(str,hits)) if hits else '')
+# A script's top-level scope and its $script: scope are the same variable table, so a top-level
+# `$script:<Parameter> = <literal>` overwrites the bound parameter (v1.2.0 wrote `$script:Interactive = $false` and
+# the IT launcher opened the user layout): such a line, at any indentation, must use the parameter's own token on the right-hand
+# side. Outside a function the same holds for unscoped assignments and for Set-Variable / New-Variable without -Scope.
+def overwritten_parameters(text):
+    head=text.split('\n)',1)[0]; params={x.lower() for x in re.findall(r'\[[\w\[\].]+\]\$(\w+)',head)}
+    param_end=head.count('\n')+2   # the line holding the param block's closing ')'; defaults inside the block are not overwrites
+    hits=[]; in_function=False
+    # The only accepted initializer is the parameter itself: $Name or ${Name} (any case), optionally inside ( ) or @( ),
+    # with at most one [type] cast outside or inside the parentheses and an optional .IsPresent. Anything else - a literal,
+    # `$Name -and $false`, `"$Name"`, `$Name.Trim()`, `'a' + $Name` - is treated as an overwrite: a transformed value
+    # belongs in a script variable with a different name.
+    cast=r'(?:\[[\w.\[\]]+\]\s*)?'
+    token=lambda name,expr: re.match(r'^'+cast+r'(?:@?\(\s*)?'+cast+r'\$\{?'+re.escape(name)+r'\}?(?:\.IsPresent)?\s*\)?$',expr.strip(),re.I) is not None
+    # code: strings masked with spaces (a $Name, a `sv` or a `$script:X =` inside a string is text); raw: the same logical
+    # line with strings intact, same length, for the cmdlet's -Name / -Scope values.
+    for (n,code),(_,raw) in zip(logical_lines(text,blank_single=True,blank_double=True),logical_lines(text)):
+        if n<=param_end: continue
+        # Every function in these files opens with `function Name {` and closes with a column-0 `}`; everything else is
+        # top level, where try / if / foreach blocks create no scope, so "local" means the script scope there.
+        local=in_function
+        if re.match(r'^function\s',code):
+            # The declaration line is scanned as a body line: unscoped assignments on it are locals, explicit $script: /
+            # $global: ones are not. A one-line `function F { ... }` is closed on its own line.
+            local=True; in_function=('{' not in code) or (code.count('{')!=code.count('}'))
+        elif code.rstrip()=='}': in_function=False
+        # Assignment statements at every statement start of the line (line start, after `{`, `;` or `(` - if / try / foreach
+        # blocks create no scope, and an assignment is also an expression): $Name, ${Name}, $script:Name, $Script:Name, ${script:Name}, ...,
+        # with or without type constraints / attributes in front ([bool]$script:Name = ..., [ValidateNotNull()][string[]]$Name = ...).
+        # Names are case-insensitive like PowerShell's. The assigned expression (read up to the next `;` or `}`) must be the
+        # parameter itself (see `token` above); comments and single-quoted strings were removed before matching.
+        # Plain `=` must copy the parameter itself; a compound assignment (+= -= *= /= %=) or an increment / decrement
+        # (prefix or postfix ++ / --) always changes the value and is an overwrite whatever follows.
+        overwrite=lambda scope,name: name.lower() in params and (scope in ('script','global') or (scope in ('','local','private') and not local))
+        for m in re.finditer(r'(?:^|[{;(])\s*(?:\[[^=]*?\]\s*)*\$\{?(?:(\w+):)?(\w+)\}?\s*(?:(\+\+|--)|([-+*/%]?=)(?!=)\s*([^;}]*))',code,re.I):
+            if overwrite((m.group(1) or '').lower(),m.group(2)) and (m.group(3) or m.group(4)!='=' or not token(m.group(2),m.group(5))): hits.append(f'{n} (${m.group(2)})')
+        for m in re.finditer(r'(?:^|[{;(])\s*(?:\+\+|--)\$\{?(?:(\w+):)?(\w+)\}?',code,re.I):   # prefix ++ / --
+            if overwrite((m.group(1) or '').lower(),m.group(2)): hits.append(f'{n} (${m.group(2)})')
+        # Set-Variable / New-Variable reach the same variable through the cmdlet interface: -Scope Script / Global (or a
+        # numeric parent scope) anywhere, or no -Scope / -Scope Local / -Scope 0 at the top level. -Name may be positional;
+        # -Name and -Scope may be abbreviated; the aliases sv / nv count as the cmdlets.
+        for gate in re.finditer(r'(?<![\w$])(?:(?:Set|New)-Variable|sv|nv)\b',code,re.I):   # every cmdlet / alias outside strings
+            end=code.find(';',gate.end()); seg=raw[gate.start():(end if end>=0 else len(raw))]   # this invocation only; values may be quoted, so read the intact text
+            nm=re.search(abbr('name')+r'\s+["\']?(\w+)',seg,re.I) or re.search(r'(?<![\w$])(?:(?:Set|New)-Variable|sv|nv)\s+(?!-)["\']?(\w+)',seg,re.I)
+            sc=re.search(abbr('scope')+r'\s+["\']?(\w+)',seg,re.I); scope=(sc.group(1).lower() if sc else '')
+            # -Scope 0 is the current scope (like no -Scope); 1 and higher are parent scopes and always reach past a function.
+            if nm and nm.group(1).lower() in params and (scope in ('script','global') or (scope.isdigit() and int(scope)>=1) or (scope in ('','local','0') and not local)):
+                hits.append(f'{n} (Set-Variable {nm.group(1)})')
+        # Item cmdlets on the Variable: drive write the same variable table (Set-Item / Set-Content / New-Item / Clear-Item /
+        # Remove-Item and their aliases with a Variable:<Name> path); they have no -Scope, so they behave like an unscoped call.
+        for gate in re.finditer(r'(?<![\w$])(?:Set-Item|Set-Content|New-Item|Clear-Item|Remove-Item|si|sc|ni|cli|ri|rm|del|erase|rd|rmdir)\b',code,re.I):
+            end=code.find(';',gate.end()); seg=raw[gate.start():(end if end>=0 else len(raw))]
+            for v in re.finditer(r'variable:(\w+)',seg,re.I):
+                if v.group(1).lower() in params and not local: hits.append(f'{n} ({gate.group(0)} Variable:{v.group(1)})')
+    return list(dict.fromkeys(hits))
+for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
+    hits=overwritten_parameters(read_text(ROOT/rel)); ok('parameters not overwritten at script scope '+rel,not hits,'lines '+', '.join(hits) if hits else '')
 # Hash manifest is checked if already present.
 manifest=ROOT/'SHA256SUMS.txt'
 if manifest.exists():
