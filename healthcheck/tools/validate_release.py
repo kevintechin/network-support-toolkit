@@ -74,6 +74,8 @@ for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
 # (Invoke-Expression, splatted argument lists) is outside their scope by design.
 def strip_block_comments(text):
     # <# ... #> may span lines; it is replaced by the newlines it contained so that reported line numbers stay valid.
+    # PowerShell block comments do not nest (language specification 2.2.3, 'Comments do not nest'; verified on Windows
+    # PowerShell 5.1: the first #> ends the comment and code after it runs), so the non-greedy match models the real parser.
     return re.sub(r'<#.*?#>',lambda m: '\n'*m.group(0).count('\n'),text,flags=re.S)
 def strip_line_comment(line, blank_single=False):
     # Drop <# ... #> and a trailing # comment that is outside single / double quotes, so comments never hide or fake a

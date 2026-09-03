@@ -71,6 +71,12 @@ The guards' remaining boundary is stated in the validator: code inside here-stri
 
 Re-validation after round 7 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 8 · 2026-09-03.** One P2 finding on commit ecdd32c, rejected with evidence:
+
+1. *"Strip block comments with nesting-aware state; the first `#>` should not close a nested `<#`."* PowerShell block comments do not nest — the language specification (2.2.3, "Comments do not nest") and Windows PowerShell 5.1 agree: in a file containing `<# outer <# inner #>` followed by `$x = 1` and a closing `#>` line, the assignment executes (`x = 1`) and `PSParser.Tokenize` reports the comment as ending at the first `#>`. The guard's non-greedy match therefore models the real parser; a nesting-aware stripper would classify executable code as a comment and hide exactly the overwrite the guard exists to catch. The validator now states this next to `strip_block_comments` (comment only; manifest regenerated).
+
+Review loop closed: eight Codex passes on PR #4, eight findings fixed in seven rounds (rounds 6 and 7 requested by the maintainer after the five-round limit), one finding rejected with evidence. The shipped scripts are unchanged since the UI Automation runs of commit ade80fd.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
