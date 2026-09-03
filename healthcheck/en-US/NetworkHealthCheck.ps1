@@ -31,14 +31,13 @@ param(
 # - Read-only: the script does not change IP, DNS, routes, firewall, or adapter state.
 # - Fault isolation: each diagnostic step is wrapped so one failure does not prevent
 #   the remaining checks from running.
-# - Traceability: detailed exception type, message, location, and script stack are
-#   stored in the report whenever PowerShell exposes those values.
+# - Traceability: exception type, message, and inner exceptions are stored in every
+#   report; script location and call stack go to the JSON report only (Diagnostics).
 
-$script:ToolVersion = "1.1.3"
+$script:ToolVersion = "1.1.4"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Results = New-Object System.Collections.ArrayList
 $script:StartupMessages = New-Object System.Collections.ArrayList
-$script:NetworkSnapshot = @()
 $script:PrimaryAdapters = @()
 $script:LastHtmlReport = $null
 $script:LastTextReport = $null
@@ -59,6 +58,7 @@ $script:OpenFolderButton = $null
 $script:ReportPathLabel = $null
 $script:Config = $null
 $script:ConfigLoadError = $null
+$script:ConfigLoadDiagnostics = ""
 $script:UsingFallbackOutputDirectory = $false
 
 try {
@@ -140,20 +140,88 @@ function ConvertTo-IntSafe {
         [int]$DefaultValue = 0
     )
 
-    if ($null -eq $Value) {
+    if (-not (Test-IsWholeNumber $Value)) {
         return $DefaultValue
     }
 
     try {
-        return [int]$Value
+        return [int](ConvertTo-DoubleSafe $Value 0)
     }
     catch {
         return $DefaultValue
     }
 }
 
+function ConvertTo-DoubleSafe {
+    param(
+        [object]$Value,
+        [double]$DefaultValue = 0
+    )
+
+    if ($null -eq $Value -or $Value -is [bool]) {
+        return $DefaultValue
+    }
+
+    try {
+        if ($Value -is [string]) {
+            $parsed = 0.0
+            if ([double]::TryParse($Value, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed) -and -not [double]::IsNaN($parsed) -and -not [double]::IsInfinity($parsed)) {
+                return $parsed
+            }
+            return $DefaultValue
+        }
+        $converted = [double]$Value
+        if ([double]::IsNaN($converted) -or [double]::IsInfinity($converted)) {
+            return $DefaultValue
+        }
+        return $converted
+    }
+    catch {
+        return $DefaultValue
+    }
+}
+
+function Test-IsNumericValue {
+    param([object]$Value)
+
+    if ($null -eq $Value -or $Value -is [bool]) {
+        return $false
+    }
+
+    if ($Value -is [string]) {
+        $parsed = 0.0
+        if (-not [double]::TryParse($Value, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) {
+            return $false
+        }
+        return (-not [double]::IsNaN($parsed) -and -not [double]::IsInfinity($parsed))
+    }
+
+    try {
+        $converted = [double]$Value
+        return (-not [double]::IsNaN($converted) -and -not [double]::IsInfinity($converted))
+    }
+    catch {
+        return $false
+    }
+}
+
+function Test-IsWholeNumber {
+    param([object]$Value)
+
+    if (-not (Test-IsNumericValue $Value)) {
+        return $false
+    }
+
+    $converted = ConvertTo-DoubleSafe $Value 0
+    return ([math]::Floor($converted) -eq $converted -and $converted -ge [int]::MinValue -and $converted -le [int]::MaxValue)
+}
+
+# Backlog #11: human-readable summary only; script location and call stack go to Get-ExceptionDiagnostics (JSON report).
 function Get-ExceptionDetails {
-    param([object]$ErrorRecord)
+    param(
+        [object]$ErrorRecord,
+        [switch]$IncludeDiagnostics
+    )
 
     if ($null -eq $ErrorRecord) {
         return "Unknown error"
@@ -162,9 +230,6 @@ function Get-ExceptionDetails {
     try {
         $message = $ErrorRecord.Exception.Message
         $typeName = $ErrorRecord.Exception.GetType().FullName
-        $position = ConvertTo-SafeString $ErrorRecord.InvocationInfo.PositionMessage
-        $stack = ConvertTo-SafeString $ErrorRecord.ScriptStackTrace
-
         $parts = @("Error type: $typeName", "Message: $message")
         $inner = $ErrorRecord.Exception.InnerException
         $innerIndex = 1
@@ -173,6 +238,31 @@ function Get-ExceptionDetails {
             $inner = $inner.InnerException
             $innerIndex++
         }
+        if ($IncludeDiagnostics) {
+            $diagnostics = Get-ExceptionDiagnostics $ErrorRecord
+            if (-not [string]::IsNullOrWhiteSpace($diagnostics)) {
+                $parts += $diagnostics
+            }
+        }
+        return ($parts -join [Environment]::NewLine)
+    }
+    catch {
+        return [string]$ErrorRecord
+    }
+}
+
+function Get-ExceptionDiagnostics {
+    param([object]$ErrorRecord)
+
+    if ($null -eq $ErrorRecord) {
+        return ""
+    }
+
+    try {
+        $position = ConvertTo-SafeString $ErrorRecord.InvocationInfo.PositionMessage
+        $stack = ConvertTo-SafeString $ErrorRecord.ScriptStackTrace
+
+        $parts = @()
         if (-not [string]::IsNullOrWhiteSpace($position)) {
             $parts += "Location: $position"
         }
@@ -182,7 +272,7 @@ function Get-ExceptionDetails {
         return ($parts -join [Environment]::NewLine)
     }
     catch {
-        return [string]$ErrorRecord
+        return ""
     }
 }
 
@@ -291,7 +381,8 @@ function Add-CheckResult {
         [Parameter(Mandatory = $true)][string]$Check,
         [Parameter(Mandatory = $true)][ValidateSet("PASS", "WARN", "FAIL", "INFO", "ERROR")][string]$Status,
         [Parameter(Mandatory = $true)][string]$Message,
-        [string]$Details = ""
+        [string]$Details = "",
+        [string]$Diagnostics = ""
     )
 
     $item = [pscustomobject][ordered]@{
@@ -300,7 +391,8 @@ function Add-CheckResult {
         Check    = $Check
         Status   = $Status
         Message  = $Message
-        Details  = $Details
+        Details     = $Details
+        Diagnostics = $Diagnostics
     }
 
     [void]$script:Results.Add($item)
@@ -324,7 +416,8 @@ function Invoke-CheckStep {
     }
     catch {
         $details = Get-ExceptionDetails $_
-        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "This item could not be executed. The error has been recorded." -Details $details | Out-Null
+        $diagnostics = Get-ExceptionDiagnostics $_
+        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "This item could not be executed. The error has been recorded." -Details $details -Diagnostics $diagnostics | Out-Null
         return $null
     }
 }
@@ -468,6 +561,7 @@ function Load-Configuration {
         return (Merge-ConfigObject -DefaultObject $defaultConfig -OverrideObject $overrideConfig)
     }
     catch {
+        $script:ConfigLoadDiagnostics = Get-ExceptionDiagnostics $_
         $script:ConfigLoadError = "The configuration file is invalid. Built-in defaults will be used.`r`n$(Get-ExceptionDetails $_)"
         return $defaultConfig
     }
@@ -825,6 +919,19 @@ function Get-NetworkSnapshotFromCim {
             $linkSpeed = Convert-LinkSpeedToText $adapter.Speed
         }
 
+        # Backlog #5: keep only IPv4 gateways (DefaultIPGateway may also list IPv6 next hops) and preserve an unknown DHCP state.
+        $gateways = @()
+        foreach ($gateway in @($config.DefaultIPGateway)) {
+            if (Test-IsValidIPv4Address ([string]$gateway)) {
+                $gateways += [string]$gateway
+            }
+        }
+
+        $dhcpEnabled = $null
+        if ($null -ne $config.DHCPEnabled) {
+            $dhcpEnabled = [bool]$config.DHCPEnabled
+        }
+
         [void]$items.Add([pscustomobject][ordered]@{
             Name            = $name
             Description     = $description
@@ -837,9 +944,9 @@ function Get-NetworkSnapshotFromCim {
             IPv4Prefixes    = $ipv4Prefixes
             IPv4WithPrefix  = $ipv4WithPrefix
             IPv6Addresses   = $ipv6Addresses
-            Gateways        = @($config.DefaultIPGateway)
+            Gateways        = $gateways
             DnsServers      = @($config.DNSServerSearchOrder)
-            DhcpEnabled     = [bool]$config.DHCPEnabled
+            DhcpEnabled     = $dhcpEnabled
             Source          = "CIM/WMI"
         })
     }
@@ -856,7 +963,7 @@ function Get-NetworkSnapshot {
             }
         }
         catch {
-            Add-CheckResult -Category "Network Adapter and IP" -Check "Data Source Fallback" -Status "WARN" -Message "Get-NetIPConfiguration could not retrieve data. CIM/WMI will be used instead." -Details (Get-ExceptionDetails $_) | Out-Null
+            Add-CheckResult -Category "Network Adapter and IP" -Check "Data Source Fallback" -Status "WARN" -Message "Get-NetIPConfiguration could not retrieve data. CIM/WMI will be used instead." -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) | Out-Null
         }
     }
 
@@ -1032,19 +1139,42 @@ function Test-ConfigurationSemantics {
         [pscustomobject]@{ Name = "HttpTimeoutMs"; Value = $tests.HttpTimeoutMs },
         [pscustomobject]@{ Name = "RetransmissionSampleSeconds"; Value = $tests.RetransmissionSampleSeconds }
     )) {
-        if ((ConvertTo-IntSafe $setting.Value 0) -le 0) {
+        if ($null -ne $setting.Value -and -not (Test-IsWholeNumber $setting.Value)) {
+            [void]$warnings.Add("$($setting.Name) must be a whole number in the supported range (current value: $($setting.Value)); the built-in default will be used.")
+        }
+        elseif ((ConvertTo-IntSafe $setting.Value 0) -le 0) {
             [void]$warnings.Add("$($setting.Name) should be greater than 0; the built-in minimum will be applied.")
         }
     }
 
-    $warningLoss = ConvertTo-IntSafe $thresholds.PacketLossWarningPercent 5
-    $criticalLoss = ConvertTo-IntSafe $thresholds.PacketLossCriticalPercent 20
+    $countThresholdNames = @("TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")
+    foreach ($thresholdName in @("PacketLossWarningPercent", "PacketLossCriticalPercent", "LatencyWarningMs", "LatencyCriticalMs", "TcpRetransmissionWarningPercent", "TcpRetransmissionCriticalPercent", "TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")) {
+        $thresholdValue = Get-PropertyValue $thresholds $thresholdName
+        if ($null -eq $thresholdValue) {
+            continue
+        }
+        if (-not (Test-IsNumericValue $thresholdValue)) {
+            [void]$warnings.Add("$thresholdName is not a number (current value: $thresholdValue); the built-in default will be used.")
+        }
+        elseif (($countThresholdNames -contains $thresholdName) -and -not (Test-IsWholeNumber $thresholdValue)) {
+            [void]$warnings.Add("$thresholdName must be a whole number in the supported range (current value: $thresholdValue); the built-in default will be used.")
+        }
+    }
+
+    $warningLoss = ConvertTo-DoubleSafe $thresholds.PacketLossWarningPercent 5
+    $criticalLoss = ConvertTo-DoubleSafe $thresholds.PacketLossCriticalPercent 20
     if ($warningLoss -lt 0 -or $criticalLoss -lt $warningLoss) {
         [void]$warnings.Add("Packet-loss thresholds are not ordered correctly: Warning=$warningLoss, Critical=$criticalLoss.")
     }
 
-    $warningRetrans = [double](Get-PropertyValue $thresholds "TcpRetransmissionWarningPercent" 2)
-    $criticalRetrans = [double](Get-PropertyValue $thresholds "TcpRetransmissionCriticalPercent" 5)
+    $warningLatency = ConvertTo-DoubleSafe $thresholds.LatencyWarningMs 100
+    $criticalLatency = ConvertTo-DoubleSafe $thresholds.LatencyCriticalMs 250
+    if ($warningLatency -lt 0 -or $criticalLatency -lt $warningLatency) {
+        [void]$warnings.Add("Latency thresholds are not ordered correctly: Warning=$warningLatency, Critical=$criticalLatency.")
+    }
+
+    $warningRetrans = ConvertTo-DoubleSafe (Get-PropertyValue $thresholds "TcpRetransmissionWarningPercent" 2) 2
+    $criticalRetrans = ConvertTo-DoubleSafe (Get-PropertyValue $thresholds "TcpRetransmissionCriticalPercent" 5) 5
     if ($warningRetrans -lt 0 -or $criticalRetrans -lt $warningRetrans) {
         [void]$warnings.Add("TCP retransmission thresholds are not ordered correctly: Warning=$warningRetrans, Critical=$criticalRetrans.")
     }
@@ -1366,10 +1496,10 @@ function Test-PingTargets {
 
     $count = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.PingCount 4))
     $timeout = [math]::Max(250, (ConvertTo-IntSafe $script:Config.Tests.PingTimeoutMs 1200))
-    $warningLoss = [double](ConvertTo-IntSafe $script:Config.Thresholds.PacketLossWarningPercent 5)
-    $criticalLoss = [double](ConvertTo-IntSafe $script:Config.Thresholds.PacketLossCriticalPercent 20)
-    $warningLatency = [double](ConvertTo-IntSafe $script:Config.Thresholds.LatencyWarningMs 100)
-    $criticalLatency = [double](ConvertTo-IntSafe $script:Config.Thresholds.LatencyCriticalMs 250)
+    $warningLoss = ConvertTo-DoubleSafe $script:Config.Thresholds.PacketLossWarningPercent 5
+    $criticalLoss = ConvertTo-DoubleSafe $script:Config.Thresholds.PacketLossCriticalPercent 20
+    $warningLatency = ConvertTo-DoubleSafe $script:Config.Thresholds.LatencyWarningMs 100
+    $criticalLatency = ConvertTo-DoubleSafe $script:Config.Thresholds.LatencyCriticalMs 250
 
     foreach ($targetConfig in @($script:Config.Tests.PingTargets)) {
         if ($null -eq $targetConfig) { continue }
@@ -1425,7 +1555,7 @@ function Test-PingTargets {
             }
             catch {
                 $status = if ($required) { "ERROR" } else { "INFO" }
-                Add-CheckResult -Category "Latency and Packet Loss" -Check ("{0}: {1}" -f $name, $target) -Status $status -Message "The ping test could not be performed." -Details (Get-ExceptionDetails $_) | Out-Null
+                Add-CheckResult -Category "Latency and Packet Loss" -Check ("{0}: {1}" -f $name, $target) -Status $status -Message "The ping test could not be performed." -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) | Out-Null
             }
         }
     }
@@ -1490,7 +1620,7 @@ function Test-DnsNames {
         }
         catch {
             $status = if ($required) { "FAIL" } else { "WARN" }
-            Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("Unable to resolve $hostName.") -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + $methodText + [Environment]::NewLine + "Manual check: nslookup $hostName") | Out-Null
+            Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("Unable to resolve $hostName.") -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + $methodText + [Environment]::NewLine + "Manual check: nslookup $hostName") -Diagnostics (Get-ExceptionDiagnostics $_) | Out-Null
         }
     }
 }
@@ -1902,8 +2032,9 @@ function Get-TcpCounterSnapshot {
         }
         catch {
             [void]$errors.Add([pscustomobject]@{
-                Protocol = $protocol
-                Error    = Get-ExceptionDetails $_
+                Protocol    = $protocol
+                Error       = Get-ExceptionDetails $_
+                Diagnostics = Get-ExceptionDiagnostics $_
             })
         }
     }
@@ -1930,11 +2061,11 @@ function Compare-TcpCounters {
     $counterErrors += @($Before.Errors)
     $counterErrors += @($After.Errors)
     foreach ($errorItem in $counterErrors) {
-        Add-CheckResult -Category "TCP Retransmissions" -Check ("{0} counters" -f $errorItem.Protocol) -Status "ERROR" -Message "The TCP retransmission counter could not be read." -Details $errorItem.Error | Out-Null
+        Add-CheckResult -Category "TCP Retransmissions" -Check ("{0} counters" -f $errorItem.Protocol) -Status "ERROR" -Message "The TCP retransmission counter could not be read." -Details $errorItem.Error -Diagnostics $errorItem.Diagnostics | Out-Null
     }
 
-    $warningPercent = [double](Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionWarningPercent" 2)
-    $criticalPercent = [double](Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalPercent" 5)
+    $warningPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionWarningPercent" 2) 2
+    $criticalPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalPercent" 5) 5
     $criticalCount = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalCount" 50) 50)
     $minimumSegments = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
 
@@ -2091,8 +2222,18 @@ function New-HtmlReportContent {
     foreach ($result in $script:Results) {
         $statusClass = ([string]$result.Status).ToLowerInvariant()
         $detailsHtml = ""
-        if (-not [string]::IsNullOrWhiteSpace([string]$result.Details)) {
-            $detailsEncoded = ConvertTo-HtmlEncoded $result.Details
+        $detailsText = [string]$result.Details
+        if (-not [string]::IsNullOrWhiteSpace([string]$result.Diagnostics)) {
+            $diagnosticsNote = "Technical diagnostics (script location and call stack) are recorded in the JSON report only."
+            if ([string]::IsNullOrWhiteSpace($detailsText)) {
+                $detailsText = $diagnosticsNote
+            }
+            else {
+                $detailsText += [Environment]::NewLine + $diagnosticsNote
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($detailsText)) {
+            $detailsEncoded = ConvertTo-HtmlEncoded $detailsText
             $detailsHtml = "<details><summary>Show Details</summary><pre>$detailsEncoded</pre></details>"
         }
 
@@ -2248,6 +2389,9 @@ function New-TextReportContent {
                 [void]$builder.AppendLine("    $line")
             }
         }
+        if (-not [string]::IsNullOrWhiteSpace([string]$result.Diagnostics)) {
+            [void]$builder.AppendLine("    Technical diagnostics (script location and call stack) are recorded in the JSON report only.")
+        }
         [void]$builder.AppendLine("")
     }
 
@@ -2288,7 +2432,7 @@ function Save-Reports {
         $script:LastHtmlReport = $htmlPath
     }
     catch {
-        [void]$writeErrors.Add("Failed to write HTML report: $(Get-ExceptionDetails $_)")
+        [void]$writeErrors.Add("Failed to write HTML report: $(Get-ExceptionDetails $_ -IncludeDiagnostics)")
     }
 
     try {
@@ -2297,7 +2441,7 @@ function Save-Reports {
         $script:LastTextReport = $textPath
     }
     catch {
-        [void]$writeErrors.Add("Failed to write text report: $(Get-ExceptionDetails $_)")
+        [void]$writeErrors.Add("Failed to write text report: $(Get-ExceptionDetails $_ -IncludeDiagnostics)")
     }
 
     try {
@@ -2306,7 +2450,7 @@ function Save-Reports {
         $script:LastJsonReport = $jsonPath
     }
     catch {
-        [void]$writeErrors.Add("Failed to write JSON report: $(Get-ExceptionDetails $_)")
+        [void]$writeErrors.Add("Failed to write JSON report: $(Get-ExceptionDetails $_ -IncludeDiagnostics)")
     }
 
     if ($writeErrors.Count -gt 0) {
@@ -2354,6 +2498,9 @@ function Write-EmergencyReport {
             [void]$partialBuilder.AppendLine(("[{0}] {1} / {2}: {3}" -f (Get-StatusText $result.Status), $result.Category, $result.Check, $result.Message))
             if (-not [string]::IsNullOrWhiteSpace([string]$result.Details)) {
                 [void]$partialBuilder.AppendLine([string]$result.Details)
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$result.Diagnostics)) {
+                [void]$partialBuilder.AppendLine([string]$result.Diagnostics)
             }
             [void]$partialBuilder.AppendLine("")
         }
@@ -2431,7 +2578,7 @@ function Run-AllChecks {
     Set-UiProgress -Percent 2 -Text "Initializing"
 
     if ($null -ne $script:ConfigLoadError) {
-        Add-CheckResult -Category "Program Configuration" -Check "Configuration File" -Status "ERROR" -Message "The configuration file could not be loaded. Built-in defaults were used." -Details $script:ConfigLoadError | Out-Null
+        Add-CheckResult -Category "Program Configuration" -Check "Configuration File" -Status "ERROR" -Message "The configuration file could not be loaded. Built-in defaults were used." -Details $script:ConfigLoadError -Diagnostics $script:ConfigLoadDiagnostics | Out-Null
     }
     else {
         Add-CheckResult -Category "Program Configuration" -Check "Configuration File" -Status "PASS" -Message ("Loaded: {0}" -f $script:EffectiveConfigPath) -Details "" | Out-Null
@@ -2462,11 +2609,10 @@ function Run-AllChecks {
         Add-CheckResult -Category "Program Environment" -Check "PowerShell Version" -Status "PASS" -Message ("Current version: {0}" -f $PSVersionTable.PSVersion) -Details "" | Out-Null
     }
 
-    $systemSummary = Invoke-CheckStep -Category "System Information" -Name "Get Computer and Operating System Information" -Progress 7 -Action {
+    Invoke-CheckStep -Category "System Information" -Name "Get Computer and Operating System Information" -Progress 7 -Action {
         $summary = Get-SystemSummary
         Add-CheckResult -Category "System Information" -Check "Computer" -Status "INFO" -Message ("{0}, user {1}." -f $summary.ComputerName, $summary.UserName) -Details ("Operating system: {0} ({1})`r`nPowerShell: {2}" -f $summary.OperatingSystem, $summary.OperatingVersion, $summary.PowerShellVersion) | Out-Null
-        return $summary
-    }
+    } | Out-Null
 
     $tcpBaseline = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Get TCP Retransmission Baseline" -Progress 10 -Action {
         $snapshot = Get-TcpCounterSnapshot
@@ -2491,7 +2637,6 @@ function Run-AllChecks {
     else {
         $networkSnapshot = @($networkSnapshot)
     }
-    $script:NetworkSnapshot = $networkSnapshot
     $script:PrimaryAdapters = @(Get-PrimaryAdapters -Adapters $networkSnapshot)
 
     Invoke-CheckStep -Category "Network Adapter and IP" -Name "Check Current Network Configuration" -Progress 28 -Action {
@@ -2557,7 +2702,7 @@ function Run-AllChecks {
         return $report
     }
     catch {
-        $details = Get-ExceptionDetails $_
+        $details = Get-ExceptionDetails $_ -IncludeDiagnostics
         Write-UiLog -Status "ERROR" -Text "Report generation failed."
         $emergencyPath = Write-EmergencyReport -Title "Network Health Check Report Generation Failed" -ErrorDetails $details
         if ($script:GuiAvailable) {
@@ -2589,7 +2734,7 @@ function Start-ConsoleMode {
         return 0
     }
     catch {
-        $details = Get-ExceptionDetails $_
+        $details = Get-ExceptionDetails $_ -IncludeDiagnostics
         Write-Host "An unhandled error occurred during the network health check." -ForegroundColor Red
         Write-Host $details
         $emergencyPath = Write-EmergencyReport -Title "Network Health Check Unhandled Error" -ErrorDetails $details
@@ -2733,7 +2878,7 @@ function Initialize-Gui {
             [void](Run-AllChecks)
         }
         catch {
-            $details = Get-ExceptionDetails $_
+            $details = Get-ExceptionDetails $_ -IncludeDiagnostics
             Write-UiLog -Status "ERROR" -Text "An unhandled error occurred during the test."
             $emergencyPath = Write-EmergencyReport -Title "Network Health Check Unhandled Error" -ErrorDetails $details
             $message = "The test could not be completed."
@@ -2831,7 +2976,7 @@ try {
     }
 }
 catch {
-    $details = Get-ExceptionDetails $_
+    $details = Get-ExceptionDetails $_ -IncludeDiagnostics
     Write-Host "The network health check could not be started." -ForegroundColor Red
     Write-Host $details
     $emergencyPath = Write-EmergencyReport -Title "Network Health Check Startup Failure" -ErrorDetails $details

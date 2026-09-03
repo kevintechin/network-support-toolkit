@@ -1,8 +1,8 @@
-﻿# NetworkHealthCheck Portable 1.1.3: Features, Design, Validation, and Limitations
+﻿# NetworkHealthCheck Portable 1.1.4: Features, Design, Validation, and Limitations
 
 ## 1. Purpose
 
-This document describes the features, architecture, decision rules, error handling, validation approach, known limitations, and source-comment strategy of the portable `NetworkHealthCheck` tool. It applies to version **1.1.3** and to both the Traditional Chinese and English packages. The executable logic is the same; user-visible text, default test names, and comment language are localized separately.
+This document describes the features, architecture, decision rules, error handling, validation approach, known limitations, and source-comment strategy of the portable `NetworkHealthCheck` tool. It applies to version **1.1.4** and to both the Traditional Chinese and English packages. The executable logic is the same; user-visible text, default test names, and comment language are localized separately.
 
 ## 2. Product scope
 
@@ -29,13 +29,13 @@ The tool is read-only with respect to system configuration. It does not change I
 
 The program creates safe built-in defaults, reads the JSON file, and recursively merges overrides. A missing or malformed configuration does not terminate the whole run. Built-in defaults are used, the reason is recorded as `ERROR / Unable to Check`, and other executable checks continue.
 
-Semantic validation covers IPv4 addresses, CIDRs, prefix lengths, gateways, DNS servers, DHCP Boolean state, TCP host/port values, HTTP/HTTPS URLs, DNS targets, and primary timeout values. Some inconsistent thresholds produce warnings. Semantic errors do not currently remove every affected value automatically, so an invalid setting can still make a related result meaningless; the report states this explicitly.
+Semantic validation covers IPv4 addresses, CIDRs, prefix lengths, gateways, DNS servers, DHCP Boolean state, TCP host/port values, HTTP/HTTPS URLs, DNS targets, and primary timeout values. Some inconsistent thresholds produce warnings. Since 1.1.4, every numeric threshold is parsed by a culture-invariant, non-throwing converter: a non-numeric value (Booleans, NaN and infinities included) is listed in the configuration warnings and replaced by the built-in default, and decimal thresholds (for example `2.5`) are honored instead of being rounded to integers. Count-based settings — the adapter error/discard deltas, `TcpRetransmissionCriticalCount`, `MinimumTcpSegmentsForRate`, `PingCount` and the timeouts — must be whole numbers within the 32-bit integer range; a decimal or out-of-range value there is reported and replaced by the default rather than silently changed. Semantic errors do not currently remove every affected value automatically, so an invalid setting can still make a related result meaningless; the report states this explicitly.
 
 ### 4.2 Adapter and IP discovery
 
 The preferred source is `Get-NetIPConfiguration`, `Get-NetIPInterface`, and NetAdapter/NetTCPIP objects. If those are unavailable or fail to provide data, the program falls back to CIM/WMI `Win32_NetworkAdapterConfiguration` and `Win32_NetworkAdapter`.
 
-Collected fields include interface name, description, index, link speed, MAC, network profile, IPv4/IPv6, prefixes, gateways, DNS, DHCP state, and source. Adapters with IPv4 plus a gateway are treated as primary; if none exist, adapters with IPv4 are used.
+Collected fields include interface name, description, index, link speed, MAC, network profile, IPv4/IPv6, prefixes, gateways, DNS, DHCP state, and source. Adapters with IPv4 plus a gateway are treated as primary; if none exist, adapters with IPv4 are used. In the CIM/WMI fallback (1.1.4), only IPv4 next hops from `DefaultIPGateway` count as gateways, and a missing `DHCPEnabled` value is reported as unknown rather than as static.
 
 Base rules:
 
@@ -138,7 +138,7 @@ Any `FAIL` produces Problem Detected. With no failure but at least one unexecute
 ## 5. Error-handling design
 
 - Every major step is wrapped by `Invoke-CheckStep`; exceptions become `ERROR` results and later checks continue.
-- `Get-ExceptionDetails` records exception type, message, up to five inner exceptions, position, and script stack when PowerShell exposes them.
+- `Get-ExceptionDetails` records exception type, message, and up to five inner exceptions. Since 1.1.4 the script position and call stack are collected separately by `Get-ExceptionDiagnostics` and stored only in the JSON report's `Diagnostics` field; the HTML and text reports show a one-line pointer instead, so local file paths never render in the human-facing reports. The emergency (`FATAL`) file still carries the full detail.
 - GUI initialization failure falls back to console mode.
 - An unwritable report directory falls back to `%TEMP%\NetworkHealthCheck\Reports`.
 - HTML, TXT, and JSON are attempted separately. A write failure is displayed and an emergency text report is attempted.
@@ -146,7 +146,7 @@ Any `FAIL` produces Problem Detected. With no failure but at least one unexecute
 
 ## 6. Source design and comments
 
-The program consists of 56 named functions grouped into helpers, configuration, system discovery, policy comparison, active tests, counters, reporting, orchestration, and GUI.
+The program consists of 60 named functions grouped into helpers, configuration, system discovery, policy comparison, active tests, counters, reporting, orchestration, and GUI.
 
 Version 1.1.0 adds:
 
@@ -168,7 +168,7 @@ The build performed checks that do not require a Windows network environment:
 3. PowerShell/JSON use UTF-8 BOM and Windows scripts use CRLF.
 4. English PowerShell, configuration, and README contain no Chinese user-facing text.
 5. After removing strings and comments, the English and Chinese PowerShell executable skeletons are identical.
-6. Both sources expose the same 56-function set.
+6. Both sources expose the same 60-function set.
 7. Launchers reference `NetworkHealthCheck.ps1` correctly.
 8. Every SHA-256 entry is recalculated and compared.
 9. ZIP integrity tests report no damaged members.
@@ -177,7 +177,7 @@ The validator is `tools/validate_release.py`; run it against the package root to
 
 ### 7.2 Validation status on Windows
 
-The original 1.1.0 package was produced in a non-Windows build environment, so Windows Forms, NetTCPIP, NetAdapter, CIM/WMI performance counters, and real network operations could not be executed at packaging time. Since then, versions 1.1.1–1.1.3 (2026-07-28/30) have completed full Windows validation on Windows 11 with Windows PowerShell 5.1: real-machine acceptance runs of both language versions, an independent code review, and five author-executed fault-injection scenarios. The current record is maintained in `../VALIDATION.md`. Static validation still does not replace Windows acceptance testing — the two complement each other.
+The original 1.1.0 package was produced in a non-Windows build environment, so Windows Forms, NetTCPIP, NetAdapter, CIM/WMI performance counters, and real network operations could not be executed at packaging time. Since then, versions 1.1.1–1.1.3 (2026-07-28/30) have completed full Windows validation on Windows 11 with Windows PowerShell 5.1: real-machine acceptance runs of both language versions, an independent code review, and five author-executed fault-injection scenarios. The current record is maintained in `../VALIDATION.md`. Version 1.1.4 (2026-09-03) closes backlog items #4, #5, #6, and #11 (threshold parsing, CIM-fallback gateway/DHCP semantics, dead stores, stack traces kept out of HTML/TXT) and was re-validated with the same chain: parser, validator, helper unit tests, acceptance runs of both languages, and a fault-injection configuration. Static validation still does not replace Windows acceptance testing — the two complement each other.
 
 ### 7.3 Recommended Windows acceptance matrix
 
@@ -210,7 +210,7 @@ Acceptance should cross-check reports against `Get-NetIPConfiguration`, `Get-Net
 8. **HTTP GET reaches the target service.** Use approved, side-effect-free health URLs. Targets may log source IP, User-Agent, or proxy-authentication activity.
 9. **Thresholds require calibration.** Defaults are not guaranteed for Wi-Fi, VPN, satellite, international WAN, data center, or high-throughput servers.
 10. **Policy and endpoint security can block data.** AppLocker, WDAC, EDR, WMI policy, or damaged performance counters produce `ERROR`, not proof of a network defect.
-11. **Reports contain sensitive data.** Computer/user names, MAC/IP/DNS, internal services, and exception stacks may be present.
+11. **Reports contain sensitive data.** Computer/user names, MAC/IP/DNS, internal services, and exception stacks (JSON report only, with local script paths) may be present.
 12. **No automatic repair.** Diagnosis is intentionally separated from configuration changes.
 
 ## 9. Release and maintenance guidance

@@ -1,5 +1,56 @@
 # Validation Record — NetworkHealthCheck
 
+## v1.1.4 · 2026-09-03
+
+**Changes** (backlog #4, #5, #6, #11 — see the backlog below):
+
+- **#4 Threshold parsing** — new `ConvertTo-DoubleSafe` / `Test-IsNumericValue` helpers (culture-invariant, non-throwing). Packet-loss, latency and TCP-retransmission thresholds keep decimals instead of being rounded to integers; a non-numeric threshold no longer throws inside the configuration check (which used to degrade that whole step to ERROR) — it is listed in the "Configuration Thresholds" warning and the built-in default is used. Latency thresholds now get the same ordering check as packet loss and retransmissions.
+- **#5 CIM/WMI fallback** — only IPv4 next hops from `DefaultIPGateway` count as gateways (an IPv6 gateway can no longer satisfy the IPv4 default-gateway check); a null `DHCPEnabled` is reported as unknown instead of "Disabled (static IP)". Verified by unit test of the filter and by review; the fallback path itself was not fault-injected (NetTCPIP is available on the test machine).
+- **#6 Dead stores** — `$script:NetworkSnapshot` and the unused `$systemSummary` capture in `Run-AllChecks` removed.
+- **#11 Stack traces** — `Get-ExceptionDetails` now returns the human-readable summary (type, message, inner exceptions); script position and call stack are collected by the new `Get-ExceptionDiagnostics` and stored in a new `Diagnostics` field on every result. HTML and text reports never render it (they show a one-line pointer to the JSON report); the JSON report carries it; the emergency FATAL file keeps the full detail via `-IncludeDiagnostics`. JSON `SchemaVersion` stays 1 — the field is additive.
+- Function count 56 → 59; validator updated (`TOOL_VERSION` / `FUNCTION_COUNT` constants, stale "version 1.1.0" label fixed).
+
+**Re-validation (Windows 11, Windows PowerShell 5.1.26100):**
+
+| Step | Result |
+|---|---|
+| PS 5.1 parser, both languages | 0 errors × 2 |
+| `validate_release.py` | 54 passed, 0 failed — skeleton identical, 59 = 59 functions, no CJK in en-US, SHA256 regenerated |
+| Helper unit tests (functions extracted via the PowerShell AST, run against both language files) | 26 passed × 2 — decimals kept; `"abc"`, `"5%"`, `"2,5"`, booleans → default; summary/diagnostics split; IPv4-only gateway filter; null DHCP stays unknown |
+| Acceptance, en-US console | exit 0, 22 results, tool version 1.1.4, 11 Method / 10 Manual-check lines, every result carries `Diagnostics` (all empty on a healthy run), no call-stack or location text in HTML/TXT |
+| Acceptance, zh-TW console | exit 0, Overall Healthy, 22 results, 11 / 10 lines, no call-stack or location text in HTML/TXT |
+| Fault-injection config — `PacketLossWarningPercent:"abc"`, `TcpRetransmissionWarningPercent:"x"`, `AdapterErrorWarningDelta:true`, `LatencyWarningMs:100.5`, `TcpRetransmissionCriticalPercent:2.5`, DNS name `nonexistent.invalid` | exit 0; "Configuration Thresholds" WARN lists exactly the three non-numeric values and the run continues on defaults (previously the raw `[double]` cast threw); the DNS failure carries type / message / inner errors in Details and `Location` + `Call stack` only in JSON `Diagnostics`; HTML/TXT show the pointer line and contain no stack or path |
+
+The first en-US acceptance run ended "Attention Required" because TCPv4 retransmissions were 4.1 % during the sample window — a live-network condition above the 2 % warning threshold, not a code effect. The final re-run of both language versions on the finished files (after the header-comment and documentation edits) was **Overall Healthy**: Pass 19 / Warning 0 / Fail 0 / Unable-to-check 0 / Information 3, exit 0, in each language.
+
+**Independent review — Codex (`chatgpt-codex-connector`), PR #1, round 1 · 2026-09-03.** Three P2 findings on commit 84cf529, all accepted and fixed in the same PR:
+
+1. *Rejected integer thresholds still reached `ConvertTo-IntSafe`.* A JSON Boolean was reported as invalid, but `[int]$true` = 1 was then used at runtime (e.g. `AdapterErrorCriticalDelta: true` turned one adapter error into a FAIL instead of using 10; the TCP count and minimum-sample thresholds likewise). Fix: `ConvertTo-IntSafe` treats Booleans like null and returns the default, so the reported fallback actually happens.
+2. *Non-finite thresholds accepted.* `"NaN"` and `"Infinity"` pass `Double.TryParse`, and every comparison against NaN is false, so excessive loss / latency / retransmissions would have stayed PASS. Fix: `ConvertTo-DoubleSafe` and `Test-IsNumericValue` require a finite value.
+3. *Configuration-parse diagnostics dropped from JSON.* `Load-Configuration` kept only the summary, so a malformed config lost its stack everywhere. Fix: the catch also stores `Get-ExceptionDiagnostics`, and the "Configuration File" result carries it in `Diagnostics` (JSON only, like every other exception path).
+
+Re-validation after round 1: parser 0 errors × 2; validator 54/54; unit tests 36 × 2 (new cases: Boolean → default for integers; `"NaN"`, `"Infinity"`, `[double]::NaN` → default and non-numeric); acceptance en-US and zh-TW Overall Healthy, exit 0; a fault config with `"NaN"` and two Boolean integer thresholds lists all three in the threshold warning; a malformed config file yields the "Configuration File" ERROR with `Diagnostics` populated in JSON and no stack in HTML/TXT.
+
+**Independent review — Codex, PR #1, round 2 · 2026-09-03.** One P2 finding on commit 61bb3a4, accepted and fixed:
+
+1. *Report-write failures lost their original diagnostics.* The three `Save-Reports` catch blocks built their strings with the summary-only `Get-ExceptionDetails`, then threw a new string; the emergency FATAL file therefore recorded the location/stack of that later `throw`, not of the original write failure — a regression against the documented "FATAL keeps full detail" promise. Fix: those three sites use `-IncludeDiagnostics` (they feed the UI log and the FATAL file only, never the HTML/TXT reports). Every remaining summary-only call now either passes a separate `Diagnostics` value to a check result or is the configuration-load message that is rendered in HTML by design.
+
+Re-validation after round 2: parser 0 errors × 2; validator 54/54; unit tests 36 × 2; acceptance en-US Overall Healthy, exit 0; zh-TW first run "Attention Required" (TCPv4 retransmissions 3.9 % in the sample window — live-network condition), re-run Overall Healthy, exit 0. The write-failure path itself was not fault-injected (it would require making both the report folder and `%TEMP%` unwritable); verified by review plus the skeleton-equality check.
+
+**Independent review — Codex, PR #1, round 3 · 2026-09-03.** One P2 finding on commit 15d9102, accepted and fixed:
+
+1. *Count thresholds accepted decimals that runtime silently rounded.* `AdapterErrorCriticalDelta: 2.4` passed the numeric validation, but `Compare-AdapterStatistics` still went through `ConvertTo-IntSafe` (`[int]2.4` = 2), so a delta of 2 could FAIL below the configured threshold; `TcpRetransmissionCriticalCount` and `MinimumTcpSegmentsForRate` likewise. Fix (the "reject" option): new `Test-IsWholeNumber` helper; `ConvertTo-IntSafe` now returns the default for anything that is not a finite whole number within Int32 (no more silent rounding anywhere it is used), and `Test-ConfigurationSemantics` reports "must be a whole number" for the six count thresholds and for the integer test settings (`PingCount`, timeouts, sample seconds) — so validation and runtime agree. Function count 59 → 60; validator constant updated.
+
+Re-validation after round 3: parser 0 errors × 2; validator 54/54; unit tests 52 × 2 (new cases: 2.4 / "2.4" / 3 000 000 000 / null → default, 24.0 / "24" / 1e3 / [uint32] → integers, `Test-IsWholeNumber` matrix); acceptance: en-US exit 0 with a single WARN from a live TCPv4 retransmission sample (3.0 %, reproduced on re-run — the same network condition seen earlier today, not a code effect), zh-TW Overall Healthy, exit 0; fault config with `AdapterErrorCriticalDelta: 2.4`, `TcpRetransmissionCriticalCount: 49.5`, `PingCount: 2.5` and `LatencyWarningMs: 100.5` lists exactly the three whole-number violations (the decimal latency threshold is accepted) and the ping checks run with the default count of 4, proving the fallback happens at runtime.
+
+**Independent review — Codex, PR #1, round 4 · 2026-09-03.** One P2 finding on commit 9842f30, accepted and fixed:
+
+1. *Out-of-Int32 count thresholds passed validation.* `Test-IsWholeNumber` checked integrality but not bounds, so `AdapterErrorCriticalDelta: 3000000000` produced no configuration warning while `ConvertTo-IntSafe` rejected it at runtime and used 10. Fix: the Int32 range check moved into `Test-IsWholeNumber` (the converter relies on it), and the "must be a whole number" messages now say "in the supported range".
+
+Re-validation after round 4: parser 0 errors × 2; validator 54/54; unit tests 57 × 2 (new cases: 3 000 000 000 and −2 147 483 649 rejected, 2 147 483 647 accepted); acceptance: en-US and zh-TW Overall Healthy, exit 0; fault config with `AdapterErrorCriticalDelta: 3000000000` and `MinimumTcpSegmentsForRate: 2147483647` reports exactly the out-of-range value and accepts the Int32 maximum.
+
+**Independent review — Codex, PR #1, round 5 · 2026-09-03: no findings.** The review of commit 3bfc73b completed without any comment. Review loop summary: 5 Codex passes, 6 P2 findings (3 + 1 + 1 + 1), all accepted and fixed in four rounds, each round re-validated with the full chain. This closing note is a documentation-only commit on top of the reviewed code.
+
 ## Packaging — v1.1.3 GitHub Release asset · 2026-09-03
 
 - **Finding:** GitHub's auto-generated *Code → Download ZIP* exported every file with LF line endings — the repository stores LF, the author's working tree is CRLF via `core.autocrlf`, and no `.gitattributes` existed. Run against a simulated download (`git archive` of the committed tree), `validate_release.py` reported **27 failures**: all 8 CRLF checks and all 19 SHA256 manifest entries. The auto-generated ZIP was therefore not the validated package (backlog #15).
@@ -97,9 +148,9 @@ All four injected faults were detected and correctly classified at the overall-v
 1. ~~GUI fallback gap (major)~~ — **fixed in v1.1.3** (2026-07-29).
 2. On report-write failure the emergency report is produced twice (double dialog in GUI mode).
 3. If one of the three report formats fails, the whole run is treated as a report failure — "Open Report" stays disabled even when HTML/TXT succeeded.
-4. Retransmission thresholds are parsed with raw `[double]` casts (inconsistent with the `ConvertTo-IntSafe` defensive style; a non-numeric config value degrades that step to ERROR). Packet-loss/latency thresholds silently round decimals to integers.
-5. CIM fallback path: an IPv6 gateway can satisfy the "IPv4 default gateway" check; a null DHCP state maps to "static" instead of "unknown".
-6. Dead stores to clean up: `$script:NetworkSnapshot`, local `$systemSummary`.
+4. ~~Retransmission thresholds are parsed with raw `[double]` casts (inconsistent with the `ConvertTo-IntSafe` defensive style; a non-numeric config value degrades that step to ERROR). Packet-loss/latency thresholds silently round decimals to integers.~~ — **fixed in v1.1.4** (2026-09-03).
+5. ~~CIM fallback path: an IPv6 gateway can satisfy the "IPv4 default gateway" check; a null DHCP state maps to "static" instead of "unknown".~~ — **fixed in v1.1.4** (2026-09-03).
+6. ~~Dead stores to clean up: `$script:NetworkSnapshot`, local `$systemSummary`.~~ — **fixed in v1.1.4** (2026-09-03).
 
 ### From fault-injection review (2026-07-28)
 
@@ -107,7 +158,7 @@ All four injected faults were detected and correctly classified at the overall-v
 8. ~~AUTO_GATEWAY placeholder leak~~ — **fixed in v1.1.3** (explanatory detail).
 9. ~~Optional-ping Information badge unexplained~~ — **fixed in v1.1.3** (inline explanation).
 10. Virtual adapters (VirtualBox / Hyper-V) earn Pass rows and inflate the adapter count; demote virtual NICs to Information and report physical vs virtual counts separately ("0 physical" should itself be a failure signal). **Design note (2026-07-29):** this applies to the error-counter check too — a zero-traffic adapter (0 cumulative bytes) reporting "0 errors" is vacuous evidence (counters only testify when traffic flows); annotate zero-traffic adapters and reuse the existing primary-adapter classification (`Get-PrimaryAdapters`) instead of inventing a new mechanism.
-11. Full PowerShell stack traces (with local file paths) render in the HTML report; keep them in JSON only, show a one-line summary in HTML.
+11. ~~Full PowerShell stack traces (with local file paths) render in the HTML report; keep them in JSON only, show a one-line summary in HTML.~~ — **fixed in v1.1.4** (2026-09-03).
 12. ~~Add a "Method" line to each check's details~~ — **done in v1.1.1** (2026-07-28).
 13. Wi-Fi RF data (RSSI / channel / band) for wireless adapters — needs `netsh wlan show interfaces` parsing (locale-sensitive output) or the native WLAN API; note the client-side view is inherently weaker evidence than the AP's client table.
 14. OS-locale exception strings pass through verbatim into reports (e.g., a Chinese "作業逾時" inside an en-US report); consider mapping common .NET socket/web exceptions to the report language, or note the behavior in the technical guide.
