@@ -653,7 +653,7 @@ function Set-RunOptions {
         $config.Tests.TcpTargets = @($config.Tests.TcpTargets) + [pscustomobject][ordered]@{ Name = "額外 TCP"; Host = $parts[0]; Port = $port; Required = $false; Group = "" }
         $extra.Tcp += [string]$value
     }
-    foreach ($value in @(@($Overrides["HttpUrl"]) | ForEach-Object { ([string]$_) -split '[,;]' } | ForEach-Object { ([string]$_).Trim() })) {
+    foreach ($value in @(@($Overrides["HttpUrl"]) | ForEach-Object { ([string]$_) -split '\s+' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $raw.Http += [string]$value
         $config.Tests.HttpTargets = @($config.Tests.HttpTargets) + [pscustomobject][ordered]@{ Name = "額外 URL"; Url = [string]$value; Required = $false; Group = "" }
@@ -2824,8 +2824,8 @@ function Get-FingerprintSummary {
     $adaptersFail = @($results | Where-Object { $_.Tag -eq "adapters" -and $_.Status -eq "FAIL" }).Count -gt 0
     $gatewayConfigFail = @($results | Where-Object { $_.Tag -eq "gateway-config" -and $_.Status -eq "FAIL" }).Count -gt 0
     $gatewayPingPass = @($results | Where-Object { $_.Tag -eq "ping-gateway" -and $_.Status -eq "PASS" }).Count -gt 0
-    $gatewayPingBad = @($results | Where-Object { $_.Tag -eq "ping-gateway" -and ($_.Status -eq "FAIL" -or $_.Status -eq "ERROR") }).Count -gt 0
-    $groupFail = @($results | Where-Object { $_.Tag -eq "connectivity-group" -and ($_.Status -eq "FAIL" -or $_.Status -eq "WARN") }).Count -gt 0
+    $gatewayPingBad = @($results | Where-Object { $_.Tag -eq "ping-gateway" -and $_.Status -eq "FAIL" }).Count -gt 0
+    $groupFail = @($results | Where-Object { $_.Tag -eq "connectivity-group" -and $_.Status -eq "FAIL" }).Count -gt 0
     $groupPass = @($results | Where-Object { $_.Tag -eq "connectivity-group" -and $_.Status -eq "PASS" }).Count -gt 0
     $dnsFail = @($results | Where-Object { $_.Tag -eq "dns" -and ($_.Status -eq "FAIL" -or $_.Status -eq "WARN") }).Count -gt 0
     $dnsPass = @($results | Where-Object { $_.Tag -eq "dns" -and $_.Status -eq "PASS" }).Count -gt 0
@@ -2837,7 +2837,7 @@ function Get-FingerprintSummary {
     $key = "healthy"
     if ($adaptersFail -or $gatewayConfigFail) { $key = "local" }
     elseif ($gatewayPingBad -and -not $gatewayPingPass) { $key = "gateway-unreachable" }
-    elseif ($gatewayPingPass -and $groupFail) { $key = "gateway-up-internet-dead" }
+    elseif ($gatewayPingPass -and $groupFail -and -not $groupPass) { $key = "gateway-up-internet-dead" }
     elseif ($dnsFail -and -not $dnsPass -and ($groupPass -or $tcpPass)) { $key = "dns" }
     elseif ($qualityIssue -and -not $otherProblem) { $key = "quality" }
     elseif ($overall.Code -eq "FAIL") { $key = "mixed" }
@@ -3561,7 +3561,7 @@ function Set-OptionsPanelValues {
     $controls["PingTarget"].Text = (@($options.RawTargets.Ping) -join ", ")
     $controls["DnsName"].Text = (@($options.RawTargets.Dns) -join ", ")
     $controls["TcpTarget"].Text = (@($options.RawTargets.Tcp) -join ", ")
-    $controls["HttpUrl"].Text = (@($options.RawTargets.Http) -join ", ")
+    $controls["HttpUrl"].Text = (@($options.RawTargets.Http) -join " ")
     $controls["PingCount"].Value = [math]::Min(20, [math]::Max(1, $options.PingCount))
     $controls["SampleSeconds"].Value = [math]::Min(120, [math]::Max(1, $options.SampleSeconds))
     $controls["TracerouteHops"].Value = [math]::Min(10, [math]::Max(1, $options.TracerouteHops))
@@ -3582,7 +3582,7 @@ function Get-RunOptionsFromPanel {
         PingTarget     = @(([string]$controls["PingTarget"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         DnsName        = @(([string]$controls["DnsName"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         TcpTarget      = @(([string]$controls["TcpTarget"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        HttpUrl        = @(([string]$controls["HttpUrl"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        HttpUrl        = @(([string]$controls["HttpUrl"].Text) -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         PingCount      = [int]$controls["PingCount"].Value
         SampleSeconds  = [int]$controls["SampleSeconds"].Value
         TracerouteHops = [int]$controls["TracerouteHops"].Value

@@ -57,6 +57,14 @@ Re-validation after round 3: parser 0 errors × 2; validator 62/62; unit tests 8
 
 Re-validation after round 4: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 78 × 2 (new: raw targets keep the invalid value while the accepted list excludes it); console acceptance en-US user, en-US IT switches and zh-TW user, exit 0. Form sizing and the panel were reviewed, not exercised headlessly.
 
+**Independent review — Codex, PR #3, round 5 · 2026-09-03.** Three P2 findings on commit 32d93e0, all accepted and fixed:
+
+1. *`gateway-up-internet-dead` fired for any failing group.* A failing optional group (`WARN`) next to a passing required Internet group still produced the WAN / ISP guidance. Fix: the fingerprint requires a **required** group to fail (`FAIL`) and no group to pass; a required failure next to a passing group is `mixed`, an optional failure alone is `attention`.
+2. *Gateway ping execution errors were read as an unreachable gateway.* An `ERROR` (the Ping API could not run) overrode the overall `ERROR` with local-link guidance. Fix: only `FAIL` establishes `gateway-unreachable`; execution errors keep `incomplete`.
+3. *Multi-value splitting broke URLs containing commas or semicolons.* Fix: URLs (CLI `-HttpUrl` and the panel box) are separated by whitespace only; ping / DNS / TCP lists still accept commas, semicolons or spaces. Documented in the guides.
+
+Re-validation after round 5: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 83 × 2 (new: optional group failure → `attention`; required failure next to a passing group → `mixed`; gateway ping `ERROR` → `incomplete`; a URL with `,` and `;` survives as one target); console acceptance en-US user, en-US IT switches (including `-HttpUrl "https://www.microsoft.com/?ids=1,2"`) and zh-TW user, exit 0.
+
 ## v1.1.5 · 2026-09-03
 
 **Changes** (backlog #2 and #3):
