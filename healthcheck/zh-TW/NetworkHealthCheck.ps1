@@ -25,13 +25,12 @@ param(
 # --------
 # - 唯讀：不變更 IP、DNS、路由、防火牆或網卡狀態。
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
-# - 可追溯：PowerShell 可提供時，報告會保存例外類型、訊息、位置與堆疊。
+# - 可追溯：報告保存例外類型、訊息與內部例外；腳本位置與呼叫堆疊只寫入 JSON 報告（Diagnostics）。
 
-$script:ToolVersion = "1.1.3"
+$script:ToolVersion = "1.1.4"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Results = New-Object System.Collections.ArrayList
 $script:StartupMessages = New-Object System.Collections.ArrayList
-$script:NetworkSnapshot = @()
 $script:PrimaryAdapters = @()
 $script:LastHtmlReport = $null
 $script:LastTextReport = $null
@@ -145,8 +144,58 @@ function ConvertTo-IntSafe {
     }
 }
 
+function ConvertTo-DoubleSafe {
+    param(
+        [object]$Value,
+        [double]$DefaultValue = 0
+    )
+
+    if ($null -eq $Value -or $Value -is [bool]) {
+        return $DefaultValue
+    }
+
+    try {
+        if ($Value -is [string]) {
+            $parsed = 0.0
+            if ([double]::TryParse($Value, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) {
+                return $parsed
+            }
+            return $DefaultValue
+        }
+        return [double]$Value
+    }
+    catch {
+        return $DefaultValue
+    }
+}
+
+function Test-IsNumericValue {
+    param([object]$Value)
+
+    if ($null -eq $Value -or $Value -is [bool]) {
+        return $false
+    }
+
+    if ($Value -is [string]) {
+        $parsed = 0.0
+        return [double]::TryParse($Value, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)
+    }
+
+    try {
+        $null = [double]$Value
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+# Backlog #11：只回傳人類可讀的摘要；腳本位置與呼叫堆疊改由 Get-ExceptionDiagnostics 提供（僅寫入 JSON 報告）。
 function Get-ExceptionDetails {
-    param([object]$ErrorRecord)
+    param(
+        [object]$ErrorRecord,
+        [switch]$IncludeDiagnostics
+    )
 
     if ($null -eq $ErrorRecord) {
         return "未知錯誤"
@@ -155,9 +204,6 @@ function Get-ExceptionDetails {
     try {
         $message = $ErrorRecord.Exception.Message
         $typeName = $ErrorRecord.Exception.GetType().FullName
-        $position = ConvertTo-SafeString $ErrorRecord.InvocationInfo.PositionMessage
-        $stack = ConvertTo-SafeString $ErrorRecord.ScriptStackTrace
-
         $parts = @("錯誤類型：$typeName", "訊息：$message")
         $inner = $ErrorRecord.Exception.InnerException
         $innerIndex = 1
@@ -166,6 +212,31 @@ function Get-ExceptionDetails {
             $inner = $inner.InnerException
             $innerIndex++
         }
+        if ($IncludeDiagnostics) {
+            $diagnostics = Get-ExceptionDiagnostics $ErrorRecord
+            if (-not [string]::IsNullOrWhiteSpace($diagnostics)) {
+                $parts += $diagnostics
+            }
+        }
+        return ($parts -join [Environment]::NewLine)
+    }
+    catch {
+        return [string]$ErrorRecord
+    }
+}
+
+function Get-ExceptionDiagnostics {
+    param([object]$ErrorRecord)
+
+    if ($null -eq $ErrorRecord) {
+        return ""
+    }
+
+    try {
+        $position = ConvertTo-SafeString $ErrorRecord.InvocationInfo.PositionMessage
+        $stack = ConvertTo-SafeString $ErrorRecord.ScriptStackTrace
+
+        $parts = @()
         if (-not [string]::IsNullOrWhiteSpace($position)) {
             $parts += "位置：$position"
         }
@@ -175,7 +246,7 @@ function Get-ExceptionDetails {
         return ($parts -join [Environment]::NewLine)
     }
     catch {
-        return [string]$ErrorRecord
+        return ""
     }
 }
 
@@ -284,7 +355,8 @@ function Add-CheckResult {
         [Parameter(Mandatory = $true)][string]$Check,
         [Parameter(Mandatory = $true)][ValidateSet("PASS", "WARN", "FAIL", "INFO", "ERROR")][string]$Status,
         [Parameter(Mandatory = $true)][string]$Message,
-        [string]$Details = ""
+        [string]$Details = "",
+        [string]$Diagnostics = ""
     )
 
     $item = [pscustomobject][ordered]@{
@@ -293,7 +365,8 @@ function Add-CheckResult {
         Check    = $Check
         Status   = $Status
         Message  = $Message
-        Details  = $Details
+        Details     = $Details
+        Diagnostics = $Diagnostics
     }
 
     [void]$script:Results.Add($item)
@@ -317,7 +390,8 @@ function Invoke-CheckStep {
     }
     catch {
         $details = Get-ExceptionDetails $_
-        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "此項目無法執行，已記錄錯誤。" -Details $details | Out-Null
+        $diagnostics = Get-ExceptionDiagnostics $_
+        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "此項目無法執行，已記錄錯誤。" -Details $details -Diagnostics $diagnostics | Out-Null
         return $null
     }
 }
@@ -818,6 +892,19 @@ function Get-NetworkSnapshotFromCim {
             $linkSpeed = Convert-LinkSpeedToText $adapter.Speed
         }
 
+        # Backlog #5：只保留 IPv4 閘道（DefaultIPGateway 也可能列出 IPv6 下一跳），並保留「未知」的 DHCP 狀態。
+        $gateways = @()
+        foreach ($gateway in @($config.DefaultIPGateway)) {
+            if (Test-IsValidIPv4Address ([string]$gateway)) {
+                $gateways += [string]$gateway
+            }
+        }
+
+        $dhcpEnabled = $null
+        if ($null -ne $config.DHCPEnabled) {
+            $dhcpEnabled = [bool]$config.DHCPEnabled
+        }
+
         [void]$items.Add([pscustomobject][ordered]@{
             Name            = $name
             Description     = $description
@@ -830,9 +917,9 @@ function Get-NetworkSnapshotFromCim {
             IPv4Prefixes    = $ipv4Prefixes
             IPv4WithPrefix  = $ipv4WithPrefix
             IPv6Addresses   = $ipv6Addresses
-            Gateways        = @($config.DefaultIPGateway)
+            Gateways        = $gateways
             DnsServers      = @($config.DNSServerSearchOrder)
-            DhcpEnabled     = [bool]$config.DHCPEnabled
+            DhcpEnabled     = $dhcpEnabled
             Source          = "CIM/WMI"
         })
     }
@@ -849,7 +936,7 @@ function Get-NetworkSnapshot {
             }
         }
         catch {
-            Add-CheckResult -Category "網卡與 IP" -Check "資料來源切換" -Status "WARN" -Message "Get-NetIPConfiguration 無法取得資料，已改用 CIM/WMI。" -Details (Get-ExceptionDetails $_) | Out-Null
+            Add-CheckResult -Category "網卡與 IP" -Check "資料來源切換" -Status "WARN" -Message "Get-NetIPConfiguration 無法取得資料，已改用 CIM/WMI。" -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) | Out-Null
         }
     }
 
@@ -1030,14 +1117,27 @@ function Test-ConfigurationSemantics {
         }
     }
 
-    $warningLoss = ConvertTo-IntSafe $thresholds.PacketLossWarningPercent 5
-    $criticalLoss = ConvertTo-IntSafe $thresholds.PacketLossCriticalPercent 20
+    foreach ($thresholdName in @("PacketLossWarningPercent", "PacketLossCriticalPercent", "LatencyWarningMs", "LatencyCriticalMs", "TcpRetransmissionWarningPercent", "TcpRetransmissionCriticalPercent", "TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")) {
+        $thresholdValue = Get-PropertyValue $thresholds $thresholdName
+        if ($null -ne $thresholdValue -and -not (Test-IsNumericValue $thresholdValue)) {
+            [void]$warnings.Add("$thresholdName 不是數值（目前值：$thresholdValue），將改用內建預設值。")
+        }
+    }
+
+    $warningLoss = ConvertTo-DoubleSafe $thresholds.PacketLossWarningPercent 5
+    $criticalLoss = ConvertTo-DoubleSafe $thresholds.PacketLossCriticalPercent 20
     if ($warningLoss -lt 0 -or $criticalLoss -lt $warningLoss) {
         [void]$warnings.Add("封包遺失門檻順序不合理：Warning=$warningLoss, Critical=$criticalLoss。")
     }
 
-    $warningRetrans = [double](Get-PropertyValue $thresholds "TcpRetransmissionWarningPercent" 2)
-    $criticalRetrans = [double](Get-PropertyValue $thresholds "TcpRetransmissionCriticalPercent" 5)
+    $warningLatency = ConvertTo-DoubleSafe $thresholds.LatencyWarningMs 100
+    $criticalLatency = ConvertTo-DoubleSafe $thresholds.LatencyCriticalMs 250
+    if ($warningLatency -lt 0 -or $criticalLatency -lt $warningLatency) {
+        [void]$warnings.Add("延遲門檻順序不合理：Warning=$warningLatency, Critical=$criticalLatency。")
+    }
+
+    $warningRetrans = ConvertTo-DoubleSafe (Get-PropertyValue $thresholds "TcpRetransmissionWarningPercent" 2) 2
+    $criticalRetrans = ConvertTo-DoubleSafe (Get-PropertyValue $thresholds "TcpRetransmissionCriticalPercent" 5) 5
     if ($warningRetrans -lt 0 -or $criticalRetrans -lt $warningRetrans) {
         [void]$warnings.Add("TCP 重傳門檻順序不合理：Warning=$warningRetrans, Critical=$criticalRetrans。")
     }
@@ -1359,10 +1459,10 @@ function Test-PingTargets {
 
     $count = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.PingCount 4))
     $timeout = [math]::Max(250, (ConvertTo-IntSafe $script:Config.Tests.PingTimeoutMs 1200))
-    $warningLoss = [double](ConvertTo-IntSafe $script:Config.Thresholds.PacketLossWarningPercent 5)
-    $criticalLoss = [double](ConvertTo-IntSafe $script:Config.Thresholds.PacketLossCriticalPercent 20)
-    $warningLatency = [double](ConvertTo-IntSafe $script:Config.Thresholds.LatencyWarningMs 100)
-    $criticalLatency = [double](ConvertTo-IntSafe $script:Config.Thresholds.LatencyCriticalMs 250)
+    $warningLoss = ConvertTo-DoubleSafe $script:Config.Thresholds.PacketLossWarningPercent 5
+    $criticalLoss = ConvertTo-DoubleSafe $script:Config.Thresholds.PacketLossCriticalPercent 20
+    $warningLatency = ConvertTo-DoubleSafe $script:Config.Thresholds.LatencyWarningMs 100
+    $criticalLatency = ConvertTo-DoubleSafe $script:Config.Thresholds.LatencyCriticalMs 250
 
     foreach ($targetConfig in @($script:Config.Tests.PingTargets)) {
         if ($null -eq $targetConfig) { continue }
@@ -1418,7 +1518,7 @@ function Test-PingTargets {
             }
             catch {
                 $status = if ($required) { "ERROR" } else { "INFO" }
-                Add-CheckResult -Category "延遲與封包遺失" -Check ("{0}：{1}" -f $name, $target) -Status $status -Message "Ping 測試無法執行。" -Details (Get-ExceptionDetails $_) | Out-Null
+                Add-CheckResult -Category "延遲與封包遺失" -Check ("{0}：{1}" -f $name, $target) -Status $status -Message "Ping 測試無法執行。" -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) | Out-Null
             }
         }
     }
@@ -1483,7 +1583,7 @@ function Test-DnsNames {
         }
         catch {
             $status = if ($required) { "FAIL" } else { "WARN" }
-            Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("無法解析 $hostName。") -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + $methodText + [Environment]::NewLine + "手動驗證：nslookup $hostName") | Out-Null
+            Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("無法解析 $hostName。") -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + $methodText + [Environment]::NewLine + "手動驗證：nslookup $hostName") -Diagnostics (Get-ExceptionDiagnostics $_) | Out-Null
         }
     }
 }
@@ -1895,8 +1995,9 @@ function Get-TcpCounterSnapshot {
         }
         catch {
             [void]$errors.Add([pscustomobject]@{
-                Protocol = $protocol
-                Error    = Get-ExceptionDetails $_
+                Protocol    = $protocol
+                Error       = Get-ExceptionDetails $_
+                Diagnostics = Get-ExceptionDiagnostics $_
             })
         }
     }
@@ -1923,11 +2024,11 @@ function Compare-TcpCounters {
     $counterErrors += @($Before.Errors)
     $counterErrors += @($After.Errors)
     foreach ($errorItem in $counterErrors) {
-        Add-CheckResult -Category "TCP 重傳" -Check ("{0} 計數器" -f $errorItem.Protocol) -Status "ERROR" -Message "無法讀取 TCP 重傳計數器。" -Details $errorItem.Error | Out-Null
+        Add-CheckResult -Category "TCP 重傳" -Check ("{0} 計數器" -f $errorItem.Protocol) -Status "ERROR" -Message "無法讀取 TCP 重傳計數器。" -Details $errorItem.Error -Diagnostics $errorItem.Diagnostics | Out-Null
     }
 
-    $warningPercent = [double](Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionWarningPercent" 2)
-    $criticalPercent = [double](Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalPercent" 5)
+    $warningPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionWarningPercent" 2) 2
+    $criticalPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalPercent" 5) 5
     $criticalCount = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalCount" 50) 50)
     $minimumSegments = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
 
@@ -2084,8 +2185,18 @@ function New-HtmlReportContent {
     foreach ($result in $script:Results) {
         $statusClass = ([string]$result.Status).ToLowerInvariant()
         $detailsHtml = ""
-        if (-not [string]::IsNullOrWhiteSpace([string]$result.Details)) {
-            $detailsEncoded = ConvertTo-HtmlEncoded $result.Details
+        $detailsText = [string]$result.Details
+        if (-not [string]::IsNullOrWhiteSpace([string]$result.Diagnostics)) {
+            $diagnosticsNote = "技術診斷資訊（腳本位置與呼叫堆疊）只記錄在 JSON 報告中。"
+            if ([string]::IsNullOrWhiteSpace($detailsText)) {
+                $detailsText = $diagnosticsNote
+            }
+            else {
+                $detailsText += [Environment]::NewLine + $diagnosticsNote
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($detailsText)) {
+            $detailsEncoded = ConvertTo-HtmlEncoded $detailsText
             $detailsHtml = "<details><summary>顯示詳細資料</summary><pre>$detailsEncoded</pre></details>"
         }
 
@@ -2241,6 +2352,9 @@ function New-TextReportContent {
                 [void]$builder.AppendLine("    $line")
             }
         }
+        if (-not [string]::IsNullOrWhiteSpace([string]$result.Diagnostics)) {
+            [void]$builder.AppendLine("    技術診斷資訊（腳本位置與呼叫堆疊）只記錄在 JSON 報告中。")
+        }
         [void]$builder.AppendLine("")
     }
 
@@ -2347,6 +2461,9 @@ function Write-EmergencyReport {
             [void]$partialBuilder.AppendLine(("[{0}] {1}／{2}：{3}" -f (Get-StatusText $result.Status), $result.Category, $result.Check, $result.Message))
             if (-not [string]::IsNullOrWhiteSpace([string]$result.Details)) {
                 [void]$partialBuilder.AppendLine([string]$result.Details)
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$result.Diagnostics)) {
+                [void]$partialBuilder.AppendLine([string]$result.Diagnostics)
             }
             [void]$partialBuilder.AppendLine("")
         }
@@ -2455,11 +2572,10 @@ function Run-AllChecks {
         Add-CheckResult -Category "程式環境" -Check "PowerShell 版本" -Status "PASS" -Message ("目前版本：{0}" -f $PSVersionTable.PSVersion) -Details "" | Out-Null
     }
 
-    $systemSummary = Invoke-CheckStep -Category "系統資訊" -Name "取得電腦與作業系統資訊" -Progress 7 -Action {
+    Invoke-CheckStep -Category "系統資訊" -Name "取得電腦與作業系統資訊" -Progress 7 -Action {
         $summary = Get-SystemSummary
         Add-CheckResult -Category "系統資訊" -Check "電腦" -Status "INFO" -Message ("{0}，使用者 {1}。" -f $summary.ComputerName, $summary.UserName) -Details ("作業系統：{0} ({1})`r`nPowerShell：{2}" -f $summary.OperatingSystem, $summary.OperatingVersion, $summary.PowerShellVersion) | Out-Null
-        return $summary
-    }
+    } | Out-Null
 
     $tcpBaseline = Invoke-CheckStep -Category "TCP 重傳" -Name "取得 TCP 重傳基準值" -Progress 10 -Action {
         $snapshot = Get-TcpCounterSnapshot
@@ -2484,7 +2600,6 @@ function Run-AllChecks {
     else {
         $networkSnapshot = @($networkSnapshot)
     }
-    $script:NetworkSnapshot = $networkSnapshot
     $script:PrimaryAdapters = @(Get-PrimaryAdapters -Adapters $networkSnapshot)
 
     Invoke-CheckStep -Category "網卡與 IP" -Name "檢查目前網路設定" -Progress 28 -Action {
@@ -2550,7 +2665,7 @@ function Run-AllChecks {
         return $report
     }
     catch {
-        $details = Get-ExceptionDetails $_
+        $details = Get-ExceptionDetails $_ -IncludeDiagnostics
         Write-UiLog -Status "ERROR" -Text "報告產生失敗。"
         $emergencyPath = Write-EmergencyReport -Title "網路健檢報告產生失敗" -ErrorDetails $details
         if ($script:GuiAvailable) {
@@ -2582,7 +2697,7 @@ function Start-ConsoleMode {
         return 0
     }
     catch {
-        $details = Get-ExceptionDetails $_
+        $details = Get-ExceptionDetails $_ -IncludeDiagnostics
         Write-Host "網路健檢發生未處理錯誤。" -ForegroundColor Red
         Write-Host $details
         $emergencyPath = Write-EmergencyReport -Title "網路健檢未處理錯誤" -ErrorDetails $details
@@ -2726,7 +2841,7 @@ function Initialize-Gui {
             [void](Run-AllChecks)
         }
         catch {
-            $details = Get-ExceptionDetails $_
+            $details = Get-ExceptionDetails $_ -IncludeDiagnostics
             Write-UiLog -Status "ERROR" -Text "檢測發生未處理錯誤。"
             $emergencyPath = Write-EmergencyReport -Title "網路健檢未處理錯誤" -ErrorDetails $details
             $message = "檢測無法完成。"
@@ -2824,7 +2939,7 @@ try {
     }
 }
 catch {
-    $details = Get-ExceptionDetails $_
+    $details = Get-ExceptionDetails $_ -IncludeDiagnostics
     Write-Host "網路健檢無法啟動。" -ForegroundColor Red
     Write-Host $details
     $emergencyPath = Write-EmergencyReport -Title "網路健檢啟動失敗" -ErrorDetails $details

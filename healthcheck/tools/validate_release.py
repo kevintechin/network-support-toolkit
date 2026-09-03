@@ -3,6 +3,8 @@ from pathlib import Path
 import sys, json, hashlib, re
 
 ROOT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
+TOOL_VERSION = '1.1.4'
+FUNCTION_COUNT = 59
 failures=[]; passes=[]
 
 def ok(name, cond, detail=''):
@@ -60,12 +62,12 @@ for rel in ['zh-TW/Start-NetworkCheck.cmd','en-US/Start-NetworkCheck.cmd','zh-TW
 zh=read_text(ROOT/'zh-TW/NetworkHealthCheck.ps1'); en=read_text(ROOT/'en-US/NetworkHealthCheck.ps1')
 ok('PowerShell executable skeleton equality',strip_ps(zh)==strip_ps(en))
 zh_funcs=re.findall(r'^function\s+([A-Za-z0-9_-]+)',zh,re.M); en_funcs=re.findall(r'^function\s+([A-Za-z0-9_-]+)',en,re.M)
-ok('function set equality',zh_funcs==en_funcs,f'zh={len(zh_funcs)}, en={len(en_funcs)}'); ok('function count 56',len(zh_funcs)==56,str(len(zh_funcs)))
+ok('function set equality',zh_funcs==en_funcs,f'zh={len(zh_funcs)}, en={len(en_funcs)}'); ok(f'function count {FUNCTION_COUNT}',len(zh_funcs)==FUNCTION_COUNT,str(len(zh_funcs)))
 cjk=lambda s:any('\u4e00'<=c<='\u9fff' for c in s)
 for rel in ['en-US/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.config.json','en-US/README_en-US.txt']:
     ok('English file has no CJK '+rel,not cjk(read_text(ROOT/rel)))
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
-    ok('version 1.1.0 '+rel,'$script:ToolVersion = "1.1.3"' in read_text(ROOT/rel))
+    ok('version '+TOOL_VERSION+' '+rel,'$script:ToolVersion = "'+TOOL_VERSION+'"' in read_text(ROOT/rel))
 # Hash manifest is checked if already present.
 manifest=ROOT/'SHA256SUMS.txt'
 if manifest.exists():
