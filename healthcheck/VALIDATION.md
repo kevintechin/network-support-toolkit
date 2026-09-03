@@ -25,6 +25,14 @@
 
 Not exercised live: a virtual-only-adapter machine ("0 physical" WARN / FAIL path — covered by the classification unit tests and review), a proxy misconfiguration (would require changing the user's proxy settings), and the GUI options panel itself (WinForms; reviewed, and its option plumbing is covered by scenario E). Runtime budget: healthy run 10–17 s, well under the 45 s worst-case budget.
 
+**Independent review — Codex (`chatgpt-codex-connector`), PR #3, round 1 · 2026-09-03.** Three findings on commit b74dc71 (one P1, two P2), all accepted and fixed:
+
+1. *IT-only failures reached the overall result (P1).* An IT collector that threw (permissions, policy, missing provider) added an `ERROR` row and `Get-OverallStatus` counted every `ERROR`, so a healthy run became "Test Incomplete" with the `incomplete` fingerprint — contradicting the promise that IT rows never change the verdict. Fix: `Get-OverallStatus` and `Get-SummaryCounts` exclude `Scope = "IT"`; `Invoke-CheckStep` gained `-Scope` and the whole IT step runs in the IT scope, so even an unexpected exception inside it lands in the IT section only.
+2. *Virtual-adapter counter rows were downgraded only when they were PASS.* Deltas above a threshold had already turned the status into `WARN` / `FAIL`, so a VPN adapter could still fail the run. Fix: the virtual classification is applied first, independently of the threshold-derived status; the no-traffic rule follows.
+3. *Default routes were sorted lexicographically by route metric, then interface metric.* Windows prefers the lowest route metric + interface metric. Fix: new `Sort-DefaultRoutes` sorts by the effective metric (then route metric); the details line shows it. Function count 76 → 77.
+
+Re-validation after round 1: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 64 × 2 (new: F — an IT-scoped `ERROR` and a failing IT step leave the verdict PASS and the counts untouched while a main-scope step failure still flips it; G — a virtual adapter with 50 errors is INFO, the same physical adapter is FAIL, a zero-traffic adapter is INFO; H — routes 10+100 / 20+5 / 0+50 sort as 25, 50, 110); console acceptance en-US user, en-US IT switches and zh-TW user all Overall Healthy, exit 0.
+
 ## v1.1.5 · 2026-09-03
 
 **Changes** (backlog #2 and #3):

@@ -443,7 +443,8 @@ function Invoke-CheckStep {
         [Parameter(Mandatory = $true)][string]$Category,
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][int]$Progress,
-        [Parameter(Mandatory = $true)][scriptblock]$Action
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [string]$Scope = "Main"
     )
 
     Set-UiProgress -Percent $Progress -Text $Name
@@ -455,7 +456,7 @@ function Invoke-CheckStep {
     catch {
         $details = Get-ExceptionDetails $_
         $diagnostics = Get-ExceptionDiagnostics $_
-        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "此項目無法執行，已記錄錯誤。" -Details $details -Diagnostics $diagnostics -Tag "step-error" | Out-Null
+        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "此項目無法執行，已記錄錯誤。" -Details $details -Diagnostics $diagnostics -Tag "step-error" -Scope $Scope | Out-Null
         return $null
     }
 }
@@ -2186,13 +2187,13 @@ function Compare-AdapterStatistics {
         if ($adapterByName.ContainsKey($name)) {
             $isVirtualAdapter = ($adapterByName[$name].IsPhysical -ne $true)
         }
-        if ($status -eq "PASS" -and $trafficDelta -le 0) {
-            $status = "INFO"
-            $message = "取樣期間此網卡沒有流量，錯誤計數器無法作證（0 錯誤不具意義）。"
-        }
-        elseif ($status -eq "PASS" -and $isVirtualAdapter) {
+        if ($isVirtualAdapter) {
             $status = "INFO"
             $message = "虛擬網卡：檢測期間新增錯誤 {0}、丟棄 {1}（僅供參考）。" -f $errorDelta, $discardDelta
+        }
+        elseif ($status -eq "PASS" -and $trafficDelta -le 0) {
+            $status = "INFO"
+            $message = "取樣期間此網卡沒有流量，錯誤計數器無法作證（0 錯誤不具意義）。"
         }
         $details = @(
             "接收錯誤增量：$rxErrorDelta（累積 $($afterItem.ReceivedPacketErrors)）",
@@ -2359,6 +2360,12 @@ function Add-WifiRfResult {
     }
 }
 
+function Sort-DefaultRoutes {
+    param([object[]]$Routes)
+
+    return @($Routes | Sort-Object @{ Expression = { (ConvertTo-IntSafe $_.RouteMetric 0) + (ConvertTo-IntSafe $_.InterfaceMetric 0) } }, @{ Expression = { ConvertTo-IntSafe $_.RouteMetric 0 } })
+}
+
 function Add-RouteTableResult {
     if (-not (Test-IsTrueFlag $script:Config.Checks.RouteTable)) { return }
 
@@ -2369,7 +2376,7 @@ function Add-RouteTableResult {
 
     $routes = @()
     try {
-        $routes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop | Sort-Object RouteMetric, InterfaceMetric)
+        $routes = @(Sort-DefaultRoutes -Routes @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop))
     }
     catch {
         Add-CheckResult -Category "IT 診斷資料" -Check "IPv4 預設路由" -Status "ERROR" -Message "無法讀取路由表。" -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + "手動驗證：route print -4") -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "routes" -Scope "IT" | Out-Null
@@ -2383,7 +2390,7 @@ function Add-RouteTableResult {
 
     $lines = @()
     foreach ($route in $routes) {
-        $lines += ("{0} 經由 {1}（ifIndex {2}），路由計量 {3}，介面計量 {4}，{5}" -f $route.NextHop, $route.InterfaceAlias, $route.InterfaceIndex, $route.RouteMetric, $route.InterfaceMetric, $route.State)
+        $lines += ("{0} 經由 {1}（ifIndex {2}），路由計量 {3}，介面計量 {4}，有效計量 {5}，{6}" -f $route.NextHop, $route.InterfaceAlias, $route.InterfaceIndex, $route.RouteMetric, $route.InterfaceMetric, ((ConvertTo-IntSafe $route.RouteMetric 0) + (ConvertTo-IntSafe $route.InterfaceMetric 0)), $route.State)
     }
     $interfaceCount = @($routes | ForEach-Object { [string]$_.InterfaceIndex } | Select-Object -Unique).Count
     if ($interfaceCount -gt 1) { $lines += "多條預設路由：Windows 依合計計量最低者優先；請檢查 VPN 分流或第二條連線。" }
@@ -2752,9 +2759,9 @@ function Wait-ForMinimumTcpSample {
 # 結果彙總：整體狀態優先序為 FAIL > ERROR > WARN > PASS。
 # -----------------------------------------------------------------------------
 function Get-OverallStatus {
-    $failCount = @($script:Results | Where-Object { $_.Status -eq "FAIL" }).Count
-    $errorCount = @($script:Results | Where-Object { $_.Status -eq "ERROR" }).Count
-    $warnCount = @($script:Results | Where-Object { $_.Status -eq "WARN" }).Count
+    $failCount = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "FAIL" }).Count
+    $errorCount = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "ERROR" }).Count
+    $warnCount = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "WARN" }).Count
 
     if ($failCount -gt 0) {
         return [pscustomobject]@{
@@ -2785,13 +2792,14 @@ function Get-OverallStatus {
 }
 
 function Get-SummaryCounts {
+    $mainResults = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" })
     return [pscustomobject][ordered]@{
-        Pass  = @($script:Results | Where-Object { $_.Status -eq "PASS" }).Count
-        Warn  = @($script:Results | Where-Object { $_.Status -eq "WARN" }).Count
-        Fail  = @($script:Results | Where-Object { $_.Status -eq "FAIL" }).Count
-        Info  = @($script:Results | Where-Object { $_.Status -eq "INFO" }).Count
-        Error = @($script:Results | Where-Object { $_.Status -eq "ERROR" }).Count
-        Total = $script:Results.Count
+        Pass  = @($mainResults | Where-Object { $_.Status -eq "PASS" }).Count
+        Warn  = @($mainResults | Where-Object { $_.Status -eq "WARN" }).Count
+        Fail  = @($mainResults | Where-Object { $_.Status -eq "FAIL" }).Count
+        Info  = @($mainResults | Where-Object { $_.Status -eq "INFO" }).Count
+        Error = @($mainResults | Where-Object { $_.Status -eq "ERROR" }).Count
+        Total = $mainResults.Count
     }
 }
 
@@ -3420,7 +3428,7 @@ function Run-AllChecks {
         Test-ConnectivityTargets
     } | Out-Null
 
-    Invoke-CheckStep -Category "IT 診斷資料" -Name "收集 IT 診斷資料（Wi-Fi、路由、閘道鄰居、Proxy、traceroute、驅動程式）" -Progress 74 -Action {
+    Invoke-CheckStep -Category "IT 診斷資料" -Name "收集 IT 診斷資料（Wi-Fi、路由、閘道鄰居、Proxy、traceroute、驅動程式）" -Progress 74 -Scope "IT" -Action {
         Add-WifiRfResult
         Add-RouteTableResult
         Add-GatewayNeighborResult -PrimaryAdapters $script:PrimaryAdapters

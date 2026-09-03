@@ -145,11 +145,13 @@ IT 診斷資料每次都會執行（可在設定檔 `Checks` 區段或用 `-NoWi
 | 檢查 | 來源 | 說明 |
 |---|---|---|
 | Wi-Fi 無線 | `netsh wlan show interfaces`，因標籤隨語系不同、Windows 10 與 11 順序不同，改依值的形狀解析（MAC、GHz、802.11x、百分比、數字） | SSID、BSSID、頻段（該版本未印出時由頻道推斷）、頻道、速率、訊號 %、RSSI（netsh 有印時用實際值，否則由百分比估算） |
-| IPv4 預設路由 | `Get-NetRoute -DestinationPrefix 0.0.0.0/0` | 多條路由分屬不同介面時在詳細資料提示 |
+| IPv4 預設路由 | `Get-NetRoute -DestinationPrefix 0.0.0.0/0`，依有效計量（路由計量＋介面計量，即 Windows 的選路順序）排序 | 多條路由分屬不同介面時在詳細資料提示 |
 | 閘道鄰居（ARP） | `Get-NetNeighbor`（備援 `arp -a`） | MAC 缺少或不完整時提示；閘道 Ping 仍是權威判定 |
 | Proxy 設定 | HKCU Internet Settings、`WebRequest.GetSystemWebProxy`、`netsh winhttp show proxy` | 解釋「TCP 443 通但 HTTPS 失敗」 |
 | Traceroute（前幾跳） | .NET `Ping` 以 TTL 1..N（預設 3，最多 10），每跳 1000 ms | 目標為第一個非 AUTO 的 Ping 目標 |
 | 網卡驅動程式 | NetAdapter 的 `DriverVersion`／`DriverDate`／`DriverProvider` | 只列實體網卡 |
+
+IT 範圍的項目不影響整體結果與摘要計數：`Get-OverallStatus` 與 `Get-SummaryCounts` 排除 `Scope = "IT"`，IT 資料收集失敗只會在 IT 區段內顯示為「無法檢查」（整個 IT 步驟都在該範圍執行，即使發生非預期例外也不會翻轉整體結果）。虛擬網卡的計數器項目不論增量大小都只列為資訊。
 
 每筆結果現在帶有語言中立的 `Tag`（例如 `ping-gateway`、`dns`、`connectivity-group`、`tcp-retransmissions`、`wifi`）與 `Scope`（`Main` 或 `IT`）。指紋由標籤計算：`local`、`gateway-unreachable`、`gateway-up-internet-dead`、`dns`、`quality`、`mixed`、`incomplete`、`healthy`，驅動 HTML 與文字報告頂端的「要告訴 IT 的話」，JSON 存在 `Fingerprint`。
 
@@ -166,7 +168,7 @@ IT 診斷資料每次都會執行（可在設定檔 `Checks` 區段或用 `-NoWi
 
 ## 6. 原始碼設計與註解
 
-程式主要由 76 個命名函式組成，依功能分成：輔助函式、設定、系統資料、規範比對、主動測試、計數器、報告、執行協調與 GUI。
+程式主要由 77 個命名函式組成，依功能分成：輔助函式、設定、系統資料、規範比對、主動測試、計數器、報告、執行協調與 GUI。
 
 版本 1.1.0 已加入：
 
@@ -188,7 +190,7 @@ IT 診斷資料每次都會執行（可在設定檔 `Checks` 區段或用 `-NoWi
 3. PowerShell 與 JSON 使用 UTF-8 BOM；Windows 腳本使用 CRLF。
 4. 英文版 PowerShell、設定檔與 README 不含中文使用者文字。
 5. 中英文 PowerShell 在移除字串與註解後，可執行語法骨架完全一致。
-6. 中英文函式集合一致，函式數為 76。
+6. 中英文函式集合一致，函式數為 77。
 7. 啟動器正確引用 `NetworkHealthCheck.ps1`。
 8. SHA-256 清單逐項重新計算並比對。
 9. ZIP 執行完整性測試，沒有損壞項目。

@@ -145,11 +145,13 @@ IT diagnostics run on every run (each can be disabled under `Checks` in the conf
 | Check | Source | Notes |
 |---|---|---|
 | Wi-Fi radio | `netsh wlan show interfaces`, parsed by value shape (MAC, GHz, 802.11x, percentage, numbers) because labels are localized and their order differs between Windows 10 and 11 | SSID, BSSID, band (inferred from the channel when the build prints none), channel, rates, signal %, RSSI (real when netsh prints it, otherwise estimated from the percentage) |
-| IPv4 default routes | `Get-NetRoute -DestinationPrefix 0.0.0.0/0` | more than one route on different interfaces is called out in the details |
+| IPv4 default routes | `Get-NetRoute -DestinationPrefix 0.0.0.0/0`, sorted by the effective metric (route metric + interface metric, the order Windows uses) | more than one route on different interfaces is called out in the details |
 | Gateway neighbor (ARP) | `Get-NetNeighbor` (fallback `arp -a`) | a missing or incomplete MAC is noted; the gateway ping stays the authoritative test |
 | Proxy settings | HKCU Internet Settings, `WebRequest.GetSystemWebProxy`, `netsh winhttp show proxy` | explains "TCP to 443 passes but HTTPS fails" |
 | Traceroute (first hops) | .NET `Ping` with TTL 1..N (default 3, maximum 10), 1000 ms per hop | target is the first non-AUTO ping target |
 | Adapter drivers | NetAdapter `DriverVersion` / `DriverDate` / `DriverProvider` | physical adapters only |
+
+IT-scoped rows never affect the overall result or the summary counts: `Get-OverallStatus` and `Get-SummaryCounts` exclude `Scope = "IT"`, and a failed IT collection shows as "Unable to Check" inside the IT section only (the whole IT step runs in that scope, so even an unexpected exception there cannot flip the verdict). Virtual-adapter counter rows are informational regardless of their deltas.
 
 Every result now carries a language-neutral `Tag` (for example `ping-gateway`, `dns`, `connectivity-group`, `tcp-retransmissions`, `wifi`) and a `Scope` (`Main` or `IT`). A fingerprint is computed from the tags — `local`, `gateway-unreachable`, `gateway-up-internet-dead`, `dns`, `quality`, `mixed`, `incomplete`, `healthy` — and drives the "What to tell IT" section at the top of the HTML and text reports; the JSON report stores it under `Fingerprint`.
 
@@ -166,7 +168,7 @@ Run options come from the entry point: `Start-NetworkCheck-IT.cmd` passes `-Inte
 
 ## 6. Source design and comments
 
-The program consists of 76 named functions grouped into helpers, configuration, system discovery, policy comparison, active tests, counters, reporting, orchestration, and GUI.
+The program consists of 77 named functions grouped into helpers, configuration, system discovery, policy comparison, active tests, counters, reporting, orchestration, and GUI.
 
 Version 1.1.0 adds:
 
@@ -188,7 +190,7 @@ The build performed checks that do not require a Windows network environment:
 3. PowerShell/JSON use UTF-8 BOM and Windows scripts use CRLF.
 4. English PowerShell, configuration, and README contain no Chinese user-facing text.
 5. After removing strings and comments, the English and Chinese PowerShell executable skeletons are identical.
-6. Both sources expose the same 76-function set.
+6. Both sources expose the same 77-function set.
 7. Launchers reference `NetworkHealthCheck.ps1` correctly.
 8. Every SHA-256 entry is recalculated and compared.
 9. ZIP integrity tests report no damaged members.

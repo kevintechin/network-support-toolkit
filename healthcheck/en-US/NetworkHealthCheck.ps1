@@ -450,7 +450,8 @@ function Invoke-CheckStep {
         [Parameter(Mandatory = $true)][string]$Category,
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][int]$Progress,
-        [Parameter(Mandatory = $true)][scriptblock]$Action
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [string]$Scope = "Main"
     )
 
     Set-UiProgress -Percent $Progress -Text $Name
@@ -462,7 +463,7 @@ function Invoke-CheckStep {
     catch {
         $details = Get-ExceptionDetails $_
         $diagnostics = Get-ExceptionDiagnostics $_
-        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "This item could not be executed. The error has been recorded." -Details $details -Diagnostics $diagnostics -Tag "step-error" | Out-Null
+        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "This item could not be executed. The error has been recorded." -Details $details -Diagnostics $diagnostics -Tag "step-error" -Scope $Scope | Out-Null
         return $null
     }
 }
@@ -2193,13 +2194,13 @@ function Compare-AdapterStatistics {
         if ($adapterByName.ContainsKey($name)) {
             $isVirtualAdapter = ($adapterByName[$name].IsPhysical -ne $true)
         }
-        if ($status -eq "PASS" -and $trafficDelta -le 0) {
-            $status = "INFO"
-            $message = "No traffic passed through this adapter during the sample, so its error counters cannot testify (0 errors is vacuous)."
-        }
-        elseif ($status -eq "PASS" -and $isVirtualAdapter) {
+        if ($isVirtualAdapter) {
             $status = "INFO"
             $message = "Virtual adapter: errors increased by {0} and discards by {1} (informational)." -f $errorDelta, $discardDelta
+        }
+        elseif ($status -eq "PASS" -and $trafficDelta -le 0) {
+            $status = "INFO"
+            $message = "No traffic passed through this adapter during the sample, so its error counters cannot testify (0 errors is vacuous)."
         }
         $details = @(
             "Receive error delta: $rxErrorDelta (cumulative $($afterItem.ReceivedPacketErrors))",
@@ -2366,6 +2367,12 @@ function Add-WifiRfResult {
     }
 }
 
+function Sort-DefaultRoutes {
+    param([object[]]$Routes)
+
+    return @($Routes | Sort-Object @{ Expression = { (ConvertTo-IntSafe $_.RouteMetric 0) + (ConvertTo-IntSafe $_.InterfaceMetric 0) } }, @{ Expression = { ConvertTo-IntSafe $_.RouteMetric 0 } })
+}
+
 function Add-RouteTableResult {
     if (-not (Test-IsTrueFlag $script:Config.Checks.RouteTable)) { return }
 
@@ -2376,7 +2383,7 @@ function Add-RouteTableResult {
 
     $routes = @()
     try {
-        $routes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop | Sort-Object RouteMetric, InterfaceMetric)
+        $routes = @(Sort-DefaultRoutes -Routes @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop))
     }
     catch {
         Add-CheckResult -Category "IT Diagnostics" -Check "IPv4 default routes" -Status "ERROR" -Message "The route table could not be read." -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + "Manual check: route print -4") -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "routes" -Scope "IT" | Out-Null
@@ -2390,7 +2397,7 @@ function Add-RouteTableResult {
 
     $lines = @()
     foreach ($route in $routes) {
-        $lines += ("{0} via {1} (ifIndex {2}), route metric {3}, interface metric {4}, {5}" -f $route.NextHop, $route.InterfaceAlias, $route.InterfaceIndex, $route.RouteMetric, $route.InterfaceMetric, $route.State)
+        $lines += ("{0} via {1} (ifIndex {2}), route metric {3}, interface metric {4}, effective metric {5}, {6}" -f $route.NextHop, $route.InterfaceAlias, $route.InterfaceIndex, $route.RouteMetric, $route.InterfaceMetric, ((ConvertTo-IntSafe $route.RouteMetric 0) + (ConvertTo-IntSafe $route.InterfaceMetric 0)), $route.State)
     }
     $interfaceCount = @($routes | ForEach-Object { [string]$_.InterfaceIndex } | Select-Object -Unique).Count
     if ($interfaceCount -gt 1) { $lines += "Multiple default routes: Windows prefers the lowest combined metric; check for VPN split-tunnel or a second connection." }
@@ -2759,9 +2766,9 @@ function Wait-ForMinimumTcpSample {
 # Result aggregation: overall precedence is FAIL > ERROR > WARN > PASS.
 # -----------------------------------------------------------------------------
 function Get-OverallStatus {
-    $failCount = @($script:Results | Where-Object { $_.Status -eq "FAIL" }).Count
-    $errorCount = @($script:Results | Where-Object { $_.Status -eq "ERROR" }).Count
-    $warnCount = @($script:Results | Where-Object { $_.Status -eq "WARN" }).Count
+    $failCount = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "FAIL" }).Count
+    $errorCount = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "ERROR" }).Count
+    $warnCount = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "WARN" }).Count
 
     if ($failCount -gt 0) {
         return [pscustomobject]@{
@@ -2792,13 +2799,14 @@ function Get-OverallStatus {
 }
 
 function Get-SummaryCounts {
+    $mainResults = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" })
     return [pscustomobject][ordered]@{
-        Pass  = @($script:Results | Where-Object { $_.Status -eq "PASS" }).Count
-        Warn  = @($script:Results | Where-Object { $_.Status -eq "WARN" }).Count
-        Fail  = @($script:Results | Where-Object { $_.Status -eq "FAIL" }).Count
-        Info  = @($script:Results | Where-Object { $_.Status -eq "INFO" }).Count
-        Error = @($script:Results | Where-Object { $_.Status -eq "ERROR" }).Count
-        Total = $script:Results.Count
+        Pass  = @($mainResults | Where-Object { $_.Status -eq "PASS" }).Count
+        Warn  = @($mainResults | Where-Object { $_.Status -eq "WARN" }).Count
+        Fail  = @($mainResults | Where-Object { $_.Status -eq "FAIL" }).Count
+        Info  = @($mainResults | Where-Object { $_.Status -eq "INFO" }).Count
+        Error = @($mainResults | Where-Object { $_.Status -eq "ERROR" }).Count
+        Total = $mainResults.Count
     }
 }
 
@@ -3427,7 +3435,7 @@ function Run-AllChecks {
         Test-ConnectivityTargets
     } | Out-Null
 
-    Invoke-CheckStep -Category "IT Diagnostics" -Name "Collect IT diagnostics (Wi-Fi, routes, gateway neighbor, proxy, traceroute, drivers)" -Progress 74 -Action {
+    Invoke-CheckStep -Category "IT Diagnostics" -Name "Collect IT diagnostics (Wi-Fi, routes, gateway neighbor, proxy, traceroute, drivers)" -Progress 74 -Scope "IT" -Action {
         Add-WifiRfResult
         Add-RouteTableResult
         Add-GatewayNeighborResult -PrimaryAdapters $script:PrimaryAdapters
