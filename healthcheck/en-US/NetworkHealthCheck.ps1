@@ -34,7 +34,7 @@ param(
 # - Traceability: exception type, message, and inner exceptions are stored in every
 #   report; script location and call stack go to the JSON report only (Diagnostics).
 
-$script:ToolVersion = "1.1.4"
+$script:ToolVersion = "1.1.5"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Results = New-Object System.Collections.ArrayList
 $script:StartupMessages = New-Object System.Collections.ArrayList
@@ -2425,6 +2425,7 @@ function Save-Reports {
     }
 
     $writeErrors = New-Object System.Collections.ArrayList
+    $failedFormats = New-Object System.Collections.ArrayList
 
     try {
         $html = New-HtmlReportContent -SystemSummary $systemSummary -Overall $overall -Counts $counts
@@ -2432,6 +2433,7 @@ function Save-Reports {
         $script:LastHtmlReport = $htmlPath
     }
     catch {
+        [void]$failedFormats.Add("HTML")
         [void]$writeErrors.Add("Failed to write HTML report: $(Get-ExceptionDetails $_ -IncludeDiagnostics)")
     }
 
@@ -2441,6 +2443,7 @@ function Save-Reports {
         $script:LastTextReport = $textPath
     }
     catch {
+        [void]$failedFormats.Add("TXT")
         [void]$writeErrors.Add("Failed to write text report: $(Get-ExceptionDetails $_ -IncludeDiagnostics)")
     }
 
@@ -2450,22 +2453,86 @@ function Save-Reports {
         $script:LastJsonReport = $jsonPath
     }
     catch {
+        [void]$failedFormats.Add("JSON")
         [void]$writeErrors.Add("Failed to write JSON report: $(Get-ExceptionDetails $_ -IncludeDiagnostics)")
     }
 
-    if ($writeErrors.Count -gt 0) {
-        foreach ($writeError in $writeErrors) {
-            Write-UiLog -Status "ERROR" -Text $writeError
-        }
-        throw ($writeErrors -join [Environment]::NewLine)
+    foreach ($writeError in $writeErrors) {
+        Write-UiLog -Status "ERROR" -Text $writeError
     }
 
     return [pscustomobject]@{
-        Html = $htmlPath
-        Text = $textPath
-        Json = $jsonPath
-        Overall = $overall
-        Counts = $counts
+        Html          = $script:LastHtmlReport
+        Text          = $script:LastTextReport
+        Json          = $script:LastJsonReport
+        Overall       = $overall
+        Counts        = $counts
+        FailedFormats = @($failedFormats)
+        WriteErrors   = @($writeErrors)
+    }
+}
+
+# Backlog #3: formats that succeeded stay usable; a single emergency report only when all three failed.
+function Complete-ReportStage {
+    param([object]$SaveResult)
+
+    $available = @(@($SaveResult.Html, $SaveResult.Text, $SaveResult.Json) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    $primary = $null
+    if ($available.Count -gt 0) {
+        $primary = [string]$available[0]
+    }
+    $failedFormats = @($SaveResult.FailedFormats)
+    $writeErrors = @($SaveResult.WriteErrors)
+    $emergencyPath = $null
+
+    if ($null -eq $primary) {
+        Write-UiLog -Status "ERROR" -Text "Report generation failed."
+        $emergencyPath = Write-EmergencyReport -Title "Network Health Check Report Generation Failed" -ErrorDetails ($writeErrors -join [Environment]::NewLine)
+        Set-UiProgress -Percent 100 -Text "Report generation failed"
+        Update-OverallUi -Overall $SaveResult.Overall
+        if ($script:GuiAvailable) {
+            $script:ReportPathLabel.Text = "Report could not be written"
+            $script:OpenFolderButton.Enabled = [bool](Test-Path -LiteralPath $script:OutputDirectory)
+            $message = "Report generation failed."
+            if ($null -ne $emergencyPath) {
+                $message += "`r`nEmergency error report written to: $emergencyPath"
+            }
+            [System.Windows.Forms.MessageBox]::Show($message, "Network Health Check Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        }
+    }
+    elseif ($failedFormats.Count -gt 0) {
+        Set-UiProgress -Percent 100 -Text "Test Complete"
+        Write-UiLog -Status "WARN" -Text ("Report generated, but {0} format(s) could not be written ({1}). Primary report: {2}" -f $failedFormats.Count, ($failedFormats -join ", "), $primary)
+        Update-OverallUi -Overall $SaveResult.Overall
+        if ($script:GuiAvailable) {
+            $script:ReportPathLabel.Text = "Report: $primary"
+            $script:OpenReportButton.Enabled = $true
+            $script:OpenFolderButton.Enabled = $true
+            [System.Windows.Forms.MessageBox]::Show(("{0} of 3 report formats could not be written ({1}). The report was saved as: {2}" -f $failedFormats.Count, ($failedFormats -join ", "), $primary), "Network Health Check Warning", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        }
+    }
+    else {
+        Set-UiProgress -Percent 100 -Text "Test Complete"
+        Write-UiLog -Status "PASS" -Text ("Report generated: {0}" -f $primary)
+        Update-OverallUi -Overall $SaveResult.Overall
+        if ($script:GuiAvailable) {
+            $script:ReportPathLabel.Text = "Report: $primary"
+            $script:OpenReportButton.Enabled = $true
+            $script:OpenFolderButton.Enabled = $true
+        }
+    }
+
+    return [pscustomobject]@{
+        Html          = $SaveResult.Html
+        Text          = $SaveResult.Text
+        Json          = $SaveResult.Json
+        Overall       = $SaveResult.Overall
+        Counts        = $SaveResult.Counts
+        PrimaryReport = $primary
+        FailedFormats = $failedFormats
+        WriteErrors   = $writeErrors
+        EmergencyPath = $emergencyPath
+        Succeeded     = ($null -ne $primary)
     }
 }
 
@@ -2595,15 +2662,13 @@ function Run-AllChecks {
     if (-not (Test-IsWindowsPlatform)) {
         Add-CheckResult -Category "Program Environment" -Check "Operating System" -Status "FAIL" -Message "This version supports only Windows 10/11 or compatible Windows Server versions." -Details ([System.Environment]::OSVersion.VersionString) | Out-Null
         $script:RunFinishedAt = Get-Date
-        $report = Save-Reports
-        return $report
+        return (Complete-ReportStage -SaveResult (Save-Reports))
     }
 
     if ($PSVersionTable.PSVersion.Major -lt 5) {
         Add-CheckResult -Category "Program Environment" -Check "PowerShell Version" -Status "FAIL" -Message "PowerShell 5.1 or later is required." -Details ("Current version: {0}" -f $PSVersionTable.PSVersion) | Out-Null
         $script:RunFinishedAt = Get-Date
-        $report = Save-Reports
-        return $report
+        return (Complete-ReportStage -SaveResult (Save-Reports))
     }
     else {
         Add-CheckResult -Category "Program Environment" -Check "PowerShell Version" -Status "PASS" -Message ("Current version: {0}" -f $PSVersionTable.PSVersion) -Details "" | Out-Null
@@ -2688,18 +2753,7 @@ function Run-AllChecks {
     Write-UiLog -Status "INFO" -Text "Generating HTML, text, and JSON reports."
 
     try {
-        $report = Save-Reports
-        Set-UiProgress -Percent 100 -Text "Test Complete"
-        Write-UiLog -Status "PASS" -Text ("Report generated: {0}" -f $report.Html)
-        Update-OverallUi -Overall $report.Overall
-
-        if ($script:GuiAvailable) {
-            $script:ReportPathLabel.Text = "Report: $($report.Html)"
-            $script:OpenReportButton.Enabled = $true
-            $script:OpenFolderButton.Enabled = $true
-        }
-
-        return $report
+        return (Complete-ReportStage -SaveResult (Save-Reports))
     }
     catch {
         $details = Get-ExceptionDetails $_ -IncludeDiagnostics
@@ -2712,7 +2766,19 @@ function Run-AllChecks {
             }
             [System.Windows.Forms.MessageBox]::Show($message, "Network Health Check Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         }
-        throw
+        # Backlog #2: an unexpected failure inside the report stage is handled once, here, and never re-thrown.
+        return [pscustomobject]@{
+            Html          = $null
+            Text          = $null
+            Json          = $null
+            Overall       = (Get-OverallStatus)
+            Counts        = (Get-SummaryCounts)
+            PrimaryReport = $null
+            FailedFormats = @("HTML", "TXT", "JSON")
+            WriteErrors   = @($details)
+            EmergencyPath = $emergencyPath
+            Succeeded     = $false
+        }
     }
     finally {
         $script:IsRunning = $false
@@ -2728,10 +2794,19 @@ function Start-ConsoleMode {
         $report = Run-AllChecks
         Write-Host ""
         Write-Host ("Overall result: {0}" -f $report.Overall.Text)
-        Write-Host ("HTML report: {0}" -f $report.Html)
-        Write-Host ("Text report: {0}" -f $report.Text)
-        Write-Host ("JSON report: {0}" -f $report.Json)
-        return 0
+        Write-Host ("HTML report: {0}" -f (ConvertTo-DisplayString $report.Html "(not written)"))
+        Write-Host ("Text report: {0}" -f (ConvertTo-DisplayString $report.Text "(not written)"))
+        Write-Host ("JSON report: {0}" -f (ConvertTo-DisplayString $report.Json "(not written)"))
+        if (@($report.FailedFormats).Count -gt 0) {
+            Write-Host ("Report formats not written: {0}" -f (@($report.FailedFormats) -join ", ")) -ForegroundColor Yellow
+        }
+        if ($null -ne $report.EmergencyPath) {
+            Write-Host "Emergency error report: $($report.EmergencyPath)"
+        }
+        if ($report.Succeeded) {
+            return 0
+        }
+        return 1
     }
     catch {
         $details = Get-ExceptionDetails $_ -IncludeDiagnostics
@@ -2895,11 +2970,18 @@ function Initialize-Gui {
 
     $openReportButton.Add_Click({
         try {
-            if ($null -ne $script:LastHtmlReport -and (Test-Path -LiteralPath $script:LastHtmlReport)) {
-                Start-Process -FilePath $script:LastHtmlReport -ErrorAction Stop
+            $target = $null
+            foreach ($candidate in @($script:LastHtmlReport, $script:LastTextReport, $script:LastJsonReport)) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$candidate) -and (Test-Path -LiteralPath $candidate)) {
+                    $target = $candidate
+                    break
+                }
+            }
+            if ($null -ne $target) {
+                Start-Process -FilePath $target -ErrorAction Stop
             }
             else {
-                throw "The HTML report was not found."
+                throw "No report file was found."
             }
         }
         catch {

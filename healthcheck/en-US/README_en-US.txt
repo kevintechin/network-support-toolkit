@@ -1,5 +1,5 @@
 Windows Portable Network Health Check
-Version: 1.1.4
+Version: 1.1.5
 ========================================
 
 1. Quick start
@@ -57,6 +57,9 @@ long-running problem is absent. Run the tool while the problem is occurring.
   LauncherError.txt.
 - Unhandled program failure: the tool tries to write
   NetworkHealthCheck_FATAL_yyyyMMdd_HHmmss.txt.
+- Report format failure: if one of HTML/TXT/JSON cannot be written, the others are
+  still saved and Open Report opens the first available one. Only when all three
+  fail is the FATAL file written (console mode then exits with code 1).
 - Unwritable report folder: output automatically falls back to
   %TEMP%\NetworkHealthCheck\Reports.
 

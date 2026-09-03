@@ -1,5 +1,27 @@
 # Validation Record — NetworkHealthCheck
 
+## v1.1.5 · 2026-09-03
+
+**Changes** (backlog #2 and #3):
+
+- **#3 Partial report-write failures** — `Save-Reports` no longer throws. It returns the per-format paths that were written plus `FailedFormats` / `WriteErrors`, and the new `Complete-ReportStage` decides what happens: all three written → as before; some written → WARN log line, GUI warning dialog, "Open Report" and "Open Folder" enabled, the label points at the first available report; none written → one emergency FATAL report (containing all three write errors with their diagnostics) and one error dialog. "Open Report" now opens the first available of HTML, TXT, JSON instead of insisting on HTML. Console mode prints "(not written)" per missing format, lists the failed formats, and exits 1 only when nothing could be written.
+- **#2 Double emergency report** — `Run-AllChecks` handles the report stage once and returns a result object instead of re-throwing, so the GUI click handler and `Start-ConsoleMode` no longer produce a second FATAL file and a second dialog for the same failure. Their catch blocks remain for genuinely unhandled errors elsewhere in the run.
+- Function count 60 → 61 (`Complete-ReportStage`); validator constants updated.
+
+**Re-validation (Windows 11, Windows PowerShell 5.1.26100):**
+
+| Step | Result |
+|---|---|
+| PS 5.1 parser, both languages | 0 errors × 2 |
+| `validate_release.py` | 54 passed, 0 failed — skeleton identical, 61 = 61 functions, hashes regenerated |
+| Helper unit tests | 57 × 2 (unchanged) |
+| Report-stage functional tests (every function loaded via the PowerShell AST, `Write-Utf8File` stubbed to fail selectively, run against both language files) | 23 × 2 — A: all formats written, no FATAL; B: HTML fails → TXT/JSON kept, primary = TXT, no FATAL, the write error carries the call stack; C: all three fail → exactly one FATAL file containing the three write errors with call stacks |
+| Acceptance, en-US / zh-TW console | en-US and zh-TW Overall Healthy, exit 0, tool version 1.1.5, 22 results, 11 Method / 10 Manual-check lines |
+
+Not fault-injected end-to-end: a real disk-level write failure during a full run (the functional tests cover the report stage in isolation), and the GUI dialogs were reviewed rather than exercised headlessly.
+
+**Independent review — Codex (`chatgpt-codex-connector`), PR #2 · 2026-09-03: no findings.** The review of commit cb3eda5 completed without any comment on the first pass. This closing note is a documentation-only commit on top of the reviewed code.
+
 ## v1.1.4 · 2026-09-03
 
 **Changes** (backlog #4, #5, #6, #11 — see the backlog below):
@@ -146,8 +168,8 @@ All four injected faults were detected and correctly classified at the overall-v
 ## Known issues — backlog for v1.1.1
 
 1. ~~GUI fallback gap (major)~~ — **fixed in v1.1.3** (2026-07-29).
-2. On report-write failure the emergency report is produced twice (double dialog in GUI mode).
-3. If one of the three report formats fails, the whole run is treated as a report failure — "Open Report" stays disabled even when HTML/TXT succeeded.
+2. ~~On report-write failure the emergency report is produced twice (double dialog in GUI mode).~~ — **fixed in v1.1.5** (2026-09-03).
+3. ~~If one of the three report formats fails, the whole run is treated as a report failure — "Open Report" stays disabled even when HTML/TXT succeeded.~~ — **fixed in v1.1.5** (2026-09-03).
 4. ~~Retransmission thresholds are parsed with raw `[double]` casts (inconsistent with the `ConvertTo-IntSafe` defensive style; a non-numeric config value degrades that step to ERROR). Packet-loss/latency thresholds silently round decimals to integers.~~ — **fixed in v1.1.4** (2026-09-03).
 5. ~~CIM fallback path: an IPv6 gateway can satisfy the "IPv4 default gateway" check; a null DHCP state maps to "static" instead of "unknown".~~ — **fixed in v1.1.4** (2026-09-03).
 6. ~~Dead stores to clean up: `$script:NetworkSnapshot`, local `$systemSummary`.~~ — **fixed in v1.1.4** (2026-09-03).
