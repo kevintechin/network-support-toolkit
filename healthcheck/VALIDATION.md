@@ -149,6 +149,15 @@ Re-validation after round 16 (scripts unchanged; validator and manifest only): p
 
 Re-validation after round 17 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 19 · 2026-09-03 (requested by the maintainer).** Two P2 findings on commit 35492bc, both accepted and fixed:
+
+1. *Assignments in expression context were not scanned.* `($script:Interactive = $false)` and a `for` initializer start after `(`, which was not a statement start for the guard. Fix: `(` joins the line start, `{` and `;` as a statement start for assignments and for prefix increments.
+2. *Only the first variable cmdlet on a logical line was checked.* `Set-Variable -Name Tmp -Value 1; Set-Variable -Name Interactive -Value $false` was judged by the first invocation only. Fix: every `Set-Variable` / `New-Variable` / `sv` / `nv` occurrence is checked with its own segment, cut at the next `;` (string semicolons are masked, so they do not split); duplicate hits on one line are reported once.
+
+Self-tests extended (assignment in parentheses with and without the parameter itself, a `for` initializer, two cmdlets on one line with the parameter first, second or absent, and the same inside a function); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 18 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):

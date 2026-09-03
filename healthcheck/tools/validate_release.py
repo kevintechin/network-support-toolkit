@@ -190,29 +190,28 @@ def overwritten_parameters(text):
             # $global: ones are not. A one-line `function F { ... }` is closed on its own line.
             local=True; in_function=('{' not in code) or (code.count('{')!=code.count('}'))
         elif code.rstrip()=='}': in_function=False
-        # Assignment statements at every statement start of the line (line start, after `{`, after `;` - if / try / foreach
-        # blocks create no scope): $Name, ${Name}, $script:Name, $Script:Name, ${script:Name}, $global:Name, $local:Name ...,
+        # Assignment statements at every statement start of the line (line start, after `{`, `;` or `(` - if / try / foreach
+        # blocks create no scope, and an assignment is also an expression): $Name, ${Name}, $script:Name, $Script:Name, ${script:Name}, ...,
         # with or without type constraints / attributes in front ([bool]$script:Name = ..., [ValidateNotNull()][string[]]$Name = ...).
         # Names are case-insensitive like PowerShell's. The assigned expression (read up to the next `;` or `}`) must be the
         # parameter itself (see `token` above); comments and single-quoted strings were removed before matching.
         # Plain `=` must copy the parameter itself; a compound assignment (+= -= *= /= %=) or an increment / decrement
         # (prefix or postfix ++ / --) always changes the value and is an overwrite whatever follows.
         overwrite=lambda scope,name: name.lower() in params and (scope in ('script','global') or (scope in ('','local','private') and not local))
-        for m in re.finditer(r'(?:^|[{;])\s*(?:\[[^=]*?\]\s*)*\$\{?(?:(\w+):)?(\w+)\}?\s*(?:(\+\+|--)|([-+*/%]?=)(?!=)\s*([^;}]*))',code,re.I):
+        for m in re.finditer(r'(?:^|[{;(])\s*(?:\[[^=]*?\]\s*)*\$\{?(?:(\w+):)?(\w+)\}?\s*(?:(\+\+|--)|([-+*/%]?=)(?!=)\s*([^;}]*))',code,re.I):
             if overwrite((m.group(1) or '').lower(),m.group(2)) and (m.group(3) or m.group(4)!='=' or not token(m.group(2),m.group(5))): hits.append(f'{n} (${m.group(2)})')
-        for m in re.finditer(r'(?:^|[{;])\s*(?:\+\+|--)\$\{?(?:(\w+):)?(\w+)\}?',code,re.I):   # prefix ++ / --
+        for m in re.finditer(r'(?:^|[{;(])\s*(?:\+\+|--)\$\{?(?:(\w+):)?(\w+)\}?',code,re.I):   # prefix ++ / --
             if overwrite((m.group(1) or '').lower(),m.group(2)): hits.append(f'{n} (${m.group(2)})')
         # Set-Variable / New-Variable reach the same variable through the cmdlet interface: -Scope Script / Global (or a
         # numeric parent scope) anywhere, or no -Scope / -Scope Local at the top level. -Name may be positional; -Name and
         # -Scope may be abbreviated; the aliases sv / nv count as the cmdlets.
-        gate=re.search(r'(?<![\w$])(?:(?:Set|New)-Variable|sv|nv)\b',code,re.I)   # cmdlet or its built-in alias, outside strings
-        if gate:
-            tail=raw[gate.start():]   # values may be quoted: read them from the intact text after the cmdlet
-            nm=re.search(abbr('name')+r'\s+["\']?(\w+)',tail,re.I) or re.search(r'(?<![\w$])(?:(?:Set|New)-Variable|sv|nv)\s+(?!-)["\']?(\w+)',tail,re.I)
-            sc=re.search(abbr('scope')+r'\s+["\']?(\w+)',tail,re.I); scope=(sc.group(1).lower() if sc else '')
+        for gate in re.finditer(r'(?<![\w$])(?:(?:Set|New)-Variable|sv|nv)\b',code,re.I):   # every cmdlet / alias outside strings
+            end=code.find(';',gate.end()); seg=raw[gate.start():(end if end>=0 else len(raw))]   # this invocation only; values may be quoted, so read the intact text
+            nm=re.search(abbr('name')+r'\s+["\']?(\w+)',seg,re.I) or re.search(r'(?<![\w$])(?:(?:Set|New)-Variable|sv|nv)\s+(?!-)["\']?(\w+)',seg,re.I)
+            sc=re.search(abbr('scope')+r'\s+["\']?(\w+)',seg,re.I); scope=(sc.group(1).lower() if sc else '')
             if nm and nm.group(1).lower() in params and (scope in ('script','global') or scope.isdigit() or (scope in ('','local') and not local)):
                 hits.append(f'{n} (Set-Variable {nm.group(1)})')
-    return hits
+    return list(dict.fromkeys(hits))
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     hits=overwritten_parameters(read_text(ROOT/rel)); ok('parameters not overwritten at script scope '+rel,not hits,'lines '+', '.join(hits) if hits else '')
 # Hash manifest is checked if already present.
