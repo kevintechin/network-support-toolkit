@@ -47,8 +47,8 @@ See [healthcheck/docs](healthcheck/docs/) for the technical guide (design, valid
 |---|---|
 | SOP | v1.1 |
 | NetworkHealthCheck | v1.1.5 — backlog #2/#3 closed (partial report-write failures keep the successful formats usable, a single emergency report only when all three fail); v1.1.4 closed #4/#5/#6/#11 (safe threshold parsing, CIM-fallback gateway/DHCP semantics, dead stores removed, stack traces kept out of HTML/TXT); self-explaining Method + Manual-check lines in every check; validation chain: static checks, independent code review, Windows acceptance, five fault-injection scenarios ([validation record](healthcheck/VALIDATION.md) · [scenario matrix](healthcheck/validation-matrix.html)) |
-| NHC v1.2 | Planned: separate User / IT modes |
-| Guided triage wizard | Planned: decision-tree front-end over the SOP |
+| NHC v1.2 | Planned — no separate modes: every check runs every time, user summary on top and IT diagnostics collapsed in one HTML, JSON schema 2 with a run profile, an IT entry point (launcher + switches + options panel), physical/virtual adapter classification and Wi-Fi RF data ([design](docs/design-v1.2-triage-wizard.md)) |
+| Guided triage wizard | Planned — single-file HTML decision tree over the SOP that imports the NHC JSON report, asks only what the machine cannot see, and produces the escalation package ([design](docs/design-v1.2-triage-wizard.md)) |
 
 ## Working method
 

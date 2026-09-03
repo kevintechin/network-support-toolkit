@@ -206,5 +206,5 @@ Two discriminators, used in order. **Counters first:** climbing CRC or alignment
 
 ## Tools
 
-- **NetworkHealthCheck** (companion tool) — portable, read-only Windows health check that a non-technical user can run with one double-click; produces HTML / TXT / JSON reports that drop straight into the escalation package. Roadmap v1.2: separate User / IT modes.
+- **NetworkHealthCheck** (companion tool) — portable, read-only Windows health check that a non-technical user can run with one double-click; produces HTML / TXT / JSON reports that drop straight into the escalation package. Roadmap v1.2: one run for everyone (user summary plus collapsed IT diagnostics), an IT entry point, and a guided triage wizard over this SOP — see docs/design-v1.2-triage-wizard.md.
 - **Wireshark / pktmon** — when packet-level proof is required.
