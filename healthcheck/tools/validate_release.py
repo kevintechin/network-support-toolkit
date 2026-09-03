@@ -86,11 +86,11 @@ for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     hits=unparenthesized_arithmetic(read_text(ROOT/rel)); ok('New-Object arguments parenthesized '+rel,not hits,'lines '+', '.join(map(str,hits)) if hits else '')
 # A script's top-level scope and its $script: scope are the same variable table, so a top-level
 # `$script:<Parameter> = <literal>` overwrites the bound parameter (v1.2.0 wrote `$script:Interactive = $false` and
-# the IT launcher opened the user layout): such a line must derive its value from the parameter itself.
+# the IT launcher opened the user layout): such a line, at any indentation, must derive its value from the parameter itself.
 def overwritten_parameters(text):
     head=text.split('\n)',1)[0]; params=re.findall(r'\[[\w\[\].]+\]\$(\w+)',head); hits=[]
     for n,line in enumerate(text.splitlines(),1):
-        m=re.match(r'^\$script:(\w+)\s*=\s*(.*)$',line)
+        m=re.match(r'^\s*\$script:(\w+)\s*=\s*(.*)$',line)   # any indentation: top-level try/if blocks create no scope, and a function would clobber the parameter just the same
         if m and m.group(1) in params and ('$'+m.group(1)) not in m.group(2): hits.append(f'{n} (${m.group(1)})')
     return hits
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:

@@ -26,6 +26,12 @@
 
 Lesson: "reviewed, not exercised headlessly" was not enough for WinForms code — the 1.2.0 GUI never opened on a real machine during its six review rounds because every acceptance run used `-ConsoleOnly`. From 1.2.1 the chain includes the headless `Initialize-Gui` smoke test and a UI Automation run of both entries in both languages (backlog #16 is about committing those driver scripts). The panel's spinner values cannot be read back through UI Automation (WinForms `NumericUpDown` exposes no value pattern here); the JSON run options are the evidence instead.
 
+**Independent review — Codex, PR #4, round 1 · 2026-09-03.** One P2 finding on commit ade80fd, accepted and fixed:
+
+1. *The new parameter guard only matched column 1.* A top-level `try` / `if` block creates no PowerShell scope but its statements are indented, so an indented `$script:Interactive = $false` inside the program-entry `try` block — the very regression the guard exists for — would have passed. Fix: the guard matches `$script:<Parameter> = …` at any indentation (a function assigning a literal would clobber the bound parameter just the same, so it is flagged too). Self-tests: the v1.2.0 files still flag line 77 / 70, an indented literal inside the entry `try` and a literal inside a function are flagged, and 1.2.1 is clean.
+
+Re-validation after round 1 (the scripts are unchanged since the UI Automation runs; only the validator and the manifest changed): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
