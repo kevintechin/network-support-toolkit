@@ -44,6 +44,12 @@ Re-validation after round 2 (scripts unchanged; validator and manifest only): pa
 
 Re-validation after round 3 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 4 · 2026-09-03.** One P2 finding on commit e98eaba, accepted and fixed:
+
+1. *`Set-Variable` / `New-Variable` without `-Scope` was not flagged.* At the top level the cmdlet operates in the script scope, so `Set-Variable -Name Interactive -Value $false` would have overwritten the parameter unnoticed. Fix: the guard now tracks whether a line is inside a function (every function in these files opens with `function Name {` and closes with a column-0 `}`); outside a function an unscoped or `-Scope Local` cmdlet call, and likewise an unscoped assignment `$Interactive = ...` or `$local:Interactive = ...`, counts as an overwrite, while inside a function those are locals and are ignored; `$script:` / `$global:` forms and explicit script / global / numeric scopes are flagged anywhere; a positional `-Name` is recognised; the script's own param block is skipped. Self-tests: 30 top-level and 7 function-local cases, including the finding's example; v1.2.0 line 77 / 70 still flagged; 1.2.1 clean.
+
+Re-validation after round 4 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):

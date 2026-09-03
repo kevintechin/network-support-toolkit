@@ -104,23 +104,35 @@ for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     hits=unparenthesized_arithmetic(read_text(ROOT/rel)); ok('New-Object arguments parenthesized '+rel,not hits,'lines '+', '.join(map(str,hits)) if hits else '')
 # A script's top-level scope and its $script: scope are the same variable table, so a top-level
 # `$script:<Parameter> = <literal>` overwrites the bound parameter (v1.2.0 wrote `$script:Interactive = $false` and
-# the IT launcher opened the user layout): such a line, at any indentation, must use the parameter's own token on the right-hand side.
+# the IT launcher opened the user layout): such a line, at any indentation, must use the parameter's own token on the right-hand
+# side. Outside a function the same holds for unscoped assignments and for Set-Variable / New-Variable without -Scope.
 def overwritten_parameters(text):
-    head=text.split('\n)',1)[0]; params={x.lower() for x in re.findall(r'\[[\w\[\].]+\]\$(\w+)',head)}; hits=[]
+    head=text.split('\n)',1)[0]; params={x.lower() for x in re.findall(r'\[[\w\[\].]+\]\$(\w+)',head)}
+    param_end=head.count('\n')+2   # the line holding the param block's closing ')'; defaults inside the block are not overwrites
+    hits=[]; in_function=False
+    token=lambda name,expr: re.search(r'\$\{?'+re.escape(name)+r'\}?(?!\w)',expr,re.I)   # complete $Name / ${Name} token, any case
     for n,line in enumerate(text.splitlines(),1):
+        if n<=param_end: continue
+        # Every function in these files opens with `function Name {` and closes with a column-0 `}`; everything else is
+        # top level, where try / if / foreach blocks create no scope, so "local" means the script scope there.
+        if re.match(r'^function\s',line): in_function=True
+        elif line.rstrip()=='}': in_function=False
         code=strip_line_comment(line,blank_single=True)
-        # Any indentation (top-level try/if blocks create no scope, and a function would clobber the parameter just the same);
-        # names are case-insensitive like PowerShell's; $script:Name, $Script:Name and ${script:Name} are the same variable.
-        m=re.match(r'^\s*\$\{?script:(\w+)\}?\s*=\s*(.*)$',code,re.I)
-        # The assigned expression must contain the complete parameter token ($Name or ${Name}, any case) outside comments and
-        # single quotes; a longer name such as $NameBackup does not count.
-        if m and m.group(1).lower() in params and not re.search(r'\$\{?'+re.escape(m.group(1))+r'\}?(?!\w)',m.group(2),re.I): hits.append(f'{n} (${m.group(1)})')
-        # Set-Variable / New-Variable can do the same through the cmdlet interface: flag any use that targets a parameter at
-        # script or global scope (assign with the parameter's own token instead).
-        sv=re.search(r'\b(Set|New)-Variable\b',code,re.I)
-        if sv:
-            nm=re.search(r'-Name\s+["\']?(\w+)',code,re.I); sc=re.search(r'-Scope\s+["\']?(\w+)',code,re.I)
-            if nm and sc and nm.group(1).lower() in params and (sc.group(1).lower() in ('script','global') or sc.group(1).isdigit()): hits.append(f'{n} (Set-Variable {nm.group(1)})')
+        # Assignment statements: $Name, ${Name}, $script:Name, $Script:Name, ${script:Name}, $global:Name, $local:Name ...
+        # Names are case-insensitive like PowerShell's. The assigned expression must contain the parameter's own token
+        # (outside comments and single quotes; $NameBackup does not count).
+        m=re.match(r'^\s*\$\{?(?:(\w+):)?(\w+)\}?\s*=\s*(.*)$',code,re.I)
+        if m and m.group(2).lower() in params:
+            scope=(m.group(1) or '').lower()
+            if scope in ('script','global') or (scope in ('','local','private') and not in_function):
+                if not token(m.group(2),m.group(3)): hits.append(f'{n} (${m.group(2)})')
+        # Set-Variable / New-Variable reach the same variable through the cmdlet interface: -Scope Script / Global (or a
+        # numeric parent scope) anywhere, or no -Scope / -Scope Local at the top level. -Name may be positional.
+        if re.search(r'\b(Set|New)-Variable\b',code,re.I):
+            nm=re.search(r'-Name\s+["\']?(\w+)',code,re.I) or re.search(r'\b(?:Set|New)-Variable\s+(?!-)["\']?(\w+)',code,re.I)
+            sc=re.search(r'-Scope\s+["\']?(\w+)',code,re.I); scope=(sc.group(1).lower() if sc else '')
+            if nm and nm.group(1).lower() in params and (scope in ('script','global') or scope.isdigit() or (scope in ('','local') and not in_function)):
+                hits.append(f'{n} (Set-Variable {nm.group(1)})')
     return hits
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     hits=overwritten_parameters(read_text(ROOT/rel)); ok('parameters not overwritten at script scope '+rel,not hits,'lines '+', '.join(hits) if hits else '')
