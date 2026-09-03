@@ -1,0 +1,8 @@
+# Shipped package: CRLF on checkout and in GitHub-generated archives (Download ZIP / release source ZIP).
+# Repository storage stays LF. validate_release.py enforces CRLF for .ps1/.json/.cmd and checks SHA256SUMS,
+# which was computed over CRLF files; the exceptions below are the files that must stay LF.
+healthcheck/** text eol=crlf
+healthcheck/tools/*.py text eol=lf
+healthcheck/SHA256SUMS.txt text eol=lf
+healthcheck/VALIDATION.md text eol=lf
+healthcheck/validation-matrix.html text eol=lf
