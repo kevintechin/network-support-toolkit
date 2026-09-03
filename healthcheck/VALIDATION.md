@@ -49,6 +49,8 @@ Re-validation after round 3: parser 0 errors × 2; validator 54/54; unit tests 5
 
 Re-validation after round 4: parser 0 errors × 2; validator 54/54; unit tests 57 × 2 (new cases: 3 000 000 000 and −2 147 483 649 rejected, 2 147 483 647 accepted); acceptance: en-US and zh-TW Overall Healthy, exit 0; fault config with `AdapterErrorCriticalDelta: 3000000000` and `MinimumTcpSegmentsForRate: 2147483647` reports exactly the out-of-range value and accepts the Int32 maximum.
 
+**Independent review — Codex, PR #1, round 5 · 2026-09-03: no findings.** The review of commit 3bfc73b completed without any comment. Review loop summary: 5 Codex passes, 6 P2 findings (3 + 1 + 1 + 1), all accepted and fixed in four rounds, each round re-validated with the full chain. This closing note is a documentation-only commit on top of the reviewed code.
+
 ## Packaging — v1.1.3 GitHub Release asset · 2026-09-03
 
 - **Finding:** GitHub's auto-generated *Code → Download ZIP* exported every file with LF line endings — the repository stores LF, the author's working tree is CRLF via `core.autocrlf`, and no `.gitattributes` existed. Run against a simulated download (`git archive` of the committed tree), `validate_release.py` reported **27 failures**: all 8 CRLF checks and all 19 SHA256 manifest entries. The auto-generated ZIP was therefore not the validated package (backlog #15).
