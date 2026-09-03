@@ -125,6 +125,15 @@ Re-validation after round 13 (scripts unchanged; validator and manifest only): p
 
 Re-validation after round 14 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 16 · 2026-09-03 (requested by the maintainer).** Two P2 findings on commit 5a5200c, both accepted and fixed:
+
+1. *Abbreviated `-TypeName` / `-ArgumentList` were not recognised.* PowerShell accepts any unambiguous prefix of a parameter name, so `New-Object -Type System.Drawing.Point(22, 84 + $offset)` or `-T ... -Arg (...)` escaped the arithmetic guard.
+2. *Abbreviated `-Name` / `-Scope` were not recognised.* `Set-Variable -Na Interactive -Value $false` escaped the parameter guard.
+
+Fix: a helper builds the pattern for every non-empty prefix of a parameter name (longest first, word boundary) and is used wherever the guards spell `-TypeName`, `-ArgumentList`, `-Name` and `-Scope`. Self-tests extended (five constructor spellings, four `Set-Variable` spellings at the top level and two inside a function); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 15 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):

@@ -116,6 +116,10 @@ def strip_line_comment(line, blank_single=False):
         elif c=='#': break
         out.append(c); i+=1
     return ''.join(out)
+def abbr(full):
+    # PowerShell accepts any unambiguous prefix of a parameter name (-Type or -T for -TypeName, -Na for -Name): a pattern
+    # for every non-empty prefix, longest first, ending at a word boundary.
+    return '-(?:'+'|'.join(re.escape(full[:k]) for k in range(len(full),0,-1))+r')\b'
 def logical_lines(text, blank_single=False):
     # (first physical line number, text) per logical line: block comments removed (newlines kept), line comments removed,
     # and a physical line that ends with a backtick joined with the next one (PowerShell's explicit line continuation).
@@ -152,8 +156,8 @@ def unparenthesized_arithmetic(text):
             if not c.isspace(): prev=c
             i+=1
         return False
-    for m in re.finditer(r'\bnew-object\s+(?:-typename\s+)?[\w.\[\]]+\s*\(|\bnew-object\b[^()\n]*-argumentlist\s*(\()?',code,re.I):
-        bare=m.group(0).rstrip().lower().endswith('-argumentlist')
+    for m in re.finditer(r'\bnew-object\s+(?:'+abbr('typename')+r'\s+)?[\w.\[\]]+\s*\(|\bnew-object\b[^()\n]*'+abbr('argumentlist')+r'\s*(\()?',code,re.I):
+        bare=not m.group(0).rstrip().endswith('(')   # an -ArgumentList value without parentheses
         if scan(m.end(),bare): hits.append(lines[code.count('\n',0,m.start())][0])
     return hits
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
@@ -195,10 +199,11 @@ def overwritten_parameters(text):
         for m in re.finditer(r'(?:^|[{;])\s*(?:\+\+|--)\$\{?(?:(\w+):)?(\w+)\}?',code,re.I):   # prefix ++ / --
             if overwrite((m.group(1) or '').lower(),m.group(2)): hits.append(f'{n} (${m.group(2)})')
         # Set-Variable / New-Variable reach the same variable through the cmdlet interface: -Scope Script / Global (or a
-        # numeric parent scope) anywhere, or no -Scope / -Scope Local at the top level. -Name may be positional.
+        # numeric parent scope) anywhere, or no -Scope / -Scope Local at the top level. -Name may be positional; -Name and
+        # -Scope may be abbreviated.
         if re.search(r'\b(Set|New)-Variable\b',code,re.I):
-            nm=re.search(r'-Name\s+["\']?(\w+)',code,re.I) or re.search(r'\b(?:Set|New)-Variable\s+(?!-)["\']?(\w+)',code,re.I)
-            sc=re.search(r'-Scope\s+["\']?(\w+)',code,re.I); scope=(sc.group(1).lower() if sc else '')
+            nm=re.search(abbr('name')+r'\s+["\']?(\w+)',code,re.I) or re.search(r'\b(?:Set|New)-Variable\s+(?!-)["\']?(\w+)',code,re.I)
+            sc=re.search(abbr('scope')+r'\s+["\']?(\w+)',code,re.I); scope=(sc.group(1).lower() if sc else '')
             if nm and nm.group(1).lower() in params and (scope in ('script','global') or scope.isdigit() or (scope in ('','local') and not local)):
                 hits.append(f'{n} (Set-Variable {nm.group(1)})')
     return hits
