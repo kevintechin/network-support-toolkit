@@ -20,6 +20,8 @@
 
 Not fault-injected end-to-end: a real disk-level write failure during a full run (the functional tests cover the report stage in isolation), and the GUI dialogs were reviewed rather than exercised headlessly.
 
+**Independent review — Codex (`chatgpt-codex-connector`), PR #2 · 2026-09-03: no findings.** The review of commit cb3eda5 completed without any comment on the first pass. This closing note is a documentation-only commit on top of the reviewed code.
+
 ## v1.1.4 · 2026-09-03
 
 **Changes** (backlog #4, #5, #6, #11 — see the backlog below):
