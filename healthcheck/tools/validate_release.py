@@ -128,7 +128,7 @@ def unparenthesized_arithmetic(text):
                 if depth==0: return False
                 depth-=1
             elif depth==0 and bare and (c in ';|}\n' or (c=='-' and code[i-1:i].isspace() and code[i+1:i+2].isalpha())): return False
-            elif depth==0 and (c in '+*/' or (c=='-' and prev not in '(, ')): return True
+            elif depth==0 and (c in '+*/%' or (c=='-' and prev not in '(, ')): return True
             if not c.isspace(): prev=c
             i+=1
         return False
@@ -167,11 +167,13 @@ def overwritten_parameters(text):
         # with or without type constraints / attributes in front ([bool]$script:Name = ..., [ValidateNotNull()][string[]]$Name = ...).
         # Names are case-insensitive like PowerShell's. The assigned expression (read up to the next `;` or `}`) must be the
         # parameter itself (see `token` above); comments and single-quoted strings were removed before matching.
-        for m in re.finditer(r'(?:^|[{;])\s*(?:\[[^=]*?\]\s*)*\$\{?(?:(\w+):)?(\w+)\}?\s*=(?!=)\s*([^;}]*)',code,re.I):
-            if m.group(2).lower() not in params: continue
-            scope=(m.group(1) or '').lower()
-            if scope in ('script','global') or (scope in ('','local','private') and not local):
-                if not token(m.group(2),m.group(3)): hits.append(f'{n} (${m.group(2)})')
+        # Plain `=` must copy the parameter itself; a compound assignment (+= -= *= /= %=) or an increment / decrement
+        # (prefix or postfix ++ / --) always changes the value and is an overwrite whatever follows.
+        overwrite=lambda scope,name: name.lower() in params and (scope in ('script','global') or (scope in ('','local','private') and not local))
+        for m in re.finditer(r'(?:^|[{;])\s*(?:\[[^=]*?\]\s*)*\$\{?(?:(\w+):)?(\w+)\}?\s*(?:(\+\+|--)|([-+*/%]?=)(?!=)\s*([^;}]*))',code,re.I):
+            if overwrite((m.group(1) or '').lower(),m.group(2)) and (m.group(3) or m.group(4)!='=' or not token(m.group(2),m.group(5))): hits.append(f'{n} (${m.group(2)})')
+        for m in re.finditer(r'(?:^|[{;])\s*(?:\+\+|--)\$\{?(?:(\w+):)?(\w+)\}?',code,re.I):   # prefix ++ / --
+            if overwrite((m.group(1) or '').lower(),m.group(2)): hits.append(f'{n} (${m.group(2)})')
         # Set-Variable / New-Variable reach the same variable through the cmdlet interface: -Scope Script / Global (or a
         # numeric parent scope) anywhere, or no -Scope / -Scope Local at the top level. -Name may be positional.
         if re.search(r'\b(Set|New)-Variable\b',code,re.I):

@@ -104,6 +104,15 @@ Re-validation after round 10 (scripts unchanged; validator and manifest only): p
 
 Re-validation after round 11 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 13 · 2026-09-03 (requested by the maintainer).** Two P2 findings on commit 89b4bb7, both accepted and fixed:
+
+1. *Compound assignments and increments were not recognised.* `$script:PingCount += 1`, `$script:PingCount++` and `++$script:PingCount` change the bound parameter but the guard only matched a plain `=`. Fix: `+=`, `-=`, `*=`, `/=`, `%=` and prefix or postfix `++` / `--` on a parameter name are overwrites whatever follows, under the same scope rules; a bare read at a statement start (`$script:PingCount | Out-Null`) and a read inside an expression are not reported.
+2. *Modulo was missing from the arithmetic guard.* `New-Object System.Drawing.Point(22, 84 % $offset)` has the same argument-mode hazard. Fix: `%` joins `+`, `*`, `/` and binary `-` in the top-level operator set; `"50%"` inside a string stays clean.
+
+Self-tests extended (thirteen assignment cases, three constructor cases); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 12 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
