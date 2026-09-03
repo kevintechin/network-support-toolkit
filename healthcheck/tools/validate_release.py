@@ -90,15 +90,17 @@ def strip_block_comments(text):
         if c=='<' and text[i+1:i+2]=='#':
             e=text.find('#>',i+2); e=n if e<0 else e+2
             out.append('\n'*text.count('\n',i,e)); i=e; continue
+        if c=='`': out.append(text[i:i+2]); i+=2; continue   # a backtick escapes the next character (`# is a literal #)
         if c=='#':
             e=text.find('\n',i); e=n if e<0 else e
             out.append(text[i:e]); i=e; continue
         out.append(c); i+=1
     return ''.join(out)
 def strip_line_comment(line, blank_single=False):
-    # Drop <# ... #> and a trailing # comment that is outside single / double quotes, so comments never hide or fake a
-    # pattern; with blank_single the contents of single-quoted strings are dropped too (nothing expands inside them).
-    line=re.sub(r'<#.*?#>','',line); out=[]; q=None; i=0
+    # Drop a trailing # comment that is outside single / double quotes (a backtick-escaped # is a literal), so comments
+    # never hide or fake a pattern; with blank_single the contents of single-quoted strings are dropped too (nothing
+    # expands inside them).
+    out=[]; q=None; i=0   # block comments were already removed by strip_block_comments (quote-aware, whole text)
     while i<len(line):
         c=line[i]
         if q:
@@ -109,6 +111,7 @@ def strip_line_comment(line, blank_single=False):
             if c==q: q=None; out.append(c); i+=1; continue
             if not (q=="'" and blank_single): out.append(c)
             i+=1; continue
+        if c=='`': out.append(line[i:i+2]); i+=2; continue   # escaped character outside a string
         if c=='"' or c=="'": q=c
         elif c=='#': break
         out.append(c); i+=1

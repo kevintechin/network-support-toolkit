@@ -119,6 +119,12 @@ Re-validation after round 12 (scripts unchanged; validator and manifest only): p
 
 Re-validation after round 13 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 15 · 2026-09-03 (requested by the maintainer).** One P2 finding on commit c093263, accepted and fixed:
+
+1. *A backtick-escaped `#` outside a string started a line comment in both scanners.* `Write-Output `#; $script:Interactive = $false` executes the overwrite after the semicolon, but the scanners discarded everything from the `#`. Fix: outside strings a backtick escapes the next character in `strip_line_comment` and in the line-comment branch of `strip_block_comments`. The per-line, quote-blind `<# ... #>` regex that `strip_line_comment` still carried is removed as well — block comments are handled only by the quote-aware whole-text scan, which closes the single-line variant `$a = "<#"; $script:Interactive = $false; $b = "#>"`. Self-tests extended (escaped `#` before an overwrite, before a legitimate copy and inside a real comment; the single-line quoted delimiters; the constructor guard behind an escaped `#`); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 14 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
