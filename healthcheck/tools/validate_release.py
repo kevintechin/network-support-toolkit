@@ -70,6 +70,11 @@ for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     ok('version '+TOOL_VERSION+' '+rel,'$script:ToolVersion = "'+TOOL_VERSION+'"' in read_text(ROOT/rel))
 # New-Object argument lists are parsed in expression mode, where the comma binds tighter than + (v1.2.0 shipped
 # `Point(22, 84 + $offset)` = three arguments, and the GUI fell back to console mode): arithmetic must be parenthesized.
+# Both guards below work on the comment-free text of the whole file; code inside here-strings or built dynamically
+# (Invoke-Expression, splatted argument lists) is outside their scope by design.
+def strip_block_comments(text):
+    # <# ... #> may span lines; it is replaced by the newlines it contained so that reported line numbers stay valid.
+    return re.sub(r'<#.*?#>',lambda m: '\n'*m.group(0).count('\n'),text,flags=re.S)
 def strip_line_comment(line, blank_single=False):
     # Drop <# ... #> and a trailing # comment that is outside single / double quotes, so comments never hide or fake a
     # pattern; with blank_single the contents of single-quoted strings are dropped too (nothing expands inside them).
@@ -89,20 +94,26 @@ def strip_line_comment(line, blank_single=False):
         out.append(c); i+=1
     return ''.join(out)
 def unparenthesized_arithmetic(text):
-    hits=[]
-    for n,line in enumerate(text.splitlines(),1):
-        code=strip_line_comment(line)
-        # Command names are case-insensitive; the argument list is `Type(...)` right after the type name or `-ArgumentList (...)`.
-        m=re.search(r'\bnew-object\s+(?:-typename\s+)?[\w.\[\]]+\s*\(|\bnew-object\b[^()]*-argumentlist\s*\(',code,re.I)
-        if not m: continue
-        depth=0; prev=''
-        for c in code[m.end():]:                        # the balanced group only; code after the closing ')' is not looked at
-            if c in '([': depth+=1
+    # Whole comment-free text (block comments removed across lines, line comments per line), so a call wrapped over
+    # several lines or a backtick continuation is analysed as one balanced group; string contents are skipped.
+    code='\n'.join(strip_line_comment(l) for l in strip_block_comments(text).splitlines()); hits=[]
+    for m in re.finditer(r'\bnew-object\s+(?:-typename\s+)?[\w.\[\]]+\s*\(|\bnew-object\b(?:[^()\n]|`\r?\n)*-argumentlist\s*\(',code,re.I):
+        depth=0; prev=''; q=None; i=m.end()
+        while i<len(code):
+            c=code[i]
+            if q:
+                if q=='"' and c=='`': i+=2; continue
+                if q=="'" and c=="'" and code[i+1:i+2]=="'": i+=2; continue
+                if c==q: q=None
+                i+=1; continue
+            if c=='"' or c=="'": q=c
+            elif c in '([': depth+=1
             elif c in ')]':
                 if depth==0: break
                 depth-=1
-            elif depth==0 and (c in '+*/' or (c=='-' and prev not in '(, ')): hits.append(n); break
-            if c!=' ': prev=c
+            elif depth==0 and (c in '+*/' or (c=='-' and prev not in '(, ')): hits.append(code.count('\n',0,m.start())+1); break
+            if not c.isspace(): prev=c
+            i+=1
     return hits
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     hits=unparenthesized_arithmetic(read_text(ROOT/rel)); ok('New-Object arguments parenthesized '+rel,not hits,'lines '+', '.join(map(str,hits)) if hits else '')
@@ -111,6 +122,7 @@ for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
 # the IT launcher opened the user layout): such a line, at any indentation, must use the parameter's own token on the right-hand
 # side. Outside a function the same holds for unscoped assignments and for Set-Variable / New-Variable without -Scope.
 def overwritten_parameters(text):
+    text=strip_block_comments(text)   # block comments may span lines (`#> $script:X = ...` is code); newlines are kept
     head=text.split('\n)',1)[0]; params={x.lower() for x in re.findall(r'\[[\w\[\].]+\]\$(\w+)',head)}
     param_end=head.count('\n')+2   # the line holding the param block's closing ')'; defaults inside the block are not overwrites
     hits=[]; in_function=False

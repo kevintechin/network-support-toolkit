@@ -62,6 +62,15 @@ Re-validation after round 5 (scripts unchanged; validator and manifest only): pa
 
 Re-validation after round 6 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 7 · 2026-09-03 (requested by the maintainer).** Two P2 findings on commit 17f33b4, both accepted and fixed:
+
+1. *Block comments were stripped per line.* A `<# ... #>` spanning lines left `#> $script:Interactive = $false` (code after the closing marker) unscanned, and code-looking text inside such a comment could be reported. Fix: block comments are removed from the whole text first, replaced by the newlines they contained so that reported line numbers stay valid; both guards then work on the comment-free text.
+2. *A `New-Object` argument group split over several lines was scanned on its opening line only.* Fix: the balanced group is scanned across line boundaries (including a backtick continuation before `-ArgumentList`), and string contents are skipped so that `"a+b"` inside an argument is not reported.
+
+The guards' remaining boundary is stated in the validator: code inside here-strings or built dynamically (`Invoke-Expression`, splatted argument lists) is outside their scope by design. Self-tests extended (a wrapped call is flagged, a wrapped call with parentheses passes, a call inside a block comment passes, code after `#>` is flagged, strings with operators pass) and now assert the exact v1.2.0 line numbers (77 / 70; the six constructor lines) so the whole-text rewrite is known to preserve them; 1.2.1 clean.
+
+Re-validation after round 7 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
