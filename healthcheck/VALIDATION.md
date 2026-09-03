@@ -38,6 +38,12 @@ Re-validation after round 1 (the scripts are unchanged since the UI Automation r
 
 Re-validation after round 2 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 3 · 2026-09-03.** One P2 finding on commit 1004156, accepted and fixed:
+
+1. *The parameter guard compared names case-sensitively.* PowerShell variable names are not, so `$script:interactive = $false` would have passed. Fix: parameter names, the `$script:` prefix and the right-hand-side token are matched case-insensitively, the `${script:Name}` spelling is recognised, and `Set-Variable` / `New-Variable` targeting a parameter at script or global scope is flagged as well. Self-tests extended accordingly (`$script:interactive = $false`, `${script:Interactive} = $false` and `Set-Variable -Scope Script -Name Interactive` are flagged; `$Script:Interactive = [bool]$interactive` and `${script:Interactive} = ${Interactive}` pass); v1.2.0 line 77 / 70 still flagged; 1.2.1 clean.
+
+Re-validation after round 3 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):

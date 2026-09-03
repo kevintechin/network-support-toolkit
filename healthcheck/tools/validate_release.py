@@ -106,11 +106,21 @@ for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
 # `$script:<Parameter> = <literal>` overwrites the bound parameter (v1.2.0 wrote `$script:Interactive = $false` and
 # the IT launcher opened the user layout): such a line, at any indentation, must use the parameter's own token on the right-hand side.
 def overwritten_parameters(text):
-    head=text.split('\n)',1)[0]; params=re.findall(r'\[[\w\[\].]+\]\$(\w+)',head); hits=[]
+    head=text.split('\n)',1)[0]; params={x.lower() for x in re.findall(r'\[[\w\[\].]+\]\$(\w+)',head)}; hits=[]
     for n,line in enumerate(text.splitlines(),1):
-        m=re.match(r'^\s*\$script:(\w+)\s*=\s*(.*)$',strip_line_comment(line,blank_single=True))   # any indentation: top-level try/if blocks create no scope, and a function would clobber the parameter just the same
-        # The assigned expression must contain the complete parameter token ($Name or ${Name}) outside comments and single quotes; a longer name such as $NameBackup does not count.
-        if m and m.group(1) in params and not re.search(r'\$\{?'+re.escape(m.group(1))+r'\}?(?!\w)',m.group(2)): hits.append(f'{n} (${m.group(1)})')
+        code=strip_line_comment(line,blank_single=True)
+        # Any indentation (top-level try/if blocks create no scope, and a function would clobber the parameter just the same);
+        # names are case-insensitive like PowerShell's; $script:Name, $Script:Name and ${script:Name} are the same variable.
+        m=re.match(r'^\s*\$\{?script:(\w+)\}?\s*=\s*(.*)$',code,re.I)
+        # The assigned expression must contain the complete parameter token ($Name or ${Name}, any case) outside comments and
+        # single quotes; a longer name such as $NameBackup does not count.
+        if m and m.group(1).lower() in params and not re.search(r'\$\{?'+re.escape(m.group(1))+r'\}?(?!\w)',m.group(2),re.I): hits.append(f'{n} (${m.group(1)})')
+        # Set-Variable / New-Variable can do the same through the cmdlet interface: flag any use that targets a parameter at
+        # script or global scope (assign with the parameter's own token instead).
+        sv=re.search(r'\b(Set|New)-Variable\b',code,re.I)
+        if sv:
+            nm=re.search(r'-Name\s+["\']?(\w+)',code,re.I); sc=re.search(r'-Scope\s+["\']?(\w+)',code,re.I)
+            if nm and sc and nm.group(1).lower() in params and (sc.group(1).lower() in ('script','global') or sc.group(1).isdigit()): hits.append(f'{n} (Set-Variable {nm.group(1)})')
     return hits
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     hits=overwritten_parameters(read_text(ROOT/rel)); ok('parameters not overwritten at script scope '+rel,not hits,'lines '+', '.join(hits) if hits else '')
