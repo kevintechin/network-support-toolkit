@@ -146,7 +146,12 @@ def overwritten_parameters(text):
     head=text.split('\n)',1)[0]; params={x.lower() for x in re.findall(r'\[[\w\[\].]+\]\$(\w+)',head)}
     param_end=head.count('\n')+2   # the line holding the param block's closing ')'; defaults inside the block are not overwrites
     hits=[]; in_function=False
-    token=lambda name,expr: re.search(r'\$\{?'+re.escape(name)+r'\}?(?!\w)',expr,re.I)   # complete $Name / ${Name} token, any case
+    # The only accepted initializer is the parameter itself: $Name or ${Name} (any case), optionally inside ( ) or @( ),
+    # with at most one [type] cast outside or inside the parentheses and an optional .IsPresent. Anything else - a literal,
+    # `$Name -and $false`, `"$Name"`, `$Name.Trim()`, `'a' + $Name` - is treated as an overwrite: a transformed value
+    # belongs in a script variable with a different name.
+    cast=r'(?:\[[\w.\[\]]+\]\s*)?'
+    token=lambda name,expr: re.match(r'^'+cast+r'(?:@?\(\s*)?'+cast+r'\$\{?'+re.escape(name)+r'\}?(?:\.IsPresent)?\s*\)?$',expr.strip(),re.I) is not None
     for n,code in logical_lines(text,blank_single=True):   # comment-free, backtick continuations joined, single quotes blanked
         if n<=param_end: continue
         # Every function in these files opens with `function Name {` and closes with a column-0 `}`; everything else is
@@ -159,8 +164,8 @@ def overwritten_parameters(text):
         # Assignment statements at every statement start of the line (line start, after `{`, after `;` - if / try / foreach
         # blocks create no scope): $Name, ${Name}, $script:Name, $Script:Name, ${script:Name}, $global:Name, $local:Name ...,
         # with or without type constraints / attributes in front ([bool]$script:Name = ..., [ValidateNotNull()][string[]]$Name = ...).
-        # Names are case-insensitive like PowerShell's. The assigned expression (read up to the next `;` or `}`) must contain
-        # the parameter's own token (outside comments and single quotes; $NameBackup does not count).
+        # Names are case-insensitive like PowerShell's. The assigned expression (read up to the next `;` or `}`) must be the
+        # parameter itself (see `token` above); comments and single-quoted strings were removed before matching.
         for m in re.finditer(r'(?:^|[{;])\s*(?:\[[^=]*?\]\s*)*\$\{?(?:(\w+):)?(\w+)\}?\s*=(?!=)\s*([^;}]*)',code,re.I):
             if m.group(2).lower() not in params: continue
             scope=(m.group(1) or '').lower()

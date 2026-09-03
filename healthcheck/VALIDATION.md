@@ -92,6 +92,12 @@ Self-tests extended (a bare `-ArgumentList` with and without parentheses around 
 
 Re-validation after round 9 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 11 · 2026-09-03 (requested by the maintainer).** One P2 finding on commit 1d07458, accepted and fixed:
+
+1. *The parameter guard accepted any initializer that contained the parameter's token.* `$script:Interactive = $Interactive -and $false` (always false) passed. Fix: the only accepted initializer of a script-scope copy is the parameter itself — `$Name` or `${Name}`, optionally inside `( )` or `@( )`, with at most one `[type]` cast outside or inside the parentheses and an optional `.IsPresent`; every other expression (a literal, `$Name -and $false`, `-not $Name`, `"$Name"`, `$Name.Trim()`, `'a' + $Name`, `$Name + 1`, a conditional) is treated as an overwrite, so a transformed value has to live in a script variable with a different name. The files' only such line, `$script:Interactive = [bool]$Interactive`, passes. Self-tests adjusted (four former "clean" transformations now flagged by design) and extended (eleven cases); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 10 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
