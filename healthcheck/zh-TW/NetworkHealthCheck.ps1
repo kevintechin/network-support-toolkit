@@ -138,11 +138,7 @@ function ConvertTo-IntSafe {
     }
 
     try {
-        $converted = ConvertTo-DoubleSafe $Value 0
-        if ($converted -lt [int]::MinValue -or $converted -gt [int]::MaxValue) {
-            return $DefaultValue
-        }
-        return [int]$converted
+        return [int](ConvertTo-DoubleSafe $Value 0)
     }
     catch {
         return $DefaultValue
@@ -210,7 +206,7 @@ function Test-IsWholeNumber {
     }
 
     $converted = ConvertTo-DoubleSafe $Value 0
-    return ([math]::Floor($converted) -eq $converted)
+    return ([math]::Floor($converted) -eq $converted -and $converted -ge [int]::MinValue -and $converted -le [int]::MaxValue)
 }
 
 # Backlog #11：只回傳人類可讀的摘要；腳本位置與呼叫堆疊改由 Get-ExceptionDiagnostics 提供（僅寫入 JSON 報告）。
@@ -1137,7 +1133,7 @@ function Test-ConfigurationSemantics {
         [pscustomobject]@{ Name = "RetransmissionSampleSeconds"; Value = $tests.RetransmissionSampleSeconds }
     )) {
         if ($null -ne $setting.Value -and -not (Test-IsWholeNumber $setting.Value)) {
-            [void]$warnings.Add("$($setting.Name) 必須是整數（目前值：$($setting.Value)），將改用內建預設值。")
+            [void]$warnings.Add("$($setting.Name) 必須是支援範圍內的整數（目前值：$($setting.Value)），將改用內建預設值。")
         }
         elseif ((ConvertTo-IntSafe $setting.Value 0) -le 0) {
             [void]$warnings.Add("$($setting.Name) 應大於 0；程式將套用內建最低值。")
@@ -1154,7 +1150,7 @@ function Test-ConfigurationSemantics {
             [void]$warnings.Add("$thresholdName 不是數值（目前值：$thresholdValue），將改用內建預設值。")
         }
         elseif (($countThresholdNames -contains $thresholdName) -and -not (Test-IsWholeNumber $thresholdValue)) {
-            [void]$warnings.Add("$thresholdName 必須是整數（目前值：$thresholdValue），將改用內建預設值。")
+            [void]$warnings.Add("$thresholdName 必須是支援範圍內的整數（目前值：$thresholdValue），將改用內建預設值。")
         }
     }
 

@@ -43,6 +43,12 @@ Re-validation after round 2: parser 0 errors × 2; validator 54/54; unit tests 3
 
 Re-validation after round 3: parser 0 errors × 2; validator 54/54; unit tests 52 × 2 (new cases: 2.4 / "2.4" / 3 000 000 000 / null → default, 24.0 / "24" / 1e3 / [uint32] → integers, `Test-IsWholeNumber` matrix); acceptance: en-US exit 0 with a single WARN from a live TCPv4 retransmission sample (3.0 %, reproduced on re-run — the same network condition seen earlier today, not a code effect), zh-TW Overall Healthy, exit 0; fault config with `AdapterErrorCriticalDelta: 2.4`, `TcpRetransmissionCriticalCount: 49.5`, `PingCount: 2.5` and `LatencyWarningMs: 100.5` lists exactly the three whole-number violations (the decimal latency threshold is accepted) and the ping checks run with the default count of 4, proving the fallback happens at runtime.
 
+**Independent review — Codex, PR #1, round 4 · 2026-09-03.** One P2 finding on commit 9842f30, accepted and fixed:
+
+1. *Out-of-Int32 count thresholds passed validation.* `Test-IsWholeNumber` checked integrality but not bounds, so `AdapterErrorCriticalDelta: 3000000000` produced no configuration warning while `ConvertTo-IntSafe` rejected it at runtime and used 10. Fix: the Int32 range check moved into `Test-IsWholeNumber` (the converter relies on it), and the "must be a whole number" messages now say "in the supported range".
+
+Re-validation after round 4: parser 0 errors × 2; validator 54/54; unit tests 57 × 2 (new cases: 3 000 000 000 and −2 147 483 649 rejected, 2 147 483 647 accepted); acceptance: en-US and zh-TW Overall Healthy, exit 0; fault config with `AdapterErrorCriticalDelta: 3000000000` and `MinimumTcpSegmentsForRate: 2147483647` reports exactly the out-of-range value and accepts the Int32 maximum.
+
 ## Packaging — v1.1.3 GitHub Release asset · 2026-09-03
 
 - **Finding:** GitHub's auto-generated *Code → Download ZIP* exported every file with LF line endings — the repository stores LF, the author's working tree is CRLF via `core.autocrlf`, and no `.gitattributes` existed. Run against a simulated download (`git archive` of the committed tree), `validate_release.py` reported **27 failures**: all 8 CRLF checks and all 19 SHA256 manifest entries. The auto-generated ZIP was therefore not the validated package (backlog #15).

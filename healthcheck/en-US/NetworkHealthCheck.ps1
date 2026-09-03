@@ -145,11 +145,7 @@ function ConvertTo-IntSafe {
     }
 
     try {
-        $converted = ConvertTo-DoubleSafe $Value 0
-        if ($converted -lt [int]::MinValue -or $converted -gt [int]::MaxValue) {
-            return $DefaultValue
-        }
-        return [int]$converted
+        return [int](ConvertTo-DoubleSafe $Value 0)
     }
     catch {
         return $DefaultValue
@@ -217,7 +213,7 @@ function Test-IsWholeNumber {
     }
 
     $converted = ConvertTo-DoubleSafe $Value 0
-    return ([math]::Floor($converted) -eq $converted)
+    return ([math]::Floor($converted) -eq $converted -and $converted -ge [int]::MinValue -and $converted -le [int]::MaxValue)
 }
 
 # Backlog #11: human-readable summary only; script location and call stack go to Get-ExceptionDiagnostics (JSON report).
@@ -1144,7 +1140,7 @@ function Test-ConfigurationSemantics {
         [pscustomobject]@{ Name = "RetransmissionSampleSeconds"; Value = $tests.RetransmissionSampleSeconds }
     )) {
         if ($null -ne $setting.Value -and -not (Test-IsWholeNumber $setting.Value)) {
-            [void]$warnings.Add("$($setting.Name) must be a whole number (current value: $($setting.Value)); the built-in default will be used.")
+            [void]$warnings.Add("$($setting.Name) must be a whole number in the supported range (current value: $($setting.Value)); the built-in default will be used.")
         }
         elseif ((ConvertTo-IntSafe $setting.Value 0) -le 0) {
             [void]$warnings.Add("$($setting.Name) should be greater than 0; the built-in minimum will be applied.")
@@ -1161,7 +1157,7 @@ function Test-ConfigurationSemantics {
             [void]$warnings.Add("$thresholdName is not a number (current value: $thresholdValue); the built-in default will be used.")
         }
         elseif (($countThresholdNames -contains $thresholdName) -and -not (Test-IsWholeNumber $thresholdValue)) {
-            [void]$warnings.Add("$thresholdName must be a whole number (current value: $thresholdValue); the built-in default will be used.")
+            [void]$warnings.Add("$thresholdName must be a whole number in the supported range (current value: $thresholdValue); the built-in default will be used.")
         }
     }
 
