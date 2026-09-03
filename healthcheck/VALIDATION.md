@@ -56,6 +56,12 @@ Re-validation after round 4 (scripts unchanged; validator and manifest only): pa
 
 Re-validation after round 5 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy. This is the fifth fix round of the review loop; per the agreed limit, a finding from the next pass is assessed and left for the maintainer's decision.
 
+**Independent review — Codex, PR #4, round 6 · 2026-09-03 (requested by the maintainer after the five-round limit).** One P2 finding on commit a8e2f1b, accepted and fixed:
+
+1. *A type-constrained assignment escaped the parameter guard.* The regex required `$` right after the indentation, so `[bool]$script:Interactive = $false` would have passed. Fix: the assignment pattern accepts any number of `[type]` / `[Attribute()]` prefixes (`[bool]$script:Interactive = ...`, `[ValidateNotNull()][string[]]$PingTarget = ...`); the script's own param block stays excluded, and a typed local inside a function stays a local. Self-tests extended (typed script-scope and unscoped assignments at the top level are flagged, the same with the parameter's own token or inside a function pass); v1.2.0 line 77 / 70 still flagged; 1.2.1 clean.
+
+Re-validation after round 6 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
