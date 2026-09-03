@@ -2,7 +2,7 @@
 
 ## Packaging — v1.1.3 GitHub Release asset · 2026-09-03
 
-- **Finding:** GitHub's auto-generated *Code → Download ZIP* exported every file with LF line endings — the repository stores LF, the author's working tree is CRLF via `core.autocrlf`, and no `.gitattributes` existed. Run against a simulated download (`git archive` of the committed tree), `validate_release.py` reported **27 failures**: all 8 CRLF checks and all 19 SHA256 manifest entries. The auto-generated ZIP was therefore not the validated package.
+- **Finding:** GitHub's auto-generated *Code → Download ZIP* exported every file with LF line endings — the repository stores LF, the author's working tree is CRLF via `core.autocrlf`, and no `.gitattributes` existed. Run against a simulated download (`git archive` of the committed tree), `validate_release.py` reported **27 failures**: all 8 CRLF checks and all 19 SHA256 manifest entries. The auto-generated ZIP was therefore not the validated package (backlog #15).
 - **Fix 1 — `.gitattributes`:** `healthcheck/**` is now `text eol=crlf` (the validator, the manifest, this file and validation-matrix.html stay LF), so GitHub-generated archives export CRLF. Re-simulated from the committed tree: **54 passed, 0 failed**.
 - **Fix 2 — Release asset:** `NetworkHealthCheck-1.1.3.zip` is built from the *tracked* files under `healthcheck/` only (`git ls-files` → working-tree bytes), which excludes `Reports/` and every other untracked output by construction (§8.11 PII rule). The extracted ZIP was validated before upload: **54 passed, 0 failed**. The asset's SHA256 is in the release notes.
 - **LF `.cmd` check:** the LF-only launcher was exercised through its `goto :launcher_error` → `:show_launcher_error` path under cmd.exe and behaved correctly. The CRLF requirement stays as a packaging rule (cmd.exe's label scan is known to misbehave intermittently on LF-only batch files), not as a reproduced failure.
@@ -111,3 +111,7 @@ All four injected faults were detected and correctly classified at the overall-v
 12. ~~Add a "Method" line to each check's details~~ — **done in v1.1.1** (2026-07-28).
 13. Wi-Fi RF data (RSSI / channel / band) for wireless adapters — needs `netsh wlan show interfaces` parsing (locale-sensitive output) or the native WLAN API; note the client-side view is inherently weaker evidence than the AP's client table.
 14. OS-locale exception strings pass through verbatim into reports (e.g., a Chinese "作業逾時" inside an en-US report); consider mapping common .NET socket/web exceptions to the report language, or note the behavior in the technical guide.
+
+### From release packaging (2026-09-03)
+
+15. ~~GitHub *Code → Download ZIP* shipped LF line endings — the auto-generated archive failed the validator (all 8 CRLF checks, all 19 SHA256 manifest entries) and was therefore not the validated package~~ — **fixed 2026-09-03** (`.gitattributes`: `healthcheck/** text eol=crlf`, re-simulated archive 54/54; the v1.1.3 release asset is built from tracked files only — see the Packaging entry at the top).
