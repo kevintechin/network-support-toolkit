@@ -3,8 +3,8 @@ from pathlib import Path
 import sys, json, hashlib, re
 
 ROOT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
-TOOL_VERSION = '1.1.5'
-FUNCTION_COUNT = 61
+TOOL_VERSION = '1.2.0'
+FUNCTION_COUNT = 76
 failures=[]; passes=[]
 
 def ok(name, cond, detail=''):
@@ -47,8 +47,8 @@ def strip_ps(text):
     return re.sub(r'\s+','', ''.join(out))
 
 required=[
- 'zh-TW/NetworkHealthCheck.ps1','zh-TW/NetworkHealthCheck.config.json','zh-TW/Start-NetworkCheck.cmd',
- 'en-US/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.config.json','en-US/Start-NetworkCheck.cmd',
+ 'zh-TW/NetworkHealthCheck.ps1','zh-TW/NetworkHealthCheck.config.json','zh-TW/Start-NetworkCheck.cmd','zh-TW/Start-NetworkCheck-IT.cmd',
+ 'en-US/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.config.json','en-US/Start-NetworkCheck.cmd','en-US/Start-NetworkCheck-IT.cmd',
  'docs/NetworkHealthCheck_Technical_Guide_zh-TW.md','docs/NetworkHealthCheck_Technical_Guide_en-US.md'
 ]
 for rel in required: ok('required file '+rel,(ROOT/rel).is_file())
@@ -57,7 +57,7 @@ for rel in ['zh-TW/NetworkHealthCheck.config.json','en-US/NetworkHealthCheck.con
     except Exception as e: ok('JSON parse '+rel,False,str(e))
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1','zh-TW/NetworkHealthCheck.config.json','en-US/NetworkHealthCheck.config.json']:
     b=(ROOT/rel).read_bytes(); ok('UTF-8 BOM '+rel,b.startswith(b'\xef\xbb\xbf')); ok('CRLF '+rel,b'\r\n' in b and b'\n' not in b.replace(b'\r\n',b''))
-for rel in ['zh-TW/Start-NetworkCheck.cmd','en-US/Start-NetworkCheck.cmd','zh-TW/Start-NetworkCheck-Console.cmd','en-US/Start-NetworkCheck-Console.cmd']:
+for rel in ['zh-TW/Start-NetworkCheck.cmd','en-US/Start-NetworkCheck.cmd','zh-TW/Start-NetworkCheck-Console.cmd','en-US/Start-NetworkCheck-Console.cmd','zh-TW/Start-NetworkCheck-IT.cmd','en-US/Start-NetworkCheck-IT.cmd']:
     b=(ROOT/rel).read_bytes(); ok('CMD CRLF '+rel,b'\r\n' in b and b'\n' not in b.replace(b'\r\n',b'')); ok('CMD script reference '+rel,b'NetworkHealthCheck.ps1' in b)
 zh=read_text(ROOT/'zh-TW/NetworkHealthCheck.ps1'); en=read_text(ROOT/'en-US/NetworkHealthCheck.ps1')
 ok('PowerShell executable skeleton equality',strip_ps(zh)==strip_ps(en))

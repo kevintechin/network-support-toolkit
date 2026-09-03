@@ -32,6 +32,8 @@ See [healthcheck/docs](healthcheck/docs/) for the technical guide (design, valid
 3. Double-click **`Start-NetworkCheck.cmd`** — the GUI runs all checks automatically and writes HTML / TXT / JSON reports into a `Reports/` folder next to the script
 4. If the GUI cannot start, **`Start-NetworkCheck-Console.cmd`** runs the same checks in text mode
 
+**IT staff** — double-click **`Start-NetworkCheck-IT.cmd`** in the same folder: the tool opens with a run-options panel (extra targets, sample length, optional checks) and the HTML report opens with the IT diagnostics expanded. The same options work as switches in console mode, e.g. `-ConsoleOnly -PingTarget 10.0.0.1 -TcpTarget fileserver:445 -SampleSeconds 20 -ExpandDetails`.
+
 > If Windows flags the downloaded ZIP: right-click the ZIP → Properties → **Unblock**, then extract. Corporate policies (AppLocker / WDAC) may still block PowerShell — see `en-US/README_en-US.txt` inside the package for details.
 
 ## Design principles
@@ -46,8 +48,8 @@ See [healthcheck/docs](healthcheck/docs/) for the technical guide (design, valid
 | Item | Status |
 |---|---|
 | SOP | v1.1 |
-| NetworkHealthCheck | v1.1.5 — backlog #2/#3 closed (partial report-write failures keep the successful formats usable, a single emergency report only when all three fail); v1.1.4 closed #4/#5/#6/#11 (safe threshold parsing, CIM-fallback gateway/DHCP semantics, dead stores removed, stack traces kept out of HTML/TXT); self-explaining Method + Manual-check lines in every check; validation chain: static checks, independent code review, Windows acceptance, five fault-injection scenarios ([validation record](healthcheck/VALIDATION.md) · [scenario matrix](healthcheck/validation-matrix.html)) |
-| NHC v1.2 | Planned — no separate modes: every check runs every time, user summary on top and IT diagnostics collapsed in one HTML, JSON schema 2 with a run profile, an IT entry point (launcher + switches + options panel), physical/virtual adapter classification and Wi-Fi RF data ([design](docs/design-v1.2-triage-wizard.md)) |
+| NetworkHealthCheck | v1.2.0 — one run for everyone: "What to tell IT" summary, collapsed IT diagnostics (Wi-Fi radio, routes, gateway ARP, proxy, traceroute, drivers), physical/virtual adapter classification, JSON schema 2 with run profile and fingerprint, IT entry point (launcher + switches + options panel); v1.1.5 closed backlog #2/#3, v1.1.4 closed #4/#5/#6/#11; self-explaining Method + Manual-check lines in every check; validation chain: static checks, independent code review, Windows acceptance, five fault-injection scenarios ([validation record](healthcheck/VALIDATION.md) · [scenario matrix](healthcheck/validation-matrix.html)) |
+| NHC v1.2 | Phase A shipped as v1.2.0 (no separate modes, IT entry point, IT diagnostics, schema 2 — [design](docs/design-v1.2-triage-wizard.md)); Phase C (report links to the wizard) follows the wizard |
 | Guided triage wizard | Planned — single-file HTML decision tree over the SOP that imports the NHC JSON report, asks only what the machine cannot see, and produces the escalation package ([design](docs/design-v1.2-triage-wizard.md)) |
 
 ## Working method

@@ -1,8 +1,8 @@
-﻿# NetworkHealthCheck Portable 1.1.5：功能、設計、驗證與限制
+﻿# NetworkHealthCheck Portable 1.2.0：功能、設計、驗證與限制
 
 ## 1. 文件目的
 
-本文件說明 `NetworkHealthCheck` 免安裝工具的功能、架構、判定方式、錯誤處理、驗證方法、已知限制與原始碼註解策略。文件對應版本 **1.1.5**，適用於套件中的繁體中文版與英文版；兩者的執行邏輯相同，只有使用者可見文字、預設測試名稱與註解語言不同。
+本文件說明 `NetworkHealthCheck` 免安裝工具的功能、架構、判定方式、錯誤處理、驗證方法、已知限制與原始碼註解策略。文件對應版本 **1.2.0**，適用於套件中的繁體中文版與英文版；兩者的執行邏輯相同，只有使用者可見文字、預設測試名稱與註解語言不同。
 
 ## 2. 程式定位
 
@@ -16,6 +16,7 @@
 |---|---|
 | `Start-NetworkCheck.cmd` | 圖形介面啟動器；檔案缺少、PowerShell 不存在或回傳非零代碼時顯示錯誤並嘗試寫入 `LauncherError.txt`。 |
 | `Start-NetworkCheck-Console.cmd` | GUI 無法使用時的文字模式啟動器。 |
+| `Start-NetworkCheck-IT.cmd` | IT 入口（1.2）：執行選項面板、不自動開始、HTML 預設展開 IT 診斷資料；同樣的參數可用於文字模式。 |
 | `NetworkHealthCheck.ps1` | 主要檢測、判定、錯誤處理與報告程式碼。 |
 | `NetworkHealthCheck.config.json` | 公司 IP 標準、測試目標、逾時與門檻。 |
 | `README_*.txt` | 快速操作及設定說明。 |
@@ -135,6 +136,25 @@ FAIL > ERROR > WARN > PASS
 
 因此任何 `FAIL` 會顯示「偵測到異常」；沒有 FAIL 但有無法執行項目時顯示「檢測未完整」；再其次是警告；最後才是整體正常。
 
+### 4.10 網卡分類、IT 診斷資料與指紋（1.2）
+
+每張網卡都會分類為實體或虛擬：以 NetAdapter 的 `Virtual`／`HardwareInterface` 旗標為準，CIM 備援用 `Win32_NetworkAdapter.PhysicalAdapter`，沒有旗標時以描述字串樣式判斷（VirtualBox、Hyper-V、VMware、TAP、tunnel、loopback、WAN Miniport、WireGuard、ZeroTier、Tailscale、Docker、VPN、ISATAP、Teredo）。虛擬網卡列為 `INFO`，不套用 APIPA 與無 IPv4 規則；「可用網卡」列出實體與虛擬數量，只有虛擬網卡承載閘道時（VPN 或虛擬化）為 `WARN`，完全沒有實體網卡時為 `FAIL`。取樣期間沒有流量的網卡或虛擬網卡，其錯誤計數列為 `INFO`，因為計數器只有在有流量時才能作證。公司標準比對的主要網卡選取方式不變。
+
+IT 診斷資料每次都會執行（可在設定檔 `Checks` 區段或用 `-NoWifi`／`-NoTraceroute` 個別停用），只產生 `INFO`，帶 `Scope = "IT"`，顯示在 HTML 報告收合的 IT 區段：
+
+| 檢查 | 來源 | 說明 |
+|---|---|---|
+| Wi-Fi 無線 | `netsh wlan show interfaces`，因標籤隨語系不同、Windows 10 與 11 順序不同，改依值的形狀解析（MAC、GHz、802.11x、百分比、數字） | SSID、BSSID、頻段（該版本未印出時由頻道推斷）、頻道、速率、訊號 %、RSSI（netsh 有印時用實際值，否則由百分比估算） |
+| IPv4 預設路由 | `Get-NetRoute -DestinationPrefix 0.0.0.0/0` | 多條路由分屬不同介面時在詳細資料提示 |
+| 閘道鄰居（ARP） | `Get-NetNeighbor`（備援 `arp -a`） | MAC 缺少或不完整時提示；閘道 Ping 仍是權威判定 |
+| Proxy 設定 | HKCU Internet Settings、`WebRequest.GetSystemWebProxy`、`netsh winhttp show proxy` | 解釋「TCP 443 通但 HTTPS 失敗」 |
+| Traceroute（前幾跳） | .NET `Ping` 以 TTL 1..N（預設 3，最多 10），每跳 1000 ms | 目標為第一個非 AUTO 的 Ping 目標 |
+| 網卡驅動程式 | NetAdapter 的 `DriverVersion`／`DriverDate`／`DriverProvider` | 只列實體網卡 |
+
+每筆結果現在帶有語言中立的 `Tag`（例如 `ping-gateway`、`dns`、`connectivity-group`、`tcp-retransmissions`、`wifi`）與 `Scope`（`Main` 或 `IT`）。指紋由標籤計算：`local`、`gateway-unreachable`、`gateway-up-internet-dead`、`dns`、`quality`、`mixed`、`incomplete`、`healthy`，驅動 HTML 與文字報告頂端的「要告訴 IT 的話」，JSON 存在 `Fingerprint`。
+
+執行選項由入口決定：`Start-NetworkCheck-IT.cmd` 帶 `-Interactive -ExpandDetails`；`-PingTarget`、`-DnsName`、`-TcpTarget`（host:port）、`-HttpUrl`、`-PingCount`、`-SampleSeconds`、`-TracerouteHops`、`-NoTraceroute`、`-NoWifi` 只影響本次執行，並記錄在報告的執行設定行與 JSON 的 `RunOptions`（`EntryPoint`、`ExtraTargets`、`PingCount`、`SampleSeconds`、`TracerouteHops`、`ChecksEnabled`）。設定檔永遠不會被寫入。JSON 的 `SchemaVersion` 為 2。
+
 ## 5. 錯誤處理設計
 
 - 每個主要步驟經 `Invoke-CheckStep` 包裝；例外轉成 `ERROR` 結果並繼續後續檢測。
@@ -146,7 +166,7 @@ FAIL > ERROR > WARN > PASS
 
 ## 6. 原始碼設計與註解
 
-程式主要由 61 個命名函式組成，依功能分成：輔助函式、設定、系統資料、規範比對、主動測試、計數器、報告、執行協調與 GUI。
+程式主要由 76 個命名函式組成，依功能分成：輔助函式、設定、系統資料、規範比對、主動測試、計數器、報告、執行協調與 GUI。
 
 版本 1.1.0 已加入：
 
@@ -168,7 +188,7 @@ FAIL > ERROR > WARN > PASS
 3. PowerShell 與 JSON 使用 UTF-8 BOM；Windows 腳本使用 CRLF。
 4. 英文版 PowerShell、設定檔與 README 不含中文使用者文字。
 5. 中英文 PowerShell 在移除字串與註解後，可執行語法骨架完全一致。
-6. 中英文函式集合一致，函式數為 61。
+6. 中英文函式集合一致，函式數為 76。
 7. 啟動器正確引用 `NetworkHealthCheck.ps1`。
 8. SHA-256 清單逐項重新計算並比對。
 9. ZIP 執行完整性測試，沒有損壞項目。
@@ -177,7 +197,7 @@ FAIL > ERROR > WARN > PASS
 
 ### 7.2 Windows 驗證狀態
 
-原始 1.1.0 套件在非 Windows 環境打包，當時無法實際執行 Windows Forms、NetTCPIP、NetAdapter、CIM/WMI 效能計數器與真實網路連線。其後 1.1.1–1.1.3 版（2026-07-28／30）已在 Windows 11＋Windows PowerShell 5.1 完成完整實機驗證：中英兩版驗收執行、獨立程式碼審查、以及五個作者實測的故障注入場景。最新記錄維護於 `../VALIDATION.md`。1.1.4 版（2026-09-03）修掉待辦 #4、#5、#6、#11（門檻解析、CIM 備援的閘道／DHCP 判定、無用變數、堆疊不進 HTML/TXT），並以同一條驗證鏈重新驗證：parser、validator、輔助函式單元測試、中英兩版驗收執行、以及故障注入設定檔。1.1.5 版（2026-09-03）修掉待辦 #2 與 #3（緊急報告只產生一次；部分報告格式寫入失敗時保留成功的格式），並以同一條驗證鏈加上模擬檔案寫入失敗的報告階段功能測試完成驗證。靜態驗證仍不能取代 Windows 實機驗收——兩者互補。
+原始 1.1.0 套件在非 Windows 環境打包，當時無法實際執行 Windows Forms、NetTCPIP、NetAdapter、CIM/WMI 效能計數器與真實網路連線。其後 1.1.1–1.1.3 版（2026-07-28／30）已在 Windows 11＋Windows PowerShell 5.1 完成完整實機驗證：中英兩版驗收執行、獨立程式碼審查、以及五個作者實測的故障注入場景。最新記錄維護於 `../VALIDATION.md`。1.1.4 版（2026-09-03）修掉待辦 #4、#5、#6、#11（門檻解析、CIM 備援的閘道／DHCP 判定、無用變數、堆疊不進 HTML/TXT），並以同一條驗證鏈重新驗證：parser、validator、輔助函式單元測試、中英兩版驗收執行、以及故障注入設定檔。1.1.5 版（2026-09-03）修掉待辦 #2 與 #3（緊急報告只產生一次；部分報告格式寫入失敗時保留成功的格式），並以同一條驗證鏈加上模擬檔案寫入失敗的報告階段功能測試完成驗證。1.2.0 版（2026-09-03）實作 v1.2 設計的 Phase A（repo 內 `docs/design-v1.2-triage-wizard.md`）：網卡分類、IT 診斷資料、指紋與「要告訴 IT 的話」、JSON schema 2、IT 入口，並以同一條驗證鏈加上擴充的單元測試（Windows 10／11／本地化的 Wi-Fi 樣本、分類）與執行選項、指紋的功能測試完成驗證。靜態驗證仍不能取代 Windows 實機驗收——兩者互補。
 
 ### 7.3 建議 Windows 驗收矩陣
 
@@ -212,6 +232,10 @@ FAIL > ERROR > WARN > PASS
 10. **權限/端點防護可能限制資料。** AppLocker、WDAC、EDR、WMI 政策或損壞的效能計數器會導致 `ERROR`，不代表已證實網路故障。
 11. **報告含敏感資訊。** 可能包含電腦名稱、使用者、MAC、IP、DNS、內部服務名稱與例外堆疊（後者僅存在於 JSON 報告，含本機腳本路徑）；外傳前需依公司政策處理。
 12. **沒有自動修復。** 工具只診斷，不變更設定；這是刻意的安全界線。
+
+12. **Wi-Fi 資料來自用戶端且由文字解析。** `netsh` 輸出依值的形狀解析，特殊版本可能留空欄位；該版本未印出 RSSI 時為估算值。AP 的用戶端列表才是較強的證據。
+13. **沒有 NetAdapter 旗標時的網卡分類是啟發式的**（描述字串樣式）。
+14. **Traceroute 有上限**：最多 10 跳、每跳 1 秒；沒有回應的跳顯示為 `*`，預設 3 跳通常到不了公網目標，目的是看封包停在哪裡，而不是抵達。
 
 ## 9. 發行與維護建議
 

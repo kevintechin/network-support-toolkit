@@ -1,7 +1,18 @@
 ﻿[CmdletBinding()]
 param(
     [switch]$ConsoleOnly,
-    [string]$ConfigPath = ""
+    [string]$ConfigPath = "",
+    [switch]$Interactive,
+    [switch]$ExpandDetails,
+    [string[]]$PingTarget = @(),
+    [string[]]$DnsName = @(),
+    [string[]]$TcpTarget = @(),
+    [string[]]$HttpUrl = @(),
+    [int]$SampleSeconds = 0,
+    [int]$PingCount = 0,
+    [int]$TracerouteHops = 0,
+    [switch]$NoTraceroute,
+    [switch]$NoWifi
 )
 
 # NetworkHealthCheck.ps1
@@ -27,7 +38,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：報告保存例外類型、訊息與內部例外；腳本位置與呼叫堆疊只寫入 JSON 報告（Diagnostics）。
 
-$script:ToolVersion = "1.1.5"
+$script:ToolVersion = "1.2.0"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Results = New-Object System.Collections.ArrayList
 $script:StartupMessages = New-Object System.Collections.ArrayList
@@ -53,6 +64,11 @@ $script:Config = $null
 $script:ConfigLoadError = $null
 $script:ConfigLoadDiagnostics = ""
 $script:UsingFallbackOutputDirectory = $false
+$script:BaseConfig = $null
+$script:RunOptions = $null
+$script:Interactive = $false
+$script:OptionsPanel = $null
+$script:OpenJsonButton = $null
 
 try {
     [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
@@ -207,6 +223,31 @@ function Test-IsWholeNumber {
 
     $converted = ConvertTo-DoubleSafe $Value 0
     return ([math]::Floor($converted) -eq $converted -and $converted -ge [int]::MinValue -and $converted -le [int]::MaxValue)
+}
+
+function Test-IsTrueFlag {
+    param([object]$Value)
+
+    return ($Value -is [bool] -and $Value)
+}
+
+function Test-IsVirtualAdapter {
+    param(
+        [string]$Description,
+        [object]$VirtualFlag,
+        [object]$HardwareFlag
+    )
+
+    if ($VirtualFlag -is [bool] -and $VirtualFlag) {
+        return $true
+    }
+    if ($HardwareFlag -is [bool]) {
+        return (-not $HardwareFlag)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Description) -and $Description -match 'virtual|vmware|virtualbox|hyper-v|vethernet|tap-|tunnel|loopback|wan miniport|npcap|wintun|wireguard|zerotier|tailscale|hamachi|docker|vpn|pseudo|isatap|teredo|6to4') {
+        return $true
+    }
+    return $false
 }
 
 # Backlog #11：只回傳人類可讀的摘要；腳本位置與呼叫堆疊改由 Get-ExceptionDiagnostics 提供（僅寫入 JSON 報告）。
@@ -375,7 +416,9 @@ function Add-CheckResult {
         [Parameter(Mandatory = $true)][ValidateSet("PASS", "WARN", "FAIL", "INFO", "ERROR")][string]$Status,
         [Parameter(Mandatory = $true)][string]$Message,
         [string]$Details = "",
-        [string]$Diagnostics = ""
+        [string]$Diagnostics = "",
+        [string]$Tag = "",
+        [string]$Scope = "Main"
     )
 
     $item = [pscustomobject][ordered]@{
@@ -386,6 +429,8 @@ function Add-CheckResult {
         Message  = $Message
         Details     = $Details
         Diagnostics = $Diagnostics
+        Tag         = $Tag
+        Scope       = $Scope
     }
 
     [void]$script:Results.Add($item)
@@ -410,7 +455,7 @@ function Invoke-CheckStep {
     catch {
         $details = Get-ExceptionDetails $_
         $diagnostics = Get-ExceptionDiagnostics $_
-        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "此項目無法執行，已記錄錯誤。" -Details $details -Diagnostics $diagnostics | Out-Null
+        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "此項目無法執行，已記錄錯誤。" -Details $details -Diagnostics $diagnostics -Tag "step-error" | Out-Null
         return $null
     }
 }
@@ -489,6 +534,15 @@ function Get-DefaultConfig {
             AdapterDiscardWarningDelta        = 1
             AdapterDiscardCriticalDelta       = 100
         }
+        Checks = [pscustomobject][ordered]@{
+            WifiRf           = $true
+            RouteTable       = $true
+            GatewayNeighbor  = $true
+            ProxySettings    = $true
+            Traceroute       = $true
+            TracerouteHops   = 3
+            DriverInfo       = $true
+        }
     }
 }
 
@@ -558,6 +612,107 @@ function Load-Configuration {
         $script:ConfigLoadError = "設定檔格式錯誤，程式已改用內建預設值。`r`n$(Get-ExceptionDetails $_)"
         return $defaultConfig
     }
+}
+
+# v1.2：執行選項來自入口（啟動器參數）或 IT 選項面板；JSON 設定檔永遠不會被寫入。
+function Set-RunOptions {
+    param([hashtable]$Overrides)
+
+    if ($null -eq $Overrides) {
+        $Overrides = @{}
+    }
+    $config = ($script:BaseConfig | ConvertTo-Json -Depth 10) | ConvertFrom-Json
+    $extra = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
+
+    foreach ($value in @($Overrides["PingTarget"])) {
+        if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
+        $config.Tests.PingTargets = @($config.Tests.PingTargets) + [pscustomobject][ordered]@{ Name = "額外 Ping"; Address = [string]$value; Required = $false }
+        $extra.Ping += [string]$value
+    }
+    foreach ($value in @($Overrides["DnsName"])) {
+        if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
+        $config.Tests.DnsNames = @($config.Tests.DnsNames) + [pscustomobject][ordered]@{ Name = "額外 DNS"; Host = [string]$value; Required = $false }
+        $extra.Dns += [string]$value
+    }
+    foreach ($value in @($Overrides["TcpTarget"])) {
+        if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
+        $parts = ([string]$value).Split(':')
+        $port = 0
+        if ($parts.Count -eq 2) { $port = ConvertTo-IntSafe $parts[1] 0 }
+        if ($parts.Count -ne 2 -or $port -lt 1 -or $port -gt 65535 -or [string]::IsNullOrWhiteSpace($parts[0])) {
+            [void]$script:StartupMessages.Add("已忽略額外 TCP 目標「$value」：格式應為 host:port。")
+            continue
+        }
+        $config.Tests.TcpTargets = @($config.Tests.TcpTargets) + [pscustomobject][ordered]@{ Name = "額外 TCP"; Host = $parts[0]; Port = $port; Required = $false; Group = "" }
+        $extra.Tcp += [string]$value
+    }
+    foreach ($value in @($Overrides["HttpUrl"])) {
+        if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
+        $config.Tests.HttpTargets = @($config.Tests.HttpTargets) + [pscustomobject][ordered]@{ Name = "額外 URL"; Url = [string]$value; Required = $false; Group = "" }
+        $extra.Http += [string]$value
+    }
+
+    if ((ConvertTo-IntSafe $Overrides["SampleSeconds"] 0) -gt 0) { $config.Tests.RetransmissionSampleSeconds = ConvertTo-IntSafe $Overrides["SampleSeconds"] 0 }
+    if ((ConvertTo-IntSafe $Overrides["PingCount"] 0) -gt 0) { $config.Tests.PingCount = ConvertTo-IntSafe $Overrides["PingCount"] 0 }
+    if ((ConvertTo-IntSafe $Overrides["TracerouteHops"] 0) -gt 0) { $config.Checks.TracerouteHops = ConvertTo-IntSafe $Overrides["TracerouteHops"] 0 }
+    if ($Overrides["NoTraceroute"] -eq $true) { $config.Checks.Traceroute = $false }
+    if ($Overrides["NoWifi"] -eq $true) { $config.Checks.WifiRf = $false }
+    if ($Overrides["Checks"] -is [hashtable]) {
+        foreach ($key in @($Overrides["Checks"].Keys)) {
+            if ($null -ne $config.Checks.PSObject.Properties[[string]$key]) {
+                $config.Checks.$key = [bool]$Overrides["Checks"][$key]
+            }
+        }
+    }
+
+    $entryPoint = "User"
+    if ([string]$Overrides["EntryPoint"] -eq "IT") { $entryPoint = "IT" }
+    $hops = ConvertTo-IntSafe $config.Checks.TracerouteHops 3
+    if ($hops -lt 1 -or $hops -gt 10) { $hops = 3 }
+
+    $script:Config = $config
+    $script:RunOptions = [pscustomobject][ordered]@{
+        EntryPoint     = $entryPoint
+        ExpandDetails  = ($Overrides["ExpandDetails"] -eq $true)
+        ExtraTargets   = [pscustomobject]$extra
+        PingCount      = [math]::Max(1, (ConvertTo-IntSafe $config.Tests.PingCount 4))
+        SampleSeconds  = [math]::Max(1, (ConvertTo-IntSafe $config.Tests.RetransmissionSampleSeconds 8))
+        TracerouteHops = $hops
+        ChecksEnabled  = [pscustomobject][ordered]@{
+            WifiRf          = Test-IsTrueFlag $config.Checks.WifiRf
+            RouteTable      = Test-IsTrueFlag $config.Checks.RouteTable
+            GatewayNeighbor = Test-IsTrueFlag $config.Checks.GatewayNeighbor
+            ProxySettings   = Test-IsTrueFlag $config.Checks.ProxySettings
+            Traceroute      = Test-IsTrueFlag $config.Checks.Traceroute
+            DriverInfo      = Test-IsTrueFlag $config.Checks.DriverInfo
+        }
+    }
+    return $script:RunOptions
+}
+
+function Get-RunProfileText {
+    $options = $script:RunOptions
+    if ($null -eq $options) {
+        return ""
+    }
+
+    $parts = @()
+    if ($options.EntryPoint -eq "IT") { $parts += "IT 入口" } else { $parts += "使用者入口" }
+    $extras = @()
+    foreach ($value in @($options.ExtraTargets.Ping)) { $extras += "ping $value" }
+    foreach ($value in @($options.ExtraTargets.Dns)) { $extras += "dns $value" }
+    foreach ($value in @($options.ExtraTargets.Tcp)) { $extras += "tcp $value" }
+    foreach ($value in @($options.ExtraTargets.Http)) { $extras += "url $value" }
+    if ($extras.Count -gt 0) { $parts += ("額外目標：{0}" -f ($extras -join ", ")) }
+    $parts += ("Ping 次數 {0}" -f $options.PingCount)
+    $parts += ("取樣 {0} 秒" -f $options.SampleSeconds)
+    if ($options.ChecksEnabled.Traceroute) { $parts += ("traceroute {0} 跳" -f $options.TracerouteHops) }
+    $disabled = @()
+    foreach ($property in $options.ChecksEnabled.PSObject.Properties) {
+        if (-not $property.Value) { $disabled += $property.Name }
+    }
+    if ($disabled.Count -gt 0) { $parts += ("已停用：{0}" -f ($disabled -join ", ")) }
+    return ($parts -join " | ")
 }
 
 function Initialize-OutputDirectory {
@@ -823,6 +978,11 @@ function Get-NetworkSnapshotFromNetCmdlets {
             Gateways        = $gateways
             DnsServers      = $dnsServers
             DhcpEnabled     = $dhcpEnabled
+            IsPhysical      = -not (Test-IsVirtualAdapter -Description ([string]$adapter.InterfaceDescription) -VirtualFlag (Get-PropertyValue $adapter "Virtual") -HardwareFlag (Get-PropertyValue $adapter "HardwareInterface"))
+            MediaType       = ConvertTo-SafeString (Get-PropertyValue $adapter "PhysicalMediaType" "")
+            DriverVersion   = ConvertTo-SafeString (Get-PropertyValue $adapter "DriverVersion" "")
+            DriverDate      = ConvertTo-SafeString (Get-PropertyValue $adapter "DriverDate" "")
+            DriverProvider  = ConvertTo-SafeString (Get-PropertyValue $adapter "DriverProvider" "")
             Source          = "NetTCPIP"
         })
     }
@@ -925,6 +1085,14 @@ function Get-NetworkSnapshotFromCim {
             $dhcpEnabled = [bool]$config.DHCPEnabled
         }
 
+        $physicalFlag = $null
+        $mediaType = ""
+        if ($null -ne $adapter) {
+            $physicalFlag = Get-PropertyValue $adapter "PhysicalAdapter"
+            $mediaType = ConvertTo-SafeString (Get-PropertyValue $adapter "AdapterType" "")
+        }
+        $isPhysical = -not (Test-IsVirtualAdapter -Description $description -VirtualFlag $null -HardwareFlag $physicalFlag)
+
         [void]$items.Add([pscustomobject][ordered]@{
             Name            = $name
             Description     = $description
@@ -940,6 +1108,11 @@ function Get-NetworkSnapshotFromCim {
             Gateways        = $gateways
             DnsServers      = @($config.DNSServerSearchOrder)
             DhcpEnabled     = $dhcpEnabled
+            IsPhysical      = $isPhysical
+            MediaType       = $mediaType
+            DriverVersion   = ""
+            DriverDate      = ""
+            DriverProvider  = ""
             Source          = "CIM/WMI"
         })
     }
@@ -956,7 +1129,7 @@ function Get-NetworkSnapshot {
             }
         }
         catch {
-            Add-CheckResult -Category "網卡與 IP" -Check "資料來源切換" -Status "WARN" -Message "Get-NetIPConfiguration 無法取得資料，已改用 CIM/WMI。" -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) | Out-Null
+            Add-CheckResult -Category "網卡與 IP" -Check "資料來源切換" -Status "WARN" -Message "Get-NetIPConfiguration 無法取得資料，已改用 CIM/WMI。" -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "data-source" | Out-Null
         }
     }
 
@@ -1140,6 +1313,18 @@ function Test-ConfigurationSemantics {
         }
     }
 
+    $checks = $script:Config.Checks
+    foreach ($flagName in @("WifiRf", "RouteTable", "GatewayNeighbor", "ProxySettings", "Traceroute", "DriverInfo")) {
+        $flagValue = Get-PropertyValue $checks $flagName
+        if ($null -ne $flagValue -and -not ($flagValue -is [bool])) {
+            [void]$warnings.Add("Checks.$flagName 必須是 true 或 false（目前值：$flagValue），該檢查已停用。")
+        }
+    }
+    $hopsValue = Get-PropertyValue $checks "TracerouteHops"
+    if ($null -ne $hopsValue -and (-not (Test-IsWholeNumber $hopsValue) -or (ConvertTo-IntSafe $hopsValue 0) -lt 1 -or (ConvertTo-IntSafe $hopsValue 0) -gt 10)) {
+        [void]$warnings.Add("Checks.TracerouteHops 必須是 1 到 10 的整數（目前值：$hopsValue），將改用內建預設值。")
+    }
+
     $countThresholdNames = @("TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")
     foreach ($thresholdName in @("PacketLossWarningPercent", "PacketLossCriticalPercent", "LatencyWarningMs", "LatencyCriticalMs", "TcpRetransmissionWarningPercent", "TcpRetransmissionCriticalPercent", "TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")) {
         $thresholdValue = Get-PropertyValue $thresholds $thresholdName
@@ -1173,14 +1358,14 @@ function Test-ConfigurationSemantics {
     }
 
     if ($errors.Count -gt 0) {
-        Add-CheckResult -Category "程式設定" -Check "設定值驗證" -Status "ERROR" -Message ("設定檔有 {0} 個無效值；程式會繼續執行，但相關結果可能不具判斷意義。" -f $errors.Count) -Details (@($errors) -join [Environment]::NewLine) | Out-Null
+        Add-CheckResult -Category "程式設定" -Check "設定值驗證" -Status "ERROR" -Message ("設定檔有 {0} 個無效值；程式會繼續執行，但相關結果可能不具判斷意義。" -f $errors.Count) -Details (@($errors) -join [Environment]::NewLine) -Tag "config" | Out-Null
     }
     elseif ($warnings.Count -eq 0) {
-        Add-CheckResult -Category "程式設定" -Check "設定值驗證" -Status "PASS" -Message "設定值格式檢查通過。" -Details "" | Out-Null
+        Add-CheckResult -Category "程式設定" -Check "設定值驗證" -Status "PASS" -Message "設定值格式檢查通過。" -Details "" -Tag "config" | Out-Null
     }
 
     if ($warnings.Count -gt 0) {
-        Add-CheckResult -Category "程式設定" -Check "設定值門檻" -Status "WARN" -Message ("設定檔有 {0} 個需要注意的門檻值。" -f $warnings.Count) -Details (@($warnings) -join [Environment]::NewLine) | Out-Null
+        Add-CheckResult -Category "程式設定" -Check "設定值門檻" -Status "WARN" -Message ("設定檔有 {0} 個需要注意的門檻值。" -f $warnings.Count) -Details (@($warnings) -join [Environment]::NewLine) -Tag "config" | Out-Null
     }
 }
 
@@ -1199,11 +1384,23 @@ function Add-NetworkSnapshotResults {
     param([object[]]$Adapters)
 
     if ($Adapters.Count -eq 0) {
-        Add-CheckResult -Category "網卡與 IP" -Check "可用網卡" -Status "FAIL" -Message "沒有找到已連線且具有 IP 位址的網卡。" -Details "請確認網路線、Wi-Fi、飛航模式、網卡驅動程式與網卡是否停用。" | Out-Null
+        Add-CheckResult -Category "網卡與 IP" -Check "可用網卡" -Status "FAIL" -Message "沒有找到已連線且具有 IP 位址的網卡。" -Details "請確認網路線、Wi-Fi、飛航模式、網卡驅動程式與網卡是否停用。" -Tag "adapters" | Out-Null
         return
     }
 
-    Add-CheckResult -Category "網卡與 IP" -Check "可用網卡" -Status "PASS" -Message ("找到 {0} 張已連線網卡。" -f $Adapters.Count) -Details "" | Out-Null
+    $physical = @($Adapters | Where-Object { $_.IsPhysical -eq $true })
+    $virtual = @($Adapters | Where-Object { $_.IsPhysical -ne $true })
+    $anyGateway = @($Adapters | Where-Object { @($_.Gateways).Count -gt 0 }).Count -gt 0
+    $adapterSummary = "找到 {0} 張已連線網卡：實體 {1} 張、虛擬 {2} 張。" -f $Adapters.Count, $physical.Count, $virtual.Count
+    if ($physical.Count -gt 0) {
+        Add-CheckResult -Category "網卡與 IP" -Check "可用網卡" -Status "PASS" -Message $adapterSummary -Details "" -Tag "adapters" | Out-Null
+    }
+    elseif ($anyGateway) {
+        Add-CheckResult -Category "網卡與 IP" -Check "可用網卡" -Status "WARN" -Message "沒有已連線的實體網卡；目前只有虛擬網卡（VPN 或虛擬化）承載連線。" -Details $adapterSummary -Tag "adapters" | Out-Null
+    }
+    else {
+        Add-CheckResult -Category "網卡與 IP" -Check "可用網卡" -Status "FAIL" -Message "沒有已連線的實體網卡。" -Details $adapterSummary -Tag "adapters" | Out-Null
+    }
 
     foreach ($adapter in $Adapters) {
         $dhcpText = "未知"
@@ -1222,6 +1419,9 @@ function Add-NetworkSnapshotResults {
             "預設閘道：$(ConvertTo-DisplayString $adapter.Gateways)",
             "DNS：$(ConvertTo-DisplayString $adapter.DnsServers)",
             "DHCP：$dhcpText",
+            ("網卡類型：{0}" -f $(if ($adapter.IsPhysical -eq $true) { "實體" } else { "虛擬" })),
+            ("媒體類型：{0}" -f (ConvertTo-DisplayString $adapter.MediaType)),
+            ("驅動程式：{0}" -f (ConvertTo-DisplayString (@($adapter.DriverVersion, $adapter.DriverDate, $adapter.DriverProvider) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }))),
             "資料來源：$($adapter.Source)"
         ) -join [Environment]::NewLine
 
@@ -1233,14 +1433,17 @@ function Add-NetworkSnapshotResults {
             }
         }
 
-        if ($hasApipa) {
-            Add-CheckResult -Category "網卡與 IP" -Check ("網卡：{0}" -f $adapter.Name) -Status "FAIL" -Message "偵測到 169.254.x.x 自動私人 IP，通常表示無法取得 DHCP 位址。" -Details $details | Out-Null
+        if ($adapter.IsPhysical -ne $true) {
+            Add-CheckResult -Category "網卡與 IP" -Check ("網卡：{0}" -f $adapter.Name) -Status "INFO" -Message ("虛擬網卡（不計入實體連線）。IPv4：{0}" -f (ConvertTo-DisplayString $adapter.IPv4WithPrefix)) -Details $details -Tag "adapter" | Out-Null
+        }
+        elseif ($hasApipa) {
+            Add-CheckResult -Category "網卡與 IP" -Check ("網卡：{0}" -f $adapter.Name) -Status "FAIL" -Message "偵測到 169.254.x.x 自動私人 IP，通常表示無法取得 DHCP 位址。" -Details $details -Tag "adapter" | Out-Null
         }
         elseif (@($adapter.IPv4Addresses).Count -eq 0) {
-            Add-CheckResult -Category "網卡與 IP" -Check ("網卡：{0}" -f $adapter.Name) -Status "WARN" -Message "此網卡沒有 IPv4 位址。" -Details $details | Out-Null
+            Add-CheckResult -Category "網卡與 IP" -Check ("網卡：{0}" -f $adapter.Name) -Status "WARN" -Message "此網卡沒有 IPv4 位址。" -Details $details -Tag "adapter" | Out-Null
         }
         else {
-            Add-CheckResult -Category "網卡與 IP" -Check ("網卡：{0}" -f $adapter.Name) -Status "PASS" -Message ("目前 IPv4：{0}" -f (ConvertTo-DisplayString $adapter.IPv4WithPrefix)) -Details $details | Out-Null
+            Add-CheckResult -Category "網卡與 IP" -Check ("網卡：{0}" -f $adapter.Name) -Status "PASS" -Message ("目前 IPv4：{0}" -f (ConvertTo-DisplayString $adapter.IPv4WithPrefix)) -Details $details -Tag "adapter" | Out-Null
         }
     }
 
@@ -1251,10 +1454,10 @@ function Add-NetworkSnapshotResults {
     $gateways = @($gateways | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)
 
     if ($gateways.Count -eq 0) {
-        Add-CheckResult -Category "網卡與 IP" -Check "預設閘道" -Status "FAIL" -Message "沒有找到 IPv4 預設閘道，通常無法連到其他網段或網際網路。" -Details "" | Out-Null
+        Add-CheckResult -Category "網卡與 IP" -Check "預設閘道" -Status "FAIL" -Message "沒有找到 IPv4 預設閘道，通常無法連到其他網段或網際網路。" -Details "" -Tag "gateway-config" | Out-Null
     }
     else {
-        Add-CheckResult -Category "網卡與 IP" -Check "預設閘道" -Status "PASS" -Message ("已設定：{0}" -f ($gateways -join ", ")) -Details "" | Out-Null
+        Add-CheckResult -Category "網卡與 IP" -Check "預設閘道" -Status "PASS" -Message ("已設定：{0}" -f ($gateways -join ", ")) -Details "" -Tag "gateway-config" | Out-Null
     }
 
     $dnsServers = @()
@@ -1264,10 +1467,10 @@ function Add-NetworkSnapshotResults {
     $dnsServers = @($dnsServers | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)
 
     if ($dnsServers.Count -eq 0) {
-        Add-CheckResult -Category "網卡與 IP" -Check "DNS 伺服器" -Status "FAIL" -Message "沒有找到 DNS 伺服器設定。" -Details "沒有 DNS 時，通常無法使用網址連線，但仍可能用 IP 位址連線。" | Out-Null
+        Add-CheckResult -Category "網卡與 IP" -Check "DNS 伺服器" -Status "FAIL" -Message "沒有找到 DNS 伺服器設定。" -Details "沒有 DNS 時，通常無法使用網址連線，但仍可能用 IP 位址連線。" -Tag "dns-config" | Out-Null
     }
     else {
-        Add-CheckResult -Category "網卡與 IP" -Check "DNS 伺服器" -Status "PASS" -Message ("已設定：{0}" -f ($dnsServers -join ", ")) -Details "" | Out-Null
+        Add-CheckResult -Category "網卡與 IP" -Check "DNS 伺服器" -Status "PASS" -Message ("已設定：{0}" -f ($dnsServers -join ", ")) -Details "" -Tag "dns-config" | Out-Null
     }
 }
 
@@ -1287,12 +1490,12 @@ function Test-ExpectedNetworkConfiguration {
                    $allowedGateways.Count -gt 0 -or $requiredDns.Count -gt 0 -or $hasValidDhcpRule)
 
     if (-not $hasAnyRule) {
-        Add-CheckResult -Category "公司規範比對" -Check "標準設定" -Status "INFO" -Message "設定檔尚未填入公司標準，因此只能顯示目前設定，不能判定 IP 是否符合公司規範。" -Details "請由 IT 人員編輯 NetworkHealthCheck.config.json 的 Expected 區段。" | Out-Null
+        Add-CheckResult -Category "公司規範比對" -Check "標準設定" -Status "INFO" -Message "設定檔尚未填入公司標準，因此只能顯示目前設定，不能判定 IP 是否符合公司規範。" -Details "請由 IT 人員編輯 NetworkHealthCheck.config.json 的 Expected 區段。" -Tag "expected-standard" | Out-Null
         return
     }
 
     if ($Adapters.Count -eq 0) {
-        Add-CheckResult -Category "公司規範比對" -Check "標準設定" -Status "FAIL" -Message "沒有可用網卡，無法比對公司標準。" -Details "" | Out-Null
+        Add-CheckResult -Category "公司規範比對" -Check "標準設定" -Status "FAIL" -Message "沒有可用網卡，無法比對公司標準。" -Details "" -Tag "expected-standard" | Out-Null
         return
     }
 
@@ -1334,55 +1537,55 @@ function Test-ExpectedNetworkConfiguration {
         }
 
         if ($null -ne $matchedIp) {
-            Add-CheckResult -Category "公司規範比對" -Check "IPv4 位址/網段" -Status "PASS" -Message ("目前 IP $matchedIp 符合允許清單。") -Details ("允許的 IP：{0}`r`n允許的網段：{1}" -f (ConvertTo-DisplayString $allowedIps), (ConvertTo-DisplayString $allowedCidrs)) | Out-Null
+            Add-CheckResult -Category "公司規範比對" -Check "IPv4 位址/網段" -Status "PASS" -Message ("目前 IP $matchedIp 符合允許清單。") -Details ("允許的 IP：{0}`r`n允許的網段：{1}" -f (ConvertTo-DisplayString $allowedIps), (ConvertTo-DisplayString $allowedCidrs)) -Tag "expected-standard" | Out-Null
         }
         else {
-            Add-CheckResult -Category "公司規範比對" -Check "IPv4 位址/網段" -Status "FAIL" -Message ("目前 IP 不符合允許清單：{0}" -f (ConvertTo-DisplayString $allIps)) -Details ("允許的 IP：{0}`r`n允許的網段：{1}" -f (ConvertTo-DisplayString $allowedIps), (ConvertTo-DisplayString $allowedCidrs)) | Out-Null
+            Add-CheckResult -Category "公司規範比對" -Check "IPv4 位址/網段" -Status "FAIL" -Message ("目前 IP 不符合允許清單：{0}" -f (ConvertTo-DisplayString $allIps)) -Details ("允許的 IP：{0}`r`n允許的網段：{1}" -f (ConvertTo-DisplayString $allowedIps), (ConvertTo-DisplayString $allowedCidrs)) -Tag "expected-standard" | Out-Null
         }
     }
 
     if ($allowedPrefixes.Count -gt 0) {
         $prefixMatches = @($allPrefixes | Where-Object { $allowedPrefixes -contains [int]$_ })
         if ($prefixMatches.Count -gt 0) {
-            Add-CheckResult -Category "公司規範比對" -Check "子網路前綴" -Status "PASS" -Message ("目前前綴長度符合：/{0}" -f (($prefixMatches | Select-Object -Unique) -join ", /")) -Details ("允許值：/{0}" -f ($allowedPrefixes -join ", /")) | Out-Null
+            Add-CheckResult -Category "公司規範比對" -Check "子網路前綴" -Status "PASS" -Message ("目前前綴長度符合：/{0}" -f (($prefixMatches | Select-Object -Unique) -join ", /")) -Details ("允許值：/{0}" -f ($allowedPrefixes -join ", /")) -Tag "expected-standard" | Out-Null
         }
         else {
-            Add-CheckResult -Category "公司規範比對" -Check "子網路前綴" -Status "FAIL" -Message ("目前前綴長度不符合：/{0}" -f ($allPrefixes -join ", /")) -Details ("允許值：/{0}" -f ($allowedPrefixes -join ", /")) | Out-Null
+            Add-CheckResult -Category "公司規範比對" -Check "子網路前綴" -Status "FAIL" -Message ("目前前綴長度不符合：/{0}" -f ($allPrefixes -join ", /")) -Details ("允許值：/{0}" -f ($allowedPrefixes -join ", /")) -Tag "expected-standard" | Out-Null
         }
     }
 
     if ($allowedGateways.Count -gt 0) {
         $gatewayMatches = @($allGateways | Where-Object { $allowedGateways -contains [string]$_ })
         if ($gatewayMatches.Count -gt 0) {
-            Add-CheckResult -Category "公司規範比對" -Check "預設閘道" -Status "PASS" -Message ("符合：{0}" -f ($gatewayMatches -join ", ")) -Details ("允許值：{0}" -f ($allowedGateways -join ", ")) | Out-Null
+            Add-CheckResult -Category "公司規範比對" -Check "預設閘道" -Status "PASS" -Message ("符合：{0}" -f ($gatewayMatches -join ", ")) -Details ("允許值：{0}" -f ($allowedGateways -join ", ")) -Tag "expected-standard" | Out-Null
         }
         else {
-            Add-CheckResult -Category "公司規範比對" -Check "預設閘道" -Status "FAIL" -Message ("目前閘道不符合：{0}" -f (ConvertTo-DisplayString $allGateways)) -Details ("允許值：{0}" -f ($allowedGateways -join ", ")) | Out-Null
+            Add-CheckResult -Category "公司規範比對" -Check "預設閘道" -Status "FAIL" -Message ("目前閘道不符合：{0}" -f (ConvertTo-DisplayString $allGateways)) -Details ("允許值：{0}" -f ($allowedGateways -join ", ")) -Tag "expected-standard" | Out-Null
         }
     }
 
     if ($requiredDns.Count -gt 0) {
         $missingDns = @($requiredDns | Where-Object { $allDns -notcontains [string]$_ })
         if ($missingDns.Count -eq 0) {
-            Add-CheckResult -Category "公司規範比對" -Check "DNS 伺服器" -Status "PASS" -Message "已包含所有必要 DNS 伺服器。" -Details ("必要值：{0}`r`n目前值：{1}" -f ($requiredDns -join ", "), (ConvertTo-DisplayString $allDns)) | Out-Null
+            Add-CheckResult -Category "公司規範比對" -Check "DNS 伺服器" -Status "PASS" -Message "已包含所有必要 DNS 伺服器。" -Details ("必要值：{0}`r`n目前值：{1}" -f ($requiredDns -join ", "), (ConvertTo-DisplayString $allDns)) -Tag "expected-standard" | Out-Null
         }
         else {
-            Add-CheckResult -Category "公司規範比對" -Check "DNS 伺服器" -Status "FAIL" -Message ("缺少必要 DNS：{0}" -f ($missingDns -join ", ")) -Details ("必要值：{0}`r`n目前值：{1}" -f ($requiredDns -join ", "), (ConvertTo-DisplayString $allDns)) | Out-Null
+            Add-CheckResult -Category "公司規範比對" -Check "DNS 伺服器" -Status "FAIL" -Message ("缺少必要 DNS：{0}" -f ($missingDns -join ", ")) -Details ("必要值：{0}`r`n目前值：{1}" -f ($requiredDns -join ", "), (ConvertTo-DisplayString $allDns)) -Tag "expected-standard" | Out-Null
         }
     }
 
     if ($hasValidDhcpRule) {
         $expectedBool = [bool]$expectedDhcp
         if ($allDhcp.Count -eq 0) {
-            Add-CheckResult -Category "公司規範比對" -Check "DHCP 模式" -Status "ERROR" -Message "無法取得目前 DHCP 狀態。" -Details ("預期值：{0}" -f $(if ($expectedBool) { "啟用" } else { "停用" })) | Out-Null
+            Add-CheckResult -Category "公司規範比對" -Check "DHCP 模式" -Status "ERROR" -Message "無法取得目前 DHCP 狀態。" -Details ("預期值：{0}" -f $(if ($expectedBool) { "啟用" } else { "停用" })) -Tag "expected-standard" | Out-Null
         }
         else {
             $mismatches = @($allDhcp | Where-Object { [bool]$_ -ne $expectedBool })
             if ($mismatches.Count -eq 0) {
-                Add-CheckResult -Category "公司規範比對" -Check "DHCP 模式" -Status "PASS" -Message ("符合預期：{0}" -f $(if ($expectedBool) { "啟用" } else { "停用（固定 IP）" })) -Details "" | Out-Null
+                Add-CheckResult -Category "公司規範比對" -Check "DHCP 模式" -Status "PASS" -Message ("符合預期：{0}" -f $(if ($expectedBool) { "啟用" } else { "停用（固定 IP）" })) -Details "" -Tag "expected-standard" | Out-Null
             }
             else {
-                Add-CheckResult -Category "公司規範比對" -Check "DHCP 模式" -Status "FAIL" -Message ("DHCP 模式不符合，預期：{0}" -f $(if ($expectedBool) { "啟用" } else { "停用（固定 IP）" })) -Details ("目前狀態：{0}" -f (($allDhcp | ForEach-Object { if ($_){"啟用"}else{"停用"} }) -join ", ")) | Out-Null
+                Add-CheckResult -Category "公司規範比對" -Check "DHCP 模式" -Status "FAIL" -Message ("DHCP 模式不符合，預期：{0}" -f $(if ($expectedBool) { "啟用" } else { "停用（固定 IP）" })) -Details ("目前狀態：{0}" -f (($allDhcp | ForEach-Object { if ($_){"啟用"}else{"停用"} }) -join ", ")) -Tag "expected-standard" | Out-Null
             }
         }
     }
@@ -1499,6 +1702,8 @@ function Test-PingTargets {
 
         $name = ConvertTo-SafeString (Get-PropertyValue $targetConfig "Name" "Ping")
         $address = ConvertTo-SafeString (Get-PropertyValue $targetConfig "Address" "")
+        $pingTag = "ping-target"
+        if ($address -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
         $required = [bool](Get-PropertyValue $targetConfig "Required" $false)
         $targets = @(Resolve-PingTargets -Address $address -PrimaryAdapters $PrimaryAdapters)
 
@@ -1508,7 +1713,7 @@ function Test-PingTargets {
             if ($address -eq "AUTO_GATEWAY") {
                 $noTargetDetail = "設定值：AUTO_GATEWAY——此為佔位符，執行時解析為目前的 IPv4 預設閘道；目前不存在（通常代表本地連線中斷）。"
             }
-            Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status $status -Message "找不到可測試的目標。" -Details ($noTargetDetail + [Environment]::NewLine + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms。" -f $count, $timeout) + [Environment]::NewLine + "手動驗證：ping -n $count <目標 IP>") | Out-Null
+            Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status $status -Message "找不到可測試的目標。" -Details ($noTargetDetail + [Environment]::NewLine + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms。" -f $count, $timeout) + [Environment]::NewLine + "手動驗證：ping -n $count <目標 IP>") -Tag $pingTag | Out-Null
             continue
         }
 
@@ -1544,11 +1749,11 @@ function Test-PingTargets {
                 if ($status -eq "INFO") {
                     $details += [Environment]::NewLine + "補充說明：此為非必要目標，可能單純封鎖 ICMP——網際網路的權威判定請看「連線能力」群組。"
                 }
-                Add-CheckResult -Category "延遲與封包遺失" -Check ("{0}：{1}" -f $name, $target) -Status $status -Message $message -Details $details | Out-Null
+                Add-CheckResult -Category "延遲與封包遺失" -Check ("{0}：{1}" -f $name, $target) -Status $status -Message $message -Details $details -Tag $pingTag | Out-Null
             }
             catch {
                 $status = if ($required) { "ERROR" } else { "INFO" }
-                Add-CheckResult -Category "延遲與封包遺失" -Check ("{0}：{1}" -f $name, $target) -Status $status -Message "Ping 測試無法執行。" -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) | Out-Null
+                Add-CheckResult -Category "延遲與封包遺失" -Check ("{0}：{1}" -f $name, $target) -Status $status -Message "Ping 測試無法執行。" -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) -Tag $pingTag | Out-Null
             }
         }
     }
@@ -1604,16 +1809,16 @@ function Test-DnsNames {
         try {
             $result = Invoke-DnsLookup -HostName $hostName -TimeoutMs $timeout
             if ($result.Addresses.Count -gt 0) {
-                Add-CheckResult -Category "DNS" -Check $name -Status "PASS" -Message ("{0} 已解析為 {1}（{2} ms）。" -f $hostName, ($result.Addresses -join ", "), $result.ElapsedMs) -Details ($methodText + [Environment]::NewLine + "手動驗證：nslookup $hostName") | Out-Null
+                Add-CheckResult -Category "DNS" -Check $name -Status "PASS" -Message ("{0} 已解析為 {1}（{2} ms）。" -f $hostName, ($result.Addresses -join ", "), $result.ElapsedMs) -Details ($methodText + [Environment]::NewLine + "手動驗證：nslookup $hostName") -Tag "dns" | Out-Null
             }
             else {
                 $status = if ($required) { "FAIL" } else { "WARN" }
-                Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("$hostName 沒有回傳 IP 位址。") -Details ($methodText + [Environment]::NewLine + "手動驗證：nslookup $hostName") | Out-Null
+                Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("$hostName 沒有回傳 IP 位址。") -Details ($methodText + [Environment]::NewLine + "手動驗證：nslookup $hostName") -Tag "dns" | Out-Null
             }
         }
         catch {
             $status = if ($required) { "FAIL" } else { "WARN" }
-            Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("無法解析 $hostName。") -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + $methodText + [Environment]::NewLine + "手動驗證：nslookup $hostName") -Diagnostics (Get-ExceptionDiagnostics $_) | Out-Null
+            Add-CheckResult -Category "DNS" -Check $name -Status $status -Message ("無法解析 $hostName。") -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + $methodText + [Environment]::NewLine + "手動驗證：nslookup $hostName") -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "dns" | Out-Null
         }
     }
 }
@@ -1770,19 +1975,19 @@ function Add-ConnectivityGroupResult {
 
     if ($entries.Count -eq 0) {
         $status = if ($Required) { "ERROR" } else { "INFO" }
-        Add-CheckResult -Category "連線能力" -Check ("群組：$GroupName") -Status $status -Message "此群組沒有可執行的測試項目。" -Details "請檢查設定檔中的 Group 名稱與測試目標。" | Out-Null
+        Add-CheckResult -Category "連線能力" -Check ("群組：$GroupName") -Status $status -Message "此群組沒有可執行的測試項目。" -Details "請檢查設定檔中的 Group 名稱與測試目標。" -Tag "connectivity-group" | Out-Null
         return
     }
 
     $successful = @($entries | Where-Object { $_.Success })
     if ($successful.Count -gt 0) {
         $names = @($successful | ForEach-Object { $_.Name })
-        Add-CheckResult -Category "連線能力" -Check ("群組：$GroupName") -Status "PASS" -Message ("至少一種連線方式成功：{0}" -f ($names -join ", ")) -Details (("成功 {0}/{1} 項。" -f $successful.Count, $entries.Count) + [Environment]::NewLine + "檢測方式：群組內任一連線測試成功即通過。") | Out-Null
+        Add-CheckResult -Category "連線能力" -Check ("群組：$GroupName") -Status "PASS" -Message ("至少一種連線方式成功：{0}" -f ($names -join ", ")) -Details (("成功 {0}/{1} 項。" -f $successful.Count, $entries.Count) + [Environment]::NewLine + "檢測方式：群組內任一連線測試成功即通過。") -Tag "connectivity-group" | Out-Null
     }
     else {
         $status = if ($Required) { "FAIL" } else { "WARN" }
         $details = (@($entries | ForEach-Object { "{0}：{1}" -f $_.Name, $_.Error }) + "檢測方式：群組內任一連線測試成功即通過。") -join [Environment]::NewLine
-        Add-CheckResult -Category "連線能力" -Check ("群組：$GroupName") -Status $status -Message "所有連線方式都失敗。" -Details $details | Out-Null
+        Add-CheckResult -Category "連線能力" -Check ("群組：$GroupName") -Status $status -Message "所有連線方式都失敗。" -Details $details -Tag "connectivity-group" | Out-Null
     }
 }
 
@@ -1804,18 +2009,18 @@ function Test-ConnectivityTargets {
 
         if ([string]::IsNullOrWhiteSpace($hostName) -or $port -lt 1 -or $port -gt 65535) {
             if ($required) {
-                Add-CheckResult -Category "TCP 連線" -Check $name -Status "ERROR" -Message "設定的主機或連接埠無效。" -Details ("Host=$hostName, Port=$port") | Out-Null
+                Add-CheckResult -Category "TCP 連線" -Check $name -Status "ERROR" -Message "設定的主機或連接埠無效。" -Details ("Host=$hostName, Port=$port") -Tag "tcp" | Out-Null
             }
             continue
         }
 
         $result = Invoke-TcpConnectionTest -HostName $hostName -Port $port -TimeoutMs $tcpTimeout
         if ($result.Success) {
-            Add-CheckResult -Category "TCP 連線" -Check $name -Status "PASS" -Message ("可連線至 {0}:{1}，耗時 {2} ms。" -f $hostName, $port, $result.ElapsedMs) -Details ($tcpMethod + [Environment]::NewLine + "手動驗證：Test-NetConnection $hostName -Port $port") | Out-Null
+            Add-CheckResult -Category "TCP 連線" -Check $name -Status "PASS" -Message ("可連線至 {0}:{1}，耗時 {2} ms。" -f $hostName, $port, $result.ElapsedMs) -Details ($tcpMethod + [Environment]::NewLine + "手動驗證：Test-NetConnection $hostName -Port $port") -Tag "tcp" | Out-Null
         }
         else {
             $status = if ($required) { "FAIL" } else { "INFO" }
-            Add-CheckResult -Category "TCP 連線" -Check $name -Status $status -Message ("無法連線至 {0}:{1}。" -f $hostName, $port) -Details ($result.Error + [Environment]::NewLine + $tcpMethod + [Environment]::NewLine + "手動驗證：Test-NetConnection $hostName -Port $port") | Out-Null
+            Add-CheckResult -Category "TCP 連線" -Check $name -Status $status -Message ("無法連線至 {0}:{1}。" -f $hostName, $port) -Details ($result.Error + [Environment]::NewLine + $tcpMethod + [Environment]::NewLine + "手動驗證：Test-NetConnection $hostName -Port $port") -Tag "tcp" | Out-Null
         }
 
         if (-not [string]::IsNullOrWhiteSpace($group)) {
@@ -1840,18 +2045,18 @@ function Test-ConnectivityTargets {
 
         if ([string]::IsNullOrWhiteSpace($url)) {
             if ($required) {
-                Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "URL 設定為空白。" -Details "" | Out-Null
+                Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "URL 設定為空白。" -Details "" -Tag "http" | Out-Null
             }
             continue
         }
 
         $result = Invoke-HttpConnectionTest -Url $url -TimeoutMs $httpTimeout
         if ($result.Success) {
-            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "PASS" -Message ("HTTP {0}，耗時 {1} ms。" -f $result.StatusCode, $result.ElapsedMs) -Details ("原始網址：{0}`r`n最終網址：{1}`r`n狀態：{2}`r`n{3}`r`n手動驗證：Invoke-WebRequest {0} -UseBasicParsing" -f $url, $result.FinalUrl, $result.StatusText, $httpMethod) | Out-Null
+            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "PASS" -Message ("HTTP {0}，耗時 {1} ms。" -f $result.StatusCode, $result.ElapsedMs) -Details ("原始網址：{0}`r`n最終網址：{1}`r`n狀態：{2}`r`n{3}`r`n手動驗證：Invoke-WebRequest {0} -UseBasicParsing" -f $url, $result.FinalUrl, $result.StatusText, $httpMethod) -Tag "http" | Out-Null
         }
         else {
             $status = if ($required) { "FAIL" } else { "INFO" }
-            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status $status -Message ("無法連線：$url") -Details ($result.Error + [Environment]::NewLine + $httpMethod + [Environment]::NewLine + "手動驗證：Invoke-WebRequest $url -UseBasicParsing") | Out-Null
+            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status $status -Message ("無法連線：$url") -Details ($result.Error + [Environment]::NewLine + $httpMethod + [Environment]::NewLine + "手動驗證：Invoke-WebRequest $url -UseBasicParsing") -Tag "http" | Out-Null
         }
 
         if (-not [string]::IsNullOrWhiteSpace($group)) {
@@ -1923,13 +2128,19 @@ function Compare-AdapterStatistics {
     $criticalDiscards = [uint64][math]::Max($warningDiscards, (ConvertTo-IntSafe $script:Config.Thresholds.AdapterDiscardCriticalDelta 100))
 
     $adapterNames = @($Adapters | ForEach-Object { [string]$_.Name } | Select-Object -Unique)
+    $adapterByName = @{}
+    foreach ($adapterItem in @($Adapters)) {
+        if ($null -ne $adapterItem -and -not [string]::IsNullOrWhiteSpace([string]$adapterItem.Name)) {
+            $adapterByName[[string]$adapterItem.Name] = $adapterItem
+        }
+    }
     if ($adapterNames.Count -eq 0) {
         $adapterNames = @($After.Keys)
     }
 
     foreach ($name in $adapterNames) {
         if (-not $Before.ContainsKey($name) -or -not $After.ContainsKey($name)) {
-            Add-CheckResult -Category "網卡錯誤計數" -Check $name -Status "INFO" -Message "無法取得完整的前後比較資料。" -Details "網卡可能在檢測期間切換、重新連線或名稱不同。" | Out-Null
+            Add-CheckResult -Category "網卡錯誤計數" -Check $name -Status "INFO" -Message "無法取得完整的前後比較資料。" -Details "網卡可能在檢測期間切換、重新連線或名稱不同。" -Tag "adapter-errors" | Out-Null
             continue
         }
 
@@ -1950,7 +2161,7 @@ function Compare-AdapterStatistics {
                 "起始：RxErrors=$($beforeItem.ReceivedPacketErrors), TxErrors=$($beforeItem.OutboundPacketErrors), RxDiscards=$($beforeItem.ReceivedDiscardedPackets), TxDiscards=$($beforeItem.OutboundDiscardedPackets), RxBytes=$($beforeItem.ReceivedBytes), TxBytes=$($beforeItem.SentBytes)",
                 "結束：RxErrors=$($afterItem.ReceivedPacketErrors), TxErrors=$($afterItem.OutboundPacketErrors), RxDiscards=$($afterItem.ReceivedDiscardedPackets), TxDiscards=$($afterItem.OutboundDiscardedPackets), RxBytes=$($afterItem.ReceivedBytes), TxBytes=$($afterItem.SentBytes)"
             ) -join [Environment]::NewLine
-            Add-CheckResult -Category "網卡錯誤計數" -Check $name -Status "WARN" -Message "網卡計數器在檢測期間重設，可能曾重新連線或重啟；無法可靠計算增量。" -Details $resetDetails | Out-Null
+            Add-CheckResult -Category "網卡錯誤計數" -Check $name -Status "WARN" -Message "網卡計數器在檢測期間重設，可能曾重新連線或重啟；無法可靠計算增量。" -Details $resetDetails -Tag "adapter-errors" | Out-Null
             continue
         }
 
@@ -1970,6 +2181,19 @@ function Compare-AdapterStatistics {
         }
 
         $message = "檢測期間新增錯誤 {0}、丟棄 {1}。" -f $errorDelta, $discardDelta
+        $trafficDelta = ([double]$afterItem.ReceivedBytes - [double]$beforeItem.ReceivedBytes) + ([double]$afterItem.SentBytes - [double]$beforeItem.SentBytes)
+        $isVirtualAdapter = $false
+        if ($adapterByName.ContainsKey($name)) {
+            $isVirtualAdapter = ($adapterByName[$name].IsPhysical -ne $true)
+        }
+        if ($status -eq "PASS" -and $trafficDelta -le 0) {
+            $status = "INFO"
+            $message = "取樣期間此網卡沒有流量，錯誤計數器無法作證（0 錯誤不具意義）。"
+        }
+        elseif ($status -eq "PASS" -and $isVirtualAdapter) {
+            $status = "INFO"
+            $message = "虛擬網卡：檢測期間新增錯誤 {0}、丟棄 {1}（僅供參考）。" -f $errorDelta, $discardDelta
+        }
         $details = @(
             "接收錯誤增量：$rxErrorDelta（累積 $($afterItem.ReceivedPacketErrors)）",
             "傳送錯誤增量：$txErrorDelta（累積 $($afterItem.OutboundPacketErrors)）",
@@ -1977,12 +2201,387 @@ function Compare-AdapterStatistics {
             "傳送丟棄增量：$txDiscardDelta（累積 $($afterItem.OutboundDiscardedPackets)）",
             "接收位元組累積：$($afterItem.ReceivedBytes)",
             "傳送位元組累積：$($afterItem.SentBytes)",
+            ("取樣期間流量：{0} 位元組" -f [uint64][math]::Max(0, $trafficDelta)),
             "檢測方式：Get-NetAdapterStatistics 測試前後取樣，顯示增量。",
             "手動驗證：Get-NetAdapterStatistics -Name '$name'"
         ) -join [Environment]::NewLine
 
-        Add-CheckResult -Category "網卡錯誤計數" -Check $name -Status $status -Message $message -Details $details | Out-Null
+        Add-CheckResult -Category "網卡錯誤計數" -Check $name -Status $status -Message $message -Details $details -Tag "adapter-errors" | Out-Null
     }
+}
+
+# v1.2 IT 診斷資料：給 IT 的參考資料（不影響整體結果），顯示在收合的 IT 區段。
+function ConvertFrom-NetshWlanOutput {
+    param([string[]]$Lines)
+
+    $pairs = New-Object System.Collections.ArrayList
+    foreach ($rawLine in @($Lines)) {
+        $line = [string]$rawLine
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $separator = $line.IndexOf(':')
+        $wide = $line.IndexOf([char]0xFF1A)
+        if ($separator -lt 1 -or ($wide -ge 1 -and $wide -lt $separator)) { $separator = $wide }
+        if ($separator -lt 1) { continue }
+        [void]$pairs.Add([pscustomobject]@{ Label = $line.Substring(0, $separator).Trim(); Value = $line.Substring($separator + 1).Trim() })
+    }
+
+    $guidPattern = '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'
+    $macPattern = '^[0-9a-fA-F]{2}([:-][0-9a-fA-F]{2}){5}$'
+    $starts = @()
+    for ($i = 0; $i -lt $pairs.Count; $i++) {
+        if ($pairs[$i].Value -match $guidPattern -and $i -ge 2) { $starts += ($i - 2) }
+    }
+
+    $interfaces = New-Object System.Collections.ArrayList
+    for ($b = 0; $b -lt $starts.Count; $b++) {
+        $from = $starts[$b]
+        $to = $pairs.Count - 1
+        if ($b + 1 -lt $starts.Count) { $to = $starts[$b + 1] - 1 }
+        $block = @($pairs[$from..$to])
+
+        # Values are matched by shape (MAC, percentage, 802.11x, GHz, plain numbers) because labels are localized
+        # and their order differs between Windows 10 and Windows 11 builds.
+        $macs = @($block | Where-Object { $_.Value -match $macPattern })
+        $bssidIndex = -1
+        for ($k = 0; $k -lt $block.Count; $k++) {
+            if ($block[$k].Value -match $macPattern -and $macs.Count -ge 2 -and $block[$k].Value -eq $macs[1].Value) { $bssidIndex = $k; break }
+        }
+        $ssid = ""
+        if ($bssidIndex -gt 0) { $ssid = $block[$bssidIndex - 1].Value }
+
+        $signalIndex = -1
+        $signal = $null
+        $rssiIndex = -1
+        $rssi = $null
+        $radio = ""
+        $band = ""
+        for ($k = 0; $k -lt $block.Count; $k++) {
+            $value = $block[$k].Value
+            if ($signalIndex -lt 0 -and $value -match '^\d{1,3}\s*%$') { $signalIndex = $k; $signal = ConvertTo-IntSafe ($value -replace '[^0-9]', '') 0 }
+            elseif ($rssiIndex -lt 0 -and $value -match '^-\d{1,3}$') { $rssiIndex = $k; $rssi = ConvertTo-IntSafe $value 0 }
+            elseif ([string]::IsNullOrWhiteSpace($radio) -and $value -match '^802\.11') { $radio = $value }
+            elseif ([string]::IsNullOrWhiteSpace($band) -and $value -match '^\d(\.\d)?\s*GHz$') { $band = $value }
+        }
+
+        $channel = $null
+        $receive = $null
+        $transmit = $null
+        $profile = ""
+        if ($bssidIndex -ge 0) {
+            $upper = $block.Count
+            if ($signalIndex -ge 0) { $upper = $signalIndex }
+            $numeric = @()
+            for ($k = $bssidIndex + 1; $k -lt $upper; $k++) {
+                if ($block[$k].Value -match '^\d+(\.\d+)?$') { $numeric += $block[$k].Value }
+            }
+            if ($numeric.Count -ge 2) {
+                $receive = ConvertTo-DoubleSafe $numeric[$numeric.Count - 2] 0
+                $transmit = ConvertTo-DoubleSafe $numeric[$numeric.Count - 1] 0
+            }
+            if ($numeric.Count -ge 3 -or $numeric.Count -eq 1) { $channel = ConvertTo-IntSafe $numeric[0] 0 }
+            if ([string]::IsNullOrWhiteSpace($band) -and $null -ne $channel) {
+                if ($channel -le 14) { $band = "2.4 GHz" } else { $band = "5 GHz" }
+            }
+            $profileFrom = [math]::Max($signalIndex, $rssiIndex) + 1
+            if ($profileFrom -gt 0) {
+                for ($k = $profileFrom; $k -lt $block.Count; $k++) {
+                    $value = $block[$k].Value
+                    if ($value -match '^-?\d+(\.\d+)?$' -or $value -match '^\d{1,3}\s*%$') { continue }
+                    $profile = $value
+                    break
+                }
+            }
+        }
+
+        [void]$interfaces.Add([pscustomobject][ordered]@{
+            Name             = $block[0].Value
+            Description      = $block[1].Value
+            PhysicalAddress  = $(if ($macs.Count -ge 1) { $macs[0].Value } else { "" })
+            Connected        = ($bssidIndex -ge 0)
+            Ssid             = $ssid
+            Bssid            = $(if ($bssidIndex -ge 0) { $block[$bssidIndex].Value } else { "" })
+            RadioType        = $radio
+            Band             = $band
+            Channel          = $channel
+            ReceiveRateMbps  = $receive
+            TransmitRateMbps = $transmit
+            SignalPercent    = $signal
+            Rssi             = $rssi
+            Profile          = $profile
+        })
+    }
+
+    return @($interfaces)
+}
+
+function Add-WifiRfResult {
+    if (-not (Test-IsTrueFlag $script:Config.Checks.WifiRf)) { return }
+
+    $netsh = Join-Path $env:SystemRoot "System32\netsh.exe"
+    if (-not (Test-Path -LiteralPath $netsh)) {
+        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message "找不到 netsh.exe，無法取得 Wi-Fi 無線資料。" -Details "" -Tag "wifi" -Scope "IT" | Out-Null
+        return
+    }
+
+    $lines = @()
+    try {
+        $lines = @(& $netsh wlan show interfaces 2>&1 | ForEach-Object { [string]$_ })
+    }
+    catch {
+        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "ERROR" -Message "無法讀取 Wi-Fi 無線資料。" -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "wifi" -Scope "IT" | Out-Null
+        return
+    }
+
+    $interfaces = @(ConvertFrom-NetshWlanOutput -Lines $lines)
+    $connected = @($interfaces | Where-Object { $_.Connected })
+    if ($connected.Count -eq 0) {
+        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message "沒有已連線的 Wi-Fi 介面（有線連線、Wi-Fi 關閉或沒有無線網卡）。" -Details (("netsh 回報的無線介面數：{0}" -f $interfaces.Count) + [Environment]::NewLine + "手動驗證：netsh wlan show interfaces") -Tag "wifi" -Scope "IT" | Out-Null
+        return
+    }
+
+    foreach ($wifi in $connected) {
+        $rssi = "?"
+        if ($null -ne $wifi.SignalPercent) { $rssi = [math]::Round(($wifi.SignalPercent / 2.0) - 100, 0) }
+        if ($null -ne $wifi.Rssi) { $rssi = $wifi.Rssi }
+        $message = "SSID {0}：訊號 {1}%（約 {2} dBm），{3} {4}，頻道 {5}，{6}/{7} Mbps。" -f $wifi.Ssid, (ConvertTo-DisplayString $wifi.SignalPercent), $rssi, $wifi.RadioType, $wifi.Band, (ConvertTo-DisplayString $wifi.Channel), (ConvertTo-DisplayString $wifi.ReceiveRateMbps), (ConvertTo-DisplayString $wifi.TransmitRateMbps)
+        $details = @(
+            ("介面：{0}" -f $wifi.Name),
+            ("BSSID：{0}" -f (ConvertTo-DisplayString $wifi.Bssid)),
+            ("無線規格：{0}，頻段 {1}，頻道 {2}" -f $wifi.RadioType, (ConvertTo-DisplayString $wifi.Band), (ConvertTo-DisplayString $wifi.Channel)),
+            ("速率：接收 {0} Mbps，傳送 {1} Mbps" -f (ConvertTo-DisplayString $wifi.ReceiveRateMbps), (ConvertTo-DisplayString $wifi.TransmitRateMbps)),
+            ("訊號：{0}%（約 {1} dBm）" -f (ConvertTo-DisplayString $wifi.SignalPercent), $rssi),
+            ("設定檔：{0}" -f (ConvertTo-DisplayString $wifi.Profile)),
+            "檢測方式：netsh wlan show interfaces，因標籤隨語系不同而改以欄位位置解析；dBm 由訊號百分比估算。",
+            "手動驗證：netsh wlan show interfaces",
+            "說明：用戶端看到的數值，證據力低於 AP 的用戶端列表。"
+        ) -join [Environment]::NewLine
+        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message $message -Details $details -Tag "wifi" -Scope "IT" | Out-Null
+    }
+}
+
+function Add-RouteTableResult {
+    if (-not (Test-IsTrueFlag $script:Config.Checks.RouteTable)) { return }
+
+    if (-not (Get-Command Get-NetRoute -ErrorAction SilentlyContinue)) {
+        Add-CheckResult -Category "IT 診斷資料" -Check "IPv4 預設路由" -Status "INFO" -Message "沒有 Get-NetRoute，未讀取路由表。" -Details "手動驗證：route print -4" -Tag "routes" -Scope "IT" | Out-Null
+        return
+    }
+
+    $routes = @()
+    try {
+        $routes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop | Sort-Object RouteMetric, InterfaceMetric)
+    }
+    catch {
+        Add-CheckResult -Category "IT 診斷資料" -Check "IPv4 預設路由" -Status "ERROR" -Message "無法讀取路由表。" -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + "手動驗證：route print -4") -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "routes" -Scope "IT" | Out-Null
+        return
+    }
+
+    if ($routes.Count -eq 0) {
+        Add-CheckResult -Category "IT 診斷資料" -Check "IPv4 預設路由" -Status "INFO" -Message "沒有 IPv4 預設路由。" -Details ("檢測方式：Get-NetRoute -AddressFamily IPv4 -DestinationPrefix 0.0.0.0/0" + [Environment]::NewLine + "手動驗證：route print -4") -Tag "routes" -Scope "IT" | Out-Null
+        return
+    }
+
+    $lines = @()
+    foreach ($route in $routes) {
+        $lines += ("{0} 經由 {1}（ifIndex {2}），路由計量 {3}，介面計量 {4}，{5}" -f $route.NextHop, $route.InterfaceAlias, $route.InterfaceIndex, $route.RouteMetric, $route.InterfaceMetric, $route.State)
+    }
+    $interfaceCount = @($routes | ForEach-Object { [string]$_.InterfaceIndex } | Select-Object -Unique).Count
+    if ($interfaceCount -gt 1) { $lines += "多條預設路由：Windows 依合計計量最低者優先；請檢查 VPN 分流或第二條連線。" }
+    $lines += "檢測方式：Get-NetRoute -AddressFamily IPv4 -DestinationPrefix 0.0.0.0/0"
+    $lines += "手動驗證：route print -4"
+    $message = "{0} 條 IPv4 預設路由；優先：{1} 經由 {2}。" -f $routes.Count, $routes[0].NextHop, $routes[0].InterfaceAlias
+    Add-CheckResult -Category "IT 診斷資料" -Check "IPv4 預設路由" -Status "INFO" -Message $message -Details ($lines -join [Environment]::NewLine) -Tag "routes" -Scope "IT" | Out-Null
+}
+
+function Add-GatewayNeighborResult {
+    param([object[]]$PrimaryAdapters)
+
+    if (-not (Test-IsTrueFlag $script:Config.Checks.GatewayNeighbor)) { return }
+
+    $gateways = @(Resolve-PingTargets -Address "AUTO_GATEWAY" -PrimaryAdapters $PrimaryAdapters)
+    if ($gateways.Count -eq 0) {
+        Add-CheckResult -Category "IT 診斷資料" -Check "閘道鄰居（ARP）" -Status "INFO" -Message "沒有可查詢的 IPv4 預設閘道。" -Details "手動驗證：arp -a" -Tag "gateway-neighbor" -Scope "IT" | Out-Null
+        return
+    }
+
+    foreach ($gateway in $gateways) {
+        $state = "（未知）"
+        $mac = ""
+        try {
+            if (Get-Command Get-NetNeighbor -ErrorAction SilentlyContinue) {
+                $neighbor = Get-NetNeighbor -IPAddress ([string]$gateway) -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($null -ne $neighbor) {
+                    $state = [string]$neighbor.State
+                    $mac = [string]$neighbor.LinkLayerAddress
+                }
+            }
+            else {
+                $arpLines = @(& arp -a 2>&1 | ForEach-Object { [string]$_ } | Where-Object { $_ -match ('\s' + [regex]::Escape([string]$gateway) + '\s') })
+                if ($arpLines.Count -gt 0 -and $arpLines[0] -match '([0-9a-fA-F]{2}[-:]){5}[0-9a-fA-F]{2}') {
+                    $mac = $matches[0]
+                    $state = "arp"
+                }
+            }
+        }
+        catch {
+            Add-CheckResult -Category "IT 診斷資料" -Check "閘道鄰居（ARP）" -Status "ERROR" -Message "無法讀取鄰居表。" -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + "手動驗證：arp -a") -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "gateway-neighbor" -Scope "IT" | Out-Null
+            continue
+        }
+
+        $lines = @()
+        if ([string]::IsNullOrWhiteSpace($mac) -or $mac -match '^(00[-:]){5}00$' -or $state -match 'Unreachable|Incomplete') { $lines += "閘道沒有解析到 MAC 位址，到路由器的第二層可能中斷（以上方的閘道 Ping 為準）。" }
+        $lines += "檢測方式：Get-NetNeighbor -AddressFamily IPv4（備援：arp -a）"
+        $lines += "手動驗證：arp -a"
+        $message = "閘道 {0}：鄰居狀態 {1}，MAC {2}。" -f $gateway, $state, (ConvertTo-DisplayString $mac)
+        Add-CheckResult -Category "IT 診斷資料" -Check "閘道鄰居（ARP）" -Status "INFO" -Message $message -Details ($lines -join [Environment]::NewLine) -Tag "gateway-neighbor" -Scope "IT" | Out-Null
+    }
+}
+
+function Add-ProxySettingsResult {
+    if (-not (Test-IsTrueFlag $script:Config.Checks.ProxySettings)) { return }
+
+    $lines = @()
+    $userProxy = "關閉"
+    try {
+        $registry = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -ErrorAction Stop
+        $enabled = ((ConvertTo-IntSafe (Get-PropertyValue $registry "ProxyEnable" 0) 0) -eq 1)
+        $server = ConvertTo-SafeString (Get-PropertyValue $registry "ProxyServer" "")
+        $pac = ConvertTo-SafeString (Get-PropertyValue $registry "AutoConfigURL" "")
+        if ($enabled -and -not [string]::IsNullOrWhiteSpace($server)) { $userProxy = $server }
+        elseif (-not [string]::IsNullOrWhiteSpace($pac)) { $userProxy = "PAC " + $pac }
+        $lines += ("使用者 Proxy 啟用：{0}，伺服器：{1}，PAC URL：{2}" -f $enabled, (ConvertTo-DisplayString $server), (ConvertTo-DisplayString $pac))
+    }
+    catch {
+        $lines += ("無法讀取使用者 Proxy 設定：{0}" -f $_.Exception.Message)
+    }
+
+    $probeUrl = "https://www.microsoft.com/"
+    foreach ($target in @($script:Config.Tests.HttpTargets)) {
+        $candidate = ConvertTo-SafeString (Get-PropertyValue $target "Url" "")
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) { $probeUrl = $candidate; break }
+    }
+    $effective = "直連"
+    try {
+        $probe = New-Object System.Uri($probeUrl)
+        $resolved = [System.Net.WebRequest]::GetSystemWebProxy().GetProxy($probe)
+        if ($null -ne $resolved -and $resolved.AbsoluteUri -ne $probe.AbsoluteUri) { $effective = $resolved.AbsoluteUri }
+    }
+    catch {
+        $effective = "（未知）"
+    }
+    $lines += ("{0} 實際使用的 Proxy：{1}" -f $probeUrl, $effective)
+
+    try {
+        $winhttp = @(& netsh winhttp show proxy 2>&1 | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($winhttp.Count -gt 0) { $lines += ("WinHTTP：{0}" -f (($winhttp | Select-Object -First 3) -join " / ")) }
+    }
+    catch {
+        # WinHTTP information is optional.
+    }
+    $lines += "若 TCP 443 通但 HTTPS 失敗，通常和 Proxy 有關。"
+    $lines += "檢測方式：HKCU Internet Settings 登錄值、WebRequest.GetSystemWebProxy、netsh winhttp show proxy"
+    $lines += "手動驗證：netsh winhttp show proxy"
+    Add-CheckResult -Category "IT 診斷資料" -Check "Proxy 設定" -Status "INFO" -Message ("使用者 Proxy：{0}；HTTPS 實際使用的 Proxy：{1}。" -f $userProxy, $effective) -Details ($lines -join [Environment]::NewLine) -Tag "proxy" -Scope "IT" | Out-Null
+}
+
+function Invoke-TraceRoute {
+    param(
+        [string]$Target,
+        [int]$MaxHops,
+        [int]$TimeoutMs
+    )
+
+    $hops = New-Object System.Collections.ArrayList
+    $ping = New-Object System.Net.NetworkInformation.Ping
+    $buffer = New-Object byte[] 32
+    try {
+        for ($ttl = 1; $ttl -le $MaxHops; $ttl++) {
+            $options = New-Object System.Net.NetworkInformation.PingOptions($ttl, $true)
+            $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+            $address = "*"
+            $status = "TimedOut"
+            $reached = $false
+            try {
+                $reply = $ping.Send($Target, $TimeoutMs, $buffer, $options)
+                $stopwatch.Stop()
+                $status = [string]$reply.Status
+                if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::TtlExpired -or $reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
+                    $address = [string]$reply.Address
+                }
+                if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $reached = $true }
+            }
+            catch {
+                $stopwatch.Stop()
+                $status = $_.Exception.Message
+            }
+            [void]$hops.Add([pscustomobject][ordered]@{
+                Hop       = $ttl
+                Address   = $address
+                Status    = $status
+                ElapsedMs = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
+                Reached   = $reached
+            })
+            if ($reached) { break }
+            if ($script:GuiAvailable) {
+                [System.Windows.Forms.Application]::DoEvents()
+            }
+        }
+    }
+    finally {
+        $ping.Dispose()
+    }
+    return @($hops)
+}
+
+function Add-TracerouteResult {
+    if (-not (Test-IsTrueFlag $script:Config.Checks.Traceroute)) { return }
+
+    $maxHops = ConvertTo-IntSafe $script:Config.Checks.TracerouteHops 3
+    if ($maxHops -lt 1 -or $maxHops -gt 10) { $maxHops = 3 }
+    $target = "1.1.1.1"
+    foreach ($candidate in @($script:Config.Tests.PingTargets)) {
+        $address = ConvertTo-SafeString (Get-PropertyValue $candidate "Address" "")
+        if (-not [string]::IsNullOrWhiteSpace($address) -and $address -ne "AUTO_GATEWAY" -and $address -ne "AUTO_DNS") { $target = $address; break }
+    }
+
+    $hops = @()
+    try {
+        $hops = @(Invoke-TraceRoute -Target $target -MaxHops $maxHops -TimeoutMs 1000)
+    }
+    catch {
+        Add-CheckResult -Category "IT 診斷資料" -Check "Traceroute（前幾跳）" -Status "ERROR" -Message "Traceroute 無法執行。" -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "traceroute" -Scope "IT" | Out-Null
+        return
+    }
+
+    $lines = @()
+    foreach ($hop in $hops) {
+        $lines += ("第 {0} 跳：{1}（{2}）{3} ms" -f $hop.Hop, $hop.Address, $hop.Status, $hop.ElapsedMs)
+    }
+    $lines += ("檢測方式：.NET Ping 以 TTL 1..{0} 逐跳探測，每跳 1000 ms；沒有回應的跳顯示為 *。" -f $maxHops)
+    $lines += ("手動驗證：tracert -d -h {0} {1}" -f $maxHops, $target)
+    $reachedText = "否"
+    if (@($hops | Where-Object { $_.Reached }).Count -gt 0) { $reachedText = "是" }
+    Add-CheckResult -Category "IT 診斷資料" -Check "Traceroute（前幾跳）" -Status "INFO" -Message ("{0}：探測 {1} 跳，抵達目的地：{2}。" -f $target, $hops.Count, $reachedText) -Details ($lines -join [Environment]::NewLine) -Tag "traceroute" -Scope "IT" | Out-Null
+}
+
+function Add-DriverInfoResult {
+    param([object[]]$Adapters)
+
+    if (-not (Test-IsTrueFlag $script:Config.Checks.DriverInfo)) { return }
+
+    $physical = @($Adapters | Where-Object { $_.IsPhysical -eq $true })
+    if ($physical.Count -eq 0) {
+        Add-CheckResult -Category "IT 診斷資料" -Check "網卡驅動程式" -Status "INFO" -Message "沒有已連線的實體網卡，無驅動程式資訊。" -Details "手動驗證：Get-NetAdapter | Format-List Name, DriverVersion, DriverDate" -Tag "drivers" -Scope "IT" | Out-Null
+        return
+    }
+
+    $lines = @()
+    foreach ($adapter in $physical) {
+        $lines += ("{0}：{1}，驅動 {2}（{3}，{4}），媒體 {5}" -f $adapter.Name, $adapter.Description, (ConvertTo-DisplayString $adapter.DriverVersion), (ConvertTo-DisplayString $adapter.DriverDate), (ConvertTo-DisplayString $adapter.DriverProvider), (ConvertTo-DisplayString $adapter.MediaType))
+    }
+    $lines += "檢測方式：Get-NetAdapter 的 DriverVersion / DriverDate / DriverProvider"
+    $lines += "手動驗證：Get-NetAdapter | Format-List Name, DriverVersion, DriverDate"
+    Add-CheckResult -Category "IT 診斷資料" -Check "網卡驅動程式" -Status "INFO" -Message ("{0} 張實體網卡；驅動版本列於詳細資料。" -f $physical.Count) -Details ($lines -join [Environment]::NewLine) -Tag "drivers" -Scope "IT" | Out-Null
 }
 
 function Get-CimOrWmiInstance {
@@ -2046,7 +2645,7 @@ function Compare-TcpCounters {
     )
 
     if ($null -eq $Before -or $null -eq $After) {
-        Add-CheckResult -Category "TCP 重傳" -Check "系統計數器" -Status "ERROR" -Message "沒有完整的前後 TCP 計數器資料。" -Details "" | Out-Null
+        Add-CheckResult -Category "TCP 重傳" -Check "系統計數器" -Status "ERROR" -Message "沒有完整的前後 TCP 計數器資料。" -Details "" -Tag "tcp-retransmissions" | Out-Null
         return
     }
 
@@ -2054,7 +2653,7 @@ function Compare-TcpCounters {
     $counterErrors += @($Before.Errors)
     $counterErrors += @($After.Errors)
     foreach ($errorItem in $counterErrors) {
-        Add-CheckResult -Category "TCP 重傳" -Check ("{0} 計數器" -f $errorItem.Protocol) -Status "ERROR" -Message "無法讀取 TCP 重傳計數器。" -Details $errorItem.Error -Diagnostics $errorItem.Diagnostics | Out-Null
+        Add-CheckResult -Category "TCP 重傳" -Check ("{0} 計數器" -f $errorItem.Protocol) -Status "ERROR" -Message "無法讀取 TCP 重傳計數器。" -Details $errorItem.Error -Diagnostics $errorItem.Diagnostics -Tag "tcp-retransmissions" | Out-Null
     }
 
     $warningPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionWarningPercent" 2) 2
@@ -2073,7 +2672,7 @@ function Compare-TcpCounters {
         $retransDeltaDouble = [double]$end.Retransmitted - [double]$start.Retransmitted
 
         if ($sentDeltaDouble -lt 0 -or $retransDeltaDouble -lt 0) {
-            Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "ERROR" -Message "計數器在檢測期間重設或溢位，無法計算增量。" -Details ("起始 Sent={0}, Retrans={1}; 結束 Sent={2}, Retrans={3}" -f $start.SegmentsSent, $start.Retransmitted, $end.SegmentsSent, $end.Retransmitted) | Out-Null
+            Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "ERROR" -Message "計數器在檢測期間重設或溢位，無法計算增量。" -Details ("起始 Sent={0}, Retrans={1}; 結束 Sent={2}, Retrans={3}" -f $start.SegmentsSent, $start.Retransmitted, $end.SegmentsSent, $end.Retransmitted) -Tag "tcp-retransmissions" | Out-Null
             continue
         }
 
@@ -2102,16 +2701,16 @@ function Compare-TcpCounters {
         }
 
         if ($sentDelta -eq 0 -and $retransDelta -eq 0) {
-            Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "INFO" -Message "取樣期間沒有足夠的 TCP 傳送流量，未發現重傳，但不能據此判定長時間狀況。" -Details $details | Out-Null
+            Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "INFO" -Message "取樣期間沒有足夠的 TCP 傳送流量，未發現重傳，但不能據此判定長時間狀況。" -Details $details -Tag "tcp-retransmissions" | Out-Null
             continue
         }
 
         if ($sentDelta -lt $minimumSegments) {
             if ($retransDelta -gt 0) {
-                Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "WARN" -Message ("流量樣本偏少，但觀察到 {0} 次重傳（近似 {1}%）。" -f $retransDelta, $rate) -Details $details | Out-Null
+                Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "WARN" -Message ("流量樣本偏少，但觀察到 {0} 次重傳（近似 {1}%）。" -f $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" | Out-Null
             }
             else {
-                Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "INFO" -Message ("樣本只有 {0} 個傳送 segment，未觀察到重傳。" -f $sentDelta) -Details $details | Out-Null
+                Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "INFO" -Message ("樣本只有 {0} 個傳送 segment，未觀察到重傳。" -f $sentDelta) -Details $details -Tag "tcp-retransmissions" | Out-Null
             }
             continue
         }
@@ -2124,7 +2723,7 @@ function Compare-TcpCounters {
             $status = "WARN"
         }
 
-        Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status $status -Message ("傳送 {0}、重傳 {1}，近似重傳比例 {2}%。" -f $sentDelta, $retransDelta, $rate) -Details $details | Out-Null
+        Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status $status -Message ("傳送 {0}、重傳 {1}，近似重傳比例 {2}%。" -f $sentDelta, $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" | Out-Null
     }
 }
 
@@ -2199,6 +2798,51 @@ function Get-SummaryCounts {
 # -----------------------------------------------------------------------------
 # 報告輸出：產生 HTML、TXT、JSON；任一寫入錯誤都會留下詳細例外。
 # -----------------------------------------------------------------------------
+# v1.2：以結果標籤判定的語言中立指紋；供「要告訴 IT 的話」區段與精靈使用。
+function Get-FingerprintSummary {
+    $results = @($script:Results)
+    $overall = Get-OverallStatus
+
+    $adaptersFail = @($results | Where-Object { $_.Tag -eq "adapters" -and $_.Status -eq "FAIL" }).Count -gt 0
+    $gatewayConfigFail = @($results | Where-Object { $_.Tag -eq "gateway-config" -and $_.Status -eq "FAIL" }).Count -gt 0
+    $gatewayPingPass = @($results | Where-Object { $_.Tag -eq "ping-gateway" -and $_.Status -eq "PASS" }).Count -gt 0
+    $gatewayPingBad = @($results | Where-Object { $_.Tag -eq "ping-gateway" -and ($_.Status -eq "FAIL" -or $_.Status -eq "ERROR") }).Count -gt 0
+    $groupFail = @($results | Where-Object { $_.Tag -eq "connectivity-group" -and ($_.Status -eq "FAIL" -or $_.Status -eq "WARN") }).Count -gt 0
+    $groupPass = @($results | Where-Object { $_.Tag -eq "connectivity-group" -and $_.Status -eq "PASS" }).Count -gt 0
+    $dnsFail = @($results | Where-Object { $_.Tag -eq "dns" -and ($_.Status -eq "FAIL" -or $_.Status -eq "WARN") }).Count -gt 0
+    $tcpPass = @($results | Where-Object { $_.Tag -eq "tcp" -and $_.Status -eq "PASS" }).Count -gt 0
+    $qualityIssue = @($results | Where-Object { ($_.Tag -eq "ping-target" -or $_.Tag -eq "ping-gateway" -or $_.Tag -eq "tcp-retransmissions" -or $_.Tag -eq "adapter-errors") -and ($_.Status -eq "WARN" -or $_.Status -eq "FAIL") }).Count -gt 0
+
+    $key = "healthy"
+    if ($adaptersFail -or $gatewayConfigFail) { $key = "local" }
+    elseif ($gatewayPingBad -and -not $gatewayPingPass) { $key = "gateway-unreachable" }
+    elseif ($gatewayPingPass -and $groupFail) { $key = "gateway-up-internet-dead" }
+    elseif ($dnsFail -and ($groupPass -or $tcpPass)) { $key = "dns" }
+    elseif ($overall.Code -eq "FAIL") { $key = "mixed" }
+    elseif ($overall.Code -eq "ERROR") { $key = "incomplete" }
+    elseif ($qualityIssue -or $overall.Code -eq "WARN") { $key = "quality" }
+
+    $title = ""
+    $lines = @()
+    switch ($key) {
+        "local" { $title = "本機連線問題"; $lines = @("找不到可用的網卡或預設閘道。", "問題在這台電腦或它的連線：網路線、Wi-Fi 連線、網卡停用或 DHCP 沒有回應。", "用同一個網路上的另一台裝置測試，確認是否只有這台電腦有問題。") }
+        "gateway-unreachable" { $title = "閘道沒有回應"; $lines = @("已設定預設閘道，但閘道不回應 Ping。", "問題在這台電腦和路由器之間：連線、Wi-Fi、交換器或路由器本身。", "確認連線燈號或 Wi-Fi 訊號，以及其他裝置能否連到路由器。") }
+        "gateway-up-internet-dead" { $title = "閘道正常，網際網路不通"; $lines = @("路由器有回應，但往外的連線失敗。", "問題在路由器或更外層：WAN 連線、ISP 或上游防火牆。", "查看路由器的 WAN 狀態，以及其他裝置是否同樣無法上網。") }
+        "dns" { $title = "名稱解析失敗"; $lines = @("用 IP 直接連線正常，但主機名稱無法解析。", "問題在 DNS：設定的 DNS 伺服器、過濾服務或名稱本身。", "把報告中的 DNS 伺服器和公司預期設定比對。") }
+        "quality" { $title = "連線正常但品質不佳"; $lines = @("連線可用，但封包遺失、延遲、重傳或網卡錯誤超過門檻。", "常見原因：Wi-Fi 訊號弱、線路壅塞、網路線或連接埠故障。", "問題發生時再跑一次並比較數字。") }
+        "mixed" { $title = "有必要檢查未通過"; $lines = @("至少一項必要檢查未通過，請看下方失敗的項目。", "把報告原樣交給 IT。") }
+        "incomplete" { $title = "部分檢查無法執行"; $lines = @("沒有發現故障，但部分步驟在這台電腦上無法完成。", "把報告原樣交給 IT，原因記錄在詳細資料中。") }
+        default { $title = "全部通過"; $lines = @("本次執行的所有檢查都通過。", "若問題仍然存在，可能在應用程式或伺服器端，或是時好時壞；問題發生時再跑一次。") }
+    }
+    $lines += "把 HTML 報告（或 JSON 檔）交給 IT。報告內含電腦名稱、使用者名稱、網卡 MAC 位址與 Wi-Fi 網路名稱。"
+
+    return [pscustomobject][ordered]@{
+        Key   = $key
+        Title = $title
+        Lines = @($lines)
+    }
+}
+
 function New-HtmlReportContent {
     param(
         [object]$SystemSummary,
@@ -2212,6 +2856,13 @@ function New-HtmlReportContent {
     }
 
     $rows = New-Object System.Text.StringBuilder
+    $itRows = New-Object System.Text.StringBuilder
+    $itCount = 0
+    $detailsOpen = ""
+    if ($null -ne $script:RunOptions -and $script:RunOptions.ExpandDetails) { $detailsOpen = " open" }
+    $fingerprint = Get-FingerprintSummary
+    $fingerprintItems = (@($fingerprint.Lines | ForEach-Object { "      <li>" + (ConvertTo-HtmlEncoded $_) + "</li>" }) -join [Environment]::NewLine)
+    $runProfile = ConvertTo-HtmlEncoded (Get-RunProfileText)
     foreach ($result in $script:Results) {
         $statusClass = ([string]$result.Status).ToLowerInvariant()
         $detailsHtml = ""
@@ -2227,7 +2878,7 @@ function New-HtmlReportContent {
         }
         if (-not [string]::IsNullOrWhiteSpace($detailsText)) {
             $detailsEncoded = ConvertTo-HtmlEncoded $detailsText
-            $detailsHtml = "<details><summary>顯示詳細資料</summary><pre>$detailsEncoded</pre></details>"
+            $detailsHtml = "<details$detailsOpen><summary>顯示詳細資料</summary><pre>$detailsEncoded</pre></details>"
         }
 
         $rowHtml = @"
@@ -2239,7 +2890,13 @@ function New-HtmlReportContent {
   <td>$(ConvertTo-HtmlEncoded $result.Message)$detailsHtml</td>
 </tr>
 "@
-        [void]$rows.AppendLine($rowHtml)
+        if ([string]$result.Scope -eq "IT") {
+            [void]$itRows.AppendLine($rowHtml)
+            $itCount++
+        }
+        else {
+            [void]$rows.AppendLine($rowHtml)
+        }
     }
 
     $overallClass = $Overall.Code.ToLowerInvariant()
@@ -2293,6 +2950,9 @@ summary { cursor: pointer; color: #2b6cb0; }
 pre { white-space: pre-wrap; word-break: break-word; background: #f7fafc; padding: 10px; border-radius: 6px; border: 1px solid #e2e8f0; }
 .notice { border-left: 5px solid #3182ce; background: #ebf8ff; padding: 12px 14px; border-radius: 6px; }
 footer { color: #718096; font-size: 13px; margin-top: 16px; }
+.tools { margin-bottom: 8px; } .tools button { border: 1px solid #cbd5e0; background: #edf2f7; border-radius: 6px; padding: 5px 12px; cursor: pointer; font: inherit; }
+.tell ul { margin: 6px 0 0 18px; } .tell li { margin: 3px 0; }
+details.itblock > summary { cursor: pointer; } .ith2 { font-size: 19px; font-weight: 700; }
 @media (max-width: 800px) { .cards { grid-template-columns: repeat(3, 1fr); } .meta { grid-template-columns: 1fr; } table { display: block; overflow-x: auto; } }
 </style>
 </head>
@@ -2301,6 +2961,7 @@ footer { color: #718096; font-size: 13px; margin-top: 16px; }
   <h1>網路健檢報告</h1>
   <p>單位：$(ConvertTo-HtmlEncoded $organization)　電腦：$(ConvertTo-HtmlEncoded $SystemSummary.ComputerName)</p>
   <p>產生時間：$(ConvertTo-HtmlEncoded $generatedAt)　檢測耗時：約 $(ConvertTo-HtmlEncoded $duration) 秒</p>
+  <p>執行設定：$runProfile</p>
 </header>
 <main>
   <div class="overall $overallClass">
@@ -2317,6 +2978,14 @@ footer { color: #718096; font-size: 13px; margin-top: 16px; }
     <div class="card">合計<strong>$($Counts.Total)</strong></div>
   </div>
 
+  <section class="tell">
+    <h2>要告訴 IT 的話</h2>
+    <p><strong>$(ConvertTo-HtmlEncoded $fingerprint.Title)</strong></p>
+    <ul>
+$fingerprintItems
+    </ul>
+  </section>
+
   <section>
     <h2>電腦與執行資訊</h2>
     <div class="meta">
@@ -2332,6 +3001,7 @@ footer { color: #718096; font-size: 13px; margin-top: 16px; }
 
   <section>
     <h2>檢測結果</h2>
+    <div class="tools"><button type="button" onclick="nhcToggle(true)">全部展開</button> <button type="button" onclick="nhcToggle(false)">全部收合</button></div>
     <div class="notice">「無法檢查」表示該步驟因權限、系統元件、公司政策或執行錯誤而沒有完成，不等同於網路本身一定異常。TCP 重傳比例為本機在本次取樣期間的系統級近似值。</div>
     <div style="overflow-x:auto; margin-top:14px;">
       <table>
@@ -2343,8 +3013,24 @@ $($rows.ToString())
     </div>
   </section>
 
+  <section>
+    <details class="itblock"$detailsOpen>
+      <summary><span class="ith2">$(ConvertTo-HtmlEncoded ("IT 診斷資料（{0} 項）" -f $itCount))</span></summary>
+      <div class="notice" style="margin-top:12px;">給 IT 的參考資料（路由、閘道鄰居、Proxy、traceroute、Wi-Fi 無線、驅動程式）。這些項目不影響整體結果。</div>
+      <div style="overflow-x:auto; margin-top:14px;">
+        <table>
+        <thead><tr><th>時間</th><th>分類</th><th>檢查項目</th><th>結果</th><th>說明</th></tr></thead>
+          <tbody>
+$($itRows.ToString())
+          </tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
   <footer>NetworkHealthCheck $($script:ToolVersion)。本工具只讀取系統資訊並執行連線測試，不會修改 IP、DNS、路由或防火牆設定。</footer>
 </main>
+<script>function nhcToggle(open){var items=document.querySelectorAll('details');for(var i=0;i<items.length;i++){items[i].open=open;}}</script>
 </body>
 </html>
 "@
@@ -2372,9 +3058,21 @@ function New-TextReportContent {
     [void]$builder.AppendLine("設定檔：$($SystemSummary.ConfigPath)")
     [void]$builder.AppendLine("報告目錄：$($SystemSummary.ReportDirectory)")
     [void]$builder.AppendLine("統計：正常 $($Counts.Pass)、需注意 $($Counts.Warn)、異常 $($Counts.Fail)、無法檢查 $($Counts.Error)、資訊 $($Counts.Info)，合計 $($Counts.Total)")
+    [void]$builder.AppendLine("執行設定：$(Get-RunProfileText)")
+    $fingerprint = Get-FingerprintSummary
+    [void]$builder.AppendLine("要告訴 IT 的話：$($fingerprint.Title)")
+    foreach ($line in @($fingerprint.Lines)) {
+        [void]$builder.AppendLine("  - $line")
+    }
+    $itHeaderWritten = $false
     [void]$builder.AppendLine("")
 
-    foreach ($result in $script:Results) {
+    foreach ($result in @(@($script:Results | Where-Object { [string]$_.Scope -ne "IT" }) + @($script:Results | Where-Object { [string]$_.Scope -eq "IT" }))) {
+        if ([string]$result.Scope -eq "IT" -and -not $itHeaderWritten) {
+            [void]$builder.AppendLine("IT 診斷資料")
+            [void]$builder.AppendLine("-" * 40)
+            $itHeaderWritten = $true
+        }
         [void]$builder.AppendLine(("[{0}] [{1}] {2}／{3}" -f (Get-StatusText $result.Status), $result.Time.ToString("HH:mm:ss"), $result.Category, $result.Check))
         [void]$builder.AppendLine("  $($result.Message)")
         if (-not [string]::IsNullOrWhiteSpace([string]$result.Details)) {
@@ -2407,8 +3105,10 @@ function Save-Reports {
     $jsonPath = Join-Path $script:OutputDirectory ($baseName + ".json")
 
     $reportObject = [pscustomobject][ordered]@{
-        SchemaVersion = 1
+        SchemaVersion = 2
         ToolVersion   = $script:ToolVersion
+        RunOptions    = $script:RunOptions
+        Fingerprint   = (Get-FingerprintSummary)
         Overall       = $overall
         Counts        = $counts
         System        = $systemSummary
@@ -2500,6 +3200,7 @@ function Complete-ReportStage {
         if ($script:GuiAvailable) {
             $script:ReportPathLabel.Text = "報告：$primary"
             $script:OpenReportButton.Enabled = $true
+            $script:OpenJsonButton.Enabled = (-not [string]::IsNullOrWhiteSpace([string]$SaveResult.Json))
             $script:OpenFolderButton.Enabled = $true
             [System.Windows.Forms.MessageBox]::Show(("3 種報告格式中有 {0} 種無法寫入（{1}）。報告已存為：{2}" -f $failedFormats.Count, ($failedFormats -join ", "), $primary), "網路健檢警告", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
         }
@@ -2511,6 +3212,7 @@ function Complete-ReportStage {
         if ($script:GuiAvailable) {
             $script:ReportPathLabel.Text = "報告：$primary"
             $script:OpenReportButton.Enabled = $true
+            $script:OpenJsonButton.Enabled = (-not [string]::IsNullOrWhiteSpace([string]$SaveResult.Json))
             $script:OpenFolderButton.Enabled = $true
         }
     }
@@ -2629,6 +3331,7 @@ function Run-AllChecks {
         $script:StartButton.Enabled = $false
         $script:OpenReportButton.Enabled = $false
         $script:OpenFolderButton.Enabled = $false
+        $script:OpenJsonButton.Enabled = $false
         $script:OverallLabel.Text = "結果：檢測進行中"
         $script:OverallLabel.ForeColor = [System.Drawing.Color]::FromArgb(31, 41, 51)
         $script:ReportPathLabel.Text = "報告尚未產生"
@@ -2638,14 +3341,14 @@ function Run-AllChecks {
     Set-UiProgress -Percent 2 -Text "初始化"
 
     if ($null -ne $script:ConfigLoadError) {
-        Add-CheckResult -Category "程式設定" -Check "設定檔" -Status "ERROR" -Message "設定檔無法載入，已使用內建預設值。" -Details $script:ConfigLoadError -Diagnostics $script:ConfigLoadDiagnostics | Out-Null
+        Add-CheckResult -Category "程式設定" -Check "設定檔" -Status "ERROR" -Message "設定檔無法載入，已使用內建預設值。" -Details $script:ConfigLoadError -Diagnostics $script:ConfigLoadDiagnostics -Tag "config-file" | Out-Null
     }
     else {
-        Add-CheckResult -Category "程式設定" -Check "設定檔" -Status "PASS" -Message ("已載入：{0}" -f $script:EffectiveConfigPath) -Details "" | Out-Null
+        Add-CheckResult -Category "程式設定" -Check "設定檔" -Status "PASS" -Message ("已載入：{0}" -f $script:EffectiveConfigPath) -Details "" -Tag "config-file" | Out-Null
     }
 
     foreach ($startupMessage in @($script:StartupMessages)) {
-        Add-CheckResult -Category "程式環境" -Check "啟動提示" -Status "WARN" -Message $startupMessage -Details "" | Out-Null
+        Add-CheckResult -Category "程式環境" -Check "啟動提示" -Status "WARN" -Message $startupMessage -Details "" -Tag "startup" | Out-Null
     }
 
     Invoke-CheckStep -Category "程式設定" -Name "驗證設定值" -Progress 4 -Action {
@@ -2653,23 +3356,23 @@ function Run-AllChecks {
     } | Out-Null
 
     if (-not (Test-IsWindowsPlatform)) {
-        Add-CheckResult -Category "程式環境" -Check "作業系統" -Status "FAIL" -Message "此版本只支援 Windows 10/11 或相容 Windows Server。" -Details ([System.Environment]::OSVersion.VersionString) | Out-Null
+        Add-CheckResult -Category "程式環境" -Check "作業系統" -Status "FAIL" -Message "此版本只支援 Windows 10/11 或相容 Windows Server。" -Details ([System.Environment]::OSVersion.VersionString) -Tag "environment" | Out-Null
         $script:RunFinishedAt = Get-Date
         return (Complete-ReportStage -SaveResult (Save-Reports))
     }
 
     if ($PSVersionTable.PSVersion.Major -lt 5) {
-        Add-CheckResult -Category "程式環境" -Check "PowerShell 版本" -Status "FAIL" -Message "需要 PowerShell 5.1 或更新版本。" -Details ("目前版本：{0}" -f $PSVersionTable.PSVersion) | Out-Null
+        Add-CheckResult -Category "程式環境" -Check "PowerShell 版本" -Status "FAIL" -Message "需要 PowerShell 5.1 或更新版本。" -Details ("目前版本：{0}" -f $PSVersionTable.PSVersion) -Tag "environment" | Out-Null
         $script:RunFinishedAt = Get-Date
         return (Complete-ReportStage -SaveResult (Save-Reports))
     }
     else {
-        Add-CheckResult -Category "程式環境" -Check "PowerShell 版本" -Status "PASS" -Message ("目前版本：{0}" -f $PSVersionTable.PSVersion) -Details "" | Out-Null
+        Add-CheckResult -Category "程式環境" -Check "PowerShell 版本" -Status "PASS" -Message ("目前版本：{0}" -f $PSVersionTable.PSVersion) -Details "" -Tag "environment" | Out-Null
     }
 
     Invoke-CheckStep -Category "系統資訊" -Name "取得電腦與作業系統資訊" -Progress 7 -Action {
         $summary = Get-SystemSummary
-        Add-CheckResult -Category "系統資訊" -Check "電腦" -Status "INFO" -Message ("{0}，使用者 {1}。" -f $summary.ComputerName, $summary.UserName) -Details ("作業系統：{0} ({1})`r`nPowerShell：{2}" -f $summary.OperatingSystem, $summary.OperatingVersion, $summary.PowerShellVersion) | Out-Null
+        Add-CheckResult -Category "系統資訊" -Check "電腦" -Status "INFO" -Message ("{0}，使用者 {1}。" -f $summary.ComputerName, $summary.UserName) -Details ("作業系統：{0} ({1})`r`nPowerShell：{2}" -f $summary.OperatingSystem, $summary.OperatingVersion, $summary.PowerShellVersion) -Tag "system" | Out-Null
     } | Out-Null
 
     $tcpBaseline = Invoke-CheckStep -Category "TCP 重傳" -Name "取得 TCP 重傳基準值" -Progress 10 -Action {
@@ -2717,6 +3420,15 @@ function Run-AllChecks {
         Test-ConnectivityTargets
     } | Out-Null
 
+    Invoke-CheckStep -Category "IT 診斷資料" -Name "收集 IT 診斷資料（Wi-Fi、路由、閘道鄰居、Proxy、traceroute、驅動程式）" -Progress 74 -Action {
+        Add-WifiRfResult
+        Add-RouteTableResult
+        Add-GatewayNeighborResult -PrimaryAdapters $script:PrimaryAdapters
+        Add-ProxySettingsResult
+        Add-TracerouteResult
+        Add-DriverInfoResult -Adapters $networkSnapshot
+    } | Out-Null
+
     $minimumSampleSeconds = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.RetransmissionSampleSeconds 8))
     Wait-ForMinimumTcpSample -StartTime $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
 
@@ -2726,7 +3438,7 @@ function Run-AllChecks {
 
     Invoke-CheckStep -Category "網卡錯誤計數" -Name "分析網卡錯誤與丟棄" -Progress 85 -Action {
         if ($null -eq $adapterStatsBefore -or $null -eq $adapterStatsAfter) {
-            Add-CheckResult -Category "網卡錯誤計數" -Check "前後比較" -Status "ERROR" -Message "缺少基準值或結束值，無法計算錯誤增量。" -Details "" | Out-Null
+            Add-CheckResult -Category "網卡錯誤計數" -Check "前後比較" -Status "ERROR" -Message "缺少基準值或結束值，無法計算錯誤增量。" -Details "" -Tag "adapter-errors" | Out-Null
         }
         else {
             Compare-AdapterStatistics -Before $adapterStatsBefore -After $adapterStatsAfter -Adapters $networkSnapshot
@@ -2816,6 +3528,50 @@ function Start-ConsoleMode {
 # -----------------------------------------------------------------------------
 # 使用者介面：Windows Forms 圖形介面；無法載入時由外層切換至文字模式。
 # -----------------------------------------------------------------------------
+function Set-OptionsPanelValues {
+    $controls = $script:OptionsPanel
+    $options = $script:RunOptions
+    if ($null -eq $controls -or $null -eq $options) {
+        return
+    }
+
+    $controls["PingTarget"].Text = (@($options.ExtraTargets.Ping) -join ", ")
+    $controls["DnsName"].Text = (@($options.ExtraTargets.Dns) -join ", ")
+    $controls["TcpTarget"].Text = (@($options.ExtraTargets.Tcp) -join ", ")
+    $controls["HttpUrl"].Text = (@($options.ExtraTargets.Http) -join ", ")
+    $controls["PingCount"].Value = [math]::Min(20, [math]::Max(1, $options.PingCount))
+    $controls["SampleSeconds"].Value = [math]::Min(120, [math]::Max(1, $options.SampleSeconds))
+    $controls["TracerouteHops"].Value = [math]::Min(10, [math]::Max(1, $options.TracerouteHops))
+    $controls["WifiRf"].Checked = [bool]$options.ChecksEnabled.WifiRf
+    $controls["ItData"].Checked = ([bool]$options.ChecksEnabled.RouteTable -or [bool]$options.ChecksEnabled.GatewayNeighbor -or [bool]$options.ChecksEnabled.ProxySettings -or [bool]$options.ChecksEnabled.DriverInfo)
+    $controls["Traceroute"].Checked = [bool]$options.ChecksEnabled.Traceroute
+    $controls["ExpandDetails"].Checked = [bool]$options.ExpandDetails
+}
+
+function Get-RunOptionsFromPanel {
+    $controls = $script:OptionsPanel
+    $itData = [bool]$controls["ItData"].Checked
+    return @{
+        EntryPoint     = "IT"
+        ExpandDetails  = [bool]$controls["ExpandDetails"].Checked
+        PingTarget     = @(([string]$controls["PingTarget"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        DnsName        = @(([string]$controls["DnsName"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        TcpTarget      = @(([string]$controls["TcpTarget"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        HttpUrl        = @(([string]$controls["HttpUrl"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        PingCount      = [int]$controls["PingCount"].Value
+        SampleSeconds  = [int]$controls["SampleSeconds"].Value
+        TracerouteHops = [int]$controls["TracerouteHops"].Value
+        Checks         = @{
+            WifiRf          = [bool]$controls["WifiRf"].Checked
+            Traceroute      = [bool]$controls["Traceroute"].Checked
+            RouteTable      = $itData
+            GatewayNeighbor = $itData
+            ProxySettings   = $itData
+            DriverInfo      = $itData
+        }
+    }
+}
+
 function Initialize-Gui {
     try {
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
@@ -2832,9 +3588,12 @@ function Initialize-Gui {
     try {
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "網路健檢工具 $($script:ToolVersion)"
+    if ($script:Interactive) { $form.Text += "（IT）" }
     $form.StartPosition = "CenterScreen"
-    $form.Size = New-Object System.Drawing.Size(940, 700)
-    $form.MinimumSize = New-Object System.Drawing.Size(780, 560)
+    $offset = 0
+    if ($script:Interactive) { $offset = 160 }
+    $form.Size = New-Object System.Drawing.Size(940, 700 + $offset)
+    $form.MinimumSize = New-Object System.Drawing.Size(780, 560 + $offset)
     $form.MaximizeBox = $true
     $form.FormBorderStyle = "Sizable"
 
@@ -2858,24 +3617,106 @@ function Initialize-Gui {
     $subtitle.Location = New-Object System.Drawing.Point(22, 54)
     $form.Controls.Add($subtitle)
 
+    $script:OptionsPanel = $null
+    if ($script:Interactive) {
+        $panel = New-Object System.Windows.Forms.GroupBox
+        $panel.Text = "執行選項（IT）"
+        $panel.Location = New-Object System.Drawing.Point(22, 84)
+        $panel.Size = New-Object System.Drawing.Size(880, 150)
+        $panel.Anchor = "Top,Left,Right"
+        $form.Controls.Add($panel)
+
+        $controls = @{}
+        foreach ($item in @(
+            @{ Text = "額外 Ping"; X = 12; Y = 26 },
+            @{ Text = "額外 DNS"; X = 320; Y = 26 },
+            @{ Text = "Ping 次數"; X = 630; Y = 26 },
+            @{ Text = "額外 TCP（host:port）"; X = 12; Y = 58 },
+            @{ Text = "額外 URL"; X = 320; Y = 58 },
+            @{ Text = "取樣秒數"; X = 630; Y = 58 }
+        )) {
+            $label = New-Object System.Windows.Forms.Label
+            $label.Text = $item.Text
+            $label.Location = New-Object System.Drawing.Point($item.X, $item.Y)
+            $label.Size = New-Object System.Drawing.Size(100, 22)
+            $panel.Controls.Add($label)
+        }
+        foreach ($item in @(@{ Key = "PingTarget"; X = 115; Y = 23 }, @{ Key = "DnsName"; X = 423; Y = 23 }, @{ Key = "TcpTarget"; X = 115; Y = 55 }, @{ Key = "HttpUrl"; X = 423; Y = 55 })) {
+            $box = New-Object System.Windows.Forms.TextBox
+            $box.Location = New-Object System.Drawing.Point($item.X, $item.Y)
+            $box.Size = New-Object System.Drawing.Size(195, 24)
+            $panel.Controls.Add($box)
+            $controls[$item.Key] = $box
+        }
+        foreach ($item in @(@{ Key = "PingCount"; X = 735; Y = 23; Min = 1; Max = 20 }, @{ Key = "SampleSeconds"; X = 735; Y = 55; Min = 1; Max = 120 })) {
+            $spinner = New-Object System.Windows.Forms.NumericUpDown
+            $spinner.Location = New-Object System.Drawing.Point($item.X, $item.Y)
+            $spinner.Size = New-Object System.Drawing.Size(70, 24)
+            $spinner.Minimum = $item.Min
+            $spinner.Maximum = $item.Max
+            $panel.Controls.Add($spinner)
+            $controls[$item.Key] = $spinner
+        }
+        $x = 12
+        foreach ($item in @(@{ Key = "WifiRf"; Text = "Wi-Fi 無線"; Width = 110 }, @{ Key = "ItData"; Text = "路由／ARP／Proxy／驅動"; Width = 250 }, @{ Key = "Traceroute"; Text = "Traceroute"; Width = 110 })) {
+            $check = New-Object System.Windows.Forms.CheckBox
+            $check.Text = $item.Text
+            $check.Location = New-Object System.Drawing.Point($x, 90)
+            $check.Size = New-Object System.Drawing.Size($item.Width, 24)
+            $panel.Controls.Add($check)
+            $controls[$item.Key] = $check
+            $x += $item.Width + 6
+        }
+        $hopsLabel = New-Object System.Windows.Forms.Label
+        $hopsLabel.Text = "Traceroute 跳數"
+        $hopsLabel.Location = New-Object System.Drawing.Point($x, 92)
+        $hopsLabel.Size = New-Object System.Drawing.Size(115, 22)
+        $panel.Controls.Add($hopsLabel)
+        $hops = New-Object System.Windows.Forms.NumericUpDown
+        $hops.Location = New-Object System.Drawing.Point(($x + 118), 89)
+        $hops.Size = New-Object System.Drawing.Size(55, 24)
+        $hops.Minimum = 1
+        $hops.Maximum = 10
+        $panel.Controls.Add($hops)
+        $controls["TracerouteHops"] = $hops
+        $expand = New-Object System.Windows.Forms.CheckBox
+        $expand.Text = "HTML 預設展開細節"
+        $expand.Location = New-Object System.Drawing.Point(($x + 185), 90)
+        $expand.Size = New-Object System.Drawing.Size(220, 24)
+        $panel.Controls.Add($expand)
+        $controls["ExpandDetails"] = $expand
+        $resetButton = New-Object System.Windows.Forms.Button
+        $resetButton.Text = "還原設定檔"
+        $resetButton.Location = New-Object System.Drawing.Point(12, 118)
+        $resetButton.Size = New-Object System.Drawing.Size(140, 26)
+        $panel.Controls.Add($resetButton)
+        $script:OptionsPanel = $controls
+        Set-OptionsPanelValues
+        $resetButton.Add_Click({
+            Set-RunOptions -Overrides @{ EntryPoint = "IT"; ExpandDetails = $true } | Out-Null
+            Set-OptionsPanelValues
+        })
+    }
+
     $overall = New-Object System.Windows.Forms.Label
     $overall.Text = "結果：尚未開始"
     $overall.Font = New-Object System.Drawing.Font($form.Font.FontFamily, 11, [System.Drawing.FontStyle]::Bold)
     $overall.AutoSize = $false
-    $overall.Location = New-Object System.Drawing.Point(22, 84)
+    $overall.Location = New-Object System.Drawing.Point(22, 84 + $offset)
     $overall.Size = New-Object System.Drawing.Size(880, 28)
     $overall.Anchor = "Top,Left,Right"
     $form.Controls.Add($overall)
 
     $progressLabel = New-Object System.Windows.Forms.Label
     $progressLabel.Text = "準備中"
-    $progressLabel.Location = New-Object System.Drawing.Point(22, 119)
+    if ($script:Interactive) { $progressLabel.Text = "就緒，調整選項後按「開始檢測」" }
+    $progressLabel.Location = New-Object System.Drawing.Point(22, 119 + $offset)
     $progressLabel.Size = New-Object System.Drawing.Size(880, 22)
     $progressLabel.Anchor = "Top,Left,Right"
     $form.Controls.Add($progressLabel)
 
     $progress = New-Object System.Windows.Forms.ProgressBar
-    $progress.Location = New-Object System.Drawing.Point(22, 143)
+    $progress.Location = New-Object System.Drawing.Point(22, 143 + $offset)
     $progress.Size = New-Object System.Drawing.Size(880, 22)
     $progress.Minimum = 0
     $progress.Maximum = 100
@@ -2884,7 +3725,7 @@ function Initialize-Gui {
     $form.Controls.Add($progress)
 
     $log = New-Object System.Windows.Forms.RichTextBox
-    $log.Location = New-Object System.Drawing.Point(22, 178)
+    $log.Location = New-Object System.Drawing.Point(22, 178 + $offset)
     $log.Size = New-Object System.Drawing.Size(880, 390)
     $log.Anchor = "Top,Bottom,Left,Right"
     $log.ReadOnly = $true
@@ -2895,14 +3736,14 @@ function Initialize-Gui {
 
     $startButton = New-Object System.Windows.Forms.Button
     $startButton.Text = "開始檢測"
-    $startButton.Location = New-Object System.Drawing.Point(22, 584)
+    $startButton.Location = New-Object System.Drawing.Point(22, 584 + $offset)
     $startButton.Size = New-Object System.Drawing.Size(120, 34)
     $startButton.Anchor = "Bottom,Left"
     $form.Controls.Add($startButton)
 
     $openReportButton = New-Object System.Windows.Forms.Button
     $openReportButton.Text = "開啟報告"
-    $openReportButton.Location = New-Object System.Drawing.Point(152, 584)
+    $openReportButton.Location = New-Object System.Drawing.Point(152, 584 + $offset)
     $openReportButton.Size = New-Object System.Drawing.Size(120, 34)
     $openReportButton.Anchor = "Bottom,Left"
     $openReportButton.Enabled = $false
@@ -2910,22 +3751,30 @@ function Initialize-Gui {
 
     $openFolderButton = New-Object System.Windows.Forms.Button
     $openFolderButton.Text = "開啟報告資料夾"
-    $openFolderButton.Location = New-Object System.Drawing.Point(282, 584)
+    $openFolderButton.Location = New-Object System.Drawing.Point(282, 584 + $offset)
     $openFolderButton.Size = New-Object System.Drawing.Size(150, 34)
     $openFolderButton.Anchor = "Bottom,Left"
     $openFolderButton.Enabled = $false
     $form.Controls.Add($openFolderButton)
 
+    $openJsonButton = New-Object System.Windows.Forms.Button
+    $openJsonButton.Text = "開啟 JSON"
+    $openJsonButton.Location = New-Object System.Drawing.Point(442, 584 + $offset)
+    $openJsonButton.Size = New-Object System.Drawing.Size(110, 34)
+    $openJsonButton.Anchor = "Bottom,Left"
+    $openJsonButton.Enabled = $false
+    $form.Controls.Add($openJsonButton)
+
     $closeButton = New-Object System.Windows.Forms.Button
     $closeButton.Text = "關閉"
-    $closeButton.Location = New-Object System.Drawing.Point(782, 584)
+    $closeButton.Location = New-Object System.Drawing.Point(782, 584 + $offset)
     $closeButton.Size = New-Object System.Drawing.Size(120, 34)
     $closeButton.Anchor = "Bottom,Right"
     $form.Controls.Add($closeButton)
 
     $reportPathLabel = New-Object System.Windows.Forms.Label
     $reportPathLabel.Text = "報告尚未產生"
-    $reportPathLabel.Location = New-Object System.Drawing.Point(22, 628)
+    $reportPathLabel.Location = New-Object System.Drawing.Point(22, 628 + $offset)
     $reportPathLabel.Size = New-Object System.Drawing.Size(880, 24)
     $reportPathLabel.Anchor = "Bottom,Left,Right"
     $reportPathLabel.AutoEllipsis = $true
@@ -2939,10 +3788,14 @@ function Initialize-Gui {
     $script:StartButton = $startButton
     $script:OpenReportButton = $openReportButton
     $script:OpenFolderButton = $openFolderButton
+    $script:OpenJsonButton = $openJsonButton
     $script:ReportPathLabel = $reportPathLabel
 
     $startButton.Add_Click({
         try {
+            if ($script:Interactive -and $null -ne $script:OptionsPanel) {
+                Set-RunOptions -Overrides (Get-RunOptionsFromPanel) | Out-Null
+            }
             [void](Run-AllChecks)
         }
         catch {
@@ -2996,6 +3849,20 @@ function Initialize-Gui {
         }
     })
 
+    $openJsonButton.Add_Click({
+        try {
+            if ($null -ne $script:LastJsonReport -and (Test-Path -LiteralPath $script:LastJsonReport)) {
+                Start-Process -FilePath "notepad.exe" -ArgumentList ('"{0}"' -f $script:LastJsonReport) -ErrorAction Stop
+            }
+            else {
+                throw "找不到 JSON 報告。"
+            }
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show(("無法開啟 JSON 報告：{0}" -f $_.Exception.Message), "開啟 JSON 失敗", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        }
+    })
+
     $closeButton.Add_Click({
         if (-not $script:IsRunning) {
             $form.Close()
@@ -3010,6 +3877,7 @@ function Initialize-Gui {
     })
 
     $form.Add_Shown({
+        if ($script:Interactive) { return }
         $timer = New-Object System.Windows.Forms.Timer
         $timer.Interval = 600
         $timer.Add_Tick({
@@ -3034,7 +3902,16 @@ function Initialize-Gui {
 $exitCode = 0
 
 try {
-    $script:Config = Load-Configuration -RequestedPath $ConfigPath
+    $script:Interactive = [bool]$Interactive
+    $script:BaseConfig = Load-Configuration -RequestedPath $ConfigPath
+    $entryPoint = "User"
+    if ($Interactive -or $ExpandDetails) { $entryPoint = "IT" }
+    Set-RunOptions -Overrides @{
+        EntryPoint = $entryPoint; ExpandDetails = [bool]$ExpandDetails
+        PingTarget = @($PingTarget); DnsName = @($DnsName); TcpTarget = @($TcpTarget); HttpUrl = @($HttpUrl)
+        SampleSeconds = $SampleSeconds; PingCount = $PingCount; TracerouteHops = $TracerouteHops
+        NoTraceroute = [bool]$NoTraceroute; NoWifi = [bool]$NoWifi
+    } | Out-Null
     Initialize-OutputDirectory
 
     if ($ConsoleOnly) {

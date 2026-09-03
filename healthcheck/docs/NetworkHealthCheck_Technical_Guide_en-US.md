@@ -1,8 +1,8 @@
-﻿# NetworkHealthCheck Portable 1.1.5: Features, Design, Validation, and Limitations
+﻿# NetworkHealthCheck Portable 1.2.0: Features, Design, Validation, and Limitations
 
 ## 1. Purpose
 
-This document describes the features, architecture, decision rules, error handling, validation approach, known limitations, and source-comment strategy of the portable `NetworkHealthCheck` tool. It applies to version **1.1.5** and to both the Traditional Chinese and English packages. The executable logic is the same; user-visible text, default test names, and comment language are localized separately.
+This document describes the features, architecture, decision rules, error handling, validation approach, known limitations, and source-comment strategy of the portable `NetworkHealthCheck` tool. It applies to version **1.2.0** and to both the Traditional Chinese and English packages. The executable logic is the same; user-visible text, default test names, and comment language are localized separately.
 
 ## 2. Product scope
 
@@ -16,6 +16,7 @@ The tool is read-only with respect to system configuration. It does not change I
 |---|---|
 | `Start-NetworkCheck.cmd` | GUI launcher. Displays startup failures and attempts to write `LauncherError.txt`. |
 | `Start-NetworkCheck-Console.cmd` | Console fallback when Windows Forms cannot be used. |
+| `Start-NetworkCheck-IT.cmd` | IT entry (1.2): run-options panel, no auto-run, HTML opens with the IT diagnostics expanded. Same switches work in console mode. |
 | `NetworkHealthCheck.ps1` | Main diagnostics, decision logic, error handling, and report generation. |
 | `NetworkHealthCheck.config.json` | Company IP standards, targets, timeouts, and thresholds. |
 | `README_*.txt` | Quick-start and configuration instructions. |
@@ -135,6 +136,25 @@ FAIL > ERROR > WARN > PASS
 
 Any `FAIL` produces Problem Detected. With no failure but at least one unexecuted check, the result is Test Incomplete. Warnings are next, and only then Overall Healthy.
 
+### 4.10 Adapter classification, IT diagnostics, and the fingerprint (1.2)
+
+Every adapter is classified as physical or virtual: the NetAdapter `Virtual` / `HardwareInterface` flags win, the CIM fallback uses `Win32_NetworkAdapter.PhysicalAdapter`, and without flags a description pattern (VirtualBox, Hyper-V, VMware, TAP, tunnel, loopback, WAN Miniport, WireGuard, ZeroTier, Tailscale, Docker, VPN, ISATAP, Teredo) decides. Virtual adapters are `INFO` rows and never trigger the APIPA or no-IPv4 rules; the "Usable Network Adapters" row reports physical and virtual counts and becomes `WARN` when only virtual adapters carry a gateway (VPN or virtualization) and `FAIL` when no physical adapter is connected. Error-counter rows for adapters with no traffic during the sample, or for virtual adapters, are `INFO` — counters only testify when traffic flows. Primary-adapter selection for the company-standard comparison is unchanged.
+
+IT diagnostics run on every run (each can be disabled under `Checks` in the configuration or with `-NoWifi` / `-NoTraceroute`), are `INFO` only, carry `Scope = "IT"`, and appear in the collapsed IT section of the HTML report:
+
+| Check | Source | Notes |
+|---|---|---|
+| Wi-Fi radio | `netsh wlan show interfaces`, parsed by value shape (MAC, GHz, 802.11x, percentage, numbers) because labels are localized and their order differs between Windows 10 and 11 | SSID, BSSID, band (inferred from the channel when the build prints none), channel, rates, signal %, RSSI (real when netsh prints it, otherwise estimated from the percentage) |
+| IPv4 default routes | `Get-NetRoute -DestinationPrefix 0.0.0.0/0` | more than one route on different interfaces is called out in the details |
+| Gateway neighbor (ARP) | `Get-NetNeighbor` (fallback `arp -a`) | a missing or incomplete MAC is noted; the gateway ping stays the authoritative test |
+| Proxy settings | HKCU Internet Settings, `WebRequest.GetSystemWebProxy`, `netsh winhttp show proxy` | explains "TCP to 443 passes but HTTPS fails" |
+| Traceroute (first hops) | .NET `Ping` with TTL 1..N (default 3, maximum 10), 1000 ms per hop | target is the first non-AUTO ping target |
+| Adapter drivers | NetAdapter `DriverVersion` / `DriverDate` / `DriverProvider` | physical adapters only |
+
+Every result now carries a language-neutral `Tag` (for example `ping-gateway`, `dns`, `connectivity-group`, `tcp-retransmissions`, `wifi`) and a `Scope` (`Main` or `IT`). A fingerprint is computed from the tags — `local`, `gateway-unreachable`, `gateway-up-internet-dead`, `dns`, `quality`, `mixed`, `incomplete`, `healthy` — and drives the "What to tell IT" section at the top of the HTML and text reports; the JSON report stores it under `Fingerprint`.
+
+Run options come from the entry point: `Start-NetworkCheck-IT.cmd` passes `-Interactive -ExpandDetails`; the switches `-PingTarget`, `-DnsName`, `-TcpTarget` (host:port), `-HttpUrl`, `-PingCount`, `-SampleSeconds`, `-TracerouteHops`, `-NoTraceroute`, `-NoWifi` add or tune this run only and are recorded in the report's run profile line and in the JSON `RunOptions` object (`EntryPoint`, `ExtraTargets`, `PingCount`, `SampleSeconds`, `TracerouteHops`, `ChecksEnabled`). The configuration file is never written. JSON `SchemaVersion` is 2.
+
 ## 5. Error-handling design
 
 - Every major step is wrapped by `Invoke-CheckStep`; exceptions become `ERROR` results and later checks continue.
@@ -146,7 +166,7 @@ Any `FAIL` produces Problem Detected. With no failure but at least one unexecute
 
 ## 6. Source design and comments
 
-The program consists of 61 named functions grouped into helpers, configuration, system discovery, policy comparison, active tests, counters, reporting, orchestration, and GUI.
+The program consists of 76 named functions grouped into helpers, configuration, system discovery, policy comparison, active tests, counters, reporting, orchestration, and GUI.
 
 Version 1.1.0 adds:
 
@@ -168,7 +188,7 @@ The build performed checks that do not require a Windows network environment:
 3. PowerShell/JSON use UTF-8 BOM and Windows scripts use CRLF.
 4. English PowerShell, configuration, and README contain no Chinese user-facing text.
 5. After removing strings and comments, the English and Chinese PowerShell executable skeletons are identical.
-6. Both sources expose the same 61-function set.
+6. Both sources expose the same 76-function set.
 7. Launchers reference `NetworkHealthCheck.ps1` correctly.
 8. Every SHA-256 entry is recalculated and compared.
 9. ZIP integrity tests report no damaged members.
@@ -177,7 +197,7 @@ The validator is `tools/validate_release.py`; run it against the package root to
 
 ### 7.2 Validation status on Windows
 
-The original 1.1.0 package was produced in a non-Windows build environment, so Windows Forms, NetTCPIP, NetAdapter, CIM/WMI performance counters, and real network operations could not be executed at packaging time. Since then, versions 1.1.1–1.1.3 (2026-07-28/30) have completed full Windows validation on Windows 11 with Windows PowerShell 5.1: real-machine acceptance runs of both language versions, an independent code review, and five author-executed fault-injection scenarios. The current record is maintained in `../VALIDATION.md`. Version 1.1.4 (2026-09-03) closes backlog items #4, #5, #6, and #11 (threshold parsing, CIM-fallback gateway/DHCP semantics, dead stores, stack traces kept out of HTML/TXT) and was re-validated with the same chain: parser, validator, helper unit tests, acceptance runs of both languages, and a fault-injection configuration. Version 1.1.5 (2026-09-03) closes backlog items #2 and #3 (single emergency report; partial report-write failures keep the successful formats usable) and was validated with the same chain plus report-stage functional tests that stub the file writer. Static validation still does not replace Windows acceptance testing — the two complement each other.
+The original 1.1.0 package was produced in a non-Windows build environment, so Windows Forms, NetTCPIP, NetAdapter, CIM/WMI performance counters, and real network operations could not be executed at packaging time. Since then, versions 1.1.1–1.1.3 (2026-07-28/30) have completed full Windows validation on Windows 11 with Windows PowerShell 5.1: real-machine acceptance runs of both language versions, an independent code review, and five author-executed fault-injection scenarios. The current record is maintained in `../VALIDATION.md`. Version 1.1.4 (2026-09-03) closes backlog items #4, #5, #6, and #11 (threshold parsing, CIM-fallback gateway/DHCP semantics, dead stores, stack traces kept out of HTML/TXT) and was re-validated with the same chain: parser, validator, helper unit tests, acceptance runs of both languages, and a fault-injection configuration. Version 1.1.5 (2026-09-03) closes backlog items #2 and #3 (single emergency report; partial report-write failures keep the successful formats usable) and was validated with the same chain plus report-stage functional tests that stub the file writer. Version 1.2.0 (2026-09-03) implements Phase A of the v1.2 design (`docs/design-v1.2-triage-wizard.md` in the repository): adapter classification, IT diagnostics, the fingerprint and "What to tell IT" section, JSON schema 2, and the IT entry point. It was validated with the same chain plus the extended unit tests (Wi-Fi parser on Windows 10 / 11 / localized samples, classification) and functional tests of the run options and fingerprint. Static validation still does not replace Windows acceptance testing — the two complement each other.
 
 ### 7.3 Recommended Windows acceptance matrix
 
@@ -212,6 +232,10 @@ Acceptance should cross-check reports against `Get-NetIPConfiguration`, `Get-Net
 10. **Policy and endpoint security can block data.** AppLocker, WDAC, EDR, WMI policy, or damaged performance counters produce `ERROR`, not proof of a network defect.
 11. **Reports contain sensitive data.** Computer/user names, MAC/IP/DNS, internal services, and exception stacks (JSON report only, with local script paths) may be present.
 12. **No automatic repair.** Diagnosis is intentionally separated from configuration changes.
+
+12. **Wi-Fi data is client-side and text-parsed.** `netsh` output is parsed by value shape; an unusual build may leave a field empty, and the RSSI is estimated when the build does not print it. The access point's client table is the stronger evidence.
+13. **Adapter classification without NetAdapter flags is heuristic** (description patterns).
+14. **Traceroute is bounded** to 10 hops and 1 s per hop; silent hops show as `*`, and the default 3 hops rarely reach a public target — the goal is to see where packets stop, not to reach it.
 
 ## 9. Release and maintenance guidance
 
