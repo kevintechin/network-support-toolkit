@@ -155,7 +155,7 @@ IT 範圍的項目不影響整體結果與摘要計數：`Get-OverallStatus` 與
 
 每筆結果現在帶有語言中立的 `Tag`（例如 `ping-gateway`、`dns`、`connectivity-group`、`tcp-retransmissions`、`wifi`）與 `Scope`（`Main` 或 `IT`）。指紋由標籤計算：`local`、`gateway-unreachable`、`gateway-up-internet-dead`、`dns`（只在沒有任何 DNS 檢查通過時）、`quality`（遺失、延遲、重傳或網卡錯誤的警告或異常，且沒有其他項目失敗）、`attention`（其他只有警告的執行）、`mixed`、`incomplete`、`healthy`，驅動 HTML 與文字報告頂端的「要告訴 IT 的話」，JSON 存在 `Fingerprint`。
 
-執行選項由入口決定：`Start-NetworkCheck-IT.cmd` 帶 `-Interactive -ExpandDetails`；`-PingTarget`、`-DnsName`、`-TcpTarget`（host:port）、`-HttpUrl`、`-PingCount`、`-SampleSeconds`、`-TracerouteHops`、`-NoTraceroute`、`-NoWifi` 只影響本次執行（多個值以逗號分隔，例如 `-PingTarget 10.0.0.1,10.0.0.2`），並記錄在報告的執行設定行與 JSON 的 `RunOptions`（`EntryPoint`、`ExtraTargets`、`PingCount`、`SampleSeconds`、`TracerouteHops`、`ChecksEnabled`）。設定檔永遠不會被寫入。JSON 的 `SchemaVersion` 為 2。
+執行選項由入口決定：`Start-NetworkCheck-IT.cmd` 帶 `-Interactive -ExpandDetails`；`-PingTarget`、`-DnsName`、`-TcpTarget`（host:port）、`-HttpUrl`、`-PingCount`、`-SampleSeconds`、`-TracerouteHops`、`-NoTraceroute`、`-NoWifi` 只影響本次執行（多個值以逗號分隔，例如 `-PingTarget 10.0.0.1,10.0.0.2`），並記錄在報告的執行設定行與 JSON 的 `RunOptions`（`EntryPoint`、`ExtraTargets` 為通過驗證的值、`RawTargets` 為原始輸入、`PingCount`、`SampleSeconds`、`TracerouteHops`、`ChecksEnabled`）。設定檔永遠不會被寫入。JSON 的 `SchemaVersion` 為 2。
 
 ## 5. 錯誤處理設計
 

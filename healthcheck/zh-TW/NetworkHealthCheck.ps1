@@ -626,19 +626,23 @@ function Set-RunOptions {
     $script:RunOptionMessages = New-Object System.Collections.ArrayList
     $config = ($script:BaseConfig | ConvertTo-Json -Depth 10) | ConvertFrom-Json
     $extra = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
+    $raw = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
 
     foreach ($value in @(@($Overrides["PingTarget"]) | ForEach-Object { ([string]$_) -split '[,;]' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
+        $raw.Ping += [string]$value
         $config.Tests.PingTargets = @($config.Tests.PingTargets) + [pscustomobject][ordered]@{ Name = "額外 Ping"; Address = [string]$value; Required = $false }
         $extra.Ping += [string]$value
     }
     foreach ($value in @(@($Overrides["DnsName"]) | ForEach-Object { ([string]$_) -split '[,;]' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
+        $raw.Dns += [string]$value
         $config.Tests.DnsNames = @($config.Tests.DnsNames) + [pscustomobject][ordered]@{ Name = "額外 DNS"; Host = [string]$value; Required = $false }
         $extra.Dns += [string]$value
     }
     foreach ($value in @(@($Overrides["TcpTarget"]) | ForEach-Object { ([string]$_) -split '[,;]' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
+        $raw.Tcp += [string]$value
         $parts = ([string]$value).Split(':')
         $port = 0
         if ($parts.Count -eq 2) { $port = ConvertTo-IntSafe $parts[1] 0 }
@@ -651,6 +655,7 @@ function Set-RunOptions {
     }
     foreach ($value in @(@($Overrides["HttpUrl"]) | ForEach-Object { ([string]$_) -split '[,;]' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
+        $raw.Http += [string]$value
         $config.Tests.HttpTargets = @($config.Tests.HttpTargets) + [pscustomobject][ordered]@{ Name = "額外 URL"; Url = [string]$value; Required = $false; Group = "" }
         $extra.Http += [string]$value
     }
@@ -678,6 +683,7 @@ function Set-RunOptions {
         EntryPoint     = $entryPoint
         ExpandDetails  = ($Overrides["ExpandDetails"] -eq $true)
         ExtraTargets   = [pscustomobject]$extra
+        RawTargets     = [pscustomobject]$raw
         PingCount      = [math]::Max(1, (ConvertTo-IntSafe $config.Tests.PingCount 4))
         SampleSeconds  = [math]::Max(1, (ConvertTo-IntSafe $config.Tests.RetransmissionSampleSeconds 8))
         TracerouteHops = $hops
@@ -3552,10 +3558,10 @@ function Set-OptionsPanelValues {
         return
     }
 
-    $controls["PingTarget"].Text = (@($options.ExtraTargets.Ping) -join ", ")
-    $controls["DnsName"].Text = (@($options.ExtraTargets.Dns) -join ", ")
-    $controls["TcpTarget"].Text = (@($options.ExtraTargets.Tcp) -join ", ")
-    $controls["HttpUrl"].Text = (@($options.ExtraTargets.Http) -join ", ")
+    $controls["PingTarget"].Text = (@($options.RawTargets.Ping) -join ", ")
+    $controls["DnsName"].Text = (@($options.RawTargets.Dns) -join ", ")
+    $controls["TcpTarget"].Text = (@($options.RawTargets.Tcp) -join ", ")
+    $controls["HttpUrl"].Text = (@($options.RawTargets.Http) -join ", ")
     $controls["PingCount"].Value = [math]::Min(20, [math]::Max(1, $options.PingCount))
     $controls["SampleSeconds"].Value = [math]::Min(120, [math]::Max(1, $options.SampleSeconds))
     $controls["TracerouteHops"].Value = [math]::Min(10, [math]::Max(1, $options.TracerouteHops))
@@ -3614,7 +3620,7 @@ function Initialize-Gui {
     $formHeight = 700 + $offset
     try {
         $workingHeight = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height
-        if ($formHeight -gt $workingHeight - 40) { $formHeight = [math]::Max(600, $workingHeight - 40) }
+        if ($formHeight -gt $workingHeight - 40) { $formHeight = [math]::Max(400, $workingHeight - 40) }
     }
     catch {
         $formHeight = 700 + $offset
@@ -3764,7 +3770,13 @@ function Initialize-Gui {
 
     $log = New-Object System.Windows.Forms.RichTextBox
     $log.Location = New-Object System.Drawing.Point(22, 178 + $offset)
-    $log.Size = New-Object System.Drawing.Size(880, [math]::Max(120, $bottomY - 16 - (178 + $offset)))
+    $logHeight = $bottomY - 16 - (178 + $offset)
+    if ($logHeight -lt 36) {
+        $logHeight = 36
+        $form.AutoScroll = $true
+        $form.AutoScrollMinSize = New-Object System.Drawing.Size(900, 700 + $offset)
+    }
+    $log.Size = New-Object System.Drawing.Size(880, $logHeight)
     $log.Anchor = "Top,Bottom,Left,Right"
     $log.ReadOnly = $true
     $log.DetectUrls = $false

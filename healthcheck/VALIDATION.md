@@ -50,6 +50,13 @@ Re-validation after round 2: parser 0 errors × 2; validator 62/62; unit tests 8
 
 Re-validation after round 3: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 76 × 2 (new: config warning only → `attention`; optional DNS failure with a passing DNS check → `attention`, not `dns`; invalid TCP target is a per-run notice that disappears when options are reapplied; `-PingTarget 10.0.0.1,10.0.0.2` yields two extra targets; retransmission FAIL alone → `quality`, with another failure → `mixed`); console acceptance en-US user, en-US IT switches (including an invalid `-TcpTarget bad`, reported once as a startup notice) and zh-TW user, exit 0. The form-sizing change was reviewed, not exercised headlessly.
 
+**Independent review — Codex, PR #3, round 4 · 2026-09-03.** Two P2 findings on commit f6d0d4a, both accepted and fixed:
+
+1. *The 600-px floor still overflowed very short working areas* (an 800×600 remote session with a taskbar leaves ~560 px). Fix: the form height is capped strictly at the working area minus 40 px (sanity floor 400 px), the log box may shrink to 36 px, and when even that does not fit the form turns on `AutoScroll` with the designed size as `AutoScrollMinSize`, so every control stays reachable.
+2. *CLI validation notices were lost on the first interactive Start.* `-Interactive -TcpTarget bad` recorded a notice, but the panel was populated from the accepted targets only; Start re-applied the sanitized panel values, reset the per-run notices, and the warning vanished. Fix: `RunOptions` now also carries `RawTargets` (the values as entered) and the panel is populated from them, so the invalid value stays visible and is re-validated — and re-reported — on every run until the IT user removes it.
+
+Re-validation after round 4: parser 0 errors × 2; validator 62/62; unit tests 89 × 2; report-stage functional tests 78 × 2 (new: raw targets keep the invalid value while the accepted list excludes it); console acceptance en-US user, en-US IT switches and zh-TW user, exit 0. Form sizing and the panel were reviewed, not exercised headlessly.
+
 ## v1.1.5 · 2026-09-03
 
 **Changes** (backlog #2 and #3):
