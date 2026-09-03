@@ -27,12 +27,12 @@ See [healthcheck/docs](healthcheck/docs/) for the technical guide (design, valid
 
 **NetworkHealthCheck** — no installation, no admin rights, no prerequisites beyond stock Windows 10 / 11 (Windows PowerShell 5.1 and .NET Framework 4.x are built into the OS):
 
-1. Download this repository (Code → Download ZIP) and extract it to a local folder
-2. Open `healthcheck/en-US/` (or `healthcheck/zh-TW/` for Traditional Chinese)
+1. Download the latest **NetworkHealthCheck** ZIP from the [Releases page](https://github.com/kevintechin/network-support-toolkit/releases/latest) and extract it to a local folder (Code → Download ZIP also works — the package is then under `healthcheck/`)
+2. Open the `en-US/` folder (or `zh-TW/` for Traditional Chinese)
 3. Double-click **`Start-NetworkCheck.cmd`** — the GUI runs all checks automatically and writes HTML / TXT / JSON reports into a `Reports/` folder next to the script
 4. If the GUI cannot start, **`Start-NetworkCheck-Console.cmd`** runs the same checks in text mode
 
-> If Windows flags the downloaded ZIP: right-click the ZIP → Properties → **Unblock**, then extract. Corporate policies (AppLocker / WDAC) may still block PowerShell — see `healthcheck/README_en-US.txt` for details.
+> If Windows flags the downloaded ZIP: right-click the ZIP → Properties → **Unblock**, then extract. Corporate policies (AppLocker / WDAC) may still block PowerShell — see `en-US/README_en-US.txt` inside the package for details.
 
 ## Design principles
 
