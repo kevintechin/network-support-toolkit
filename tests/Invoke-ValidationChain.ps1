@@ -1,0 +1,325 @@
+<#
+.SYNOPSIS
+    Runs the NetworkHealthCheck validation chain against this checkout (backlog #16).
+
+.DESCRIPTION
+    One command reproduces the chain recorded in healthcheck/VALIDATION.md: the Windows PowerShell 5.1 parser, the static
+    release validator and the self-test of its two PowerShell guards, the helper unit tests, the report-stage functional
+    tests, the headless Initialize-Gui smoke test, the real-window UI Automation run of both entry points, the console
+    acceptance runs and, on request, the release-asset round trip (build, extract, validate inside the package, open the
+    extracted IT entry through the real window).
+
+    Nothing is written into the repository: every run works on a staged copy of healthcheck/<lang>/ under -WorkDir
+    (default %TEMP%\nhc-tests\<timestamp>), where each step's raw output is kept as <step>_<case>.log and the final
+    table as summary.md.
+
+.PARAMETER Steps
+    Steps to run (parse, validator, guards, unit, report, gui-headless, gui, acceptance, package); comma-separated values
+    are accepted, and the steps always execute in the chain's own order. Default: everything except package.
+.PARAMETER Package
+    Adds the package step (the same as listing it in -Steps).
+.PARAMETER SkipGui
+    Drops the real-window runs (the gui step and the window part of package) for a session without an interactive desktop.
+.PARAMETER RequireHealthy
+    Window and acceptance runs must also end Overall Healthy. Use it on the reference machine; on a machine with a real
+    network problem the warning is the tool doing its job, so it is off by default.
+.PARAMETER WorkDir
+    Where staged copies, reports and logs go. Created if missing.
+.PARAMETER Python
+    The Python 3 command for the validator, the guard self-test and the asset builder.
+.PARAMETER GuiTimeoutSeconds
+    How long one real-window run may take; the IT entry samples TCP retransmissions for 125 s before it reports.
+
+.EXAMPLE
+    powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-ValidationChain.ps1
+.EXAMPLE
+    powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-ValidationChain.ps1 -Package -RequireHealthy
+.EXAMPLE
+    powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-ValidationChain.ps1 -Steps parse,validator,guards,unit,report
+#>
+[CmdletBinding()]
+param(
+    [string[]]$Steps = @('parse', 'validator', 'guards', 'unit', 'report', 'gui-headless', 'gui', 'acceptance'),
+    [switch]$Package,
+    [switch]$SkipGui,
+    [switch]$RequireHealthy,
+    [string]$WorkDir,
+    [string]$Python = 'python',
+    [int]$GuiTimeoutSeconds = 360
+)
+
+$ErrorActionPreference = 'Stop'
+$Order = @('parse', 'validator', 'guards', 'unit', 'report', 'gui-headless', 'gui', 'acceptance', 'package')
+$Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+$PackageDir = Join-Path $Root 'healthcheck'
+$Languages = @('en-US', 'zh-TW')
+$PsExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+
+# -File passes "a,b" as one string, so the list is split here and validated by hand.
+$selected = @($Steps | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
+$unknown = @($selected | Where-Object { $Order -notcontains $_ })
+if ($unknown.Count) { throw ('unknown step(s): ' + ($unknown -join ', ') + '; known: ' + ($Order -join ', ')) }
+if ($Package) { $selected += 'package' }
+if ($SkipGui) { $selected = @($selected | Where-Object { $_ -ne 'gui' }) }
+$selected = @($Order | Where-Object { $selected -contains $_ })
+if (-not $selected.Count) { throw 'no step selected' }
+
+if (-not $WorkDir) { $WorkDir = Join-Path $env:TEMP ('nhc-tests\' + (Get-Date -Format 'yyyyMMdd_HHmmss')) }
+New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+$WorkDir = (Resolve-Path -LiteralPath $WorkDir).Path
+$Results = New-Object System.Collections.ArrayList
+$ChainStarted = Get-Date
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+function Invoke-Native {
+    # Runs a native command; returns its merged output lines and exit code, and keeps the raw output as <LogName>.log.
+    param([string]$FilePath, [string[]]$ArgumentList, [string]$LogName)
+    $ErrorActionPreference = 'Continue'   # a native command's stderr must not become a terminating error
+    if ($null -eq $ArgumentList) { $ArgumentList = @() }
+    $lines = @(& $FilePath @ArgumentList 2>&1 | ForEach-Object { if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ } })
+    $code = $LASTEXITCODE
+    $header = @(('> ' + $FilePath + ' ' + ($ArgumentList -join ' ')), ('exit code ' + $code), '')
+    [IO.File]::WriteAllLines((Join-Path $WorkDir ($LogName + '.log')), [string[]]($header + $lines), $Utf8NoBom)
+    return @{ Output = $lines; ExitCode = $code }
+}
+function Invoke-TestScript {
+    # Runs one of the scripts in this folder in a fresh Windows PowerShell 5.1 process.
+    param([string]$Name, [string[]]$ArgumentList, [string]$LogName)
+    Invoke-Native -FilePath $PsExe -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot $Name)) + $ArgumentList) -LogName $LogName
+}
+function Invoke-Case {
+    # Runs one case of a step, records PASS / FAIL with its detail and duration, and prints the line.
+    param([string]$Step, [string]$Case, [scriptblock]$Body)
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try { $r = @(& $Body | Where-Object { $_ -is [hashtable] })[-1] }
+    catch { $r = @{ Passed = $false; Detail = ('exception: ' + $_.Exception.Message) } }
+    if ($null -eq $r) { $r = @{ Passed = $false; Detail = 'the case returned no result' } }
+    $sw.Stop()
+    $entry = [pscustomobject]@{
+        Step = $Step; Case = $Case
+        Result = $(if ($r.Passed) { 'PASS' } else { 'FAIL' })
+        Seconds = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+        Detail = [string]$r.Detail
+    }
+    [void]$Results.Add($entry)
+    $color = $(if ($r.Passed) { 'Green' } else { 'Red' })
+    Write-Host ('[{0}] {1} / {2}: {3} ({4} s)' -f $entry.Result, $Step, $Case, $entry.Detail, $entry.Seconds) -ForegroundColor $color
+}
+function Get-SummaryLine([string[]]$Lines) { [string]@($Lines | Where-Object { $_ -match '^Summary:' } | Select-Object -Last 1)[0] }
+function Test-SummaryClean([string]$Line) { ($Line -match '^Summary:\s+(\d+) passed, (\d+) failed') -and ([int]$Matches[1] -gt 0) -and ([int]$Matches[2] -eq 0) }
+function Read-ToolVersion {
+    foreach ($line in [IO.File]::ReadLines((Join-Path $PackageDir 'en-US\NetworkHealthCheck.ps1'))) {
+        if ($line -match '^\$script:ToolVersion\s*=\s*"([^"]+)"') { return $Matches[1] }
+    }
+    throw 'ToolVersion not found in en-US/NetworkHealthCheck.ps1'
+}
+function New-StagedCopy {
+    # A copy of healthcheck/<lang>/ (files only - never Reports/) under the work dir. -WidenSampling raises PingCount to 30
+    # and RetransmissionSampleSeconds to 125 in the copied configuration, above the IT panel's default spinner ranges
+    # (1-20 / 1-120): the 1.2.1 fix is that an untouched Start keeps those values instead of clamping them.
+    param([string]$Lang, [string]$Name, [switch]$WidenSampling)
+    $dst = Join-Path $WorkDir ('stage\' + $Name + '\' + $Lang)
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    Get-ChildItem -LiteralPath (Join-Path $PackageDir $Lang) -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $dst -Force }
+    if ($WidenSampling) {
+        $cfg = Join-Path $dst 'NetworkHealthCheck.config.json'
+        $text = [IO.File]::ReadAllText($cfg)
+        $text = [regex]::Replace($text, '"PingCount"\s*:\s*\d+', '"PingCount": 30')
+        $text = [regex]::Replace($text, '"RetransmissionSampleSeconds"\s*:\s*\d+', '"RetransmissionSampleSeconds": 125')
+        [IO.File]::WriteAllText($cfg, $text, (New-Object System.Text.UTF8Encoding($true)))
+    }
+    return $dst
+}
+function Get-ConfigSampling([string]$Dir) {
+    $c = Get-Content -LiteralPath (Join-Path $Dir 'NetworkHealthCheck.config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    return @{ PingCount = [int]$c.Tests.PingCount; SampleSeconds = [int]$c.Tests.RetransmissionSampleSeconds }
+}
+function Get-NewestJson([string]$Dir, [datetime]$After) {
+    @(Get-ChildItem -LiteralPath $Dir -Filter '*.json' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $After } | Sort-Object LastWriteTime -Descending | Select-Object -First 1)[0]
+}
+function Read-Report([System.IO.FileInfo]$File) { Get-Content -LiteralPath $File.FullName -Raw -Encoding UTF8 | ConvertFrom-Json }
+function Test-ReportExpectations {
+    # Compares the run options a JSON report recorded with what the launch must have produced; returns the mismatches.
+    param($Report, [hashtable]$Expect)
+    $bad = @()
+    foreach ($key in @('EntryPoint', 'PingCount', 'SampleSeconds', 'TracerouteHops')) {
+        if ($Expect.ContainsKey($key) -and ([string]$Report.RunOptions.$key -ne [string]$Expect[$key])) { $bad += ('{0}={1} (expected {2})' -f $key, $Report.RunOptions.$key, $Expect[$key]) }
+    }
+    if ($Expect.ContainsKey('ExtraPing') -and (@($Report.RunOptions.ExtraTargets.Ping) -notcontains $Expect['ExtraPing'])) { $bad += ('extra ping target {0} missing' -f $Expect['ExtraPing']) }
+    if ($Expect.ContainsKey('ExtraTcp') -and (@($Report.RunOptions.ExtraTargets.Tcp) -notcontains $Expect['ExtraTcp'])) { $bad += ('extra TCP target {0} missing' -f $Expect['ExtraTcp']) }
+    if ([string]$Report.SchemaVersion -ne '2') { $bad += ('SchemaVersion={0} (expected 2)' -f $Report.SchemaVersion) }
+    if ($RequireHealthy -and ([string]$Report.Overall.Code -ne 'PASS')) { $bad += ('Overall {0}, not PASS' -f $Report.Overall.Code) }
+    return $bad
+}
+function Format-ReportDetail($Report) {
+    $it = @($Report.Results | Where-Object { $_.Scope -eq 'IT' }).Count
+    return ('EntryPoint={0} PingCount={1} SampleSeconds={2} TracerouteHops={3}; Overall {4} ({5}); {6} results ({7} IT); fingerprint {8}' -f $Report.RunOptions.EntryPoint, $Report.RunOptions.PingCount, $Report.RunOptions.SampleSeconds, $Report.RunOptions.TracerouteHops, $Report.Overall.Text, $Report.Overall.Code, @($Report.Results).Count, $it, $Report.Fingerprint.Key)
+}
+function Invoke-WindowRun {
+    # One real-window run through gui_check.ps1, and the evidence it must leave: exit 0; a JSON report whose run options
+    # match the launch (entry point; ping count and sample seconds from the folder's configuration); the title carrying
+    # the IT marker for the IT entry only ("- IT" / "(IT)" right before the closing quote of the window line); the window
+    # closed through its own Close button.
+    param([string]$Dir, [string]$Entry, [string]$LogName)
+    $expect = Get-ConfigSampling $Dir
+    $expect['EntryPoint'] = $Entry
+    $started = Get-Date
+    $r = Invoke-TestScript 'gui_check.ps1' @('-PackageDir', $Dir, '-Entry', $Entry, '-TimeoutSeconds', $GuiTimeoutSeconds) $LogName
+    if ($r.ExitCode -ne 0) { return @{ Passed = $false; Detail = ('exit code {0}: {1}' -f $r.ExitCode, [string]@($r.Output | Where-Object { $_ -match 'ERROR' })[0]) } }
+    $json = Get-NewestJson (Join-Path $Dir 'Reports') $started
+    if ($null -eq $json) { return @{ Passed = $false; Detail = 'exit 0 but no JSON report' } }
+    $d = Read-Report $json
+    $bad = @(Test-ReportExpectations $d $expect)
+    $window = [string]@($r.Output | Where-Object { $_ -match "window: '" })[0]
+    $titledIt = [bool]($window -match "IT[^']{0,3}' \d+x\d+")
+    if ($titledIt -ne ($Entry -eq 'IT')) { $bad += ('window title ' + $(if ($titledIt) { 'carries' } else { 'lacks' }) + ' the IT marker') }
+    if (@($r.Output | Where-Object { $_ -match 'closed via the Close button' }).Count -eq 0) { $bad += 'not closed through the Close button' }
+    $detail = (Format-ReportDetail $d) + '; ' + ($window -replace '^\[[^\]]+\]\s*', '')
+    if ($bad.Count) { $detail = ($bad -join '; ') + ' | ' + $detail }
+    return @{ Passed = ($bad.Count -eq 0); Detail = $detail }
+}
+
+# -------------------- The chain --------------------
+$prevOutputEncoding = [Console]::OutputEncoding
+try { [Console]::OutputEncoding = $Utf8NoBom } catch { }
+$env:PYTHONUTF8 = '1'; $env:PYTHONIOENCODING = 'utf-8'
+try {
+    $ToolVersion = Read-ToolVersion
+    $gitHead = [string]@((Invoke-Native 'git' @('-C', $Root, 'rev-parse', '--short', 'HEAD') 'env_git').Output)[0]
+    $dirty = @((Invoke-Native 'git' @('-C', $Root, 'status', '--porcelain', '--', 'healthcheck') 'env_git_status').Output | Where-Object { $_ })
+    $pythonVersion = [string]@((Invoke-Native $Python @('--version') 'env_python').Output)[0]
+    Write-Host ('NetworkHealthCheck {0} validation chain - {1}' -f $ToolVersion, (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+    Write-Host ('  checkout {0} at {1}{2}' -f $Root, $gitHead, $(if ($dirty.Count) { ' (healthcheck/ has uncommitted changes)' } else { '' }))
+    Write-Host ('  {0}; Windows PowerShell {1}; {2}' -f [Environment]::OSVersion.VersionString, $PSVersionTable.PSVersion, $pythonVersion)
+    Write-Host ('  steps: {0}; work dir: {1}' -f ($selected -join ', '), $WorkDir)
+
+    if ($selected -contains 'parse') {
+        foreach ($lang in $Languages) {
+            Invoke-Case 'parse' $lang {
+                $r = Invoke-TestScript 'parse_check.ps1' @('-Path', (Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1'))) ('parse_' + $lang)
+                @{ Passed = ($r.ExitCode -eq 0); Detail = [string]@($r.Output)[0] }
+            }
+        }
+    }
+    if ($selected -contains 'validator') {
+        Invoke-Case 'validator' 'healthcheck/' {
+            $r = Invoke-Native $Python @((Join-Path $PackageDir 'tools\validate_release.py'), $PackageDir) 'validator'
+            $s = Get-SummaryLine $r.Output
+            @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
+        }
+    }
+    if ($selected -contains 'guards') {
+        Invoke-Case 'guards' 'validate_release.py' {
+            $r = Invoke-Native $Python @((Join-Path $PSScriptRoot 'selftest_guards.py')) 'guards'
+            $corpus = [string]@($r.Output | Where-Object { $_ -match '^corpus:' })[0]
+            @{ Passed = (($r.ExitCode -eq 0) -and ($r.Output -contains 'ALL SELF-TESTS OK')); Detail = $corpus }
+        }
+    }
+    if ($selected -contains 'unit') {
+        foreach ($lang in $Languages) {
+            Invoke-Case 'unit' $lang {
+                $r = Invoke-TestScript 'unit_tests.ps1' @('-ScriptPath', (Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1'))) ('unit_' + $lang)
+                $s = Get-SummaryLine $r.Output
+                @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
+            }
+        }
+    }
+    if ($selected -contains 'report') {
+        foreach ($lang in $Languages) {
+            Invoke-Case 'report' $lang {
+                $dir = Join-Path $WorkDir ('report\' + $lang)
+                New-Item -ItemType Directory -Force -Path $dir | Out-Null
+                $r = Invoke-TestScript 'report_stage_tests.ps1' @('-ScriptPath', (Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1')), '-WorkDir', $dir) ('report_' + $lang)
+                $s = Get-SummaryLine $r.Output
+                @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
+            }
+        }
+    }
+    if ($selected -contains 'gui-headless') {
+        foreach ($lang in $Languages) {
+            foreach ($entry in @('User', 'IT')) {
+                Invoke-Case 'gui-headless' ($lang + ' ' + $entry) {
+                    $argList = @('-ScriptPath', (Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1')))
+                    if ($entry -eq 'IT') { $argList += '-Interactive' }
+                    $r = Invoke-TestScript 'gui_repro.ps1' $argList ('gui-headless_' + $entry + '_' + $lang)
+                    $line = [string]@($r.Output)[0]
+                    @{ Passed = (($r.ExitCode -eq 0) -and ($line -match 'Initialize-Gui body OK')); Detail = ($line -replace '^[^:]+:\s*', '') }
+                }
+            }
+        }
+    }
+    if ($selected -contains 'gui') {
+        foreach ($entry in @('User', 'IT')) {
+            foreach ($lang in $Languages) {
+                Invoke-Case 'gui' ($lang + ' ' + $entry + $(if ($entry -eq 'IT') { ' (config 30 pings / 125 s)' } else { '' })) {
+                    $stage = New-StagedCopy -Lang $lang -Name ('gui-' + $entry) -WidenSampling:($entry -eq 'IT')
+                    Invoke-WindowRun -Dir $stage -Entry $entry -LogName ('gui_' + $entry + '_' + $lang)
+                }
+            }
+        }
+    }
+    if ($selected -contains 'acceptance') {
+        $acceptance = @(
+            @{ Lang = 'en-US'; Case = 'en-US user'; Args = @('-ConsoleOnly'); Expect = @{ EntryPoint = 'User' } },
+            @{ Lang = 'en-US'; Case = 'en-US IT switches'; Args = @('-ConsoleOnly', '-PingCount', '6', '-SampleSeconds', '6', '-PingTarget', '8.8.8.8', '-TcpTarget', '1.1.1.1:53', '-TracerouteHops', '4', '-ExpandDetails'); Expect = @{ EntryPoint = 'IT'; PingCount = 6; SampleSeconds = 6; TracerouteHops = 4; ExtraPing = '8.8.8.8'; ExtraTcp = '1.1.1.1:53' } },
+            @{ Lang = 'zh-TW'; Case = 'zh-TW user'; Args = @('-ConsoleOnly'); Expect = @{ EntryPoint = 'User' } }
+        )
+        foreach ($a in $acceptance) {
+            Invoke-Case 'acceptance' $a.Case {
+                $stage = Join-Path $WorkDir ('stage\console\' + $a.Lang)
+                if (-not (Test-Path -LiteralPath $stage)) { $stage = New-StagedCopy -Lang $a.Lang -Name 'console' }
+                $expect = @{}
+                foreach ($k in $a.Expect.Keys) { $expect[$k] = $a.Expect[$k] }
+                if (-not $expect.ContainsKey('PingCount')) { $s = Get-ConfigSampling $stage; $expect['PingCount'] = $s.PingCount; $expect['SampleSeconds'] = $s.SampleSeconds }
+                $started = Get-Date
+                $r = Invoke-Native $PsExe (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $stage 'NetworkHealthCheck.ps1')) + $a.Args) ('acceptance_' + ($a.Case -replace '[^\w-]', '_'))
+                if ($r.ExitCode -ne 0) { return @{ Passed = $false; Detail = ('exit code ' + $r.ExitCode) } }
+                $json = Get-NewestJson (Join-Path $stage 'Reports') $started
+                if ($null -eq $json) { return @{ Passed = $false; Detail = 'exit 0 but no JSON report' } }
+                $d = Read-Report $json
+                $bad = @(Test-ReportExpectations $d $expect)
+                $detail = 'exit 0; ' + (Format-ReportDetail $d)
+                if ($bad.Count) { $detail = ($bad -join '; ') + ' | ' + $detail }
+                @{ Passed = ($bad.Count -eq 0); Detail = $detail }
+            }
+        }
+    }
+    if ($selected -contains 'package') {
+        $zipName = 'NetworkHealthCheck-' + $ToolVersion + '.zip'
+        $extracted = Join-Path $WorkDir ('verify\NetworkHealthCheck-' + $ToolVersion)
+        Invoke-Case 'package' $zipName {
+            $zip = Join-Path $WorkDir $zipName
+            $r = Invoke-Native $Python @((Join-Path $PSScriptRoot 'build_asset.py'), $zip) 'package_build'
+            if ($r.ExitCode -ne 0) { return @{ Passed = $false; Detail = ('build_asset.py failed: ' + [string]@($r.Output)[-1]) } }
+            $sha = [string]@($r.Output | Where-Object { $_ -match '^SHA256:' })[0]
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $verify = Join-Path $WorkDir 'verify'
+            if (Test-Path -LiteralPath $verify) { Remove-Item -LiteralPath $verify -Recurse -Force }
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $verify)
+            $v = Invoke-Native $Python @((Join-Path $extracted 'tools\validate_release.py')) 'package_validate'
+            $s = Get-SummaryLine $v.Output
+            $detail = ('{0} bytes, {1}; validator run from inside the extracted package: {2}' -f (Get-Item -LiteralPath $zip).Length, $sha, $s)
+            @{ Passed = (($v.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $detail }
+        }
+        if (-not $SkipGui) {
+            foreach ($lang in $Languages) {
+                Invoke-Case 'package' ($lang + ' IT entry from the extracted package (real window)') {
+                    if (-not (Test-Path -LiteralPath (Join-Path $extracted $lang))) { return @{ Passed = $false; Detail = 'extracted package not present' } }
+                    Invoke-WindowRun -Dir (Join-Path $extracted $lang) -Entry 'IT' -LogName ('package_gui_IT_' + $lang)
+                }
+            }
+        }
+    }
+}
+finally {
+    try { [Console]::OutputEncoding = $prevOutputEncoding } catch { }
+}
+
+# -------------------- Summary --------------------
+$failed = @($Results | Where-Object { $_.Result -ne 'PASS' }).Count
+Write-Host ''
+$Results | Format-Table -AutoSize -Wrap Step, Case, Result, Seconds, Detail | Out-String -Width 250 | Write-Host
+$md = @('| Step | Case | Result | s | Detail |', '|---|---|---|---:|---|') + @($Results | ForEach-Object { '| {0} | {1} | {2} | {3} | {4} |' -f $_.Step, $_.Case, $_.Result, $_.Seconds, ($_.Detail -replace '\|', '\|') })
+[IO.File]::WriteAllLines((Join-Path $WorkDir 'summary.md'), [string[]]$md, $Utf8NoBom)
+Write-Host ('Summary: {0} passed, {1} failed; {2:n0} s; work dir {3}' -f ($Results.Count - $failed), $failed, ((Get-Date) - $ChainStarted).TotalSeconds, $WorkDir)
+exit $failed

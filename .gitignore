@@ -3,6 +3,9 @@ healthcheck/**/Reports/
 **/LauncherError.txt
 **/NetworkHealthCheck_FATAL_*.txt
 
+# Python bytecode (tests/)
+__pycache__/
+
 # OS noise
 Thumbs.db
 desktop.ini

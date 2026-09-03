@@ -19,7 +19,7 @@ A one-page fault-isolation playbook, from the user's chair to the ISP ([markdown
 
 A read-only Windows diagnostic a non-technical user can run with **one double-click** — no install, no admin rights. Produces HTML / TXT / JSON reports that drop straight into the escalation package. Bilingual (en-US / zh-TW), config-driven expected-standards comparison, delta-based counter sampling.
 
-See [healthcheck/docs](healthcheck/docs/) for the technical guide (design, validation, known limits).
+See [healthcheck/docs](healthcheck/docs/) for the technical guide (design, validation, known limits). The validation chain that every release runs through is committed under [tests/](tests/) and runs from a fresh checkout with one command.
 
 ## Quick start
 
@@ -48,13 +48,13 @@ See [healthcheck/docs](healthcheck/docs/) for the technical guide (design, valid
 | Item | Status |
 |---|---|
 | SOP | v1.1 |
-| NetworkHealthCheck | v1.2.1 — one run for everyone: "What to tell IT" summary, collapsed IT diagnostics (Wi-Fi radio, routes, gateway ARP, proxy, traceroute, drivers), physical/virtual adapter classification, JSON schema 2 with run profile and fingerprint, IT entry point (launcher + switches + options panel); v1.2.1 fixes the IT panel truncating a configured ping count / sample length above its default range (Codex round 7 on PR #3) and two 1.2.0 GUI regressions caught by the first real GUI runs (both entries fell back to console mode; the IT launcher opened the user layout); v1.1.5 closed backlog #2/#3, v1.1.4 closed #4/#5/#6/#11; self-explaining Method + Manual-check lines in every check; validation chain: static checks, independent code review, Windows acceptance, five fault-injection scenarios ([validation record](healthcheck/VALIDATION.md) · [scenario matrix](healthcheck/validation-matrix.html)) |
+| NetworkHealthCheck | v1.2.1 — one run for everyone: "What to tell IT" summary, collapsed IT diagnostics (Wi-Fi radio, routes, gateway ARP, proxy, traceroute, drivers), physical/virtual adapter classification, JSON schema 2 with run profile and fingerprint, IT entry point (launcher + switches + options panel); v1.2.1 fixes the IT panel truncating a configured ping count / sample length above its default range (Codex round 7 on PR #3) and two 1.2.0 GUI regressions caught by the first real GUI runs (both entries fell back to console mode; the IT launcher opened the user layout); v1.1.5 closed backlog #2/#3, v1.1.4 closed #4/#5/#6/#11; self-explaining Method + Manual-check lines in every check; validation chain: static checks, independent code review, Windows acceptance, real-window GUI runs, five fault-injection scenarios ([validation record](healthcheck/VALIDATION.md) · [scenario matrix](healthcheck/validation-matrix.html) · [tests/](tests/) runs the chain from a checkout, backlog #16) |
 | NHC v1.2 | Phase A shipped as v1.2.0 (no separate modes, IT entry point, IT diagnostics, schema 2 — [design](docs/design-v1.2-triage-wizard.md)); Phase C (report links to the wizard) follows the wizard |
 | Guided triage wizard | Planned — single-file HTML decision tree over the SOP that imports the NHC JSON report, asks only what the machine cannot see, and produces the escalation package ([design](docs/design-v1.2-triage-wizard.md)) |
 
 ## Working method
 
-Built and maintained **with AI assistance** — the methodology, requirements, and field experience behind it are mine; every release is validated end-to-end before it ships (PowerShell 5.1 parser checks, dual-language parity, real-machine acceptance runs, fault-injection scenarios). See the [validation record](healthcheck/VALIDATION.md).
+Built and maintained **with AI assistance** — the methodology, requirements, and field experience behind it are mine; every release is validated end-to-end before it ships (PowerShell 5.1 parser checks, dual-language parity, unit and functional tests, real-window GUI runs, real-machine acceptance runs, fault-injection scenarios). See the [validation record](healthcheck/VALIDATION.md); the chain itself is in [tests/](tests/).
 
 ## Author
 
