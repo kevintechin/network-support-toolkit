@@ -98,6 +98,12 @@ Re-validation after round 9 (scripts unchanged; validator and manifest only): pa
 
 Re-validation after round 10 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 12 · 2026-09-03 (requested by the maintainer).** One P2 finding on commit 2d6e64e, accepted and fixed:
+
+1. *A one-line function declaration was skipped by the parameter guard.* Since round 8 the `function` line itself was not scanned, so `function Reset-Interactive { $script:Interactive = $false }` passed although an explicit `$script:` reference targets the script scope from inside a function. Fix: the declaration line is scanned like a function-body line — explicitly script- / global-scoped assignments and `Set-Variable -Scope Script / Global` on it are flagged, unscoped ones are locals — and a one-line function still counts as closed on its line. Self-tests extended (six cases); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 11 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):

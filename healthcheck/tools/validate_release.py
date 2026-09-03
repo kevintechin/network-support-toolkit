@@ -156,10 +156,11 @@ def overwritten_parameters(text):
         if n<=param_end: continue
         # Every function in these files opens with `function Name {` and closes with a column-0 `}`; everything else is
         # top level, where try / if / foreach blocks create no scope, so "local" means the script scope there.
+        local=in_function
         if re.match(r'^function\s',code):
-            # A one-line `function F { ... }` is closed on its own line and its body is local: nothing on that line is scanned.
-            in_function=('{' not in code) or (code.count('{')!=code.count('}'))
-            continue
+            # The declaration line is scanned as a body line: unscoped assignments on it are locals, explicit $script: /
+            # $global: ones are not. A one-line `function F { ... }` is closed on its own line.
+            local=True; in_function=('{' not in code) or (code.count('{')!=code.count('}'))
         elif code.rstrip()=='}': in_function=False
         # Assignment statements at every statement start of the line (line start, after `{`, after `;` - if / try / foreach
         # blocks create no scope): $Name, ${Name}, $script:Name, $Script:Name, ${script:Name}, $global:Name, $local:Name ...,
@@ -169,14 +170,14 @@ def overwritten_parameters(text):
         for m in re.finditer(r'(?:^|[{;])\s*(?:\[[^=]*?\]\s*)*\$\{?(?:(\w+):)?(\w+)\}?\s*=(?!=)\s*([^;}]*)',code,re.I):
             if m.group(2).lower() not in params: continue
             scope=(m.group(1) or '').lower()
-            if scope in ('script','global') or (scope in ('','local','private') and not in_function):
+            if scope in ('script','global') or (scope in ('','local','private') and not local):
                 if not token(m.group(2),m.group(3)): hits.append(f'{n} (${m.group(2)})')
         # Set-Variable / New-Variable reach the same variable through the cmdlet interface: -Scope Script / Global (or a
         # numeric parent scope) anywhere, or no -Scope / -Scope Local at the top level. -Name may be positional.
         if re.search(r'\b(Set|New)-Variable\b',code,re.I):
             nm=re.search(r'-Name\s+["\']?(\w+)',code,re.I) or re.search(r'\b(?:Set|New)-Variable\s+(?!-)["\']?(\w+)',code,re.I)
             sc=re.search(r'-Scope\s+["\']?(\w+)',code,re.I); scope=(sc.group(1).lower() if sc else '')
-            if nm and nm.group(1).lower() in params and (scope in ('script','global') or scope.isdigit() or (scope in ('','local') and not in_function)):
+            if nm and nm.group(1).lower() in params and (scope in ('script','global') or scope.isdigit() or (scope in ('','local') and not local)):
                 hits.append(f'{n} (Set-Variable {nm.group(1)})')
     return hits
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
