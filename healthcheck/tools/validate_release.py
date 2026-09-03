@@ -74,10 +74,27 @@ for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
 # continuations joined); code inside here-strings or built dynamically (Invoke-Expression, splatted argument lists) is
 # outside their scope by design.
 def strip_block_comments(text):
-    # <# ... #> may span lines; it is replaced by the newlines it contained so that reported line numbers stay valid.
-    # PowerShell block comments do not nest (language specification 2.2.3, 'Comments do not nest'; verified on Windows
-    # PowerShell 5.1: the first #> ends the comment and code after it runs), so the non-greedy match models the real parser.
-    return re.sub(r'<#.*?#>',lambda m: '\n'*m.group(0).count('\n'),text,flags=re.S)
+    # <# ... #> may span lines and is removed only outside single / double quotes (a quoted "<#" is string data) and outside
+    # line comments; the newlines it contained are kept so that reported line numbers stay valid. Line comments are copied
+    # verbatim here and removed per line by strip_line_comment. PowerShell block comments do not nest (language
+    # specification 2.2.3, 'Comments do not nest'; verified on Windows PowerShell 5.1: the first #> ends the comment).
+    out=[]; q=None; i=0; n=len(text)
+    while i<n:
+        c=text[i]
+        if q:
+            if q=='"' and c=='`': out.append(text[i:i+2]); i+=2; continue
+            if c==q and text[i+1:i+2]==q: out.append(q+q); i+=2; continue
+            if c==q: q=None
+            out.append(c); i+=1; continue
+        if c=='"' or c=="'": q=c; out.append(c); i+=1; continue
+        if c=='<' and text[i+1:i+2]=='#':
+            e=text.find('#>',i+2); e=n if e<0 else e+2
+            out.append('\n'*text.count('\n',i,e)); i=e; continue
+        if c=='#':
+            e=text.find('\n',i); e=n if e<0 else e
+            out.append(text[i:e]); i=e; continue
+        out.append(c); i+=1
+    return ''.join(out)
 def strip_line_comment(line, blank_single=False):
     # Drop <# ... #> and a trailing # comment that is outside single / double quotes, so comments never hide or fake a
     # pattern; with blank_single the contents of single-quoted strings are dropped too (nothing expands inside them).
@@ -86,8 +103,8 @@ def strip_line_comment(line, blank_single=False):
         c=line[i]
         if q:
             if q=='"' and c=='`': out.append(line[i:i+2]); i+=2; continue
-            if q=="'" and c=="'" and line[i+1:i+2]=="'":
-                if not blank_single: out.append("''")
+            if c==q and line[i+1:i+2]==q:   # doubled quote inside a string ('' or "")
+                if not (q=="'" and blank_single): out.append(q+q)
                 i+=2; continue
             if c==q: q=None; out.append(c); i+=1; continue
             if not (q=="'" and blank_single): out.append(c)

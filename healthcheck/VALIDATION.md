@@ -113,6 +113,12 @@ Self-tests extended (thirteen assignment cases, three constructor cases); v1.2.0
 
 Re-validation after round 12 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 14 · 2026-09-03 (requested by the maintainer).** One P2 finding on commit f5e63af, accepted and fixed:
+
+1. *Block comments were stripped with a regex that ignored quotes.* A `<#` inside a string (`$a = "<#"`) followed later by a `"#>"` string would have hidden the code between them from both guards, although PowerShell treats quoted delimiters as data. Fix: block comments are removed by a lexical scan that tracks single- and double-quoted strings (doubled quotes and backtick escapes included) and copies line comments verbatim, so a `<#` inside a string or a line comment never starts a block; newlines are still kept. The line-comment stripper honours doubled quotes the same way. Self-tests extended (quoted delimiters in both quote styles, doubled and backtick-escaped quotes, a `<#` inside a line comment, a real block comment, the constructor guard behind a quoted `<#`); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 13 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
