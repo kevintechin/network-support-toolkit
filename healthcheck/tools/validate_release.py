@@ -96,21 +96,20 @@ def strip_block_comments(text):
             out.append(text[i:e]); i=e; continue
         out.append(c); i+=1
     return ''.join(out)
-def strip_line_comment(line, blank_single=False):
+def strip_line_comment(line, blank_single=False, blank_double=False):
     # Drop a trailing # comment that is outside single / double quotes (a backtick-escaped # is a literal), so comments
-    # never hide or fake a pattern; with blank_single the contents of single-quoted strings are dropped too (nothing
-    # expands inside them).
+    # never hide or fake a pattern; with blank_single / blank_double the contents of such strings are replaced by spaces
+    # of the same length, so a $Name or a command word inside a string is not taken for code and offsets stay aligned.
     out=[]; q=None; i=0   # block comments were already removed by strip_block_comments (quote-aware, whole text)
     while i<len(line):
         c=line[i]
         if q:
-            if q=='"' and c=='`': out.append(line[i:i+2]); i+=2; continue
+            blank=(q=="'" and blank_single) or (q=='"' and blank_double)
+            if q=='"' and c=='`': out.append('  ' if blank else line[i:i+2]); i+=2; continue
             if c==q and line[i+1:i+2]==q:   # doubled quote inside a string ('' or "")
-                if not (q=="'" and blank_single): out.append(q+q)
-                i+=2; continue
+                out.append('  ' if blank else q+q); i+=2; continue
             if c==q: q=None; out.append(c); i+=1; continue
-            if not (q=="'" and blank_single): out.append(c)
-            i+=1; continue
+            out.append(' ' if blank else c); i+=1; continue
         if c=='`': out.append(line[i:i+2]); i+=2; continue   # escaped character outside a string
         if c=='"' or c=="'": q=c
         elif c=='#': break
@@ -120,12 +119,12 @@ def abbr(full):
     # PowerShell accepts any unambiguous prefix of a parameter name (-Type or -T for -TypeName, -Na for -Name): a pattern
     # for every non-empty prefix, longest first, ending at a word boundary.
     return '-(?:'+'|'.join(re.escape(full[:k]) for k in range(len(full),0,-1))+r')\b'
-def logical_lines(text, blank_single=False):
+def logical_lines(text, blank_single=False, blank_double=False):
     # (first physical line number, text) per logical line: block comments removed (newlines kept), line comments removed,
     # and a physical line that ends with a backtick joined with the next one (PowerShell's explicit line continuation).
     out=[]; pending=None
     for i,raw in enumerate(strip_block_comments(text).splitlines(),1):
-        line=strip_line_comment(raw,blank_single)
+        line=strip_line_comment(raw,blank_single,blank_double)
         if pending is None: pending=[i,line]
         else: pending[1]+=' '+line.lstrip()
         if pending[1].rstrip().endswith('`'): pending[1]=pending[1].rstrip()[:-1]; continue
@@ -179,7 +178,9 @@ def overwritten_parameters(text):
     # belongs in a script variable with a different name.
     cast=r'(?:\[[\w.\[\]]+\]\s*)?'
     token=lambda name,expr: re.match(r'^'+cast+r'(?:@?\(\s*)?'+cast+r'\$\{?'+re.escape(name)+r'\}?(?:\.IsPresent)?\s*\)?$',expr.strip(),re.I) is not None
-    for n,code in logical_lines(text,blank_single=True):   # comment-free, backtick continuations joined, single quotes blanked
+    # code: strings masked with spaces (a $Name, a `sv` or a `$script:X =` inside a string is text); raw: the same logical
+    # line with strings intact, same length, for the cmdlet's -Name / -Scope values.
+    for (n,code),(_,raw) in zip(logical_lines(text,blank_single=True,blank_double=True),logical_lines(text)):
         if n<=param_end: continue
         # Every function in these files opens with `function Name {` and closes with a column-0 `}`; everything else is
         # top level, where try / if / foreach blocks create no scope, so "local" means the script scope there.
@@ -204,9 +205,11 @@ def overwritten_parameters(text):
         # Set-Variable / New-Variable reach the same variable through the cmdlet interface: -Scope Script / Global (or a
         # numeric parent scope) anywhere, or no -Scope / -Scope Local at the top level. -Name may be positional; -Name and
         # -Scope may be abbreviated; the aliases sv / nv count as the cmdlets.
-        if re.search(r'(?<![\w$])(?:(?:Set|New)-Variable|sv|nv)\b',code,re.I):   # cmdlet or its built-in alias
-            nm=re.search(abbr('name')+r'\s+["\']?(\w+)',code,re.I) or re.search(r'(?<![\w$])(?:(?:Set|New)-Variable|sv|nv)\s+(?!-)["\']?(\w+)',code,re.I)
-            sc=re.search(abbr('scope')+r'\s+["\']?(\w+)',code,re.I); scope=(sc.group(1).lower() if sc else '')
+        gate=re.search(r'(?<![\w$])(?:(?:Set|New)-Variable|sv|nv)\b',code,re.I)   # cmdlet or its built-in alias, outside strings
+        if gate:
+            tail=raw[gate.start():]   # values may be quoted: read them from the intact text after the cmdlet
+            nm=re.search(abbr('name')+r'\s+["\']?(\w+)',tail,re.I) or re.search(r'(?<![\w$])(?:(?:Set|New)-Variable|sv|nv)\s+(?!-)["\']?(\w+)',tail,re.I)
+            sc=re.search(abbr('scope')+r'\s+["\']?(\w+)',tail,re.I); scope=(sc.group(1).lower() if sc else '')
             if nm and nm.group(1).lower() in params and (scope in ('script','global') or scope.isdigit() or (scope in ('','local') and not local)):
                 hits.append(f'{n} (Set-Variable {nm.group(1)})')
     return hits

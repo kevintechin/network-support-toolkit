@@ -143,6 +143,12 @@ Self-tests extended (eight constructor cases, seven `sv` / `nv` cases at the top
 
 Re-validation after round 16 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 18 · 2026-09-03 (requested by the maintainer).** One P2 finding on commit ff20e3f, accepted and fixed:
+
+1. *Quoted variable names escaped the cmdlet check.* The parameter guard blanked single-quoted string contents before matching, which also erased the name in `Set-Variable -Name 'Interactive' -Value $false` or `sv 'Interactive' $false`. Fix: string contents (single- and double-quoted alike) are now masked with spaces of the same length for the assignment check and the cmdlet gate — so a `$Name`, a `sv` or a `$script:X =` inside a string is text — while the cmdlet's `-Name` / `-Scope` values and a positional name are read from the intact logical line starting at the cmdlet's own offset. Self-tests extended (quoted names in both styles, a quoted `-Scope`, cmdlet words and assignments inside strings, a real cmdlet after a string that mentions one); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 17 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
