@@ -31,6 +31,12 @@ The first en-US acceptance run ended "Attention Required" because TCPv4 retransm
 
 Re-validation after round 1: parser 0 errors × 2; validator 54/54; unit tests 36 × 2 (new cases: Boolean → default for integers; `"NaN"`, `"Infinity"`, `[double]::NaN` → default and non-numeric); acceptance en-US and zh-TW Overall Healthy, exit 0; a fault config with `"NaN"` and two Boolean integer thresholds lists all three in the threshold warning; a malformed config file yields the "Configuration File" ERROR with `Diagnostics` populated in JSON and no stack in HTML/TXT.
 
+**Independent review — Codex, PR #1, round 2 · 2026-09-03.** One P2 finding on commit 61bb3a4, accepted and fixed:
+
+1. *Report-write failures lost their original diagnostics.* The three `Save-Reports` catch blocks built their strings with the summary-only `Get-ExceptionDetails`, then threw a new string; the emergency FATAL file therefore recorded the location/stack of that later `throw`, not of the original write failure — a regression against the documented "FATAL keeps full detail" promise. Fix: those three sites use `-IncludeDiagnostics` (they feed the UI log and the FATAL file only, never the HTML/TXT reports). Every remaining summary-only call now either passes a separate `Diagnostics` value to a check result or is the configuration-load message that is rendered in HTML by design.
+
+Re-validation after round 2: parser 0 errors × 2; validator 54/54; unit tests 36 × 2; acceptance en-US Overall Healthy, exit 0; zh-TW first run "Attention Required" (TCPv4 retransmissions 3.9 % in the sample window — live-network condition), re-run Overall Healthy, exit 0. The write-failure path itself was not fault-injected (it would require making both the report folder and `%TEMP%` unwritable); verified by review plus the skeleton-equality check.
+
 ## Packaging — v1.1.3 GitHub Release asset · 2026-09-03
 
 - **Finding:** GitHub's auto-generated *Code → Download ZIP* exported every file with LF line endings — the repository stores LF, the author's working tree is CRLF via `core.autocrlf`, and no `.gitattributes` existed. Run against a simulated download (`git archive` of the committed tree), `validate_release.py` reported **27 failures**: all 8 CRLF checks and all 19 SHA256 manifest entries. The auto-generated ZIP was therefore not the validated package (backlog #15).

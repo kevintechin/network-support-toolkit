@@ -2411,7 +2411,7 @@ function Save-Reports {
         $script:LastHtmlReport = $htmlPath
     }
     catch {
-        [void]$writeErrors.Add("Failed to write HTML report: $(Get-ExceptionDetails $_)")
+        [void]$writeErrors.Add("Failed to write HTML report: $(Get-ExceptionDetails $_ -IncludeDiagnostics)")
     }
 
     try {
@@ -2420,7 +2420,7 @@ function Save-Reports {
         $script:LastTextReport = $textPath
     }
     catch {
-        [void]$writeErrors.Add("Failed to write text report: $(Get-ExceptionDetails $_)")
+        [void]$writeErrors.Add("Failed to write text report: $(Get-ExceptionDetails $_ -IncludeDiagnostics)")
     }
 
     try {
@@ -2429,7 +2429,7 @@ function Save-Reports {
         $script:LastJsonReport = $jsonPath
     }
     catch {
-        [void]$writeErrors.Add("Failed to write JSON report: $(Get-ExceptionDetails $_)")
+        [void]$writeErrors.Add("Failed to write JSON report: $(Get-ExceptionDetails $_ -IncludeDiagnostics)")
     }
 
     if ($writeErrors.Count -gt 0) {

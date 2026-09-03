@@ -2404,7 +2404,7 @@ function Save-Reports {
         $script:LastHtmlReport = $htmlPath
     }
     catch {
-        [void]$writeErrors.Add("HTML 報告寫入失敗：$(Get-ExceptionDetails $_)")
+        [void]$writeErrors.Add("HTML 報告寫入失敗：$(Get-ExceptionDetails $_ -IncludeDiagnostics)")
     }
 
     try {
@@ -2413,7 +2413,7 @@ function Save-Reports {
         $script:LastTextReport = $textPath
     }
     catch {
-        [void]$writeErrors.Add("文字報告寫入失敗：$(Get-ExceptionDetails $_)")
+        [void]$writeErrors.Add("文字報告寫入失敗：$(Get-ExceptionDetails $_ -IncludeDiagnostics)")
     }
 
     try {
@@ -2422,7 +2422,7 @@ function Save-Reports {
         $script:LastJsonReport = $jsonPath
     }
     catch {
-        [void]$writeErrors.Add("JSON 報告寫入失敗：$(Get-ExceptionDetails $_)")
+        [void]$writeErrors.Add("JSON 報告寫入失敗：$(Get-ExceptionDetails $_ -IncludeDiagnostics)")
     }
 
     if ($writeErrors.Count -gt 0) {
