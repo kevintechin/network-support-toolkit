@@ -203,14 +203,21 @@ def overwritten_parameters(text):
         for m in re.finditer(r'(?:^|[{;(])\s*(?:\+\+|--)\$\{?(?:(\w+):)?(\w+)\}?',code,re.I):   # prefix ++ / --
             if overwrite((m.group(1) or '').lower(),m.group(2)): hits.append(f'{n} (${m.group(2)})')
         # Set-Variable / New-Variable reach the same variable through the cmdlet interface: -Scope Script / Global (or a
-        # numeric parent scope) anywhere, or no -Scope / -Scope Local at the top level. -Name may be positional; -Name and
-        # -Scope may be abbreviated; the aliases sv / nv count as the cmdlets.
+        # numeric parent scope) anywhere, or no -Scope / -Scope Local / -Scope 0 at the top level. -Name may be positional;
+        # -Name and -Scope may be abbreviated; the aliases sv / nv count as the cmdlets.
         for gate in re.finditer(r'(?<![\w$])(?:(?:Set|New)-Variable|sv|nv)\b',code,re.I):   # every cmdlet / alias outside strings
             end=code.find(';',gate.end()); seg=raw[gate.start():(end if end>=0 else len(raw))]   # this invocation only; values may be quoted, so read the intact text
             nm=re.search(abbr('name')+r'\s+["\']?(\w+)',seg,re.I) or re.search(r'(?<![\w$])(?:(?:Set|New)-Variable|sv|nv)\s+(?!-)["\']?(\w+)',seg,re.I)
             sc=re.search(abbr('scope')+r'\s+["\']?(\w+)',seg,re.I); scope=(sc.group(1).lower() if sc else '')
-            if nm and nm.group(1).lower() in params and (scope in ('script','global') or scope.isdigit() or (scope in ('','local') and not local)):
+            # -Scope 0 is the current scope (like no -Scope); 1 and higher are parent scopes and always reach past a function.
+            if nm and nm.group(1).lower() in params and (scope in ('script','global') or (scope.isdigit() and int(scope)>=1) or (scope in ('','local','0') and not local)):
                 hits.append(f'{n} (Set-Variable {nm.group(1)})')
+        # Item cmdlets on the Variable: drive write the same variable table (Set-Item / Set-Content / New-Item / Clear-Item /
+        # Remove-Item and their aliases with a Variable:<Name> path); they have no -Scope, so they behave like an unscoped call.
+        for gate in re.finditer(r'(?<![\w$])(?:Set-Item|Set-Content|New-Item|Clear-Item|Remove-Item|si|sc|ni|cli|ri|rm|del|erase|rd|rmdir)\b',code,re.I):
+            end=code.find(';',gate.end()); seg=raw[gate.start():(end if end>=0 else len(raw))]
+            for v in re.finditer(r'variable:(\w+)',seg,re.I):
+                if v.group(1).lower() in params and not local: hits.append(f'{n} ({gate.group(0)} Variable:{v.group(1)})')
     return list(dict.fromkeys(hits))
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     hits=overwritten_parameters(read_text(ROOT/rel)); ok('parameters not overwritten at script scope '+rel,not hits,'lines '+', '.join(hits) if hits else '')

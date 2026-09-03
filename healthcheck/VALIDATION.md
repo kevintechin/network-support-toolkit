@@ -158,6 +158,15 @@ Self-tests extended (assignment in parentheses with and without the parameter it
 
 Re-validation after round 18 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 20 · 2026-09-03 (requested by the maintainer).** Two P2 findings on commit 46b8f10, both accepted and fixed:
+
+1. *`-Scope 0` inside a function was reported as an overwrite.* Numeric scope 0 is the current scope, so `Set-Variable -Name PingCount -Scope 0 -Value 1` in a helper is a local (a false positive). Fix: `0` follows the rules of an unscoped call — local inside a function, the script scope at the top level — while `1` and higher stay parent-scope overwrites.
+2. *Variable-provider writes were not covered.* `Set-Item -Path Variable:Interactive -Value $false` (also `Set-Content`, `New-Item`, `Clear-Item`, `Remove-Item` and their aliases with a `Variable:` path) changes the bound variable at the top level. Fix: a second gate for item cmdlets whose segment carries a `Variable:<Parameter>` path, treated like an unscoped variable cmdlet (quoted paths read from the intact text; `Get-Item` and other drives are not reported).
+
+Self-tests extended (`-Scope 0` and `-Scope 1` at both levels, seven provider cases at the top level and one inside a function); v1.2.0 line 77 / 70 and the six constructor lines still flagged; 1.2.1 clean.
+
+Re-validation after round 19 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
