@@ -51,6 +51,7 @@ $script:OpenFolderButton = $null
 $script:ReportPathLabel = $null
 $script:Config = $null
 $script:ConfigLoadError = $null
+$script:ConfigLoadDiagnostics = ""
 $script:UsingFallbackOutputDirectory = $false
 
 try {
@@ -132,7 +133,7 @@ function ConvertTo-IntSafe {
         [int]$DefaultValue = 0
     )
 
-    if ($null -eq $Value) {
+    if ($null -eq $Value -or $Value -is [bool]) {
         return $DefaultValue
     }
 
@@ -157,12 +158,16 @@ function ConvertTo-DoubleSafe {
     try {
         if ($Value -is [string]) {
             $parsed = 0.0
-            if ([double]::TryParse($Value, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) {
+            if ([double]::TryParse($Value, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed) -and -not [double]::IsNaN($parsed) -and -not [double]::IsInfinity($parsed)) {
                 return $parsed
             }
             return $DefaultValue
         }
-        return [double]$Value
+        $converted = [double]$Value
+        if ([double]::IsNaN($converted) -or [double]::IsInfinity($converted)) {
+            return $DefaultValue
+        }
+        return $converted
     }
     catch {
         return $DefaultValue
@@ -178,12 +183,15 @@ function Test-IsNumericValue {
 
     if ($Value -is [string]) {
         $parsed = 0.0
-        return [double]::TryParse($Value, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)
+        if (-not [double]::TryParse($Value, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) {
+            return $false
+        }
+        return (-not [double]::IsNaN($parsed) -and -not [double]::IsInfinity($parsed))
     }
 
     try {
-        $null = [double]$Value
-        return $true
+        $converted = [double]$Value
+        return (-not [double]::IsNaN($converted) -and -not [double]::IsInfinity($converted))
     }
     catch {
         return $false
@@ -535,6 +543,7 @@ function Load-Configuration {
         return (Merge-ConfigObject -DefaultObject $defaultConfig -OverrideObject $overrideConfig)
     }
     catch {
+        $script:ConfigLoadDiagnostics = Get-ExceptionDiagnostics $_
         $script:ConfigLoadError = "設定檔格式錯誤，程式已改用內建預設值。`r`n$(Get-ExceptionDetails $_)"
         return $defaultConfig
     }
@@ -2541,7 +2550,7 @@ function Run-AllChecks {
     Set-UiProgress -Percent 2 -Text "初始化"
 
     if ($null -ne $script:ConfigLoadError) {
-        Add-CheckResult -Category "程式設定" -Check "設定檔" -Status "ERROR" -Message "設定檔無法載入，已使用內建預設值。" -Details $script:ConfigLoadError | Out-Null
+        Add-CheckResult -Category "程式設定" -Check "設定檔" -Status "ERROR" -Message "設定檔無法載入，已使用內建預設值。" -Details $script:ConfigLoadError -Diagnostics $script:ConfigLoadDiagnostics | Out-Null
     }
     else {
         Add-CheckResult -Category "程式設定" -Check "設定檔" -Status "PASS" -Message ("已載入：{0}" -f $script:EffectiveConfigPath) -Details "" | Out-Null

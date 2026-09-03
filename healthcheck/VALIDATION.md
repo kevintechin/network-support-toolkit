@@ -23,6 +23,14 @@
 
 The first en-US acceptance run ended "Attention Required" because TCPv4 retransmissions were 4.1 % during the sample window — a live-network condition above the 2 % warning threshold, not a code effect. The final re-run of both language versions on the finished files (after the header-comment and documentation edits) was **Overall Healthy**: Pass 19 / Warning 0 / Fail 0 / Unable-to-check 0 / Information 3, exit 0, in each language.
 
+**Independent review — Codex (`chatgpt-codex-connector`), PR #1, round 1 · 2026-09-03.** Three P2 findings on commit 84cf529, all accepted and fixed in the same PR:
+
+1. *Rejected integer thresholds still reached `ConvertTo-IntSafe`.* A JSON Boolean was reported as invalid, but `[int]$true` = 1 was then used at runtime (e.g. `AdapterErrorCriticalDelta: true` turned one adapter error into a FAIL instead of using 10; the TCP count and minimum-sample thresholds likewise). Fix: `ConvertTo-IntSafe` treats Booleans like null and returns the default, so the reported fallback actually happens.
+2. *Non-finite thresholds accepted.* `"NaN"` and `"Infinity"` pass `Double.TryParse`, and every comparison against NaN is false, so excessive loss / latency / retransmissions would have stayed PASS. Fix: `ConvertTo-DoubleSafe` and `Test-IsNumericValue` require a finite value.
+3. *Configuration-parse diagnostics dropped from JSON.* `Load-Configuration` kept only the summary, so a malformed config lost its stack everywhere. Fix: the catch also stores `Get-ExceptionDiagnostics`, and the "Configuration File" result carries it in `Diagnostics` (JSON only, like every other exception path).
+
+Re-validation after round 1: parser 0 errors × 2; validator 54/54; unit tests 36 × 2 (new cases: Boolean → default for integers; `"NaN"`, `"Infinity"`, `[double]::NaN` → default and non-numeric); acceptance en-US and zh-TW Overall Healthy, exit 0; a fault config with `"NaN"` and two Boolean integer thresholds lists all three in the threshold warning; a malformed config file yields the "Configuration File" ERROR with `Diagnostics` populated in JSON and no stack in HTML/TXT.
+
 ## Packaging — v1.1.3 GitHub Release asset · 2026-09-03
 
 - **Finding:** GitHub's auto-generated *Code → Download ZIP* exported every file with LF line endings — the repository stores LF, the author's working tree is CRLF via `core.autocrlf`, and no `.gitattributes` existed. Run against a simulated download (`git archive` of the committed tree), `validate_release.py` reported **27 failures**: all 8 CRLF checks and all 19 SHA256 manifest entries. The auto-generated ZIP was therefore not the validated package (backlog #15).
