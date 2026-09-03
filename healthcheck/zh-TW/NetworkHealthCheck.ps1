@@ -27,7 +27,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：報告保存例外類型、訊息與內部例外；腳本位置與呼叫堆疊只寫入 JSON 報告（Diagnostics）。
 
-$script:ToolVersion = "1.1.4"
+$script:ToolVersion = "1.1.5"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:Results = New-Object System.Collections.ArrayList
 $script:StartupMessages = New-Object System.Collections.ArrayList
@@ -2418,6 +2418,7 @@ function Save-Reports {
     }
 
     $writeErrors = New-Object System.Collections.ArrayList
+    $failedFormats = New-Object System.Collections.ArrayList
 
     try {
         $html = New-HtmlReportContent -SystemSummary $systemSummary -Overall $overall -Counts $counts
@@ -2425,6 +2426,7 @@ function Save-Reports {
         $script:LastHtmlReport = $htmlPath
     }
     catch {
+        [void]$failedFormats.Add("HTML")
         [void]$writeErrors.Add("HTML 報告寫入失敗：$(Get-ExceptionDetails $_ -IncludeDiagnostics)")
     }
 
@@ -2434,6 +2436,7 @@ function Save-Reports {
         $script:LastTextReport = $textPath
     }
     catch {
+        [void]$failedFormats.Add("TXT")
         [void]$writeErrors.Add("文字報告寫入失敗：$(Get-ExceptionDetails $_ -IncludeDiagnostics)")
     }
 
@@ -2443,22 +2446,86 @@ function Save-Reports {
         $script:LastJsonReport = $jsonPath
     }
     catch {
+        [void]$failedFormats.Add("JSON")
         [void]$writeErrors.Add("JSON 報告寫入失敗：$(Get-ExceptionDetails $_ -IncludeDiagnostics)")
     }
 
-    if ($writeErrors.Count -gt 0) {
-        foreach ($writeError in $writeErrors) {
-            Write-UiLog -Status "ERROR" -Text $writeError
-        }
-        throw ($writeErrors -join [Environment]::NewLine)
+    foreach ($writeError in $writeErrors) {
+        Write-UiLog -Status "ERROR" -Text $writeError
     }
 
     return [pscustomobject]@{
-        Html = $htmlPath
-        Text = $textPath
-        Json = $jsonPath
-        Overall = $overall
-        Counts = $counts
+        Html          = $script:LastHtmlReport
+        Text          = $script:LastTextReport
+        Json          = $script:LastJsonReport
+        Overall       = $overall
+        Counts        = $counts
+        FailedFormats = @($failedFormats)
+        WriteErrors   = @($writeErrors)
+    }
+}
+
+# Backlog #3：成功寫入的格式仍可使用；三種格式全部失敗時才寫一份緊急報告。
+function Complete-ReportStage {
+    param([object]$SaveResult)
+
+    $available = @(@($SaveResult.Html, $SaveResult.Text, $SaveResult.Json) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    $primary = $null
+    if ($available.Count -gt 0) {
+        $primary = [string]$available[0]
+    }
+    $failedFormats = @($SaveResult.FailedFormats)
+    $writeErrors = @($SaveResult.WriteErrors)
+    $emergencyPath = $null
+
+    if ($null -eq $primary) {
+        Write-UiLog -Status "ERROR" -Text "報告產生失敗。"
+        $emergencyPath = Write-EmergencyReport -Title "網路健檢報告產生失敗" -ErrorDetails ($writeErrors -join [Environment]::NewLine)
+        Set-UiProgress -Percent 100 -Text "報告產生失敗"
+        Update-OverallUi -Overall $SaveResult.Overall
+        if ($script:GuiAvailable) {
+            $script:ReportPathLabel.Text = "報告無法寫入"
+            $script:OpenFolderButton.Enabled = [bool](Test-Path -LiteralPath $script:OutputDirectory)
+            $message = "報告產生失敗。"
+            if ($null -ne $emergencyPath) {
+                $message += "`r`n已寫入緊急錯誤報告：$emergencyPath"
+            }
+            [System.Windows.Forms.MessageBox]::Show($message, "網路健檢錯誤", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        }
+    }
+    elseif ($failedFormats.Count -gt 0) {
+        Set-UiProgress -Percent 100 -Text "檢測完成"
+        Write-UiLog -Status "WARN" -Text ("報告已產生，但有 {0} 種格式無法寫入（{1}）。主要報告：{2}" -f $failedFormats.Count, ($failedFormats -join ", "), $primary)
+        Update-OverallUi -Overall $SaveResult.Overall
+        if ($script:GuiAvailable) {
+            $script:ReportPathLabel.Text = "報告：$primary"
+            $script:OpenReportButton.Enabled = $true
+            $script:OpenFolderButton.Enabled = $true
+            [System.Windows.Forms.MessageBox]::Show(("3 種報告格式中有 {0} 種無法寫入（{1}）。報告已存為：{2}" -f $failedFormats.Count, ($failedFormats -join ", "), $primary), "網路健檢警告", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        }
+    }
+    else {
+        Set-UiProgress -Percent 100 -Text "檢測完成"
+        Write-UiLog -Status "PASS" -Text ("報告已產生：{0}" -f $primary)
+        Update-OverallUi -Overall $SaveResult.Overall
+        if ($script:GuiAvailable) {
+            $script:ReportPathLabel.Text = "報告：$primary"
+            $script:OpenReportButton.Enabled = $true
+            $script:OpenFolderButton.Enabled = $true
+        }
+    }
+
+    return [pscustomobject]@{
+        Html          = $SaveResult.Html
+        Text          = $SaveResult.Text
+        Json          = $SaveResult.Json
+        Overall       = $SaveResult.Overall
+        Counts        = $SaveResult.Counts
+        PrimaryReport = $primary
+        FailedFormats = $failedFormats
+        WriteErrors   = $writeErrors
+        EmergencyPath = $emergencyPath
+        Succeeded     = ($null -ne $primary)
     }
 }
 
@@ -2588,15 +2655,13 @@ function Run-AllChecks {
     if (-not (Test-IsWindowsPlatform)) {
         Add-CheckResult -Category "程式環境" -Check "作業系統" -Status "FAIL" -Message "此版本只支援 Windows 10/11 或相容 Windows Server。" -Details ([System.Environment]::OSVersion.VersionString) | Out-Null
         $script:RunFinishedAt = Get-Date
-        $report = Save-Reports
-        return $report
+        return (Complete-ReportStage -SaveResult (Save-Reports))
     }
 
     if ($PSVersionTable.PSVersion.Major -lt 5) {
         Add-CheckResult -Category "程式環境" -Check "PowerShell 版本" -Status "FAIL" -Message "需要 PowerShell 5.1 或更新版本。" -Details ("目前版本：{0}" -f $PSVersionTable.PSVersion) | Out-Null
         $script:RunFinishedAt = Get-Date
-        $report = Save-Reports
-        return $report
+        return (Complete-ReportStage -SaveResult (Save-Reports))
     }
     else {
         Add-CheckResult -Category "程式環境" -Check "PowerShell 版本" -Status "PASS" -Message ("目前版本：{0}" -f $PSVersionTable.PSVersion) -Details "" | Out-Null
@@ -2681,18 +2746,7 @@ function Run-AllChecks {
     Write-UiLog -Status "INFO" -Text "正在產生 HTML、文字與 JSON 報告。"
 
     try {
-        $report = Save-Reports
-        Set-UiProgress -Percent 100 -Text "檢測完成"
-        Write-UiLog -Status "PASS" -Text ("報告已產生：{0}" -f $report.Html)
-        Update-OverallUi -Overall $report.Overall
-
-        if ($script:GuiAvailable) {
-            $script:ReportPathLabel.Text = "報告：$($report.Html)"
-            $script:OpenReportButton.Enabled = $true
-            $script:OpenFolderButton.Enabled = $true
-        }
-
-        return $report
+        return (Complete-ReportStage -SaveResult (Save-Reports))
     }
     catch {
         $details = Get-ExceptionDetails $_ -IncludeDiagnostics
@@ -2705,7 +2759,19 @@ function Run-AllChecks {
             }
             [System.Windows.Forms.MessageBox]::Show($message, "網路健檢錯誤", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         }
-        throw
+        # Backlog #2：報告階段的非預期錯誤只在這裡處理一次，不再重新拋出。
+        return [pscustomobject]@{
+            Html          = $null
+            Text          = $null
+            Json          = $null
+            Overall       = (Get-OverallStatus)
+            Counts        = (Get-SummaryCounts)
+            PrimaryReport = $null
+            FailedFormats = @("HTML", "TXT", "JSON")
+            WriteErrors   = @($details)
+            EmergencyPath = $emergencyPath
+            Succeeded     = $false
+        }
     }
     finally {
         $script:IsRunning = $false
@@ -2721,10 +2787,19 @@ function Start-ConsoleMode {
         $report = Run-AllChecks
         Write-Host ""
         Write-Host ("整體結果：{0}" -f $report.Overall.Text)
-        Write-Host ("HTML 報告：{0}" -f $report.Html)
-        Write-Host ("文字報告：{0}" -f $report.Text)
-        Write-Host ("JSON 報告：{0}" -f $report.Json)
-        return 0
+        Write-Host ("HTML 報告：{0}" -f (ConvertTo-DisplayString $report.Html "（未寫入）"))
+        Write-Host ("文字報告：{0}" -f (ConvertTo-DisplayString $report.Text "（未寫入）"))
+        Write-Host ("JSON 報告：{0}" -f (ConvertTo-DisplayString $report.Json "（未寫入）"))
+        if (@($report.FailedFormats).Count -gt 0) {
+            Write-Host ("未寫入的報告格式：{0}" -f (@($report.FailedFormats) -join ", ")) -ForegroundColor Yellow
+        }
+        if ($null -ne $report.EmergencyPath) {
+            Write-Host "緊急錯誤報告：$($report.EmergencyPath)"
+        }
+        if ($report.Succeeded) {
+            return 0
+        }
+        return 1
     }
     catch {
         $details = Get-ExceptionDetails $_ -IncludeDiagnostics
@@ -2888,11 +2963,18 @@ function Initialize-Gui {
 
     $openReportButton.Add_Click({
         try {
-            if ($null -ne $script:LastHtmlReport -and (Test-Path -LiteralPath $script:LastHtmlReport)) {
-                Start-Process -FilePath $script:LastHtmlReport -ErrorAction Stop
+            $target = $null
+            foreach ($candidate in @($script:LastHtmlReport, $script:LastTextReport, $script:LastJsonReport)) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$candidate) -and (Test-Path -LiteralPath $candidate)) {
+                    $target = $candidate
+                    break
+                }
+            }
+            if ($null -ne $target) {
+                Start-Process -FilePath $target -ErrorAction Stop
             }
             else {
-                throw "找不到 HTML 報告。"
+                throw "找不到報告檔案。"
             }
         }
         catch {

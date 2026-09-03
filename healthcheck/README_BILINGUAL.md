@@ -1,4 +1,4 @@
-# NetworkHealthCheck Portable 1.1.4 — Bilingual Package
+# NetworkHealthCheck Portable 1.1.5 — Bilingual Package
 
 - English: run `Start-English.cmd` or open the `en-US` folder.
 - 繁體中文：執行 `Start-Traditional-Chinese.cmd`，或開啟 `zh-TW` 資料夾。
