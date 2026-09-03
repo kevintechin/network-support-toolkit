@@ -91,12 +91,16 @@ def strip_line_comment(line, blank_single=False):
 def unparenthesized_arithmetic(text):
     hits=[]
     for n,line in enumerate(text.splitlines(),1):
-        m=re.search(r'New-Object [A-Za-z.]+\((.*)\)\s*$',strip_line_comment(line).rstrip())
+        code=strip_line_comment(line)
+        # Command names are case-insensitive; the argument list is `Type(...)` right after the type name or `-ArgumentList (...)`.
+        m=re.search(r'\bnew-object\s+(?:-typename\s+)?[\w.\[\]]+\s*\(|\bnew-object\b[^()]*-argumentlist\s*\(',code,re.I)
         if not m: continue
         depth=0; prev=''
-        for c in m.group(1):
+        for c in code[m.end():]:                        # the balanced group only; code after the closing ')' is not looked at
             if c in '([': depth+=1
-            elif c in ')]': depth-=1
+            elif c in ')]':
+                if depth==0: break
+                depth-=1
             elif depth==0 and (c in '+*/' or (c=='-' and prev not in '(, ')): hits.append(n); break
             if c!=' ': prev=c
     return hits

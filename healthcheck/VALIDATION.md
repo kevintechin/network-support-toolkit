@@ -50,6 +50,12 @@ Re-validation after round 3 (scripts unchanged; validator and manifest only): pa
 
 Re-validation after round 4 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy.
 
+**Independent review — Codex, PR #4, round 5 · 2026-09-03.** One P2 finding on commit 61ab9a0, accepted and fixed:
+
+1. *The arithmetic guard matched `New-Object` case-sensitively.* Command names are not, so `new-object System.Drawing.Point(22, 84 + $offset)` would have passed. Fix: the command is matched case-insensitively; the guard also covers the `New-Object -TypeName T -ArgumentList (...)` form (the same precedence pitfall) and analyses the balanced argument group even when more code follows on the line. Self-tests extended (lower-case and upper-case spellings, `-ArgumentList` with and without parentheses, trailing code, a `-Property` hashtable, nested `[math]::Min(560 + $offset, ...)`); the six v1.2.0 lines still flagged; 1.2.1 clean.
+
+Re-validation after round 5 (scripts unchanged; validator and manifest only): parser 0 errors × 2; validator 66/66; unit tests 89 × 2; report-stage functional tests 103 × 2; console acceptance en-US user, en-US IT switches and zh-TW user, exit 0, Overall Healthy. This is the fifth fix round of the review loop; per the agreed limit, a finding from the next pass is assessed and left for the maintainer's decision.
+
 ## v1.2.0 · 2026-09-03 — v1.2 Phase A
 
 **Changes** (design: `docs/design-v1.2-triage-wizard.md`, §3–§5; closes backlog #10 and #13):
