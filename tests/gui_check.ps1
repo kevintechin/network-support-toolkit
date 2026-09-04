@@ -1,8 +1,22 @@
-﻿param([string]$PackageDir, [ValidateSet("User", "IT")][string]$Entry = "IT", [int]$TimeoutSeconds = 300)
-# End-to-end check through the real WinForms window (UI Automation), the way a person would use the launchers:
-#   User entry: NetworkHealthCheck.ps1 (no switches) - the run starts by itself when the window is shown.
-#   IT entry:   NetworkHealthCheck.ps1 -Interactive -ExpandDetails - read the panel's numeric fields, click Start untouched.
-# Then wait for the JSON report, print the run options it recorded, and close the window with its Close button.
+param(
+    [string]$PackageDir,
+    [ValidateSet("User", "IT")][string]$Entry = "IT",
+    [ValidateSet("Launcher", "Direct")][string]$Via = "Launcher",
+    [int]$TimeoutSeconds = 300
+)
+# End-to-end check through the real WinForms window (UI Automation), the way a person would use the package:
+#   -Via Launcher (default): the double-click path - cmd.exe runs the shipped Start-NetworkCheck.cmd (User) or
+#                            Start-NetworkCheck-IT.cmd (IT) from the package folder; the window belongs to the PowerShell
+#                            process the launcher starts, and the launcher's effective command line is printed.
+#   -Via Direct:             powershell.exe -STA -File NetworkHealthCheck.ps1 [-Interactive -ExpandDetails], for debugging.
+#   User entry: the run must start by itself - Start disabled or the window changing within 10 s, nobody clicking.
+#   IT entry:   the window must be idle first - Start enabled, no report since launch, nothing in the window changing over
+#               a 3-second hold - then Start is clicked with the panel untouched and the click must take effect (Start
+#               disabled or the window changing within 10 s).
+# Then wait for the JSON report, print the run options it recorded, close the window with its Close button, and exit
+# nonzero if anything above failed, if the launched process (or the launcher) did not exit 0, or if the launcher wrote
+# LauncherError.txt. WinForms controls surface as generic panes through UI Automation here, but their names, enabled
+# state and window classes are exact; the spinner values show up as the names of their inner edit controls.
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -17,65 +31,138 @@ $scope = [System.Windows.Automation.TreeScope]
 $lang = Split-Path -Leaf $PackageDir
 $startNames = @{ "en-US" = "Start Test"; "zh-TW" = ([string][char]0x958B + [char]0x59CB + [char]0x6AA2 + [char]0x6E2C) }   # 開始檢測
 $closeNames = @{ "en-US" = "Close"; "zh-TW" = ([string][char]0x95DC + [char]0x9589) }                                      # 關閉
+if (-not $startNames.ContainsKey($lang)) { "[$lang] ERROR: the package folder must be named en-US or zh-TW"; exit 1 }
+$tag = "[$lang $Entry]"
 $ps = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+$cmd = Join-Path $env:SystemRoot "System32\cmd.exe"
 $script = Join-Path $PackageDir "NetworkHealthCheck.ps1"
 $reports = Join-Path $PackageDir "Reports"
-$psArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script)
-if ($Entry -eq "IT") { $psArgs += @("-Interactive", "-ExpandDetails") }
-"[$lang $Entry] arguments: " + ($psArgs -join " ")
+$launcherError = Join-Path $PackageDir "LauncherError.txt"
+if (Test-Path -LiteralPath $launcherError) { Remove-Item -LiteralPath $launcherError -Force }
+
+function Get-NewReport([datetime]$Since) {
+    Get-ChildItem -LiteralPath $reports -Filter "*.json" -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $Since } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+}
+function Get-WindowSnapshot($Window) {
+    # Every descendant as class|name|enabled; an unchanged snapshot means nothing in the window moved.
+    @($Window.FindAll($scope::Descendants, [System.Windows.Automation.Condition]::TrueCondition) | ForEach-Object { $_.Current.ClassName + "|" + $_.Current.Name + "|" + $_.Current.IsEnabled }) -join "`n"
+}
+function Find-ByName($Window, [string]$Name) {
+    $Window.FindFirst($scope::Descendants, (New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, $Name)))
+}
+function Send-Click($Element) {
+    [void][Win32Msg]::PostMessage([IntPtr]$Element.Current.NativeWindowHandle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
+}
+
 $launchedAt = Get-Date
-$proc = Start-Process -FilePath $ps -ArgumentList $psArgs -PassThru
-"[$lang $Entry] launched pid $($proc.Id) at " + $launchedAt.ToString("HH:mm:ss")
+if ($Via -eq "Launcher") {
+    $launcher = Join-Path $PackageDir $(if ($Entry -eq "IT") { "Start-NetworkCheck-IT.cmd" } else { "Start-NetworkCheck.cmd" })
+    if (-not (Test-Path -LiteralPath $launcher)) { "$tag ERROR: launcher not found: $launcher"; exit 1 }
+    "$tag launcher: " + (Split-Path -Leaf $launcher)
+    $proc = Start-Process -FilePath $cmd -ArgumentList @("/c", ('"' + $launcher + '"')) -WorkingDirectory $PackageDir -PassThru
+}
+else {
+    $psArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File", $script)
+    if ($Entry -eq "IT") { $psArgs += @("-Interactive", "-ExpandDetails") }
+    "$tag arguments: " + ($psArgs -join " ")
+    $proc = Start-Process -FilePath $ps -ArgumentList $psArgs -PassThru
+}
+"$tag launched pid $($proc.Id) at " + $launchedAt.ToString("HH:mm:ss")
+$guiPid = $proc.Id
 try {
+    if ($Via -eq "Launcher") {
+        # The window belongs to the PowerShell process the launcher starts, not to cmd.exe.
+        $child = $null; $deadline = (Get-Date).AddSeconds(30)
+        while ($null -eq $child -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 500
+            if ($proc.HasExited) { throw "the launcher exited early with code $($proc.ExitCode)" }
+            $child = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($proc.Id)" | Where-Object { $_.Name -match '^(powershell|pwsh)\.exe$' })[0]
+        }
+        if ($null -eq $child) { throw "the launcher started no PowerShell process within 30 s" }
+        $guiPid = [int]$child.ProcessId
+        "$tag launcher started $($child.Name) pid $guiPid with: " + ($child.CommandLine -replace '^"[^"]*"\s*', '')
+    }
     $win = $null; $deadline = (Get-Date).AddSeconds(60)
     while ($null -eq $win -and (Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
         if ($proc.HasExited) { throw "process exited early with code $($proc.ExitCode) (GUI fallback to console mode?)" }
-        $cond = New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $proc.Id)
-        $win = $AE::RootElement.FindFirst($scope::Children, $cond)
+        $win = $AE::RootElement.FindFirst($scope::Children, (New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $guiPid)))
     }
     if ($null -eq $win) { throw "main window not found within 60 s" }
-    "[$lang $Entry] window: '$($win.Current.Name)' " + [int]$win.Current.BoundingRectangle.Width + "x" + [int]$win.Current.BoundingRectangle.Height
+    "$tag window: '$($win.Current.Name)' " + [int]$win.Current.BoundingRectangle.Width + "x" + [int]$win.Current.BoundingRectangle.Height
     Start-Sleep -Seconds 2
+    $startButton = Find-ByName $win $startNames[$lang]
+    if ($null -eq $startButton) { throw "Start button not found" }
 
     if ($Entry -eq "IT") {
-        # What the panel shows: every Edit / Spinner descendant with its name, value and position (top to bottom).
+        # What the panel shows: every edit control (text boxes and the spinners' inner edits) with its text, top to bottom.
         $fields = @()
         foreach ($e in $win.FindAll($scope::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) {
-            $t = $e.Current.ControlType.ProgrammaticName
-            if ($t -notmatch 'Edit|Spinner') { continue }
-            $v = ''
-            try { $v = $e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value } catch { $v = '(no ValuePattern)' }
-            $fields += [pscustomobject]@{ Top = [int]$e.Current.BoundingRectangle.Top; Left = [int]$e.Current.BoundingRectangle.Left; Type = $t.Replace('ControlType.', ''); Name = $e.Current.Name; Value = $v }
+            if ($e.Current.ClassName -notmatch 'EDIT') { continue }
+            $fields += [pscustomobject]@{ Top = [int]$e.Current.BoundingRectangle.Top; Left = [int]$e.Current.BoundingRectangle.Left; Value = $e.Current.Name }
         }
-        foreach ($f in ($fields | Sort-Object Top, Left)) { "[$lang $Entry]   $($f.Type) name='$($f.Name)' value='$($f.Value)' at $($f.Left),$($f.Top)" }
-        $btnCond = New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, $startNames[$lang])
-        $btn = $win.FindFirst($scope::Descendants, $btnCond)
-        if ($null -eq $btn) { throw "Start button not found" }
-        [void][Win32Msg]::PostMessage([IntPtr]$btn.Current.NativeWindowHandle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
-        "[$lang $Entry] clicked Start with the panel untouched at " + (Get-Date).ToString("HH:mm:ss")
+        "$tag panel edit fields (top to bottom): " + (@($fields | Sort-Object Top, Left | ForEach-Object { "'" + $_.Value + "'" }) -join " ")
+        # Idle check: the IT entry must not start by itself. Start enabled, no report since launch, and nothing in the
+        # window changing over a 3-second hold; an auto-started run disables Start at once and moves the progress texts.
+        if (-not $startButton.Current.IsEnabled) { throw "Start is disabled before it was clicked: the run started by itself" }
+        if ($null -ne (Get-NewReport $launchedAt)) { throw "a report appeared before Start was clicked: the run started by itself" }
+        $before = Get-WindowSnapshot $win
+        Start-Sleep -Seconds 3
+        $after = Get-WindowSnapshot $win
+        if ($after -ne $before) { throw "the window changed during the 3-second idle hold: the run started by itself" }
+        if (-not $startButton.Current.IsEnabled) { throw "Start became disabled during the idle hold: the run started by itself" }
+        if ($null -ne (Get-NewReport $launchedAt)) { throw "a report appeared during the idle hold: the run started by itself" }
+        "$tag idle for 3 s with Start enabled and no report: the IT entry did not start by itself"
+        Send-Click $startButton
+        "$tag clicked Start with the panel untouched at " + (Get-Date).ToString("HH:mm:ss")
+        # The click must take effect: Run-AllChecks disables Start immediately and the progress texts move.
+        $deadline = (Get-Date).AddSeconds(10); $started = $false
+        while (-not $started -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 500
+            $started = (-not $startButton.Current.IsEnabled) -or ((Get-WindowSnapshot $win) -ne $after)
+        }
+        if (-not $started) { throw "the Start click had no effect within 10 s (Start still enabled, window unchanged)" }
+        "$tag the run started after the click"
+    }
+    else {
+        # The user entry must start by itself: Start disabled or the window changing within 10 s, with nobody clicking.
+        $snapshot = Get-WindowSnapshot $win
+        $deadline = (Get-Date).AddSeconds(10); $started = $false
+        while (-not $started -and (Get-Date) -lt $deadline) {
+            $started = (-not $startButton.Current.IsEnabled) -or ((Get-WindowSnapshot $win) -ne $snapshot) -or ($null -ne (Get-NewReport $launchedAt))
+            if (-not $started) { Start-Sleep -Milliseconds 500 }
+        }
+        if (-not $started) { throw "the user entry did not start by itself within 10 s" }
+        "$tag the run started by itself (nothing was clicked)"
     }
 
     $json = $null; $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ($null -eq $json -and (Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 3
-        $json = Get-ChildItem -LiteralPath $reports -Filter "*.json" -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $launchedAt } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        $json = Get-NewReport $launchedAt
     }
     if ($null -eq $json) { throw "no JSON report within $TimeoutSeconds s" }
     Start-Sleep -Seconds 2
     $d = Get-Content -LiteralPath $json.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-    "[$lang $Entry] report $($json.Name) at " + $json.LastWriteTime.ToString("HH:mm:ss") + ": ToolVersion=$($d.ToolVersion) EntryPoint=$($d.RunOptions.EntryPoint) PingCount=$($d.RunOptions.PingCount) SampleSeconds=$($d.RunOptions.SampleSeconds) TracerouteHops=$($d.RunOptions.TracerouteHops) Overall=$($d.Overall.Code) Fingerprint=$($d.Fingerprint.Key) Results=$(@($d.Results).Count)"
+    "$tag report $($json.Name) at " + $json.LastWriteTime.ToString("HH:mm:ss") + ": ToolVersion=$($d.ToolVersion) EntryPoint=$($d.RunOptions.EntryPoint) ExpandDetails=$($d.RunOptions.ExpandDetails) PingCount=$($d.RunOptions.PingCount) SampleSeconds=$($d.RunOptions.SampleSeconds) TracerouteHops=$($d.RunOptions.TracerouteHops) Overall=$($d.Overall.Code) Fingerprint=$($d.Fingerprint.Key) Results=$(@($d.Results).Count)"
     $gw = @($d.Results | Where-Object { $_.Tag -eq 'ping-gateway' })
-    if ($gw.Count -gt 0) { "[$lang $Entry] gateway ping row: " + $gw[0].Message }
+    if ($gw.Count -gt 0) { "$tag gateway ping row: " + $gw[0].Message }
 
-    $closeCond = New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, $closeNames[$lang])
-    $close = $win.FindFirst($scope::Descendants, $closeCond)
-    if ($null -ne $close) { [void][Win32Msg]::PostMessage([IntPtr]$close.Current.NativeWindowHandle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) }
-    if (-not $proc.WaitForExit(15000)) { "[$lang $Entry] window did not close in 15 s; killing"; $proc.Kill() } else { "[$lang $Entry] closed via the Close button; process exit code $($proc.ExitCode)" }
+    $close = Find-ByName $win $closeNames[$lang]
+    if ($null -eq $close) { throw "Close button not found" }
+    Send-Click $close
+    if (-not $proc.WaitForExit(15000)) { throw "the window did not close within 15 s of the Close click" }
+    "$tag closed via the Close button; process exit code $($proc.ExitCode)"
+    if (Test-Path -LiteralPath $launcherError) { throw "the launcher wrote LauncherError.txt: " + ((Get-Content -LiteralPath $launcherError -Raw) -replace '\s+', ' ') }
+    if ($proc.ExitCode -ne 0) { throw "the launched process exited with code $($proc.ExitCode)" }
     exit 0
 }
 catch {
-    "[$lang $Entry] ERROR: " + $_.Exception.Message
-    if (-not $proc.HasExited) { $proc.Kill(); "[$lang $Entry] process killed" }
+    "$tag ERROR: " + $_.Exception.Message
+    if (-not $proc.HasExited) { $proc.Kill(); "$tag process $($proc.Id) killed" }
+    if ($guiPid -ne $proc.Id) {
+        $gui = Get-Process -Id $guiPid -ErrorAction SilentlyContinue
+        if ($null -ne $gui) { $gui.Kill(); "$tag GUI process $guiPid killed" }
+    }
     exit 1
 }

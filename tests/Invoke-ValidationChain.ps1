@@ -54,6 +54,7 @@ $Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $PackageDir = Join-Path $Root 'healthcheck'
 $Languages = @('en-US', 'zh-TW')
 $PsExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$CmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
 
 # -File passes "a,b" as one string, so the list is split here and validated by hand.
 $selected = @($Steps | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
@@ -145,6 +146,7 @@ function Test-ReportExpectations {
     foreach ($key in @('EntryPoint', 'PingCount', 'SampleSeconds', 'TracerouteHops')) {
         if ($Expect.ContainsKey($key) -and ([string]$Report.RunOptions.$key -ne [string]$Expect[$key])) { $bad += ('{0}={1} (expected {2})' -f $key, $Report.RunOptions.$key, $Expect[$key]) }
     }
+    if ($Expect.ContainsKey('ExpandDetails') -and ([bool]$Report.RunOptions.ExpandDetails -ne [bool]$Expect['ExpandDetails'])) { $bad += ('ExpandDetails={0} (expected {1})' -f $Report.RunOptions.ExpandDetails, $Expect['ExpandDetails']) }
     if ($Expect.ContainsKey('ExtraPing') -and (@($Report.RunOptions.ExtraTargets.Ping) -notcontains $Expect['ExtraPing'])) { $bad += ('extra ping target {0} missing' -f $Expect['ExtraPing']) }
     if ($Expect.ContainsKey('ExtraTcp') -and (@($Report.RunOptions.ExtraTargets.Tcp) -notcontains $Expect['ExtraTcp'])) { $bad += ('extra TCP target {0} missing' -f $Expect['ExtraTcp']) }
     if ([string]$Report.SchemaVersion -ne '2') { $bad += ('SchemaVersion={0} (expected 2)' -f $Report.SchemaVersion) }
@@ -156,25 +158,38 @@ function Format-ReportDetail($Report) {
     return ('EntryPoint={0} PingCount={1} SampleSeconds={2} TracerouteHops={3}; Overall {4} ({5}); {6} results ({7} IT); fingerprint {8}' -f $Report.RunOptions.EntryPoint, $Report.RunOptions.PingCount, $Report.RunOptions.SampleSeconds, $Report.RunOptions.TracerouteHops, $Report.Overall.Text, $Report.Overall.Code, @($Report.Results).Count, $it, $Report.Fingerprint.Key)
 }
 function Invoke-WindowRun {
-    # One real-window run through gui_check.ps1, and the evidence it must leave: exit 0; a JSON report whose run options
-    # match the launch (entry point; ping count and sample seconds from the folder's configuration); the title carrying
-    # the IT marker for the IT entry only ("- IT" / "(IT)" right before the closing quote of the window line); the window
-    # closed through its own Close button.
+    # One real-window run through gui_check.ps1 - launched the way a person does it, through the shipped
+    # Start-NetworkCheck.cmd / Start-NetworkCheck-IT.cmd - and the evidence it must leave: exit 0 (gui_check itself fails
+    # on an IT entry that starts by itself, a user entry that does not, a Start click without effect, a nonzero process
+    # exit code or a LauncherError.txt); the launcher's effective command line carrying -Interactive -ExpandDetails for
+    # the IT entry only; a JSON report whose run options match the launch (entry point, ExpandDetails, ping count and
+    # sample seconds from the folder's configuration); the title carrying the IT marker for the IT entry only ("- IT" /
+    # "(IT)" right before the closing quote of the window line); the window closed through its own Close button.
     param([string]$Dir, [string]$Entry, [string]$LogName)
     $expect = Get-ConfigSampling $Dir
     $expect['EntryPoint'] = $Entry
+    $expect['ExpandDetails'] = ($Entry -eq 'IT')
     $started = Get-Date
-    $r = Invoke-TestScript 'gui_check.ps1' @('-PackageDir', $Dir, '-Entry', $Entry, '-TimeoutSeconds', $GuiTimeoutSeconds) $LogName
+    $r = Invoke-TestScript 'gui_check.ps1' @('-PackageDir', $Dir, '-Entry', $Entry, '-Via', 'Launcher', '-TimeoutSeconds', $GuiTimeoutSeconds) $LogName
     if ($r.ExitCode -ne 0) { return @{ Passed = $false; Detail = ('exit code {0}: {1}' -f $r.ExitCode, [string]@($r.Output | Where-Object { $_ -match 'ERROR' })[0]) } }
     $json = Get-NewestJson (Join-Path $Dir 'Reports') $started
     if ($null -eq $json) { return @{ Passed = $false; Detail = 'exit 0 but no JSON report' } }
     $d = Read-Report $json
     $bad = @(Test-ReportExpectations $d $expect)
+    $cmdline = [string]@($r.Output | Where-Object { $_ -match 'launcher started .* with: ' })[0]
+    if (-not $cmdline) { $bad += 'the launcher command line was not captured' }
+    else {
+        $hasIt = ($cmdline -match '(?i)-Interactive\b') -and ($cmdline -match '(?i)-ExpandDetails\b')
+        $hasAny = ($cmdline -match '(?i)-Interactive\b') -or ($cmdline -match '(?i)-ExpandDetails\b')
+        if ($Entry -eq 'IT' -and -not $hasIt) { $bad += 'the IT launcher does not pass -Interactive -ExpandDetails' }
+        if ($Entry -eq 'User' -and $hasAny) { $bad += 'the user launcher passes an IT switch' }
+    }
     $window = [string]@($r.Output | Where-Object { $_ -match "window: '" })[0]
     $titledIt = [bool]($window -match "IT[^']{0,3}' \d+x\d+")
     if ($titledIt -ne ($Entry -eq 'IT')) { $bad += ('window title ' + $(if ($titledIt) { 'carries' } else { 'lacks' }) + ' the IT marker') }
-    if (@($r.Output | Where-Object { $_ -match 'closed via the Close button' }).Count -eq 0) { $bad += 'not closed through the Close button' }
-    $detail = (Format-ReportDetail $d) + '; ' + ($window -replace '^\[[^\]]+\]\s*', '')
+    if (@($r.Output | Where-Object { $_ -match 'closed via the Close button; process exit code 0$' }).Count -eq 0) { $bad += 'not closed through the Close button with exit code 0' }
+    $launcherLine = [string]@($r.Output | Where-Object { $_ -match '\] launcher: ' })[0] -replace '^.*launcher: ', ''
+    $detail = (Format-ReportDetail $d) + '; ' + ($window -replace '^\[[^\]]+\]\s*', '') + $(if ($launcherLine) { '; via ' + $launcherLine } else { '' })
     if ($bad.Count) { $detail = ($bad -join '; ') + ' | ' + $detail }
     return @{ Passed = ($bad.Count -eq 0); Detail = $detail }
 }
@@ -259,10 +274,12 @@ try {
         }
     }
     if ($selected -contains 'acceptance') {
+        # The two user runs go through the shipped console launcher (its trailing `pause` reads from NUL); the IT-switches
+        # run calls the script directly because the launcher takes no arguments.
         $acceptance = @(
-            @{ Lang = 'en-US'; Case = 'en-US user'; Args = @('-ConsoleOnly'); Expect = @{ EntryPoint = 'User' } },
-            @{ Lang = 'en-US'; Case = 'en-US IT switches'; Args = @('-ConsoleOnly', '-PingCount', '6', '-SampleSeconds', '6', '-PingTarget', '8.8.8.8', '-TcpTarget', '1.1.1.1:53', '-TracerouteHops', '4', '-ExpandDetails'); Expect = @{ EntryPoint = 'IT'; PingCount = 6; SampleSeconds = 6; TracerouteHops = 4; ExtraPing = '8.8.8.8'; ExtraTcp = '1.1.1.1:53' } },
-            @{ Lang = 'zh-TW'; Case = 'zh-TW user'; Args = @('-ConsoleOnly'); Expect = @{ EntryPoint = 'User' } }
+            @{ Lang = 'en-US'; Case = 'en-US user (Start-NetworkCheck-Console.cmd)'; Launcher = 'Start-NetworkCheck-Console.cmd'; Expect = @{ EntryPoint = 'User'; ExpandDetails = $false } },
+            @{ Lang = 'en-US'; Case = 'en-US IT switches (direct)'; Args = @('-ConsoleOnly', '-PingCount', '6', '-SampleSeconds', '6', '-PingTarget', '8.8.8.8', '-TcpTarget', '1.1.1.1:53', '-TracerouteHops', '4', '-ExpandDetails'); Expect = @{ EntryPoint = 'IT'; ExpandDetails = $true; PingCount = 6; SampleSeconds = 6; TracerouteHops = 4; ExtraPing = '8.8.8.8'; ExtraTcp = '1.1.1.1:53' } },
+            @{ Lang = 'zh-TW'; Case = 'zh-TW user (Start-NetworkCheck-Console.cmd)'; Launcher = 'Start-NetworkCheck-Console.cmd'; Expect = @{ EntryPoint = 'User'; ExpandDetails = $false } }
         )
         foreach ($a in $acceptance) {
             Invoke-Case 'acceptance' $a.Case {
@@ -271,9 +288,14 @@ try {
                 $expect = @{}
                 foreach ($k in $a.Expect.Keys) { $expect[$k] = $a.Expect[$k] }
                 if (-not $expect.ContainsKey('PingCount')) { $s = Get-ConfigSampling $stage; $expect['PingCount'] = $s.PingCount; $expect['SampleSeconds'] = $s.SampleSeconds }
+                $launcherError = Join-Path $stage 'LauncherError.txt'
+                if (Test-Path -LiteralPath $launcherError) { Remove-Item -LiteralPath $launcherError -Force }
                 $started = Get-Date
-                $r = Invoke-Native $PsExe (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $stage 'NetworkHealthCheck.ps1')) + $a.Args) ('acceptance_' + ($a.Case -replace '[^\w-]', '_'))
+                $logName = 'acceptance_' + ($a.Case -replace '[^\w-]', '_')
+                if ($a.Launcher) { $r = Invoke-Native $CmdExe @('/s', '/c', ('"' + (Join-Path $stage $a.Launcher) + '" <nul')) $logName }
+                else { $r = Invoke-Native $PsExe (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $stage 'NetworkHealthCheck.ps1')) + $a.Args) $logName }
                 if ($r.ExitCode -ne 0) { return @{ Passed = $false; Detail = ('exit code ' + $r.ExitCode) } }
+                if (Test-Path -LiteralPath $launcherError) { return @{ Passed = $false; Detail = 'the launcher wrote LauncherError.txt' } }
                 $json = Get-NewestJson (Join-Path $stage 'Reports') $started
                 if ($null -eq $json) { return @{ Passed = $false; Detail = 'exit 0 but no JSON report' } }
                 $d = Read-Report $json
