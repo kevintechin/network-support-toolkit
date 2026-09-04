@@ -56,14 +56,22 @@ function Find-ByName($Window, [string]$Name) {
 function Send-Click($Element) {
     [void][Win32Msg]::PostMessage([IntPtr]$Element.Current.NativeWindowHandle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
 }
+function Get-ChildProcesses([int]$ParentId) {
+    # Win32_Process through CIM when it exists and WMI otherwise - the same selection the script makes for its own
+    # CIM / WMI queries, so the driver works wherever the script does.
+    $filter = "ParentProcessId = $ParentId"
+    if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) { return @(Get-CimInstance -ClassName Win32_Process -Filter $filter -ErrorAction Stop) }
+    if (Get-Command Get-WmiObject -ErrorAction SilentlyContinue) { return @(Get-WmiObject -Class Win32_Process -Filter $filter -ErrorAction Stop) }
+    throw "Neither Get-CimInstance nor Get-WmiObject is available to find the launched process."
+}
 function Get-PowerShellDescendant([int]$ParentId) {
     # The PowerShell process under the launcher: a direct child of cmd.exe (the language launchers, and the root
     # launchers, which `call` them in the same cmd.exe), or a grandchild should a launcher ever spawn a nested cmd.exe.
-    $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ParentId")
+    $children = @(Get-ChildProcesses $ParentId)
     $hit = @($children | Where-Object { $_.Name -match '^(powershell|pwsh)\.exe$' })[0]
     if ($null -ne $hit) { return $hit }
     foreach ($c in $children) {
-        $hit = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($c.ProcessId)" | Where-Object { $_.Name -match '^(powershell|pwsh)\.exe$' })[0]
+        $hit = @(Get-ChildProcesses ([int]$c.ProcessId) | Where-Object { $_.Name -match '^(powershell|pwsh)\.exe$' })[0]
         if ($null -ne $hit) { return $hit }
     }
     return $null

@@ -175,6 +175,14 @@ function Get-MachineFacts {
         }
         catch { }
     }
+    # How many wireless interfaces `netsh wlan show interfaces` reports as connected - the output Add-WifiRfResult parses,
+    # which writes one wifi row per connected interface. Only a connected interface carries an SSID line, and that label
+    # is not localized; without netsh, or with none connected, the script writes one row.
+    $facts.WifiInterfaces = 0
+    $netsh = Join-Path $env:SystemRoot 'System32\netsh.exe'
+    if (Test-Path -LiteralPath $netsh) {
+        try { $facts.WifiInterfaces = @(& $netsh wlan show interfaces 2>&1 | Where-Object { ([string]$_) -match '^\s*SSID\s*:' }).Count } catch { }
+    }
     # Whether adapter statistics can be sampled, the way Get-AdapterStatisticsSnapshot samples them; without them both
     # sampling steps end as step-error rows and the analysis step writes one aggregate adapter-errors row.
     $facts.AdapterStatistics = $false
@@ -292,8 +300,9 @@ function Test-ResultSet {
     $reported = @{ 'wifi' = $o.ChecksEnabled.WifiRf; 'routes' = $o.ChecksEnabled.RouteTable; 'gateway-neighbor' = $o.ChecksEnabled.GatewayNeighbor; 'proxy' = $o.ChecksEnabled.ProxySettings; 'traceroute' = $o.ChecksEnabled.Traceroute; 'drivers' = $o.ChecksEnabled.DriverInfo }
     foreach ($k in @($itTags.Keys)) {
         if ([bool]$reported[$k] -ne [bool]$itTags[$k]) { $bad += ('ChecksEnabled for {0} reported as {1}, expected {2} from the configuration and the switches' -f $k, $reported[$k], $itTags[$k]) }
-        # One row per enabled diagnostic; the gateway neighbour is looked up once per resolved gateway (one row without).
-        $want[$k] = $(if (-not $itTags[$k]) { 0 } elseif ($k -eq 'gateway-neighbor') { [math]::Max(1, $gateways.Count) } else { 1 })
+        # One row per enabled diagnostic; the gateway neighbour is looked up once per resolved gateway and the Wi-Fi radio
+        # reported once per connected wireless interface (one row each without).
+        $want[$k] = $(if (-not $itTags[$k]) { 0 } elseif ($k -eq 'gateway-neighbor') { [math]::Max(1, $gateways.Count) } elseif ($k -eq 'wifi') { [math]::Max(1, [int]$(if ($null -eq $Machine.WifiInterfaces) { 0 } else { $Machine.WifiInterfaces })) } else { 1 })
     }
     $rows = @($Report.Results)
     $byTag = @{}

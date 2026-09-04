@@ -35,7 +35,7 @@ $text = Get-Content -LiteralPath $json.FullName -Raw -Encoding UTF8
 function Load { $text | ConvertFrom-Json }
 
 # The fixture and its facts.
-$facts = @{ ConnectedAdapters = 3; Gateways = @('192.0.2.1'); DnsServers = @(); Source = 'NetCmdlets'; DataSourceRow = $false; SnapshotStepFailed = $false; TcpCounters = @{ TCPv4 = $true; TCPv6 = $true }; AdapterStatistics = $true }
+$facts = @{ ConnectedAdapters = 3; Gateways = @('192.0.2.1'); DnsServers = @(); Source = 'NetCmdlets'; DataSourceRow = $false; SnapshotStepFailed = $false; TcpCounters = @{ TCPv4 = $true; TCPv6 = $true }; AdapterStatistics = $true; WifiInterfaces = 1 }
 function New-Row($Template, [string]$Tag, [string]$Check, [string]$Status, [string]$Scope = 'Main') {
     $row = $Template.PSObject.Copy(); $row.Tag = $Tag; $row.Check = $Check; $row.Status = $Status; $row.Scope = $Scope; $row.Message = 'fixture row'; return $row
 }
@@ -136,5 +136,9 @@ function ConvertTo-FailedFallbackShape($Report) {
 }
 $r = ConvertTo-FailedFallbackShape (New-Fixture); Assert-Case 'both snapshot paths failed: data-source row, step-error row, zero-adapter shape, facts agree' @(Test-ResultSet $r $cfg @{} $failedFallback) $true ''
 $r = ConvertTo-FailedFallbackShape (New-Fixture); Assert-Case 'the same shape with a fallback that worked' @(Test-ResultSet $r $cfg @{} (With $failedFallback @{ SnapshotStepFailed = $false })) $false 'step-error: 1 row(s), expected 0'
+# Two connected wireless interfaces: one wifi row each.
+$twoWifi = With $facts @{ WifiInterfaces = 2 }
+$r = New-Fixture; $r.Results = @($r.Results) + @(New-Row $r.Results[0] 'wifi' 'Wi-Fi radio' 'INFO' 'IT'); Assert-Case 'two connected wireless interfaces with two wifi rows' @(Test-ResultSet $r $cfg @{} $twoWifi) $true ''
+$r = New-Fixture; Assert-Case 'two connected wireless interfaces but one wifi row' @(Test-ResultSet $r $cfg @{} $twoWifi) $false 'wifi: 1 row(s), expected 2'
 "Summary: $passes passed, $fails failed"
 exit $fails
