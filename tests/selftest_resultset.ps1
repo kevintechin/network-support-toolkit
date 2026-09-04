@@ -21,7 +21,7 @@ $ErrorActionPreference = 'Stop'
 $runner = Join-Path $PSScriptRoot 'Invoke-ValidationChain.ps1'
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($runner, [ref]$tokens, [ref]$errors)
-foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Read-Config', 'Get-Count', 'Test-TrueFlag', 'Get-CimOrWmiInstance', 'Add-PrimaryFacts', 'Get-MachineFacts', 'Get-StandardRuleCount', 'Test-ResultSet') }, $true)) { Invoke-Expression $f.Extent.Text }
+foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Read-Config', 'Get-Count', 'Test-TrueFlag', 'Get-CimOrWmiInstance', 'Add-PrimaryFacts', 'Get-MachineFacts', 'Get-StandardRuleCount', 'Test-ResultSet', 'ConvertTo-FactsKey', 'Test-ResultSetForRun') }, $true)) { Invoke-Expression $f.Extent.Text }
 $machine = Get-MachineFacts
 "machine: $($machine.ConnectedAdapters) connected adapter(s) with an address, gateway(s) $(@($machine.Gateways) -join ', '), source $($machine.Source), TCP counters v4=$($machine.TcpCounters.TCPv4) v6=$($machine.TcpCounters.TCPv6)"
 $cfg = Read-Config $ConfigDir
@@ -149,5 +149,28 @@ function ConvertTo-OneSampleFailed($Report) {
     return $Report
 }
 $r = ConvertTo-OneSampleFailed (New-Fixture); Assert-Case 'one adapter-statistics sample failed: one step-error row and the aggregate row' @(Test-ResultSet $r $cfg @{} $facts) $true ''
+# The two TCP counter samples are read independently: a class readable in one sample only leaves one error row and no
+# result row for that class; both classes lost after the baseline leave two error rows and no step-error.
+function Set-TcpRows($Report, [object[]]$Rows) {
+    $Report.Results = @($Report.Results | Where-Object { $_.Tag -ne 'tcp-retransmissions' })
+    foreach ($row in $Rows) { $Report.Results = @($Report.Results) + @(New-Row $Report.Results[0] 'tcp-retransmissions' $row[0] $row[1]) }
+    return $Report
+}
+$v6LostAfter = With $facts @{ TcpCounters = @{ TCPv4 = $true; TCPv6 = $false } }
+$r = Set-TcpRows (New-Fixture) @(@('TCPv4', 'PASS'), @('TCPv6 counters', 'ERROR')); Assert-Case 'TCPv6 readable at the baseline only: one result row and one error row' @(Test-ResultSet $r $cfg @{} $facts $v6LostAfter) $true ''
+$r = Set-TcpRows (New-Fixture) @(@('TCPv4', 'PASS'), @('TCPv6 counters', 'ERROR')); Assert-Case 'TCPv6 readable at the end only: the same shape' @(Test-ResultSet $r $cfg @{} $v6LostAfter $facts) $true ''
+$bothLostAfter = With $facts @{ TcpCounters = @{ TCPv4 = $false; TCPv6 = $false } }
+$r = Set-TcpRows (New-Fixture) @(@('TCPv4 counters', 'ERROR'), @('TCPv6 counters', 'ERROR')); Assert-Case 'both classes lost after the baseline: two error rows, no step-error' @(Test-ResultSet $r $cfg @{} $facts $bothLostAfter) $true ''
+# The machine can change during a run: the report must match the pre-launch facts, or else the post-run facts (noted).
+function ConvertTo-TwoAdapters($Report) {
+    $Report.Results = @($Report.Results | Where-Object { -not ($_.Tag -in @('adapter', 'adapter-errors') -and $_.Check -like '*fixture 3*') })
+    return $Report
+}
+$twoAdapters = With $facts @{ ConnectedAdapters = 2 }
+$run = Test-ResultSetForRun (New-Fixture) $cfg @{} $facts $twoAdapters; Assert-Case 'an adapter dropped during the run, report from before the drop' @($run.Mismatches) $true ''
+if ($run.Note -ne '') { $script:fails++; "[FAIL] the pre-launch match must carry no note -> '$($run.Note)'" } else { $script:passes++; "[PASS] the pre-launch match carries no note" }
+$run = Test-ResultSetForRun (ConvertTo-TwoAdapters (New-Fixture)) $cfg @{} $facts $twoAdapters; Assert-Case 'an adapter dropped during the run, report from after the drop' @($run.Mismatches) $true ''
+if ($run.Note -like '*matches the post-run facts*') { $script:passes++; "[PASS] the post-run match is noted -> '$($run.Note)'" } else { $script:fails++; "[FAIL] the post-run match must be noted -> '$($run.Note)'" }
+$run = Test-ResultSetForRun (ConvertTo-TwoAdapters (New-Fixture)) $cfg @{} $facts $facts; Assert-Case 'two adapter rows with three adapters throughout' @($run.Mismatches) $false 'adapter: 2 row(s), expected one per connected adapter with an address (3)'
 "Summary: $passes passed, $fails failed"
 exit $fails

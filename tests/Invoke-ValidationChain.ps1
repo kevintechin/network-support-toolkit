@@ -251,8 +251,9 @@ function Test-ResultSet {
     # counter row per adapter row). A Run-AllChecks that skipped a diagnostic, an unknown or renamed tag, or a missing
     # row for an extra target given as a switch fails here. Returns the mismatches. $Machine (adapters and gateways as
     # the operating system reports them, see Get-MachineFacts) can be injected by the self-test.
-    param($Report, $Config, [hashtable]$Expect, [hashtable]$Machine)
+    param($Report, $Config, [hashtable]$Expect, [hashtable]$Machine, [hashtable]$MachineAfter)
     if ($null -eq $Machine) { $Machine = Get-MachineFacts }
+    if ($null -eq $MachineAfter) { $MachineAfter = $Machine }   # facts read after the run, for what the ending sample saw
     $bad = @()
     $o = $Report.RunOptions
     $pingTargets = @($Config.Tests.PingTargets)
@@ -261,9 +262,18 @@ function Test-ResultSet {
     $gateways = @($Machine.Gateways)
     $dnsServerCount = Get-Count $Machine.DnsServers
     $connected = [int]$Machine.ConnectedAdapters
-    $tcpCounters = $Machine.TcpCounters
-    if ($null -eq $tcpCounters) { $tcpCounters = @{ TCPv4 = $true; TCPv6 = $true } }
-    $tcpBothUnreadable = (-not [bool]$tcpCounters.TCPv4) -and (-not [bool]$tcpCounters.TCPv6)
+    # The two TCP counter samples are read independently (baseline, then ending): a class readable in both gives one
+    # result row, unreadable in both two error rows, readable in one of them one error row and no result row. The
+    # pre-launch facts stand for the baseline sample, the post-run facts for the ending one.
+    $tcpBefore = $Machine.TcpCounters
+    if ($null -eq $tcpBefore) { $tcpBefore = @{ TCPv4 = $true; TCPv6 = $true } }
+    $tcpAfter = $MachineAfter.TcpCounters
+    if ($null -eq $tcpAfter) { $tcpAfter = $tcpBefore }
+    $tcpBothUnreadable = (-not [bool]$tcpBefore.TCPv4) -and (-not [bool]$tcpBefore.TCPv6)   # then the baseline step throws
+    $tcpRows = 0
+    foreach ($protocol in @('TCPv4', 'TCPv6')) {
+        $tcpRows += $(if ([bool]$tcpBefore.$protocol -and [bool]$tcpAfter.$protocol) { 1 } elseif ((-not [bool]$tcpBefore.$protocol) -and (-not [bool]$tcpAfter.$protocol)) { 2 } else { 1 })
+    }
     $statsReadable = $(if ($null -eq $Machine.AdapterStatistics) { $true } else { [bool]$Machine.AdapterStatistics })
     # One connectivity-group row per group named on a TCP or HTTP target or listed in RequiredConnectivityGroups (a
     # required group without targets gets its own "no executable items" row), the way Test-ConnectivityTargets writes them.
@@ -287,9 +297,9 @@ function Test-ResultSet {
         'tcp' = (Get-Count $Config.Tests.TcpTargets) + (Get-Count $o.ExtraTargets.Tcp)
         'http' = (Get-Count $Config.Tests.HttpTargets) + (Get-Count $o.ExtraTargets.Http)
         'connectivity-group' = $groups.Count
-        # One result row per readable TCP counter class and two error rows (one per sample) per unreadable one; with
-        # neither readable the baseline step fails (a step-error row) and the analysis writes one generic row.
-        'tcp-retransmissions' = $(if ($tcpBothUnreadable) { 1 } else { $(if ([bool]$tcpCounters.TCPv4) { 1 } else { 2 }) + $(if ([bool]$tcpCounters.TCPv6) { 1 } else { 2 }) })
+        # Per class as computed above; with neither class readable at the baseline the step fails (a step-error row) and
+        # the analysis writes one generic row.
+        'tcp-retransmissions' = $(if ($tcpBothUnreadable) { 1 } else { $tcpRows })
         # Step failures the machine facts explain: the TCP baseline without a readable counter class, both
         # adapter-statistics samples without the cmdlet (or one of them when a sample failed on its own - see below), and
         # the network snapshot when its fallback failed too. Any other step-error row is unexpected.
@@ -369,6 +379,19 @@ function Test-ResultSet {
     }
     return $bad
 }
+function ConvertTo-FactsKey([hashtable]$F) {
+    return ('{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}' -f $F.ConnectedAdapters, (@($F.Gateways) -join ','), (@($F.DnsServers) -join ','), $F.WifiInterfaces, [bool]$F.TcpCounters.TCPv4, [bool]$F.TcpCounters.TCPv6, [bool]$F.AdapterStatistics, [bool]$F.DataSourceRow, [bool]$F.SnapshotStepFailed)
+}
+function Test-ResultSetForRun {
+    # The machine can change while a run samples for two minutes (an adapter connecting or dropping, a Wi-Fi roaming),
+    # so the facts are read before the launch and after the report: the report must match the pre-launch facts, or -
+    # when the two readings differ - the post-run facts, and the note says which. Returns @{ Mismatches; Note }.
+    param($Report, $Config, [hashtable]$Expect, [hashtable]$Before, [hashtable]$After)
+    $bad = @(Test-ResultSet $Report $Config $Expect $Before $After)
+    if ($bad.Count -eq 0 -or ((ConvertTo-FactsKey $Before) -eq (ConvertTo-FactsKey $After))) { return @{ Mismatches = $bad; Note = '' } }
+    if (@(Test-ResultSet $Report $Config $Expect $After $After).Count -eq 0) { return @{ Mismatches = @(); Note = 'the machine changed during the run; the report matches the post-run facts' } }
+    return @{ Mismatches = $bad; Note = 'the machine changed during the run; the report matches neither the pre-launch nor the post-run facts' }
+}
 function Get-NewestJson([string]$Dir, [datetime]$After) {
     @(Get-ChildItem -LiteralPath $Dir -Filter '*.json' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $After } | Sort-Object LastWriteTime -Descending | Select-Object -First 1)[0]
 }
@@ -408,6 +431,7 @@ function Invoke-WindowRun {
     $expect = Get-ConfigSampling $Dir
     $expect['EntryPoint'] = $Entry
     $expect['ExpandDetails'] = ($Entry -eq 'IT')
+    $factsBefore = Get-MachineFacts
     $started = Get-Date
     $argList = @('-PackageDir', $Dir, '-Entry', $Entry, '-Via', 'Launcher', '-TimeoutSeconds', $GuiTimeoutSeconds)
     if ($LauncherPath) { $argList += @('-LauncherPath', $LauncherPath) }
@@ -415,8 +439,10 @@ function Invoke-WindowRun {
     if ($r.ExitCode -ne 0) { return @{ Passed = $false; Detail = ('exit code {0}: {1}' -f $r.ExitCode, [string]@($r.Output | Where-Object { $_ -match 'ERROR' })[0]) } }
     $json = Get-NewestJson (Join-Path $Dir 'Reports') $started
     if ($null -eq $json) { return @{ Passed = $false; Detail = 'exit 0 but no JSON report' } }
+    $factsAfter = Get-MachineFacts
     $d = Read-Report $json
-    $bad = @(Test-ReportExpectations $d $expect) + @(Test-ResultSet $d (Read-Config $Dir) $expect)
+    $resultSet = Test-ResultSetForRun $d (Read-Config $Dir) $expect $factsBefore $factsAfter
+    $bad = @(Test-ReportExpectations $d $expect) + @($resultSet.Mismatches)
     $cmdline = [string]@($r.Output | Where-Object { $_ -match 'launcher started .* with: ' })[0]
     if (-not $cmdline) { $bad += 'the launcher command line was not captured' }
     else {
@@ -430,7 +456,7 @@ function Invoke-WindowRun {
     if ($titledIt -ne ($Entry -eq 'IT')) { $bad += ('window title ' + $(if ($titledIt) { 'carries' } else { 'lacks' }) + ' the IT marker') }
     if (@($r.Output | Where-Object { $_ -match 'closed via the Close button; process exit code 0$' }).Count -eq 0) { $bad += 'not closed through the Close button with exit code 0' }
     $launcherLine = [string]@($r.Output | Where-Object { $_ -match '\] launcher: ' })[0] -replace '^.*launcher: ', ''
-    $detail = (Format-ReportDetail $d) + '; ' + ($window -replace '^\[[^\]]+\]\s*', '') + $(if ($launcherLine) { '; via ' + $launcherLine } else { '' })
+    $detail = (Format-ReportDetail $d) + '; ' + ($window -replace '^\[[^\]]+\]\s*', '') + $(if ($launcherLine) { '; via ' + $launcherLine } else { '' }) + $(if ($resultSet.Note) { '; ' + $resultSet.Note } else { '' })
     if ($bad.Count) { $detail = ($bad -join '; ') + ' | ' + $detail }
     return @{ Passed = ($bad.Count -eq 0); Detail = $detail }
 }
@@ -530,6 +556,7 @@ try {
                 if (-not $expect.ContainsKey('PingCount')) { $s = Get-ConfigSampling $stage; $expect['PingCount'] = $s.PingCount; $expect['SampleSeconds'] = $s.SampleSeconds }
                 $launcherError = Join-Path $stage 'LauncherError.txt'
                 if (Test-Path -LiteralPath $launcherError) { Remove-Item -LiteralPath $launcherError -Force }
+                $factsBefore = Get-MachineFacts
                 $started = Get-Date
                 $logName = 'acceptance_' + ($a.Case -replace '[^\w-]', '_')
                 if ($a.Launcher) { $r = Invoke-Native $CmdExe @('/s', '/c', ('"' + (Join-Path $stage $a.Launcher) + '" <nul')) $logName }
@@ -538,10 +565,12 @@ try {
                 if (Test-Path -LiteralPath $launcherError) { return @{ Passed = $false; Detail = 'the launcher wrote LauncherError.txt' } }
                 $json = Get-NewestJson (Join-Path $stage 'Reports') $started
                 if ($null -eq $json) { return @{ Passed = $false; Detail = 'exit 0 but no JSON report' } }
+                $factsAfter = Get-MachineFacts
                 $d = Read-Report $json
                 if ($a.Lang -eq 'en-US' -and $a.Expect['EntryPoint'] -eq 'User') { $script:UserReportPath = $json.FullName }
-                $bad = @(Test-ReportExpectations $d $expect) + @(Test-ResultSet $d (Read-Config $stage) $expect)
-                $detail = 'exit 0; ' + (Format-ReportDetail $d)
+                $resultSet = Test-ResultSetForRun $d (Read-Config $stage) $expect $factsBefore $factsAfter
+                $bad = @(Test-ReportExpectations $d $expect) + @($resultSet.Mismatches)
+                $detail = 'exit 0; ' + (Format-ReportDetail $d) + $(if ($resultSet.Note) { '; ' + $resultSet.Note } else { '' })
                 if ($bad.Count) { $detail = ($bad -join '; ') + ' | ' + $detail }
                 @{ Passed = ($bad.Count -eq 0); Detail = $detail }
             }
