@@ -38,8 +38,72 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：報告保存例外類型、訊息與內部例外；腳本位置與呼叫堆疊只寫入 JSON 報告（Diagnostics）。
 
-$script:ToolVersion = "1.2.1"
+$script:ToolVersion = "1.2.2"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# -----------------------------------------------------------------------------
+# Backlog #18：應用程式控制政策（WDAC、AppLocker）可能把 PowerShell 限制在受限語言模式，該模式下腳本不得建立 .NET
+# 物件。本工具從第一行就需要它們——下面那個 ArrayList 就已經不被允許——因此在那種機器上根本無法執行，而使用者只會
+# 看到引擎自己的「Cannot create type. Only core types are supported in this language mode.」，那句話對他毫無幫助。
+# 所以這一行以上的程式碼與 Write-EnvironmentReport 都只用受限模式允許的東西：cmdlet、運算子與屬性讀取，不用 .NET
+# 型別、不用 New-Object。
+# -----------------------------------------------------------------------------
+function Write-EnvironmentReport {
+    param([string]$Reason)
+
+    $lines = @(
+        "網路健檢工具 - 環境報告",
+        "=========================================",
+        "本工具無法在這台電腦上執行，且未變更任何設定。",
+        "",
+        "原因：$Reason",
+        ("日期時間：" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss")),
+        ("工具版本：" + $script:ToolVersion),
+        ("電腦名稱：" + $env:COMPUTERNAME),
+        ("使用者：" + $env:USERNAME),
+        ("腳本資料夾：" + $script:BaseDirectory)
+    )
+    # 每一項資訊都是選擇性的：被鎖定的機器可能拒絕其中任何一項，少一行不該讓其他成功取得的資訊一起消失。
+    try { $lines += ("PowerShell：" + $PSVersionTable.PSVersion + "（" + $PSVersionTable.PSEdition + "）") } catch { $lines += "PowerShell：未知" }
+    try { $lines += ("語言模式：" + $ExecutionContext.SessionState.LanguageMode) } catch { $lines += "語言模式：未知" }
+    try { $lines += ("地區設定：" + (Get-Culture).Name + " / 介面語言：" + (Get-UICulture).Name) } catch { $lines += "地區設定：未知" }
+    try { $lines += ("作業系統：" + (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).Caption) } catch { $lines += "作業系統：未知" }
+    $lines += @(
+        "",
+        "IT 可以怎麼做：",
+        "- 在應用程式控制政策（WDAC / AppLocker）中放行 NetworkHealthCheck.ps1，或",
+        "- 改在沒有這項限制的電腦上執行檢測。",
+        "請將本檔案一併附在報修單中。"
+    )
+
+    # 先寫腳本資料夾，不可寫時改寫暫存資料夾——與報告採用相同的順序。
+    $name = "NetworkHealthCheck_ENVIRONMENT_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".txt"
+    foreach ($folder in @($script:BaseDirectory, $env:TEMP)) {
+        if ([string]::IsNullOrWhiteSpace($folder)) { continue }
+        $path = Join-Path $folder $name
+        try {
+            Set-Content -LiteralPath $path -Value $lines -Encoding UTF8 -ErrorAction Stop
+            return $path
+        }
+        catch { }
+    }
+    return ""
+}
+
+if ([string]$ExecutionContext.SessionState.LanguageMode -ne "FullLanguage") {
+    $mode = [string]$ExecutionContext.SessionState.LanguageMode
+    $reason = "PowerShell 被應用程式控制政策限制在「$mode」語言模式，本腳本因此不得建立所需的 .NET 物件。"
+    $written = Write-EnvironmentReport -Reason $reason
+    Write-Host ""
+    Write-Host "網路健檢工具無法在這台電腦上執行。"
+    Write-Host $reason
+    Write-Host "本工具未讀取或變更任何網路設定。"
+    Write-Host "IT 可以怎麼做：在應用程式控制政策（WDAC / AppLocker）中放行本腳本，或改在沒有這項限制的電腦上執行檢測。"
+    if (-not [string]::IsNullOrWhiteSpace($written)) { Write-Host "已將供 IT 參考的資訊寫入：$written" }
+    Write-Host ""
+    exit 3
+}
+
 $script:Results = New-Object System.Collections.ArrayList
 $script:StartupMessages = New-Object System.Collections.ArrayList
 $script:PrimaryAdapters = @()
@@ -231,6 +295,15 @@ function Test-IsTrueFlag {
     param([object]$Value)
 
     return ($Value -is [bool] -and $Value)
+}
+
+function Test-IsRunningFromArchive {
+    param([string]$Path)
+
+    # Windows 會把 ZIP 開在類似 %TEMP%\Temp1_NetworkHealthCheck-1.2.2.zip\... 的暫時檢視中；從那裡直接按兩下看似
+    # 可以執行，但報告會寫進一個隨檢視消失的資料夾，等使用者要把證據交給 IT 時已經找不到了。
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    return ($Path -match "\.zip[\\/]")
 }
 
 function Test-IsVirtualAdapter {
@@ -3478,7 +3551,7 @@ function Run-AllChecks {
         return (Complete-ReportStage -SaveResult (Save-Reports))
     }
     else {
-        Add-CheckResult -Category "程式環境" -Check "PowerShell 版本" -Status "PASS" -Message ("目前版本：{0}" -f $PSVersionTable.PSVersion) -Details "" -Tag "environment" | Out-Null
+        Add-CheckResult -Category "程式環境" -Check "PowerShell 版本" -Status "PASS" -Message ("目前版本：{0}" -f $PSVersionTable.PSVersion) -Details ("語言模式：{0}。受限模式（應用程式控制：WDAC／AppLocker）會讓本工具在任何檢測開始前就停止，並改為輸出環境報告。" -f $ExecutionContext.SessionState.LanguageMode) -Tag "environment" | Out-Null
     }
 
     Invoke-CheckStep -Category "系統資訊" -Name "取得電腦與作業系統資訊" -Progress 7 -Action {
@@ -4045,6 +4118,9 @@ $exitCode = 0
 
 try {
     $script:BaseConfig = Load-Configuration -RequestedPath $ConfigPath
+    if (Test-IsRunningFromArchive $script:BaseDirectory) {
+        [void]$script:StartupMessages.Add("目前是從壓縮檔內執行。請先將 ZIP 解壓縮到實際的資料夾，否則報告會寫進隨後消失的暫存位置。")
+    }
     $entryPoint = "User"
     if ($Interactive -or $ExpandDetails) { $entryPoint = "IT" }
     Set-RunOptions -Overrides @{

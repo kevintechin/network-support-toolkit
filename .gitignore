@@ -2,6 +2,7 @@
 healthcheck/**/Reports/
 **/LauncherError.txt
 **/NetworkHealthCheck_FATAL_*.txt
+**/NetworkHealthCheck_ENVIRONMENT_*.txt
 
 # Python bytecode (tests/)
 __pycache__/
