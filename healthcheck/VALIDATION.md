@@ -10,6 +10,10 @@
 
 **Not in this change.** Nothing under `healthcheck/` changes but this record; the two shipped scripts, the launchers, the configurations and the validator are byte-identical to v1.2.2. The check is not yet required for merging into `main` — branch protection is a repository setting, left to the owner. Windows 10, a locale opposite to the report language and a machine without a wireless adapter remain backlog #19: `windows-latest` is a Windows Server image and stands in for none of them.
 
+**Second run — 33928421364, on the commit that added this entry (`f702288`): 15 cases, 0 failed, 47 s from trigger to completion,** every count equal to the first. The record itself is a tracked file under `healthcheck/`, so it travels in the ZIP the `package` step builds and the run is the proof that editing it breaks nothing the validator checks.
+
+**Independent review — Codex, PR #9, round 1 · 2026-09-05: no findings, review loop closed.** The pass on commit `f702288` reported nothing — the second pull request in this repository to come back clean on its first round (PR #6 was the first; PR #7 and PR #8 took two rounds each). The same two things hold here as there: the change is confined to `.github/` and documentation, so the shipped scripts give the reviewer nothing to disagree about; and the workflow's behaviour was measured twice before the review (both runs green, identical counts) rather than claimed, so the pull request carried its own evidence.
+
 ## v1.2.2 — the environment explains itself · 2026-09-04 — backlog #18 (and #14, released here)
 
 **The defect, measured.** Application control (WDAC, AppLocker) can restrict PowerShell to a language mode in which a script may not create .NET objects. Forced into `ConstrainedLanguage` on this machine, every call this tool depends on is refused:
