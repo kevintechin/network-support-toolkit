@@ -21,7 +21,7 @@ $ErrorActionPreference = 'Stop'
 $runner = Join-Path $PSScriptRoot 'Invoke-ValidationChain.ps1'
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($runner, [ref]$tokens, [ref]$errors)
-foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Read-Config', 'Get-Count', 'Test-TrueFlag', 'Get-MachineFacts', 'Get-StandardRuleCount', 'Test-ResultSet') }, $true)) { Invoke-Expression $f.Extent.Text }
+foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Read-Config', 'Get-Count', 'Test-TrueFlag', 'Get-CimOrWmiInstance', 'Add-PrimaryFacts', 'Get-MachineFacts', 'Get-StandardRuleCount', 'Test-ResultSet') }, $true)) { Invoke-Expression $f.Extent.Text }
 $machine = Get-MachineFacts
 "machine: $($machine.ConnectedAdapters) connected adapter(s) with an address, gateway(s) $(@($machine.Gateways) -join ', '), source $($machine.Source), TCP counters v4=$($machine.TcpCounters.TCPv4) v6=$($machine.TcpCounters.TCPv6)"
 $cfg = Read-Config $ConfigDir
@@ -35,7 +35,7 @@ $text = Get-Content -LiteralPath $json.FullName -Raw -Encoding UTF8
 function Load { $text | ConvertFrom-Json }
 
 # The fixture and its facts.
-$facts = @{ ConnectedAdapters = 3; Gateways = @('192.0.2.1'); Source = 'NetCmdlets'; DataSourceRow = $false; TcpCounters = @{ TCPv4 = $true; TCPv6 = $true }; AdapterStatistics = $true }
+$facts = @{ ConnectedAdapters = 3; Gateways = @('192.0.2.1'); DnsServers = @(); Source = 'NetCmdlets'; DataSourceRow = $false; TcpCounters = @{ TCPv4 = $true; TCPv6 = $true }; AdapterStatistics = $true }
 function New-Row($Template, [string]$Tag, [string]$Check, [string]$Status, [string]$Scope = 'Main') {
     $row = $Template.PSObject.Copy(); $row.Tag = $Tag; $row.Check = $Check; $row.Status = $Status; $row.Scope = $Scope; $row.Message = 'fixture row'; return $row
 }
@@ -118,5 +118,10 @@ function ConvertTo-NoAdapterStatistics($Report) {
 $r = ConvertTo-NoAdapterStatistics (New-Fixture); Assert-Case 'adapter statistics unavailable: two step-error rows and the aggregate row, facts agree' @(Test-ResultSet $r $cfg @{} (With $facts @{ AdapterStatistics = $false })) $true ''
 $r = ConvertTo-NoAdapterStatistics (New-Fixture); Assert-Case 'the same shape with adapter statistics available' @(Test-ResultSet $r $cfg @{} $facts) $false 'adapter-errors: 1 row(s), expected one per adapter row (3)'
 $r = New-Fixture; $r.Results = @($r.Results) + @(New-Row $r.Results[0] 'step-error' 'Collect IT diagnostics' 'ERROR' 'IT'); Assert-Case 'a step-error row the facts do not explain' @(Test-ResultSet $r $cfg @{} $facts) $false 'step-error: 1 row(s), expected 0'
+# An AUTO_DNS ping target expands to one row per DNS server of the primary adapters.
+$cfg4 = Read-Config $ConfigDir; $cfg4.Tests.PingTargets = @($cfg4.Tests.PingTargets) + @([pscustomobject]@{ Name = 'DNS servers'; Address = 'AUTO_DNS'; Required = $false })
+$dnsFacts = With $facts @{ DnsServers = @('192.0.2.53', '192.0.2.54') }
+$r = New-Fixture; Assert-Case 'AUTO_DNS target against two DNS servers, rows missing' @(Test-ResultSet $r $cfg4 @{} $dnsFacts) $false 'ping-target: 1 row(s), expected 3'
+$r = New-Fixture; $r.Results = @($r.Results) + @((New-Row $r.Results[0] 'ping-target' 'DNS servers: 192.0.2.53' 'PASS'), (New-Row $r.Results[0] 'ping-target' 'DNS servers: 192.0.2.54' 'PASS')); Assert-Case 'AUTO_DNS target against two DNS servers, one row each' @(Test-ResultSet $r $cfg4 @{} $dnsFacts) $true ''
 "Summary: $passes passed, $fails failed"
 exit $fails

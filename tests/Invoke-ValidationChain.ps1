@@ -141,19 +141,35 @@ function Get-ConfigSampling([string]$Dir) {
 }
 function Get-Count($Value) { if ($null -eq $Value) { return 0 }; return @($Value).Count }
 function Test-TrueFlag($Value) { return (($Value -is [bool]) -and $Value) }   # the script's Test-IsTrueFlag: only a boolean true enables a check
+function Get-CimOrWmiInstance([string]$ClassName) {
+    # The script's own selection: Get-CimInstance when it exists, Get-WmiObject otherwise, nothing when neither does.
+    if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) { return @(Get-CimInstance -ClassName $ClassName -OperationTimeoutSec 8 -ErrorAction Stop) }
+    if (Get-Command Get-WmiObject -ErrorAction SilentlyContinue) { return @(Get-WmiObject -Class $ClassName -ErrorAction Stop) }
+    return @()
+}
+function Add-PrimaryFacts([hashtable]$Facts, [object[]]$Adapters) {
+    # Get-PrimaryAdapters: the adapters with an IPv4 address and a gateway, or all with an IPv4 address when none has a
+    # gateway; the AUTO_GATEWAY and AUTO_DNS placeholders resolve to their distinct gateways and DNS servers.
+    $withIPv4 = @($Adapters | Where-Object { $_.IPv4 -gt 0 })
+    $primary = @($withIPv4 | Where-Object { @($_.Gateways).Count -gt 0 })
+    if ($primary.Count -eq 0) { $primary = $withIPv4 }
+    $Facts.ConnectedAdapters = @($Adapters).Count
+    $Facts.Gateways = @(@($primary | ForEach-Object { @($_.Gateways) }) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
+    $Facts.DnsServers = @(@($primary | ForEach-Object { @($_.Dns) }) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
+}
 function Get-MachineFacts {
     # What the script's snapshot sees, read from the operating system the way Get-NetworkSnapshot does: first
     # Get-NetIPConfiguration (an adapter counts when it is Up and has an IPv4 or IPv6 address; the gateways are those of
     # the adapters with an IPv4 address, which is what AUTO_GATEWAY resolves to); when that cmdlet throws, the script
     # writes a data-source row and falls back to CIM, and when it is missing or returns nothing it falls back without the
     # row - CIM counts every IP-enabled Win32_NetworkAdapterConfiguration and keeps its IPv4 default gateways.
-    $facts = @{ ConnectedAdapters = 0; Gateways = @(); Source = 'NetCmdlets'; DataSourceRow = $false; TcpCounters = @{ TCPv4 = $false; TCPv6 = $false } }
+    $facts = @{ ConnectedAdapters = 0; Gateways = @(); DnsServers = @(); Source = 'NetCmdlets'; DataSourceRow = $false; TcpCounters = @{ TCPv4 = $false; TCPv6 = $false } }
     # Which TCP performance-counter classes can be read, the way Get-TcpCounterSnapshot reads them: an instance with the
     # SegmentsSentPersec and SegmentsRetransmittedPersec fields. An unreadable class yields an error row from each of the
     # two samples instead of a result row.
     foreach ($protocol in @('TCPv4', 'TCPv6')) {
         try {
-            $counter = @(Get-CimInstance -ClassName ('Win32_PerfRawData_Tcpip_' + $protocol) -ErrorAction Stop | Select-Object -First 1)[0]
+            $counter = @(Get-CimOrWmiInstance ('Win32_PerfRawData_Tcpip_' + $protocol) | Select-Object -First 1)[0]
             if ($null -ne $counter -and $null -ne $counter.PSObject.Properties['SegmentsSentPersec'] -and $null -ne $counter.PSObject.Properties['SegmentsRetransmittedPersec']) { $facts.TcpCounters[$protocol] = $true }
         }
         catch { }
@@ -167,32 +183,35 @@ function Get-MachineFacts {
     $useCim = $true
     if (Get-Command Get-NetIPConfiguration -ErrorAction SilentlyContinue) {
         try {
-            $n = 0; $gws = @()
+            $items = @()
             foreach ($c in @(Get-NetIPConfiguration -ErrorAction Stop)) {
                 if ($null -eq $c.NetAdapter -or ([string]$c.NetAdapter.Status) -ne 'Up') { continue }
                 $v4 = @($c.IPv4Address | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_.IPAddress) })
                 $v6 = @($c.IPv6Address | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_.IPAddress) })
                 if ($v4.Count -eq 0 -and $v6.Count -eq 0) { continue }
-                $n++
-                if ($v4.Count -gt 0) {
-                    foreach ($g in @($c.IPv4DefaultGateway)) { if ($null -ne $g -and -not [string]::IsNullOrWhiteSpace([string]$g.NextHop)) { $gws += [string]$g.NextHop } }
-                }
+                $gws = @(); foreach ($g in @($c.IPv4DefaultGateway)) { if ($null -ne $g -and -not [string]::IsNullOrWhiteSpace([string]$g.NextHop)) { $gws += [string]$g.NextHop } }
+                $dns = @(); if ($null -ne $c.DNSServer) { foreach ($srv in @($c.DNSServer.ServerAddresses)) { if (-not [string]::IsNullOrWhiteSpace([string]$srv)) { $dns += [string]$srv } } }
+                $items += @{ IPv4 = $v4.Count; Gateways = $gws; Dns = $dns }
             }
-            if ($n -gt 0) { $facts.ConnectedAdapters = $n; $facts.Gateways = @($gws | Sort-Object -Unique); $useCim = $false }
+            if ($items.Count -gt 0) { Add-PrimaryFacts $facts $items; $useCim = $false }
         }
         catch { $facts.DataSourceRow = $true }
     }
     if ($useCim) {
+        # Every IP-enabled Win32_NetworkAdapterConfiguration, through CIM or WMI like the script; with neither available
+        # the script's fallback throws too, and the facts stay at zero adapters.
         $facts.Source = 'CIM'
-        $configs = @(Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -OperationTimeoutSec 8 -ErrorAction SilentlyContinue | Where-Object { $_.IPEnabled })
-        $facts.ConnectedAdapters = $configs.Count
-        $gws = @()
-        foreach ($c in $configs) {
-            $ipv4 = @(@($c.IPAddress) | Where-Object { $p = $null; [System.Net.IPAddress]::TryParse([string]$_, [ref]$p) -and $p.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork })
-            if ($ipv4.Count -eq 0) { continue }
-            foreach ($g in @($c.DefaultIPGateway)) { $p = $null; if ([System.Net.IPAddress]::TryParse([string]$g, [ref]$p) -and $p.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $gws += [string]$g } }
+        $items = @()
+        try {
+            foreach ($c in @(Get-CimOrWmiInstance 'Win32_NetworkAdapterConfiguration' | Where-Object { $_.IPEnabled })) {
+                $ipv4 = @(@($c.IPAddress) | Where-Object { $p = $null; [System.Net.IPAddress]::TryParse([string]$_, [ref]$p) -and $p.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork })
+                $gws = @(); foreach ($g in @($c.DefaultIPGateway)) { $p = $null; if ([System.Net.IPAddress]::TryParse([string]$g, [ref]$p) -and $p.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $gws += [string]$g } }
+                $dns = @(@($c.DNSServerSearchOrder) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
+                $items += @{ IPv4 = $ipv4.Count; Gateways = $gws; Dns = $dns }
+            }
         }
-        $facts.Gateways = @($gws | Sort-Object -Unique)
+        catch { $items = @() }
+        Add-PrimaryFacts $facts $items
     }
     return $facts
 }
@@ -224,7 +243,9 @@ function Test-ResultSet {
     $o = $Report.RunOptions
     $pingTargets = @($Config.Tests.PingTargets)
     $gatewayTargets = @($pingTargets | Where-Object { [string]$_.Address -eq 'AUTO_GATEWAY' }).Count
+    $dnsTargets = @($pingTargets | Where-Object { [string]$_.Address -eq 'AUTO_DNS' }).Count
     $gateways = @($Machine.Gateways)
+    $dnsServerCount = Get-Count $Machine.DnsServers
     $connected = [int]$Machine.ConnectedAdapters
     $tcpCounters = $Machine.TcpCounters
     if ($null -eq $tcpCounters) { $tcpCounters = @{ TCPv4 = $true; TCPv6 = $true } }
@@ -246,7 +267,8 @@ function Test-ResultSet {
         # One row per configured standard rule; one informational row without rules; one failure row without adapters.
         'expected-standard' = $(if ($rules -eq 0 -or $connected -eq 0) { 1 } else { $rules })
         'ping-gateway' = $gatewayTargets * [math]::Max(1, $gateways.Count)   # one row per resolved gateway, or one "no target" row
-        'ping-target' = ($pingTargets.Count - $gatewayTargets) + (Get-Count $o.ExtraTargets.Ping)
+        # A literal target is one row; AUTO_DNS is one row per DNS server of the primary adapters, or one "no target" row.
+        'ping-target' = ($pingTargets.Count - $gatewayTargets - $dnsTargets) + $dnsTargets * [math]::Max(1, $dnsServerCount) + (Get-Count $o.ExtraTargets.Ping)
         'dns' = (Get-Count $Config.Tests.DnsNames) + (Get-Count $o.ExtraTargets.Dns)
         'tcp' = (Get-Count $Config.Tests.TcpTargets) + (Get-Count $o.ExtraTargets.Tcp)
         'http' = (Get-Count $Config.Tests.HttpTargets) + (Get-Count $o.ExtraTargets.Http)
@@ -317,7 +339,10 @@ function Test-ResultSet {
         }
     }
     foreach ($pair in @(@('ExtraPing', 'ping-target'), @('ExtraTcp', 'tcp'))) {
-        if ($Expect.ContainsKey($pair[0]) -and @($rows | Where-Object { $_.Tag -eq $pair[1] -and (($_.Check + ' ' + $_.Message) -like ('*' + $Expect[$pair[0]] + '*')) }).Count -eq 0) { $bad += ('no {0} row for {1}' -f $pair[1], $Expect[$pair[0]]) }
+        if (-not $Expect.ContainsKey($pair[0])) { continue }
+        foreach ($value in @($Expect[$pair[0]])) {
+            if (@($rows | Where-Object { $_.Tag -eq $pair[1] -and (($_.Check + ' ' + $_.Message) -like ('*' + $value + '*')) }).Count -eq 0) { $bad += ('no {0} row for {1}' -f $pair[1], $value) }
+        }
     }
     return $bad
 }
@@ -333,8 +358,13 @@ function Test-ReportExpectations {
         if ($Expect.ContainsKey($key) -and ([string]$Report.RunOptions.$key -ne [string]$Expect[$key])) { $bad += ('{0}={1} (expected {2})' -f $key, $Report.RunOptions.$key, $Expect[$key]) }
     }
     if ($Expect.ContainsKey('ExpandDetails') -and ([bool]$Report.RunOptions.ExpandDetails -ne [bool]$Expect['ExpandDetails'])) { $bad += ('ExpandDetails={0} (expected {1})' -f $Report.RunOptions.ExpandDetails, $Expect['ExpandDetails']) }
-    if ($Expect.ContainsKey('ExtraPing') -and (@($Report.RunOptions.ExtraTargets.Ping) -notcontains $Expect['ExtraPing'])) { $bad += ('extra ping target {0} missing' -f $Expect['ExtraPing']) }
-    if ($Expect.ContainsKey('ExtraTcp') -and (@($Report.RunOptions.ExtraTargets.Tcp) -notcontains $Expect['ExtraTcp'])) { $bad += ('extra TCP target {0} missing' -f $Expect['ExtraTcp']) }
+    # The extra targets the run recorded must be exactly the ones the launch gave - none without switches - so that a run
+    # duplicating a target or adding one of its own fails here, before the rows are counted from that same list.
+    foreach ($kind in @(@('ExtraPing', 'Ping'), @('ExtraDns', 'Dns'), @('ExtraTcp', 'Tcp'), @('ExtraHttp', 'Http'))) {
+        $expected = @(); if ($Expect.ContainsKey($kind[0])) { $expected = @(@($Expect[$kind[0]]) | ForEach-Object { [string]$_ }) }
+        $actual = @(@($Report.RunOptions.ExtraTargets.($kind[1])) | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+        if ((@($actual | Sort-Object) -join '|') -ne (@($expected | Sort-Object) -join '|')) { $bad += ('ExtraTargets.{0} = [{1}], expected exactly [{2}]' -f $kind[1], ($actual -join ', '), ($expected -join ', ')) }
+    }
     if ([string]$Report.SchemaVersion -ne '2') { $bad += ('SchemaVersion={0} (expected 2)' -f $Report.SchemaVersion) }
     if ($RequireHealthy -and ([string]$Report.Overall.Code -ne 'PASS')) { $bad += ('Overall {0}, not PASS' -f $Report.Overall.Code) }
     return $bad
