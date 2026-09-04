@@ -1,0 +1,78 @@
+# The deterministic part of the NetworkHealthCheck validation chain (backlog #20), on every push to main, every pull
+# request and on request. tests/README.md says what each step asserts.
+#
+# What runs here needs neither a desktop nor a particular network, so its result depends on the files alone: the
+# Windows PowerShell 5.1 parser, the release validator, the two AST guards with their self-test, the helper unit tests,
+# the report-stage tests, the language-mode guard, the headless Initialize-Gui smoke test, and the asset round trip
+# (build the ZIP from the tracked files, extract it, run the validator from inside the package).
+#
+# What stays local: the real-window `gui` step (an interactive desktop, UI Automation, 125 s of TCP sampling per IT
+# window), the console `acceptance` runs and the `resultset` self-check, which assert every row of a report against the
+# machine's own network facts - gateways, DNS servers, wireless interfaces, counter classes - which nobody controls on a
+# hosted runner. A green run therefore means "everything a machine can check unattended still passes", not "the
+# release is validated": that remains the local `-Package -RequireHealthy` run recorded in healthcheck/VALIDATION.md.
+#
+# No path filter on purpose: a required status check that is skipped for a docs-only commit blocks the merge, and the
+# run costs two or three minutes.
+name: Validation chain
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validation-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chain:
+    name: chain (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      # Full history: the guard self-test reads the v1.2.0 anchor files from commit f7c45a9 (`git show`).
+      - name: Check out with history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The release validator and the asset builder are Python 3 scripts (standard library only).
+      - name: Python 3
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # The exact command line tests/README.md documents, in Windows PowerShell 5.1 (the tool's own runtime, not the
+      # runner's pwsh). The chain writes nothing into the checkout; its exit code is the number of failed cases.
+      - name: Run the chain
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-ValidationChain.ps1 -Steps parse,validator,guards,unit,report,envguard,gui-headless -Package -SkipGui -WorkDir "%RUNNER_TEMP%\nhc-tests"
+
+      # The table the chain prints, on the run's page.
+      - name: Summary table
+        if: always()
+        shell: powershell
+        run: |
+          $summary = Join-Path $env:RUNNER_TEMP 'nhc-tests\summary.md'
+          if (Test-Path -LiteralPath $summary) {
+            $text = "## Validation chain (parse, validator, guards, unit, report, envguard, gui-headless, package; -SkipGui)`n`n" + [IO.File]::ReadAllText($summary, [Text.Encoding]::UTF8) + "`n"
+            [IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY, $text, (New-Object Text.UTF8Encoding($false)))
+          }
+
+      # summary.md, one <step>_<case>.log per run, and the ZIP the package step built.
+      - name: Keep the logs and the built asset
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-chain-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/nhc-tests/summary.md
+            ${{ runner.temp }}/nhc-tests/*.log
+            ${{ runner.temp }}/nhc-tests/*.zip
+          if-no-files-found: warn
+          retention-days: 30
