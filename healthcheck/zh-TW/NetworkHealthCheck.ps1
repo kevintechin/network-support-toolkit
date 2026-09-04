@@ -252,6 +252,83 @@ function Test-IsVirtualAdapter {
     return $false
 }
 
+# Backlog #14：Winsock 與 WinHTTP 的錯誤字串由作業系統提供，因此系統地區設定與報告語言不同的機器，會把該地區的文字
+# 印進報告（英文報告裡出現中文句子）。訊息會變，錯誤碼不會：SocketException.SocketErrorCode 與 WebException.Status
+# 都是列舉。下面兩張表把這些檢查會遇到的錯誤碼轉成報告語言的一句話；原始訊息一律保留在旁邊，未收錄的錯誤碼也仍會附上
+# 與語系無關的代碼名稱，讓讀的人查得到作業系統實際說了什麼。
+function Get-NetworkErrorCauseText {
+    param([object]$Exception)
+
+    $socketCauses = @{
+        "HostNotFound"        = "無法解析這個名稱（DNS 沒有紀錄）。"
+        "TryAgain"            = "名稱解析暫時失敗，DNS 伺服器沒有回應。"
+        "NoData"              = "名稱存在，但沒有所要求類型的位址紀錄。"
+        "TimedOut"            = "目標在逾時前沒有回應。"
+        "ConnectionRefused"   = "目標有回應，但拒絕該連接埠的連線。"
+        "NetworkUnreachable"  = "這台機器沒有到該網路的路由。"
+        "HostUnreachable"     = "網路可達，但主機不可達。"
+        "ConnectionReset"     = "連線被遠端主機強制關閉。"
+        "ConnectionAborted"   = "連線被本機軟體中止（常見於安全性軟體或政策）。"
+        "NetworkDown"         = "本機的網路堆疊回報網路已中斷。"
+        "AddressNotAvailable" = "這個位址在本機無效。"
+        "AccessDenied"        = "Socket 操作被權限或政策封鎖。"
+    }
+    $webCauses = @{
+        "Timeout"                    = "HTTP 要求逾時。"
+        "NameResolutionFailure"      = "無法解析 URL 中的主機名稱。"
+        "ProxyNameResolutionFailure" = "無法解析 Proxy 伺服器的名稱。"
+        "ConnectFailure"             = "無法建立到伺服器的連線。"
+        "TrustFailure"               = "伺服器憑證不受信任。"
+        "SecureChannelFailure"       = "TLS 交握失敗（通訊協定或加密套件不符）。"
+        "ReceiveFailure"             = "接收回應的過程中連線中斷。"
+        "SendFailure"                = "傳送要求的過程中連線中斷。"
+        "ConnectionClosed"           = "伺服器意外關閉連線。"
+        "ServerProtocolViolation"    = "伺服器的回應不是有效的 HTTP。"
+        "RequestProhibitedByProxy"   = "Proxy 拒絕了這個要求。"
+    }
+
+    # PowerShell 會把失敗的方法呼叫包成 MethodInvocationException、把工作包成 AggregateException、把 ping 包成
+    # PingException，所以 socket 錯誤通常在往內兩三層的地方。
+    $current = $Exception
+    $depth = 0
+    while ($null -ne $current -and $depth -le 5) {
+        if ($current -is [System.Net.Sockets.SocketException]) {
+            $code = [string]$current.SocketErrorCode
+            if ($socketCauses.ContainsKey($code)) {
+                return ("{0} [SocketError {1}]" -f $socketCauses[$code], $code)
+            }
+            return ("[SocketError {0}]" -f $code)
+        }
+        if ($current -is [System.Net.WebException]) {
+            $status = [string]$current.Status
+            if ($webCauses.ContainsKey($status)) {
+                return ("{0} [WebExceptionStatus {1}]" -f $webCauses[$status], $status)
+            }
+            return ("[WebExceptionStatus {0}]" -f $status)
+        }
+        $current = $current.InnerException
+        $depth++
+    }
+    return ""
+}
+
+# 原因放在原始訊息上方，而不是取代它。
+function Add-NetworkErrorCause {
+    param(
+        [object]$Exception,
+        [string]$Text
+    )
+
+    $cause = Get-NetworkErrorCauseText $Exception
+    if ([string]::IsNullOrWhiteSpace($cause)) {
+        return $Text
+    }
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return ("原因：{0}" -f $cause)
+    }
+    return (("原因：{0}" -f $cause) + [Environment]::NewLine + $Text)
+}
+
 # Backlog #11：只回傳人類可讀的摘要；腳本位置與呼叫堆疊改由 Get-ExceptionDiagnostics 提供（僅寫入 JSON 報告）。
 function Get-ExceptionDetails {
     param(
@@ -267,6 +344,10 @@ function Get-ExceptionDetails {
         $message = $ErrorRecord.Exception.Message
         $typeName = $ErrorRecord.Exception.GetType().FullName
         $parts = @("錯誤類型：$typeName", "訊息：$message")
+        $cause = Get-NetworkErrorCauseText $ErrorRecord.Exception
+        if (-not [string]::IsNullOrWhiteSpace($cause)) {
+            $parts = @("原因：$cause") + $parts
+        }
         $inner = $ErrorRecord.Exception.InnerException
         $innerIndex = 1
         while ($null -ne $inner -and $innerIndex -le 5) {
@@ -1628,7 +1709,10 @@ function Invoke-PingMeasurement {
                 }
             }
             catch {
-                [void]$attemptDetails.Add(("第 {0} 次：錯誤，{1}" -f $i, $_.Exception.Message))
+                $cause = Get-NetworkErrorCauseText $_.Exception
+                $causeSuffix = ""
+                if (-not [string]::IsNullOrWhiteSpace($cause)) { $causeSuffix = "｜原因：$cause" }
+                [void]$attemptDetails.Add(("第 {0} 次：錯誤，{1}{2}" -f $i, $_.Exception.Message, $causeSuffix))
             }
             if ($script:GuiAvailable) {
                 [System.Windows.Forms.Application]::DoEvents()
@@ -1867,7 +1951,7 @@ function Invoke-TcpConnectionTest {
             Host      = $HostName
             Port      = $Port
             ElapsedMs = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
-            Error     = $_.Exception.Message
+            Error     = (Add-NetworkErrorCause $_.Exception $_.Exception.Message)
         }
     }
     finally {
@@ -1946,7 +2030,7 @@ function Invoke-HttpConnectionTest {
             StatusText   = ""
             FinalUrl     = ""
             ElapsedMs    = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
-            Error        = $_.Exception.Message
+            Error        = (Add-NetworkErrorCause $_.Exception $_.Exception.Message)
         }
     }
     catch {
@@ -1958,7 +2042,7 @@ function Invoke-HttpConnectionTest {
             StatusText   = ""
             FinalUrl     = ""
             ElapsedMs    = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
-            Error        = $_.Exception.Message
+            Error        = (Add-NetworkErrorCause $_.Exception $_.Exception.Message)
         }
     }
     finally {
@@ -2530,7 +2614,8 @@ function Invoke-TraceRoute {
             }
             catch {
                 $stopwatch.Stop()
-                $status = $_.Exception.Message
+                $cause = Get-NetworkErrorCauseText $_.Exception
+                $status = $(if ([string]::IsNullOrWhiteSpace($cause)) { $_.Exception.Message } else { $cause })
             }
             [void]$hops.Add([pscustomobject][ordered]@{
                 Hop       = $ttl

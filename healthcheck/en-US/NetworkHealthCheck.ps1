@@ -260,6 +260,85 @@ function Test-IsVirtualAdapter {
     return $false
 }
 
+# Backlog #14: Winsock and WinHTTP error text comes from the operating system, so a machine whose system locale
+# differs from the report language prints that locale's words into the report (a Chinese sentence inside an English
+# report). The message moves, the code does not: SocketException.SocketErrorCode and WebException.Status are
+# enumerations. The tables below turn the codes these checks can produce into one sentence in the report's language.
+# The original message is always kept next to it, and an unmapped code still carries its locale-independent name, so
+# the reader can look up what the operating system actually said.
+function Get-NetworkErrorCauseText {
+    param([object]$Exception)
+
+    $socketCauses = @{
+        "HostNotFound"        = "The name could not be resolved (no DNS record)."
+        "TryAgain"            = "Name resolution failed temporarily; the DNS server did not answer."
+        "NoData"              = "The name exists but has no address record of the requested type."
+        "TimedOut"            = "The target did not respond within the timeout."
+        "ConnectionRefused"   = "The target answered but refused the connection on that port."
+        "NetworkUnreachable"  = "This machine has no route to that network."
+        "HostUnreachable"     = "The network is reachable but the host is not."
+        "ConnectionReset"     = "The remote host closed the connection."
+        "ConnectionAborted"   = "Software on this machine aborted the connection (often security software or policy)."
+        "NetworkDown"         = "The local network stack reports the network as down."
+        "AddressNotAvailable" = "The address is not valid on this machine."
+        "AccessDenied"        = "The socket operation was blocked by permissions or policy."
+    }
+    $webCauses = @{
+        "Timeout"                    = "The HTTP request timed out."
+        "NameResolutionFailure"      = "The host name in the URL could not be resolved."
+        "ProxyNameResolutionFailure" = "The proxy server's name could not be resolved."
+        "ConnectFailure"             = "The connection to the server could not be established."
+        "TrustFailure"               = "The server certificate was not trusted."
+        "SecureChannelFailure"       = "The TLS handshake failed (protocol or cipher mismatch)."
+        "ReceiveFailure"             = "The connection was interrupted while receiving the response."
+        "SendFailure"                = "The connection was interrupted while sending the request."
+        "ConnectionClosed"           = "The server closed the connection unexpectedly."
+        "ServerProtocolViolation"    = "The server's answer was not valid HTTP."
+        "RequestProhibitedByProxy"   = "The proxy refused the request."
+    }
+
+    # PowerShell wraps a failed method call in a MethodInvocationException, a task in an AggregateException and a
+    # ping in a PingException, so the socket error is usually two or three levels down.
+    $current = $Exception
+    $depth = 0
+    while ($null -ne $current -and $depth -le 5) {
+        if ($current -is [System.Net.Sockets.SocketException]) {
+            $code = [string]$current.SocketErrorCode
+            if ($socketCauses.ContainsKey($code)) {
+                return ("{0} [SocketError {1}]" -f $socketCauses[$code], $code)
+            }
+            return ("[SocketError {0}]" -f $code)
+        }
+        if ($current -is [System.Net.WebException]) {
+            $status = [string]$current.Status
+            if ($webCauses.ContainsKey($status)) {
+                return ("{0} [WebExceptionStatus {1}]" -f $webCauses[$status], $status)
+            }
+            return ("[WebExceptionStatus {0}]" -f $status)
+        }
+        $current = $current.InnerException
+        $depth++
+    }
+    return ""
+}
+
+# The cause goes above the original text, never instead of it.
+function Add-NetworkErrorCause {
+    param(
+        [object]$Exception,
+        [string]$Text
+    )
+
+    $cause = Get-NetworkErrorCauseText $Exception
+    if ([string]::IsNullOrWhiteSpace($cause)) {
+        return $Text
+    }
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return ("Cause: {0}" -f $cause)
+    }
+    return (("Cause: {0}" -f $cause) + [Environment]::NewLine + $Text)
+}
+
 # Backlog #11: human-readable summary only; script location and call stack go to Get-ExceptionDiagnostics (JSON report).
 function Get-ExceptionDetails {
     param(
@@ -275,6 +354,10 @@ function Get-ExceptionDetails {
         $message = $ErrorRecord.Exception.Message
         $typeName = $ErrorRecord.Exception.GetType().FullName
         $parts = @("Error type: $typeName", "Message: $message")
+        $cause = Get-NetworkErrorCauseText $ErrorRecord.Exception
+        if (-not [string]::IsNullOrWhiteSpace($cause)) {
+            $parts = @("Cause: $cause") + $parts
+        }
         $inner = $ErrorRecord.Exception.InnerException
         $innerIndex = 1
         while ($null -ne $inner -and $innerIndex -le 5) {
@@ -1636,7 +1719,10 @@ function Invoke-PingMeasurement {
                 }
             }
             catch {
-                [void]$attemptDetails.Add(("Attempt {0}: error, {1}" -f $i, $_.Exception.Message))
+                $cause = Get-NetworkErrorCauseText $_.Exception
+                $causeSuffix = ""
+                if (-not [string]::IsNullOrWhiteSpace($cause)) { $causeSuffix = " | Cause: $cause" }
+                [void]$attemptDetails.Add(("Attempt {0}: error, {1}{2}" -f $i, $_.Exception.Message, $causeSuffix))
             }
             if ($script:GuiAvailable) {
                 [System.Windows.Forms.Application]::DoEvents()
@@ -1875,7 +1961,7 @@ function Invoke-TcpConnectionTest {
             Host      = $HostName
             Port      = $Port
             ElapsedMs = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
-            Error     = $_.Exception.Message
+            Error     = (Add-NetworkErrorCause $_.Exception $_.Exception.Message)
         }
     }
     finally {
@@ -1954,7 +2040,7 @@ function Invoke-HttpConnectionTest {
             StatusText   = ""
             FinalUrl     = ""
             ElapsedMs    = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
-            Error        = $_.Exception.Message
+            Error        = (Add-NetworkErrorCause $_.Exception $_.Exception.Message)
         }
     }
     catch {
@@ -1966,7 +2052,7 @@ function Invoke-HttpConnectionTest {
             StatusText   = ""
             FinalUrl     = ""
             ElapsedMs    = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
-            Error        = $_.Exception.Message
+            Error        = (Add-NetworkErrorCause $_.Exception $_.Exception.Message)
         }
     }
     finally {
@@ -2538,7 +2624,8 @@ function Invoke-TraceRoute {
             }
             catch {
                 $stopwatch.Stop()
-                $status = $_.Exception.Message
+                $cause = Get-NetworkErrorCauseText $_.Exception
+                $status = $(if ([string]::IsNullOrWhiteSpace($cause)) { $_.Exception.Message } else { $cause })
             }
             [void]$hops.Add([pscustomobject][ordered]@{
                 Hop       = $ttl

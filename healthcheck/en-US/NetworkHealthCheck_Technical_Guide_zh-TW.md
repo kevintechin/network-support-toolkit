@@ -161,6 +161,7 @@ IT 範圍的項目不影響整體結果與摘要計數：`Get-OverallStatus` 與
 
 - 每個主要步驟經 `Invoke-CheckStep` 包裝；例外轉成 `ERROR` 結果並繼續後續檢測。
 - `Get-ExceptionDetails` 記錄例外型別、訊息與最多五層內部例外。自 1.1.4 起，腳本位置與呼叫堆疊改由 `Get-ExceptionDiagnostics` 另外收集，只寫入 JSON 報告的 `Diagnostics` 欄位；HTML 與文字報告改為顯示一行提示，因此本機檔案路徑不會出現在給人看的報告中。緊急（`FATAL`）檔案仍保留完整內容。
+- 網路類錯誤會在報告語言中附上一行 `原因：`，依據的是錯誤碼而不是作業系統的用字：`SocketException.SocketErrorCode` 與 `WebException.Status` 都是列舉，而訊息文字跟著機器的系統地區設定，因此可能以另一種語言出現在本報告中（待辦 #14）。該行同時附上代碼（`[SocketError HostNotFound]`），表中未收錄的代碼則只顯示代碼本身，作業系統的原始訊息一律保留在下方。此行會出現在例外細節、Ping 的逐次紀錄、TCP 與 HTTP 的失敗說明，以及 traceroute 的單一躍點狀態。cmdlet、CIM/WMI 或檔案系統產生的錯誤沒有這種代碼，維持作業系統的原始用字。
 - GUI 初始化失敗時改用 Console 模式。
 - 報告資料夾不可寫時改到 `%TEMP%\NetworkHealthCheck\Reports`。
 - HTML、TXT、JSON 分別嘗試寫入。自 1.1.5 起，單一格式失敗只會記錄並在 GUI 顯示警告，成功的格式仍可使用：「開啟報告」會開啟 HTML、TXT、JSON 中第一個可用的檔案，文字模式對缺少的格式顯示「（未寫入）」。三種格式全部失敗時才寫一份緊急 `FATAL` 文字報告（含三個寫入錯誤與呼叫堆疊）並顯示一次錯誤對話框，文字模式結束碼為 1。報告階段在 `Run-AllChecks` 內只處理一次、不再重新拋出，外層處理器不會再產生第二份 FATAL 檔或第二個對話框。
@@ -168,7 +169,7 @@ IT 範圍的項目不影響整體結果與摘要計數：`Get-OverallStatus` 與
 
 ## 6. 原始碼設計與註解
 
-程式主要由 77 個命名函式組成，依功能分成：輔助函式、設定、系統資料、規範比對、主動測試、計數器、報告、執行協調與 GUI。
+程式主要由 79 個命名函式組成，依功能分成：輔助函式、設定、系統資料、規範比對、主動測試、計數器、報告、執行協調與 GUI。
 
 版本 1.1.0 已加入：
 
@@ -190,7 +191,7 @@ IT 範圍的項目不影響整體結果與摘要計數：`Get-OverallStatus` 與
 3. PowerShell 與 JSON 使用 UTF-8 BOM；Windows 腳本使用 CRLF。
 4. 英文版 PowerShell、設定檔與 README 不含中文使用者文字。
 5. 中英文 PowerShell 在移除字串與註解後，可執行語法骨架完全一致。
-6. 中英文函式集合一致，函式數為 77。
+6. 中英文函式集合一致，函式數為 79。
 7. 啟動器正確引用 `NetworkHealthCheck.ps1`。
 8. SHA-256 清單逐項重新計算並比對。
 9. ZIP 執行完整性測試，沒有損壞項目。

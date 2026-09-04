@@ -412,7 +412,14 @@ function Test-ReportExpectations {
         if ((@($actual | Sort-Object) -join '|') -ne (@($expected | Sort-Object) -join '|')) { $bad += ('ExtraTargets.{0} = [{1}], expected exactly [{2}]' -f $kind[1], ($actual -join ', '), ($expected -join ', ')) }
     }
     if ([string]$Report.SchemaVersion -ne '2') { $bad += ('SchemaVersion={0} (expected 2)' -f $Report.SchemaVersion) }
-    if ($RequireHealthy -and ([string]$Report.Overall.Code -ne 'PASS')) { $bad += ('Overall {0}, not PASS' -f $Report.Overall.Code) }
+    if ($RequireHealthy -and (-not $Expect['AllowUnhealthy']) -and ([string]$Report.Overall.Code -ne 'PASS')) { $bad += ('Overall {0}, not PASS' -f $Report.Overall.Code) }
+    # backlog #14: a run whose targets cannot be reached must classify the failures by their error code, in the report
+    # language, with the operating system's own message kept underneath. Which code appears depends on the network (a
+    # resolver that answers for an unknown name turns a name failure into a connect failure), so any code counts.
+    if ($Expect['RequireErrorCause']) {
+        $classified = @($Report.Results | Where-Object { ([string]$_.Details + [string]$_.Message) -match '\[(SocketError|WebExceptionStatus) \w+\]' })
+        if (-not $classified.Count) { $bad += 'no result carries a [SocketError ...] / [WebExceptionStatus ...] cause' }
+    }
     return $bad
 }
 function Format-ReportDetail($Report) {
@@ -546,7 +553,12 @@ try {
         $acceptance = @(
             @{ Lang = 'en-US'; Case = 'en-US user (Start-NetworkCheck-Console.cmd)'; Launcher = 'Start-NetworkCheck-Console.cmd'; Expect = @{ EntryPoint = 'User'; ExpandDetails = $false } },
             @{ Lang = 'en-US'; Case = 'en-US IT switches (direct)'; Args = @('-ConsoleOnly', '-PingCount', '6', '-SampleSeconds', '6', '-PingTarget', '8.8.8.8', '-TcpTarget', '1.1.1.1:53', '-TracerouteHops', '4', '-ExpandDetails'); Expect = @{ EntryPoint = 'IT'; ExpandDetails = $true; PingCount = 6; SampleSeconds = 6; TracerouteHops = 4; ExtraPing = '8.8.8.8'; ExtraTcp = '1.1.1.1:53' } },
-            @{ Lang = 'zh-TW'; Case = 'zh-TW user (Start-NetworkCheck-Console.cmd)'; Launcher = 'Start-NetworkCheck-Console.cmd'; Expect = @{ EntryPoint = 'User'; ExpandDetails = $false } }
+            @{ Lang = 'zh-TW'; Case = 'zh-TW user (Start-NetworkCheck-Console.cmd)'; Launcher = 'Start-NetworkCheck-Console.cmd'; Expect = @{ EntryPoint = 'User'; ExpandDetails = $false } },
+            # Unreachable on purpose (RFC 2606 .invalid, RFC 5737 TEST-NET-1), so the ping, TCP and HTTP failure paths -
+            # and with them the error-code classification of backlog #14 - are executed on every run of the chain: a
+            # healthy machine never reaches them otherwise. The verdict is expected to be unhealthy, so -RequireHealthy
+            # skips this one case; everything else about it is asserted as usual.
+            @{ Lang = 'en-US'; Case = 'en-US unreachable targets (direct)'; Args = @('-ConsoleOnly', '-PingCount', '2', '-SampleSeconds', '2', '-TracerouteHops', '2', '-ExpandDetails', '-PingTarget', 'nhc-no-such-host.invalid', '-TcpTarget', '192.0.2.1:9', '-HttpUrl', 'https://nhc-no-such-host.invalid/'); Expect = @{ EntryPoint = 'IT'; ExpandDetails = $true; PingCount = 2; SampleSeconds = 2; TracerouteHops = 2; ExtraPing = 'nhc-no-such-host.invalid'; ExtraTcp = '192.0.2.1:9'; ExtraHttp = 'https://nhc-no-such-host.invalid/'; AllowUnhealthy = $true; RequireErrorCause = $true } }
         )
         foreach ($a in $acceptance) {
             Invoke-Case 'acceptance' $a.Case {
