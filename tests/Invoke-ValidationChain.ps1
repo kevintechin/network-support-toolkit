@@ -141,22 +141,42 @@ function Get-ConfigSampling([string]$Dir) {
 function Get-Count($Value) { if ($null -eq $Value) { return 0 }; return @($Value).Count }
 function Test-TrueFlag($Value) { return (($Value -is [bool]) -and $Value) }   # the script's Test-IsTrueFlag: only a boolean true enables a check
 function Get-MachineFacts {
-    # What the script's snapshot sees, read from the operating system with the script's own first source and rule
-    # (Get-NetIPConfiguration: an adapter counts when it is Up and has an IPv4 or IPv6 address): the number of connected
-    # adapters with an address - one adapter row each - and the distinct IPv4 default gateways of those with an IPv4
-    # address, which is what AUTO_GATEWAY resolves to. On a machine where the script falls back to CIM the counts may differ.
-    $facts = @{ ConnectedAdapters = 0; Gateways = @() }
-    foreach ($c in @(Get-NetIPConfiguration -ErrorAction SilentlyContinue)) {
-        if ($null -eq $c.NetAdapter -or ([string]$c.NetAdapter.Status) -ne 'Up') { continue }
-        $v4 = @($c.IPv4Address | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_.IPAddress) })
-        $v6 = @($c.IPv6Address | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_.IPAddress) })
-        if ($v4.Count -eq 0 -and $v6.Count -eq 0) { continue }
-        $facts.ConnectedAdapters++
-        if ($v4.Count -gt 0) {
-            foreach ($g in @($c.IPv4DefaultGateway)) { if ($null -ne $g -and -not [string]::IsNullOrWhiteSpace([string]$g.NextHop)) { $facts.Gateways += [string]$g.NextHop } }
+    # What the script's snapshot sees, read from the operating system the way Get-NetworkSnapshot does: first
+    # Get-NetIPConfiguration (an adapter counts when it is Up and has an IPv4 or IPv6 address; the gateways are those of
+    # the adapters with an IPv4 address, which is what AUTO_GATEWAY resolves to); when that cmdlet throws, the script
+    # writes a data-source row and falls back to CIM, and when it is missing or returns nothing it falls back without the
+    # row - CIM counts every IP-enabled Win32_NetworkAdapterConfiguration and keeps its IPv4 default gateways.
+    $facts = @{ ConnectedAdapters = 0; Gateways = @(); Source = 'NetCmdlets'; DataSourceRow = $false }
+    $useCim = $true
+    if (Get-Command Get-NetIPConfiguration -ErrorAction SilentlyContinue) {
+        try {
+            $n = 0; $gws = @()
+            foreach ($c in @(Get-NetIPConfiguration -ErrorAction Stop)) {
+                if ($null -eq $c.NetAdapter -or ([string]$c.NetAdapter.Status) -ne 'Up') { continue }
+                $v4 = @($c.IPv4Address | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_.IPAddress) })
+                $v6 = @($c.IPv6Address | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_.IPAddress) })
+                if ($v4.Count -eq 0 -and $v6.Count -eq 0) { continue }
+                $n++
+                if ($v4.Count -gt 0) {
+                    foreach ($g in @($c.IPv4DefaultGateway)) { if ($null -ne $g -and -not [string]::IsNullOrWhiteSpace([string]$g.NextHop)) { $gws += [string]$g.NextHop } }
+                }
+            }
+            if ($n -gt 0) { $facts.ConnectedAdapters = $n; $facts.Gateways = @($gws | Sort-Object -Unique); $useCim = $false }
         }
+        catch { $facts.DataSourceRow = $true }
     }
-    $facts.Gateways = @($facts.Gateways | Sort-Object -Unique)
+    if ($useCim) {
+        $facts.Source = 'CIM'
+        $configs = @(Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -OperationTimeoutSec 8 -ErrorAction SilentlyContinue | Where-Object { $_.IPEnabled })
+        $facts.ConnectedAdapters = $configs.Count
+        $gws = @()
+        foreach ($c in $configs) {
+            $ipv4 = @(@($c.IPAddress) | Where-Object { $p = $null; [System.Net.IPAddress]::TryParse([string]$_, [ref]$p) -and $p.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork })
+            if ($ipv4.Count -eq 0) { continue }
+            foreach ($g in @($c.DefaultIPGateway)) { $p = $null; if ([System.Net.IPAddress]::TryParse([string]$g, [ref]$p) -and $p.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $gws += [string]$g } }
+        }
+        $facts.Gateways = @($gws | Sort-Object -Unique)
+    }
     return $facts
 }
 function Get-StandardRuleCount($Config) {
@@ -189,10 +209,16 @@ function Test-ResultSet {
     $gatewayTargets = @($pingTargets | Where-Object { [string]$_.Address -eq 'AUTO_GATEWAY' }).Count
     $gateways = @($Machine.Gateways)
     $connected = [int]$Machine.ConnectedAdapters
-    $groups = @(@($Config.Tests.TcpTargets) + @($Config.Tests.HttpTargets) | ForEach-Object { [string]$_.Group } | Where-Object { $_ } | Sort-Object -Unique)
+    # One connectivity-group row per group named on a TCP or HTTP target or listed in RequiredConnectivityGroups (a
+    # required group without targets gets its own "no executable items" row), the way Test-ConnectivityTargets writes them.
+    $groupKeys = @{}
+    foreach ($t in @(@($Config.Tests.TcpTargets) + @($Config.Tests.HttpTargets))) { $g = [string]$t.Group; if (-not [string]::IsNullOrWhiteSpace($g)) { $groupKeys[$g] = $true } }
+    $requiredGroups = @(@($Config.Tests.RequiredConnectivityGroups) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
+    $groups = @(@(@($groupKeys.Keys) + $requiredGroups) | Select-Object -Unique)
     $rules = Get-StandardRuleCount $Config
     $want = [ordered]@{
         'config-file' = 1; 'config' = 1; 'environment' = 1; 'system' = 1; 'adapters' = 1
+        'data-source' = $(if ([bool]$Machine.DataSourceRow) { 1 } else { 0 })   # the CIM fallback's warning row, only when the cmdlets threw
         # Without a connected adapter the snapshot writes the aggregate adapters row only: no gateway or DNS settings rows.
         'gateway-config' = $(if ($connected -gt 0) { 1 } else { 0 })
         'dns-config' = $(if ($connected -gt 0) { 1 } else { 0 })

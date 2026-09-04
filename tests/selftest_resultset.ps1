@@ -4,8 +4,10 @@ param([string]$ReportDir, [string]$ConfigDir)
 # (must be clean) and tampered with (must be reported): a row removed, a rogue tag added, an IT row moved to the Main
 # scope, an extra-target row expected but absent, every adapter counter row removed, an empty result set, a diagnostic
 # dropped by the run and by the report's ChecksEnabled alike, a gateway row naming an address that is not a default
-# gateway of this machine, the zero-adapter shape (accepted for a machine without a connected adapter, reported for this
-# one), and a configuration with two standard rules against a report with one standard row.
+# gateway of the machine, the zero-adapter shape (accepted for a machine without a connected adapter, reported for one
+# with adapters), a configuration with two standard rules against a report with one standard row, a required
+# connectivity group without targets, and the CIM fallback's data-source row expected and present or absent. The machine
+# facts are injected for every tampered case, so the outcome does not depend on the connectivity of the machine.
 #   -ReportDir: a Reports folder written by NetworkHealthCheck.ps1 (the oldest JSON report in it is used)
 #   -ConfigDir: the folder holding the NetworkHealthCheck.config.json that run used
 # Example: tests\selftest_resultset.ps1 -ReportDir <work dir>\stage\console\en-US\Reports -ConfigDir <work dir>\stage\console\en-US
@@ -30,25 +32,41 @@ function Assert-Case([string]$Name, [string[]]$Mismatches, [bool]$ExpectClean, [
     else { $script:fails++; "[FAIL] $Name -> " + $(if ($clean) { 'clean' } else { $Mismatches -join '; ' }) + " (expected " + $(if ($ExpectClean) { 'clean' } else { "a mismatch mentioning '$MustMention'" }) + ")" }
 }
 "report $($json.Name): $(@((Load).Results).Count) rows, EntryPoint $((Load).RunOptions.EntryPoint)"
-$r = Load; Assert-Case 'intact report' @(Test-ResultSet $r $cfg @{}) $true ''
-$r = Load; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'dns' }); Assert-Case 'dns row removed' @(Test-ResultSet $r $cfg @{}) $false 'dns: 0 row(s)'
-$r = Load; $rogue = $r.Results[0].PSObject.Copy(); $rogue.Tag = 'bogus'; $r.Results = @($r.Results) + @($rogue); Assert-Case 'rogue tag added' @(Test-ResultSet $r $cfg @{}) $false 'unexpected tag(s): bogus'
-$r = Load; foreach ($x in $r.Results) { if ($x.Tag -eq 'routes') { $x.Scope = 'Main' } }; Assert-Case 'routes row moved to the Main scope' @(Test-ResultSet $r $cfg @{}) $false 'routes row in scope Main'
-$r = Load; Assert-Case 'extra ping target expected but absent' @(Test-ResultSet $r $cfg @{ ExtraPing = '9.9.9.9' }) $false 'no ping-target row for 9.9.9.9'
-$r = Load; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'adapter-errors' }); Assert-Case 'every adapter counter row removed' @(Test-ResultSet $r $cfg @{}) $false 'adapter-errors: 0 row(s)'
-$r = Load; $r.Results = @(); Assert-Case 'empty result set' @(Test-ResultSet $r $cfg @{}) $false 'adapter: 0 row(s)'
-$r = Load; $r.RunOptions.ChecksEnabled.WifiRf = $false; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi' }); Assert-Case 'Wi-Fi diagnostic dropped by the run and by ChecksEnabled alike' @(Test-ResultSet $r $cfg @{}) $false 'ChecksEnabled for wifi reported as False'
-$r = Load; foreach ($x in $r.Results) { if ($x.Tag -eq 'ping-gateway') { $x.Check = ($x.Check -replace '\d{1,3}(\.\d{1,3}){3}', '10.255.255.254') } }; Assert-Case 'ping-gateway row naming an address that is not a gateway of this machine' @(Test-ResultSet $r $cfg @{}) $false 'not a default gateway of this machine'
+# The intact report is checked against the real machine facts (the positive control); every tampered case runs against
+# injected facts - three connected adapters, no gateway unless the case is about gateways - so the outcome does not depend
+# on the connectivity of the machine running the self-check.
+$three = @{ ConnectedAdapters = 3; Gateways = @() }
+$adapterRows = @((Load).Results | Where-Object { $_.Tag -eq 'adapter' }).Count
+if ($adapterRows -ne 3) { $three['ConnectedAdapters'] = $adapterRows }   # the report was written on this machine; keep the tampered cases consistent with it
+$r = Load; Assert-Case 'intact report (real machine facts)' @(Test-ResultSet $r $cfg @{}) $true ''
+$r = Load; Assert-Case 'intact report (injected facts)' @(Test-ResultSet $r $cfg @{} $three) $true ''
+$r = Load; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'dns' }); Assert-Case 'dns row removed' @(Test-ResultSet $r $cfg @{} $three) $false 'dns: 0 row(s)'
+$r = Load; $rogue = $r.Results[0].PSObject.Copy(); $rogue.Tag = 'bogus'; $r.Results = @($r.Results) + @($rogue); Assert-Case 'rogue tag added' @(Test-ResultSet $r $cfg @{} $three) $false 'unexpected tag(s): bogus'
+$r = Load; foreach ($x in $r.Results) { if ($x.Tag -eq 'routes') { $x.Scope = 'Main' } }; Assert-Case 'routes row moved to the Main scope' @(Test-ResultSet $r $cfg @{} $three) $false 'routes row in scope Main'
+$r = Load; Assert-Case 'extra ping target expected but absent' @(Test-ResultSet $r $cfg @{ ExtraPing = '9.9.9.9' } $three) $false 'no ping-target row for 9.9.9.9'
+$r = Load; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'adapter-errors' }); Assert-Case 'every adapter counter row removed' @(Test-ResultSet $r $cfg @{} $three) $false 'adapter-errors: 0 row(s)'
+$r = Load; $r.Results = @(); Assert-Case 'empty result set' @(Test-ResultSet $r $cfg @{} $three) $false 'adapters: 0 row(s)'
+$r = Load; $r.RunOptions.ChecksEnabled.WifiRf = $false; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi' }); Assert-Case 'Wi-Fi diagnostic dropped by the run and by ChecksEnabled alike' @(Test-ResultSet $r $cfg @{} $three) $false 'ChecksEnabled for wifi reported as False'
+# Gateway rows by target: the facts carry a synthetic gateway (TEST-NET-1), the row names another address.
+$oneGateway = @{ ConnectedAdapters = $three['ConnectedAdapters']; Gateways = @('192.0.2.1') }
+$r = Load; foreach ($x in $r.Results) { if ($x.Tag -eq 'ping-gateway') { $x.Check = (($x.Check -replace '\d{1,3}(\.\d{1,3}){3}', '').TrimEnd() + ' 10.255.255.254') } }; Assert-Case 'ping-gateway row naming an address that is not a gateway of the machine' @(Test-ResultSet $r $cfg @{} $oneGateway) $false 'not a default gateway of this machine (192.0.2.1)'
+$r = Load; foreach ($x in $r.Results) { if ($x.Tag -eq 'ping-gateway') { $x.Check = (($x.Check -replace '\d{1,3}(\.\d{1,3}){3}', '').TrimEnd() + ' 192.0.2.1') } }; Assert-Case 'ping-gateway row naming the gateway of the machine' @(Test-ResultSet $r $cfg @{} $oneGateway) $true ''
 # The zero-adapter shape (all adapters disabled or disconnected): the aggregate adapters row fails and there are no
 # adapter, gateway-config or dns-config rows; counter rows may still name whatever the counter sample saw. Legitimate on a
-# machine without a connected adapter (injected facts), a regression on this one (real facts).
+# machine without a connected adapter, a regression on a machine with three.
 function ConvertTo-ZeroAdapterShape($Report) {
     $Report.Results = @($Report.Results | Where-Object { $_.Tag -notin @('adapter', 'gateway-config', 'dns-config') })
     foreach ($x in $Report.Results) { if ($x.Tag -eq 'adapters') { $x.Status = 'FAIL' } }
     return $Report
 }
 $r = ConvertTo-ZeroAdapterShape (Load); Assert-Case 'zero-adapter shape on a machine without a connected adapter' @(Test-ResultSet $r $cfg @{} @{ ConnectedAdapters = 0; Gateways = @() }) $true ''
-$r = ConvertTo-ZeroAdapterShape (Load); Assert-Case 'zero-adapter shape on this machine' @(Test-ResultSet $r $cfg @{}) $false 'expected one per connected adapter with an address'
-$r = Load; $cfg2 = Read-Config $ConfigDir; $cfg2.Expected.RequiredDnsServers = @('192.168.1.1'); $cfg2.Expected.AllowedDefaultGateways = @('192.168.1.1'); Assert-Case 'two standard rules configured but one standard row' @(Test-ResultSet $r $cfg2 @{}) $false 'expected-standard: 1 row(s), expected 2'
+$r = ConvertTo-ZeroAdapterShape (Load); Assert-Case 'zero-adapter shape on a machine with connected adapters' @(Test-ResultSet $r $cfg @{} $three) $false 'expected one per connected adapter with an address'
+$r = Load; $cfg2 = Read-Config $ConfigDir; $cfg2.Expected.RequiredDnsServers = @('192.168.1.1'); $cfg2.Expected.AllowedDefaultGateways = @('192.168.1.1'); Assert-Case 'two standard rules configured but one standard row' @(Test-ResultSet $r $cfg2 @{} $three) $false 'expected-standard: 1 row(s), expected 2'
+# A required connectivity group without targets gets its own row; a configuration that requires two groups expects two.
+$r = Load; $cfg3 = Read-Config $ConfigDir; $cfg3.Tests.RequiredConnectivityGroups = @('Internet', 'Intranet'); Assert-Case 'a required group without targets expects its own row' @(Test-ResultSet $r $cfg3 @{} $three) $false 'connectivity-group: 1 row(s), expected 2'
+# The CIM fallback after a cmdlet failure writes a data-source row; the facts say so, the report must carry it.
+$cimFacts = @{ ConnectedAdapters = $three['ConnectedAdapters']; Gateways = @(); Source = 'CIM'; DataSourceRow = $true }
+$r = Load; Assert-Case 'facts from the CIM fallback after a cmdlet failure, report without the data-source row' @(Test-ResultSet $r $cfg @{} $cimFacts) $false 'data-source: 0 row(s), expected 1'
+$r = Load; $ds = $r.Results[0].PSObject.Copy(); $ds.Tag = 'data-source'; $ds.Scope = 'Main'; $ds.Status = 'WARN'; $r.Results = @($r.Results) + @($ds); Assert-Case 'facts from the CIM fallback after a cmdlet failure, report with the data-source row' @(Test-ResultSet $r $cfg @{} $cimFacts) $true ''
 "Summary: $passes passed, $fails failed"
 exit $fails
