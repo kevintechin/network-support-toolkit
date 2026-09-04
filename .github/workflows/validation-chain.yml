@@ -64,12 +64,14 @@ jobs:
             [IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY, $text, (New-Object Text.UTF8Encoding($false)))
           }
 
-      # summary.md, one <step>_<case>.log per run, and the ZIP the package step built.
+      # summary.md, one <step>_<case>.log per run, and the ZIP the package step built. Artifacts of a run are immutable
+      # and a re-run keeps the earlier attempt's, so the name carries the attempt: each attempt uploads its own, and the
+      # evidence of a failed first attempt stays next to the second one's.
       - name: Keep the logs and the built asset
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: validation-chain-${{ github.run_number }}
+          name: validation-chain-${{ github.run_number }}.${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/nhc-tests/summary.md
             ${{ runner.temp }}/nhc-tests/*.log
