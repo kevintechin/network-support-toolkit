@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -187,5 +187,77 @@ Assert-Equal 'virt: no flags, Hyper-V vEthernet' (Test-IsVirtualAdapter -Descrip
 Assert-Equal 'virt: no flags, real NIC' (Test-IsVirtualAdapter -Description "Intel(R) Wi-Fi 6E AX211 160MHz" -VirtualFlag $null -HardwareFlag $null) False
 Assert-Equal 'virt: CIM PhysicalAdapter=true -> physical' (Test-IsVirtualAdapter -Description "Hyper-V Network Adapter" -VirtualFlag $null -HardwareFlag $true) False
 
+
+# backlog #14: network error text is classified by its error code, never by the operating system's wording. The
+# expected sentences differ per language, so the assertions below check language-independent properties: the code
+# name is always there, a mapped code adds a sentence in front of it, an unmapped code adds none, the original text
+# is never dropped, and both language files carry the same table keys.
+$socketCodes = 'HostNotFound', 'TryAgain', 'NoData', 'TimedOut', 'ConnectionRefused', 'NetworkUnreachable', 'HostUnreachable', 'ConnectionReset', 'ConnectionAborted', 'NetworkDown', 'AddressNotAvailable', 'AccessDenied'
+$webStatuses = 'Timeout', 'NameResolutionFailure', 'ProxyNameResolutionFailure', 'ConnectFailure', 'TrustFailure', 'SecureChannelFailure', 'ReceiveFailure', 'SendFailure', 'ConnectionClosed', 'ServerProtocolViolation', 'RequestProhibitedByProxy'
+foreach ($code in $socketCodes) {
+    # A constructed SocketException carries .NET's own text, not the operating system's; the code is what is read.
+    $marker = "[SocketError $code]"
+    $text = Get-NetworkErrorCauseText (New-Object System.Net.Sockets.SocketException ([int][System.Net.Sockets.SocketError]::$code))
+    Assert-Equal ("cause: SocketError $code names the code") ($text.EndsWith($marker)) True
+    Assert-Equal ("cause: SocketError $code has a sentence") ($text.Length -gt ($marker.Length + 8)) True
+}
+foreach ($status in $webStatuses) {
+    $marker = "[WebExceptionStatus $status]"
+    $text = Get-NetworkErrorCauseText (New-Object System.Net.WebException 'x', $null, ([System.Net.WebExceptionStatus]::$status), $null)
+    Assert-Equal ("cause: WebExceptionStatus $status names the status") ($text.EndsWith($marker)) True
+    Assert-Equal ("cause: WebExceptionStatus $status has a sentence") ($text.Length -gt ($marker.Length + 8)) True
+}
+$refused = New-Object System.Net.Sockets.SocketException ([int][System.Net.Sockets.SocketError]::ConnectionRefused)
+Assert-Equal 'cause: unmapped code is the code alone' (Get-NetworkErrorCauseText (New-Object System.Net.Sockets.SocketException ([int][System.Net.Sockets.SocketError]::NetworkReset))) '[SocketError NetworkReset]'
+Assert-Equal 'cause: unmapped web status is the status alone' (Get-NetworkErrorCauseText (New-Object System.Net.WebException 'x', $null, ([System.Net.WebExceptionStatus]::KeepAliveFailure), $null)) '[WebExceptionStatus KeepAliveFailure]'
+# The socket error is two or three levels down in every real failure: a task, a ping and a method call all wrap it.
+$nested = New-Object System.AggregateException 'wrapper', (New-Object System.Net.NetworkInformation.PingException 'ping', $refused)
+Assert-Equal 'cause: found through AggregateException and PingException' ((Get-NetworkErrorCauseText $nested).EndsWith('[SocketError ConnectionRefused]')) True
+Assert-Equal 'cause: non-network exception has none' (Get-NetworkErrorCauseText (New-Object System.InvalidOperationException 'nope')) ''
+Assert-Equal 'cause: null has none' (Get-NetworkErrorCauseText $null) ''
+# Depth is bounded, so a self-referencing or very deep chain cannot loop.
+$deep = $refused
+foreach ($i in 1..8) { $deep = New-Object System.InvalidOperationException ('level ' + $i), $deep }
+Assert-Equal 'cause: deeper than the walk gives none' (Get-NetworkErrorCauseText $deep) ''
+$withCause = Add-NetworkErrorCause $refused 'ORIGINAL'
+Assert-Equal 'add: original text kept' ($withCause.EndsWith('ORIGINAL')) True
+Assert-Equal 'add: cause on its own first line' (@($withCause -split "`r`n").Count) 2
+Assert-Equal 'add: first line names the code' ((@($withCause -split "`r`n")[0]).EndsWith('[SocketError ConnectionRefused]')) True
+Assert-Equal 'add: no cause returns the text unchanged' (Add-NetworkErrorCause (New-Object System.InvalidOperationException 'nope') 'ORIGINAL') 'ORIGINAL'
+Assert-Equal 'add: empty text yields the cause line only' ((Add-NetworkErrorCause $refused '').EndsWith('[SocketError ConnectionRefused]')) True
+$oneLine = Add-NetworkErrorCause $refused 'ORIGINAL' -SingleLine
+Assert-Equal 'add -SingleLine: one line' (@($oneLine -split "`r`n").Count) 1
+Assert-Equal 'add -SingleLine: original text kept' ($oneLine.EndsWith('ORIGINAL')) True
+Assert-Equal 'add -SingleLine: cause before the original' (($oneLine.IndexOf('[SocketError ConnectionRefused]')) -lt ($oneLine.IndexOf('ORIGINAL'))) True
+Assert-Equal 'add -SingleLine: no cause returns the text unchanged' (Add-NetworkErrorCause (New-Object System.InvalidOperationException 'nope') 'ORIGINAL' -SingleLine) 'ORIGINAL'
+# Get-ExceptionDetails puts the cause first, above the type and the operating system's own message.
+try { throw $refused } catch { $record = $_ }
+$details = @((Get-ExceptionDetails $record) -split "`r`n")
+Assert-Equal 'details: cause is the first line' ($details[0].EndsWith('[SocketError ConnectionRefused]')) True
+Assert-Equal 'details: original message still present' (@($details | Where-Object { $_ -like ("*" + $refused.Message + "*") }).Count -gt 0) True
+try { throw (New-Object System.InvalidOperationException 'plain') } catch { $plainRecord = $_ }
+Assert-Equal 'details: no cause line for a non-network error' ((@((Get-ExceptionDetails $plainRecord) -split "`r`n")).Count) 2
+
+# The two language files must offer the same codes: a key misspelled in one of them would silently lose its
+# sentence there, and the validator's skeleton comparison cannot see it (it compares string count, not content).
+function Get-CauseTableKeys([string]$Path) {
+    $tokens = $null; $errors = $null
+    $fileAst = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+    $fn = $fileAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-NetworkErrorCauseText' }, $true)
+    if ($null -eq $fn) { return @() }
+    $keys = New-Object System.Collections.ArrayList
+    foreach ($table in $fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $true)) {
+        foreach ($pair in $table.KeyValuePairs) { [void]$keys.Add($pair.Item1.Extent.Text.Trim('"')) }
+    }
+    return @($keys | Sort-Object)
+}
+$thisLang = Split-Path -Leaf (Split-Path -Parent $ScriptPath)
+$peerLang = $(if ($thisLang -eq 'en-US') { 'zh-TW' } else { 'en-US' })
+$peerPath = Join-Path (Split-Path -Parent (Split-Path -Parent $ScriptPath)) ($peerLang + '\NetworkHealthCheck.ps1')
+Assert-Equal "tables: peer file $peerLang is present" (Test-Path -LiteralPath $peerPath) True
+$thisKeys = @(Get-CauseTableKeys $ScriptPath)
+$peerKeys = @(Get-CauseTableKeys $peerPath)
+Assert-Equal 'tables: this file holds every mapped code' (($thisKeys -join ',')) ((@($socketCodes + $webStatuses) | Sort-Object) -join ',')
+Assert-Equal "tables: $peerLang holds the same keys" ($peerKeys -join ',') ($thisKeys -join ',')
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails
