@@ -131,9 +131,62 @@ function New-StagedCopy {
     }
     return $dst
 }
+function Read-Config([string]$Dir) { Get-Content -LiteralPath (Join-Path $Dir 'NetworkHealthCheck.config.json') -Raw -Encoding UTF8 | ConvertFrom-Json }
 function Get-ConfigSampling([string]$Dir) {
-    $c = Get-Content -LiteralPath (Join-Path $Dir 'NetworkHealthCheck.config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $c = Read-Config $Dir
     return @{ PingCount = [int]$c.Tests.PingCount; SampleSeconds = [int]$c.Tests.RetransmissionSampleSeconds }
+}
+function Get-Count($Value) { if ($null -eq $Value) { return 0 }; return @($Value).Count }
+function Test-ResultSet {
+    # The report must carry every row the configuration and the run options call for, and nothing else: one row per
+    # configured or extra target, one per enabled IT diagnostic, the fixed rows (configuration, environment, system,
+    # adapters, gateway and DNS settings, standard comparison, connectivity group per group, TCPv4 and TCPv6
+    # retransmissions), each in its scope. Per-adapter rows depend on the machine, so they must exist and pair up (one
+    # counter row per adapter row). A Run-AllChecks that skipped a diagnostic, an unknown or renamed tag, or a missing
+    # row for an extra target given as a switch fails here. Returns the mismatches.
+    param($Report, $Config, [hashtable]$Expect)
+    $bad = @()
+    $o = $Report.RunOptions
+    $pingTargets = @($Config.Tests.PingTargets)
+    $gatewayTargets = @($pingTargets | Where-Object { [string]$_.Address -eq 'AUTO_GATEWAY' }).Count
+    $groups = @(@($Config.Tests.TcpTargets) + @($Config.Tests.HttpTargets) | ForEach-Object { [string]$_.Group } | Where-Object { $_ } | Sort-Object -Unique)
+    $want = [ordered]@{
+        'config-file' = 1; 'config' = 1; 'environment' = 1; 'system' = 1; 'adapters' = 1; 'gateway-config' = 1; 'dns-config' = 1; 'expected-standard' = 1
+        'ping-gateway' = $gatewayTargets
+        'ping-target' = ($pingTargets.Count - $gatewayTargets) + (Get-Count $o.ExtraTargets.Ping)
+        'dns' = (Get-Count $Config.Tests.DnsNames) + (Get-Count $o.ExtraTargets.Dns)
+        'tcp' = (Get-Count $Config.Tests.TcpTargets) + (Get-Count $o.ExtraTargets.Tcp)
+        'http' = (Get-Count $Config.Tests.HttpTargets) + (Get-Count $o.ExtraTargets.Http)
+        'connectivity-group' = $groups.Count
+        'tcp-retransmissions' = 2
+    }
+    $itTags = [ordered]@{ 'wifi' = $o.ChecksEnabled.WifiRf; 'routes' = $o.ChecksEnabled.RouteTable; 'gateway-neighbor' = $o.ChecksEnabled.GatewayNeighbor; 'proxy' = $o.ChecksEnabled.ProxySettings; 'traceroute' = $o.ChecksEnabled.Traceroute; 'drivers' = $o.ChecksEnabled.DriverInfo }
+    foreach ($k in @($itTags.Keys)) { $want[$k] = $(if ([bool]$itTags[$k]) { 1 } else { 0 }) }
+    $rows = @($Report.Results)
+    $byTag = @{}
+    foreach ($r in $rows) { $t = [string]$r.Tag; if (-not $byTag.ContainsKey($t)) { $byTag[$t] = 0 }; $byTag[$t]++ }
+    foreach ($k in @($want.Keys)) {
+        $have = $(if ($byTag.ContainsKey($k)) { $byTag[$k] } else { 0 })
+        if ($have -ne $want[$k]) { $bad += ('{0}: {1} row(s), expected {2}' -f $k, $have, $want[$k]) }
+    }
+    $adapters = $(if ($byTag.ContainsKey('adapter')) { $byTag['adapter'] } else { 0 })
+    $counters = $(if ($byTag.ContainsKey('adapter-errors')) { $byTag['adapter-errors'] } else { 0 })
+    if ($adapters -lt 1) { $bad += 'no adapter row' }
+    if ($counters -ne $adapters) { $bad += ('adapter-errors: {0} row(s), expected one per adapter row ({1})' -f $counters, $adapters) }
+    $known = @($want.Keys) + @('adapter', 'adapter-errors')
+    $unknown = @($byTag.Keys | Where-Object { $known -notcontains $_ })
+    if ($unknown.Count) { $bad += ('unexpected tag(s): ' + ($unknown -join ', ')) }
+    $expectedTotal = $adapters + $counters
+    foreach ($k in @($want.Keys)) { $expectedTotal += [int]$want[$k] }
+    if ($rows.Count -ne $expectedTotal) { $bad += ('{0} results, expected {1}' -f $rows.Count, $expectedTotal) }
+    foreach ($r in $rows) {
+        $scope = $(if ($itTags.Contains([string]$r.Tag)) { 'IT' } else { 'Main' })
+        if ([string]$r.Scope -ne $scope) { $bad += ('{0} row in scope {1}, expected {2}' -f $r.Tag, $r.Scope, $scope) }
+    }
+    foreach ($pair in @(@('ExtraPing', 'ping-target'), @('ExtraTcp', 'tcp'))) {
+        if ($Expect.ContainsKey($pair[0]) -and @($rows | Where-Object { $_.Tag -eq $pair[1] -and (($_.Check + ' ' + $_.Message) -like ('*' + $Expect[$pair[0]] + '*')) }).Count -eq 0) { $bad += ('no {0} row for {1}' -f $pair[1], $Expect[$pair[0]]) }
+    }
+    return $bad
 }
 function Get-NewestJson([string]$Dir, [datetime]$After) {
     @(Get-ChildItem -LiteralPath $Dir -Filter '*.json' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $After } | Sort-Object LastWriteTime -Descending | Select-Object -First 1)[0]
@@ -165,17 +218,19 @@ function Invoke-WindowRun {
     # the IT entry only; a JSON report whose run options match the launch (entry point, ExpandDetails, ping count and
     # sample seconds from the folder's configuration); the title carrying the IT marker for the IT entry only ("- IT" /
     # "(IT)" right before the closing quote of the window line); the window closed through its own Close button.
-    param([string]$Dir, [string]$Entry, [string]$LogName)
+    param([string]$Dir, [string]$Entry, [string]$LogName, [string]$LauncherPath)
     $expect = Get-ConfigSampling $Dir
     $expect['EntryPoint'] = $Entry
     $expect['ExpandDetails'] = ($Entry -eq 'IT')
     $started = Get-Date
-    $r = Invoke-TestScript 'gui_check.ps1' @('-PackageDir', $Dir, '-Entry', $Entry, '-Via', 'Launcher', '-TimeoutSeconds', $GuiTimeoutSeconds) $LogName
+    $argList = @('-PackageDir', $Dir, '-Entry', $Entry, '-Via', 'Launcher', '-TimeoutSeconds', $GuiTimeoutSeconds)
+    if ($LauncherPath) { $argList += @('-LauncherPath', $LauncherPath) }
+    $r = Invoke-TestScript 'gui_check.ps1' $argList $LogName
     if ($r.ExitCode -ne 0) { return @{ Passed = $false; Detail = ('exit code {0}: {1}' -f $r.ExitCode, [string]@($r.Output | Where-Object { $_ -match 'ERROR' })[0]) } }
     $json = Get-NewestJson (Join-Path $Dir 'Reports') $started
     if ($null -eq $json) { return @{ Passed = $false; Detail = 'exit 0 but no JSON report' } }
     $d = Read-Report $json
-    $bad = @(Test-ReportExpectations $d $expect)
+    $bad = @(Test-ReportExpectations $d $expect) + @(Test-ResultSet $d (Read-Config $Dir) $expect)
     $cmdline = [string]@($r.Output | Where-Object { $_ -match 'launcher started .* with: ' })[0]
     if (-not $cmdline) { $bad += 'the launcher command line was not captured' }
     else {
@@ -299,7 +354,7 @@ try {
                 $json = Get-NewestJson (Join-Path $stage 'Reports') $started
                 if ($null -eq $json) { return @{ Passed = $false; Detail = 'exit 0 but no JSON report' } }
                 $d = Read-Report $json
-                $bad = @(Test-ReportExpectations $d $expect)
+                $bad = @(Test-ReportExpectations $d $expect) + @(Test-ResultSet $d (Read-Config $stage) $expect)
                 $detail = 'exit 0; ' + (Format-ReportDetail $d)
                 if ($bad.Count) { $detail = ($bad -join '; ') + ' | ' + $detail }
                 @{ Passed = ($bad.Count -eq 0); Detail = $detail }
@@ -324,8 +379,17 @@ try {
             @{ Passed = (($v.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $detail }
         }
         if (-not $SkipGui) {
+            # The package root's launchers (README_BILINGUAL.md sends users there) open the user entry of their language;
+            # the language folders' IT launchers open the IT entry.
+            foreach ($root in @(@{ Lang = 'en-US'; Launcher = 'Start-English.cmd' }, @{ Lang = 'zh-TW'; Launcher = 'Start-Traditional-Chinese.cmd' })) {
+                Invoke-Case 'package' ($root.Lang + ' user entry from the extracted package root (' + $root.Launcher + ', real window)') {
+                    $path = Join-Path $extracted $root.Launcher
+                    if (-not (Test-Path -LiteralPath $path)) { return @{ Passed = $false; Detail = ('root launcher not present: ' + $root.Launcher) } }
+                    Invoke-WindowRun -Dir (Join-Path $extracted $root.Lang) -Entry 'User' -LogName ('package_gui_root_' + $root.Lang) -LauncherPath $path
+                }
+            }
             foreach ($lang in $Languages) {
-                Invoke-Case 'package' ($lang + ' IT entry from the extracted package (real window)') {
+                Invoke-Case 'package' ($lang + ' IT entry from the extracted package (Start-NetworkCheck-IT.cmd, real window)') {
                     if (-not (Test-Path -LiteralPath (Join-Path $extracted $lang))) { return @{ Passed = $false; Detail = 'extracted package not present' } }
                     Invoke-WindowRun -Dir (Join-Path $extracted $lang) -Entry 'IT' -LogName ('package_gui_IT_' + $lang)
                 }

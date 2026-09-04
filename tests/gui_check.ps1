@@ -2,12 +2,15 @@ param(
     [string]$PackageDir,
     [ValidateSet("User", "IT")][string]$Entry = "IT",
     [ValidateSet("Launcher", "Direct")][string]$Via = "Launcher",
+    [string]$LauncherPath,
     [int]$TimeoutSeconds = 300
 )
 # End-to-end check through the real WinForms window (UI Automation), the way a person would use the package:
 #   -Via Launcher (default): the double-click path - cmd.exe runs the shipped Start-NetworkCheck.cmd (User) or
-#                            Start-NetworkCheck-IT.cmd (IT) from the package folder; the window belongs to the PowerShell
-#                            process the launcher starts, and the launcher's effective command line is printed.
+#                            Start-NetworkCheck-IT.cmd (IT) from the package folder, or the launcher given as
+#                            -LauncherPath (the package root's Start-English.cmd / Start-Traditional-Chinese.cmd, which
+#                            call the language folder's user launcher); the window belongs to the PowerShell process the
+#                            launcher starts, and the launcher's effective command line is printed.
 #   -Via Direct:             powershell.exe -STA -File NetworkHealthCheck.ps1 [-Interactive -ExpandDetails], for debugging.
 #   User entry: the run must start by itself - Start disabled or the window changing within 10 s, nobody clicking.
 #   IT entry:   the window must be idle first - Start enabled, no report since launch, nothing in the window changing over
@@ -53,13 +56,26 @@ function Find-ByName($Window, [string]$Name) {
 function Send-Click($Element) {
     [void][Win32Msg]::PostMessage([IntPtr]$Element.Current.NativeWindowHandle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
 }
+function Get-PowerShellDescendant([int]$ParentId) {
+    # The PowerShell process under the launcher: a direct child of cmd.exe (the language launchers, and the root
+    # launchers, which `call` them in the same cmd.exe), or a grandchild should a launcher ever spawn a nested cmd.exe.
+    $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ParentId")
+    $hit = @($children | Where-Object { $_.Name -match '^(powershell|pwsh)\.exe$' })[0]
+    if ($null -ne $hit) { return $hit }
+    foreach ($c in $children) {
+        $hit = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($c.ProcessId)" | Where-Object { $_.Name -match '^(powershell|pwsh)\.exe$' })[0]
+        if ($null -ne $hit) { return $hit }
+    }
+    return $null
+}
 
 $launchedAt = Get-Date
 if ($Via -eq "Launcher") {
-    $launcher = Join-Path $PackageDir $(if ($Entry -eq "IT") { "Start-NetworkCheck-IT.cmd" } else { "Start-NetworkCheck.cmd" })
+    $launcher = $LauncherPath
+    if (-not $launcher) { $launcher = Join-Path $PackageDir $(if ($Entry -eq "IT") { "Start-NetworkCheck-IT.cmd" } else { "Start-NetworkCheck.cmd" }) }
     if (-not (Test-Path -LiteralPath $launcher)) { "$tag ERROR: launcher not found: $launcher"; exit 1 }
     "$tag launcher: " + (Split-Path -Leaf $launcher)
-    $proc = Start-Process -FilePath $cmd -ArgumentList @("/c", ('"' + $launcher + '"')) -WorkingDirectory $PackageDir -PassThru
+    $proc = Start-Process -FilePath $cmd -ArgumentList @("/c", ('"' + $launcher + '"')) -WorkingDirectory (Split-Path -Parent $launcher) -PassThru
 }
 else {
     $psArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-STA", "-File", $script)
@@ -76,7 +92,7 @@ try {
         while ($null -eq $child -and (Get-Date) -lt $deadline) {
             Start-Sleep -Milliseconds 500
             if ($proc.HasExited) { throw "the launcher exited early with code $($proc.ExitCode)" }
-            $child = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($proc.Id)" | Where-Object { $_.Name -match '^(powershell|pwsh)\.exe$' })[0]
+            $child = Get-PowerShellDescendant $proc.Id
         }
         if ($null -eq $child) { throw "the launcher started no PowerShell process within 30 s" }
         $guiPid = [int]$child.ProcessId
