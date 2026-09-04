@@ -146,7 +146,17 @@ function Get-MachineFacts {
     # the adapters with an IPv4 address, which is what AUTO_GATEWAY resolves to); when that cmdlet throws, the script
     # writes a data-source row and falls back to CIM, and when it is missing or returns nothing it falls back without the
     # row - CIM counts every IP-enabled Win32_NetworkAdapterConfiguration and keeps its IPv4 default gateways.
-    $facts = @{ ConnectedAdapters = 0; Gateways = @(); Source = 'NetCmdlets'; DataSourceRow = $false }
+    $facts = @{ ConnectedAdapters = 0; Gateways = @(); Source = 'NetCmdlets'; DataSourceRow = $false; TcpCounters = @{ TCPv4 = $false; TCPv6 = $false } }
+    # Which TCP performance-counter classes can be read, the way Get-TcpCounterSnapshot reads them: an instance with the
+    # SegmentsSentPersec and SegmentsRetransmittedPersec fields. An unreadable class yields an error row from each of the
+    # two samples instead of a result row.
+    foreach ($protocol in @('TCPv4', 'TCPv6')) {
+        try {
+            $counter = @(Get-CimInstance -ClassName ('Win32_PerfRawData_Tcpip_' + $protocol) -ErrorAction Stop | Select-Object -First 1)[0]
+            if ($null -ne $counter -and $null -ne $counter.PSObject.Properties['SegmentsSentPersec'] -and $null -ne $counter.PSObject.Properties['SegmentsRetransmittedPersec']) { $facts.TcpCounters[$protocol] = $true }
+        }
+        catch { }
+    }
     $useCim = $true
     if (Get-Command Get-NetIPConfiguration -ErrorAction SilentlyContinue) {
         try {
@@ -209,6 +219,8 @@ function Test-ResultSet {
     $gatewayTargets = @($pingTargets | Where-Object { [string]$_.Address -eq 'AUTO_GATEWAY' }).Count
     $gateways = @($Machine.Gateways)
     $connected = [int]$Machine.ConnectedAdapters
+    $tcpCounters = $Machine.TcpCounters
+    if ($null -eq $tcpCounters) { $tcpCounters = @{ TCPv4 = $true; TCPv6 = $true } }
     # One connectivity-group row per group named on a TCP or HTTP target or listed in RequiredConnectivityGroups (a
     # required group without targets gets its own "no executable items" row), the way Test-ConnectivityTargets writes them.
     $groupKeys = @{}
@@ -230,7 +242,8 @@ function Test-ResultSet {
         'tcp' = (Get-Count $Config.Tests.TcpTargets) + (Get-Count $o.ExtraTargets.Tcp)
         'http' = (Get-Count $Config.Tests.HttpTargets) + (Get-Count $o.ExtraTargets.Http)
         'connectivity-group' = $groups.Count
-        'tcp-retransmissions' = 2
+        # One result row per readable TCP counter class, two error rows (one per sample) per unreadable one.
+        'tcp-retransmissions' = $(if ([bool]$tcpCounters.TCPv4) { 1 } else { 2 }) + $(if ([bool]$tcpCounters.TCPv6) { 1 } else { 2 })
     }
     # The IT diagnostics to expect come from the configuration and the launch switches (-NoWifi / -NoTraceroute as
     # Expect['NoWifi'] / Expect['NoTraceroute']), never from the report under test; the report's own ChecksEnabled must
@@ -282,6 +295,9 @@ function Test-ResultSet {
         if ($named.Count -ne $gwRows.Count) { $bad += 'a ping-gateway row names no IPv4 address' }
         foreach ($a in $named) { if ($gateways -notcontains $a) { $bad += ('ping-gateway row for {0}, which is not a default gateway of this machine ({1})' -f $a, ($gateways -join ', ')) } }
         if (@($named | Sort-Object -Unique).Count -ne $named.Count) { $bad += 'duplicate ping-gateway rows' }
+    }
+    foreach ($protocol in @('TCPv4', 'TCPv6')) {
+        if (@($rows | Where-Object { $_.Tag -eq 'tcp-retransmissions' -and (([string]$_.Check) -like ('*' + $protocol + '*')) }).Count -eq 0) { $bad += ('no tcp-retransmissions row for {0}' -f $protocol) }
     }
     foreach ($pair in @(@('ExtraPing', 'ping-target'), @('ExtraTcp', 'tcp'))) {
         if ($Expect.ContainsKey($pair[0]) -and @($rows | Where-Object { $_.Tag -eq $pair[1] -and (($_.Check + ' ' + $_.Message) -like ('*' + $Expect[$pair[0]] + '*')) }).Count -eq 0) { $bad += ('no {0} row for {1}' -f $pair[1], $Expect[$pair[0]]) }
