@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     One command reproduces the chain recorded in healthcheck/VALIDATION.md: the Windows PowerShell 5.1 parser, the static
-    release validator and the self-test of its two PowerShell guards, the helper unit tests, the report-stage functional
+    release validator and the self-test of the two AST guards, the helper unit tests, the report-stage functional
     tests, the headless Initialize-Gui smoke test, the real-window UI Automation run of both entry points, the console
     acceptance runs and, on request, the release-asset round trip (build, extract, validate inside the package, open the
     extracted IT entry through the real window).
@@ -28,7 +28,7 @@
 .PARAMETER WorkDir
     Where staged copies, reports and logs go. Created if missing.
 .PARAMETER Python
-    The Python 3 command for the validator, the guard self-test and the asset builder.
+    The Python 3 command for the release validator and the asset builder.
 .PARAMETER GuiTimeoutSeconds
     How long one real-window run may take; the IT entry samples TCP retransmissions for 125 s before it reports.
 
@@ -491,8 +491,8 @@ try {
         }
     }
     if ($selected -contains 'guards') {
-        Invoke-Case 'guards' 'validate_release.py' {
-            $r = Invoke-Native $Python @((Join-Path $PSScriptRoot 'selftest_guards.py')) 'guards'
+        Invoke-Case 'guards' 'ast_guards.ps1' {
+            $r = Invoke-TestScript 'selftest_guards.ps1' @() 'guards'
             $corpus = [string]@($r.Output | Where-Object { $_ -match '^corpus:' })[0]
             @{ Passed = (($r.ExitCode -eq 0) -and ($r.Output -contains 'ALL SELF-TESTS OK')); Detail = $corpus }
         }
