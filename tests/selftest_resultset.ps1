@@ -42,7 +42,9 @@ function New-Row($Template, [string]$Tag, [string]$Check, [string]$Status, [stri
 function New-Fixture {
     $r = Load
     $template = $r.Results[0]
-    $rows = @($r.Results | Where-Object { $_.Tag -notin @('adapter', 'adapter-errors', 'gateway-config', 'dns-config', 'ping-gateway', 'tcp-retransmissions', 'data-source') })
+    # Environment-dependent rows are dropped and rebuilt, step-error rows included: the fixture's facts declare every
+    # collector healthy, whatever the live machine had to say.
+    $rows = @($r.Results | Where-Object { $_.Tag -notin @('adapter', 'adapter-errors', 'gateway-config', 'dns-config', 'ping-gateway', 'tcp-retransmissions', 'data-source', 'step-error') })
     foreach ($x in $rows) { if ($x.Tag -eq 'adapters') { $x.Status = 'PASS' } }
     foreach ($i in 1..3) { $rows += New-Row $template 'adapter' "Adapter: fixture $i" 'PASS' }
     $rows += New-Row $template 'gateway-config' 'Default Gateway' 'PASS'
@@ -116,7 +118,7 @@ function ConvertTo-NoAdapterStatistics($Report) {
     return $Report
 }
 $r = ConvertTo-NoAdapterStatistics (New-Fixture); Assert-Case 'adapter statistics unavailable: two step-error rows and the aggregate row, facts agree' @(Test-ResultSet $r $cfg @{} (With $facts @{ AdapterStatistics = $false })) $true ''
-$r = ConvertTo-NoAdapterStatistics (New-Fixture); Assert-Case 'the same shape with adapter statistics available' @(Test-ResultSet $r $cfg @{} $facts) $false 'adapter-errors: 1 row(s), expected one per adapter row (3)'
+$r = ConvertTo-NoAdapterStatistics (New-Fixture); Assert-Case 'the same shape with adapter statistics available (one failed sample would explain one step error, not two)' @(Test-ResultSet $r $cfg @{} $facts) $false 'step-error: 2 row(s), expected 1'
 $r = New-Fixture; $r.Results = @($r.Results) + @(New-Row $r.Results[0] 'step-error' 'Collect IT diagnostics' 'ERROR' 'IT'); Assert-Case 'a step-error row the facts do not explain' @(Test-ResultSet $r $cfg @{} $facts) $false 'step-error: 1 row(s), expected 0'
 # An AUTO_DNS ping target expands to one row per DNS server of the primary adapters.
 $cfg4 = Read-Config $ConfigDir; $cfg4.Tests.PingTargets = @($cfg4.Tests.PingTargets) + @([pscustomobject]@{ Name = 'DNS servers'; Address = 'AUTO_DNS'; Required = $false })
@@ -140,5 +142,12 @@ $r = ConvertTo-FailedFallbackShape (New-Fixture); Assert-Case 'the same shape wi
 $twoWifi = With $facts @{ WifiInterfaces = 2 }
 $r = New-Fixture; $r.Results = @($r.Results) + @(New-Row $r.Results[0] 'wifi' 'Wi-Fi radio' 'INFO' 'IT'); Assert-Case 'two connected wireless interfaces with two wifi rows' @(Test-ResultSet $r $cfg @{} $twoWifi) $true ''
 $r = New-Fixture; Assert-Case 'two connected wireless interfaces but one wifi row' @(Test-ResultSet $r $cfg @{} $twoWifi) $false 'wifi: 1 row(s), expected 2'
+# Exactly one adapter-statistics sample failing on a machine where the cmdlet works: one step-error row and the aggregate row.
+function ConvertTo-OneSampleFailed($Report) {
+    $Report.Results = @($Report.Results | Where-Object { $_.Tag -ne 'adapter-errors' })
+    $Report.Results = @($Report.Results) + @((New-Row $Report.Results[0] 'step-error' 'Get Ending Network Adapter Error Values' 'ERROR'), (New-Row $Report.Results[0] 'adapter-errors' 'Before/After Comparison' 'ERROR'))
+    return $Report
+}
+$r = ConvertTo-OneSampleFailed (New-Fixture); Assert-Case 'one adapter-statistics sample failed: one step-error row and the aggregate row' @(Test-ResultSet $r $cfg @{} $facts) $true ''
 "Summary: $passes passed, $fails failed"
 exit $fails

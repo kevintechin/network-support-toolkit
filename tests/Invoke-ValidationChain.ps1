@@ -118,12 +118,16 @@ function Read-ToolVersion {
     throw 'ToolVersion not found in en-US/NetworkHealthCheck.ps1'
 }
 function New-StagedCopy {
-    # A copy of healthcheck/<lang>/ (files only - never Reports/) under the work dir. -WidenSampling raises PingCount to 30
-    # and RetransmissionSampleSeconds to 125 in the copied configuration, above the IT panel's default spinner ranges
-    # (1-20 / 1-120): the 1.2.1 fix is that an untouched Start keeps those values instead of clamping them.
+    # A copy of healthcheck/<lang>/ (files only - never Reports/) under the work dir, refreshed from this checkout on every
+    # call so that a reused work dir never runs an older revision (its Reports/ folder is kept; reports are selected by
+    # start time). -WidenSampling raises PingCount to 30 and RetransmissionSampleSeconds to 125 in the copied
+    # configuration, above the IT panel's default spinner ranges (1-20 / 1-120): the 1.2.1 fix is that an untouched
+    # Start keeps those values instead of clamping them.
     param([string]$Lang, [string]$Name, [switch]$WidenSampling)
     $dst = Join-Path $WorkDir ('stage\' + $Name + '\' + $Lang)
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    $stale = Join-Path $dst 'LauncherError.txt'
+    if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
     Get-ChildItem -LiteralPath (Join-Path $PackageDir $Lang) -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $dst -Force }
     if ($WidenSampling) {
         $cfg = Join-Path $dst 'NetworkHealthCheck.config.json'
@@ -287,8 +291,8 @@ function Test-ResultSet {
         # neither readable the baseline step fails (a step-error row) and the analysis writes one generic row.
         'tcp-retransmissions' = $(if ($tcpBothUnreadable) { 1 } else { $(if ([bool]$tcpCounters.TCPv4) { 1 } else { 2 }) + $(if ([bool]$tcpCounters.TCPv6) { 1 } else { 2 }) })
         # Step failures the machine facts explain: the TCP baseline without a readable counter class, both
-        # adapter-statistics samples without the cmdlet, and the network snapshot when its fallback failed too. Any other
-        # step-error row is unexpected.
+        # adapter-statistics samples without the cmdlet (or one of them when a sample failed on its own - see below), and
+        # the network snapshot when its fallback failed too. Any other step-error row is unexpected.
         'step-error' = $(if ($tcpBothUnreadable) { 1 } else { 0 }) + $(if ($statsReadable) { 0 } else { 2 }) + $(if ([bool]$Machine.SnapshotStepFailed) { 1 } else { 0 })
     }
     # The IT diagnostics to expect come from the configuration and the launch switches (-NoWifi / -NoTraceroute as
@@ -307,6 +311,12 @@ function Test-ResultSet {
     $rows = @($Report.Results)
     $byTag = @{}
     foreach ($r in $rows) { $t = [string]$r.Tag; if (-not $byTag.ContainsKey($t)) { $byTag[$t] = 0 }; $byTag[$t]++ }
+    # The two adapter-statistics samples are taken independently: when exactly one of them fails on a machine where the
+    # cmdlet works, the report legitimately carries one step-error row and the single aggregate "Before/After
+    # Comparison" row (the only adapter-errors row the script ever writes with status ERROR) instead of one row per adapter.
+    $counterRows = @($rows | Where-Object { $_.Tag -eq 'adapter-errors' })
+    $oneSampleFailed = $statsReadable -and ($counterRows.Count -eq 1) -and ([string]$counterRows[0].Status -eq 'ERROR')
+    if ($oneSampleFailed) { $want['step-error'] = [int]$want['step-error'] + 1 }
     foreach ($k in @($want.Keys)) {
         $have = $(if ($byTag.ContainsKey($k)) { $byTag[$k] } else { 0 })
         if ($have -ne $want[$k]) { $bad += ('{0}: {1} row(s), expected {2}' -f $k, $have, $want[$k]) }
@@ -316,7 +326,7 @@ function Test-ResultSet {
     if ($connected -gt 0) {
         # One adapter row per connected adapter with an address, and one counter row per adapter row.
         if ($adapters -ne $connected) { $bad += ('adapter: {0} row(s), expected one per connected adapter with an address ({1})' -f $adapters, $connected) }
-        if ($statsReadable -and $counters -ne $adapters) { $bad += ('adapter-errors: {0} row(s), expected one per adapter row ({1})' -f $counters, $adapters) }
+        if ($statsReadable -and -not $oneSampleFailed -and $counters -ne $adapters) { $bad += ('adapter-errors: {0} row(s), expected one per adapter row ({1})' -f $counters, $adapters) }
     }
     else {
         # The zero-adapter shape: the aggregate adapters row fails, there are no adapter rows, and the counter rows come
@@ -514,8 +524,7 @@ try {
         )
         foreach ($a in $acceptance) {
             Invoke-Case 'acceptance' $a.Case {
-                $stage = Join-Path $WorkDir ('stage\console\' + $a.Lang)
-                if (-not (Test-Path -LiteralPath $stage)) { $stage = New-StagedCopy -Lang $a.Lang -Name 'console' }
+                $stage = New-StagedCopy -Lang $a.Lang -Name 'console'   # refreshed from this checkout on every invocation
                 $expect = @{}
                 foreach ($k in $a.Expect.Keys) { $expect[$k] = $a.Expect[$k] }
                 if (-not $expect.ContainsKey('PingCount')) { $s = Get-ConfigSampling $stage; $expect['PingCount'] = $s.PingCount; $expect['SampleSeconds'] = $s.SampleSeconds }
@@ -543,9 +552,10 @@ try {
             $stage = Join-Path $WorkDir 'stage\console\en-US'
             $report = $script:UserReportPath
             if (-not $report -or -not (Test-Path -LiteralPath $report)) {
-                # No acceptance report from this invocation: produce one the same way, through the console launcher, and
-                # take the report written after that launch - never whatever an earlier invocation left in the folder.
-                if (-not (Test-Path -LiteralPath $stage)) { $stage = New-StagedCopy -Lang 'en-US' -Name 'console' }
+                # No acceptance report from this invocation: produce one the same way, through the console launcher on a
+                # copy refreshed from this checkout, and take the report written after that launch - never whatever an
+                # earlier invocation left in the folder.
+                $stage = New-StagedCopy -Lang 'en-US' -Name 'console'
                 $started = Get-Date
                 $r0 = Invoke-Native $CmdExe @('/s', '/c', ('"' + (Join-Path $stage 'Start-NetworkCheck-Console.cmd') + '" <nul')) 'resultset_report'
                 if ($r0.ExitCode -ne 0) { return @{ Passed = $false; Detail = ('no report for the self-check: the console launcher exited with code ' + $r0.ExitCode) } }
