@@ -72,6 +72,7 @@ New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 $WorkDir = (Resolve-Path -LiteralPath $WorkDir).Path
 $Results = New-Object System.Collections.ArrayList
 $ChainStarted = Get-Date
+$script:UserReportPath = $null   # the en-US user report the acceptance step produced in this invocation, for the resultset step
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 function Invoke-Native {
@@ -157,6 +158,12 @@ function Get-MachineFacts {
         }
         catch { }
     }
+    # Whether adapter statistics can be sampled, the way Get-AdapterStatisticsSnapshot samples them; without them both
+    # sampling steps end as step-error rows and the analysis step writes one aggregate adapter-errors row.
+    $facts.AdapterStatistics = $false
+    if (Get-Command Get-NetAdapterStatistics -ErrorAction SilentlyContinue) {
+        try { [void]@(Get-NetAdapterStatistics -ErrorAction Stop); $facts.AdapterStatistics = $true } catch { }
+    }
     $useCim = $true
     if (Get-Command Get-NetIPConfiguration -ErrorAction SilentlyContinue) {
         try {
@@ -221,6 +228,8 @@ function Test-ResultSet {
     $connected = [int]$Machine.ConnectedAdapters
     $tcpCounters = $Machine.TcpCounters
     if ($null -eq $tcpCounters) { $tcpCounters = @{ TCPv4 = $true; TCPv6 = $true } }
+    $tcpBothUnreadable = (-not [bool]$tcpCounters.TCPv4) -and (-not [bool]$tcpCounters.TCPv6)
+    $statsReadable = $(if ($null -eq $Machine.AdapterStatistics) { $true } else { [bool]$Machine.AdapterStatistics })
     # One connectivity-group row per group named on a TCP or HTTP target or listed in RequiredConnectivityGroups (a
     # required group without targets gets its own "no executable items" row), the way Test-ConnectivityTargets writes them.
     $groupKeys = @{}
@@ -242,8 +251,12 @@ function Test-ResultSet {
         'tcp' = (Get-Count $Config.Tests.TcpTargets) + (Get-Count $o.ExtraTargets.Tcp)
         'http' = (Get-Count $Config.Tests.HttpTargets) + (Get-Count $o.ExtraTargets.Http)
         'connectivity-group' = $groups.Count
-        # One result row per readable TCP counter class, two error rows (one per sample) per unreadable one.
-        'tcp-retransmissions' = $(if ([bool]$tcpCounters.TCPv4) { 1 } else { 2 }) + $(if ([bool]$tcpCounters.TCPv6) { 1 } else { 2 })
+        # One result row per readable TCP counter class and two error rows (one per sample) per unreadable one; with
+        # neither readable the baseline step fails (a step-error row) and the analysis writes one generic row.
+        'tcp-retransmissions' = $(if ($tcpBothUnreadable) { 1 } else { $(if ([bool]$tcpCounters.TCPv4) { 1 } else { 2 }) + $(if ([bool]$tcpCounters.TCPv6) { 1 } else { 2 }) })
+        # Step failures the machine facts explain: the TCP baseline without a readable counter class, and both
+        # adapter-statistics samples without the cmdlet. Any other step-error row is unexpected.
+        'step-error' = $(if ($tcpBothUnreadable) { 1 } else { 0 }) + $(if ($statsReadable) { 0 } else { 2 })
     }
     # The IT diagnostics to expect come from the configuration and the launch switches (-NoWifi / -NoTraceroute as
     # Expect['NoWifi'] / Expect['NoTraceroute']), never from the report under test; the report's own ChecksEnabled must
@@ -268,7 +281,7 @@ function Test-ResultSet {
     if ($connected -gt 0) {
         # One adapter row per connected adapter with an address, and one counter row per adapter row.
         if ($adapters -ne $connected) { $bad += ('adapter: {0} row(s), expected one per connected adapter with an address ({1})' -f $adapters, $connected) }
-        if ($counters -ne $adapters) { $bad += ('adapter-errors: {0} row(s), expected one per adapter row ({1})' -f $counters, $adapters) }
+        if ($statsReadable -and $counters -ne $adapters) { $bad += ('adapter-errors: {0} row(s), expected one per adapter row ({1})' -f $counters, $adapters) }
     }
     else {
         # The zero-adapter shape: the aggregate adapters row fails, there are no adapter rows, and the counter rows come
@@ -277,6 +290,8 @@ function Test-ResultSet {
         $aggregate = @($rows | Where-Object { $_.Tag -eq 'adapters' })
         if ($aggregate.Count -eq 1 -and [string]$aggregate[0].Status -ne 'FAIL') { $bad += ('adapters row is {0}, expected FAIL with no connected adapter' -f $aggregate[0].Status) }
     }
+    # Without adapter statistics the analysis step writes one aggregate adapter-errors row instead of one per adapter.
+    if (-not $statsReadable -and $counters -ne 1) { $bad += ('adapter-errors: {0} row(s), expected the single aggregate row without adapter statistics' -f $counters) }
     $known = @($want.Keys) + @('adapter', 'adapter-errors')
     $unknown = @($byTag.Keys | Where-Object { $known -notcontains $_ })
     if ($unknown.Count) { $bad += ('unexpected tag(s): ' + ($unknown -join ', ')) }
@@ -296,8 +311,10 @@ function Test-ResultSet {
         foreach ($a in $named) { if ($gateways -notcontains $a) { $bad += ('ping-gateway row for {0}, which is not a default gateway of this machine ({1})' -f $a, ($gateways -join ', ')) } }
         if (@($named | Sort-Object -Unique).Count -ne $named.Count) { $bad += 'duplicate ping-gateway rows' }
     }
-    foreach ($protocol in @('TCPv4', 'TCPv6')) {
-        if (@($rows | Where-Object { $_.Tag -eq 'tcp-retransmissions' -and (([string]$_.Check) -like ('*' + $protocol + '*')) }).Count -eq 0) { $bad += ('no tcp-retransmissions row for {0}' -f $protocol) }
+    if (-not $tcpBothUnreadable) {
+        foreach ($protocol in @('TCPv4', 'TCPv6')) {
+            if (@($rows | Where-Object { $_.Tag -eq 'tcp-retransmissions' -and (([string]$_.Check) -like ('*' + $protocol + '*')) }).Count -eq 0) { $bad += ('no tcp-retransmissions row for {0}' -f $protocol) }
+        }
     }
     foreach ($pair in @(@('ExtraPing', 'ping-target'), @('ExtraTcp', 'tcp'))) {
         if ($Expect.ContainsKey($pair[0]) -and @($rows | Where-Object { $_.Tag -eq $pair[1] -and (($_.Check + ' ' + $_.Message) -like ('*' + $Expect[$pair[0]] + '*')) }).Count -eq 0) { $bad += ('no {0} row for {1}' -f $pair[1], $Expect[$pair[0]]) }
@@ -470,6 +487,7 @@ try {
                 $json = Get-NewestJson (Join-Path $stage 'Reports') $started
                 if ($null -eq $json) { return @{ Passed = $false; Detail = 'exit 0 but no JSON report' } }
                 $d = Read-Report $json
+                if ($a.Lang -eq 'en-US' -and $a.Expect['EntryPoint'] -eq 'User') { $script:UserReportPath = $json.FullName }
                 $bad = @(Test-ReportExpectations $d $expect) + @(Test-ResultSet $d (Read-Config $stage) $expect)
                 $detail = 'exit 0; ' + (Format-ReportDetail $d)
                 if ($bad.Count) { $detail = ($bad -join '; ') + ' | ' + $detail }
@@ -480,14 +498,19 @@ try {
     if ($selected -contains 'resultset') {
         Invoke-Case 'resultset' 'selftest_resultset.ps1 on the en-US user report' {
             $stage = Join-Path $WorkDir 'stage\console\en-US'
-            $reports = Join-Path $stage 'Reports'
-            if (@(Get-ChildItem -LiteralPath $reports -Filter '*.json' -ErrorAction SilentlyContinue).Count -eq 0) {
-                # No acceptance report in this work dir: produce one the same way, through the console launcher.
+            $report = $script:UserReportPath
+            if (-not $report -or -not (Test-Path -LiteralPath $report)) {
+                # No acceptance report from this invocation: produce one the same way, through the console launcher, and
+                # take the report written after that launch - never whatever an earlier invocation left in the folder.
                 if (-not (Test-Path -LiteralPath $stage)) { $stage = New-StagedCopy -Lang 'en-US' -Name 'console' }
+                $started = Get-Date
                 $r0 = Invoke-Native $CmdExe @('/s', '/c', ('"' + (Join-Path $stage 'Start-NetworkCheck-Console.cmd') + '" <nul')) 'resultset_report'
                 if ($r0.ExitCode -ne 0) { return @{ Passed = $false; Detail = ('no report for the self-check: the console launcher exited with code ' + $r0.ExitCode) } }
+                $json = Get-NewestJson (Join-Path $stage 'Reports') $started
+                if ($null -eq $json) { return @{ Passed = $false; Detail = 'no report for the self-check: the console launcher wrote no JSON report' } }
+                $report = $json.FullName
             }
-            $r = Invoke-TestScript 'selftest_resultset.ps1' @('-ReportDir', $reports, '-ConfigDir', $stage) 'resultset'
+            $r = Invoke-TestScript 'selftest_resultset.ps1' @('-ReportPath', $report, '-ConfigDir', $stage) 'resultset'
             $s = Get-SummaryLine $r.Output
             @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
         }

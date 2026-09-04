@@ -1,4 +1,4 @@
-param([string]$ReportDir, [string]$ConfigDir)
+param([string]$ReportPath, [string]$ReportDir, [string]$ConfigDir)
 # Negative self-check of the runner's result-set assertion (Test-ResultSet in Invoke-ValidationChain.ps1): the helper
 # functions are lifted out of the runner by AST; a real report from an earlier run must pass intact against the real
 # machine facts (the positive control); and a fixture normalised out of that report - three adapter rows and three counter
@@ -10,10 +10,13 @@ param([string]$ReportDir, [string]$ConfigDir)
 # two configured standard rules against one row, a required connectivity group without targets, the CIM fallback's
 # data-source row missing, three retransmission rows with both counter classes readable, a protocol never named), while
 # the zero-adapter shape on a machine without a connected adapter, a present data-source row after a cmdlet failure and
-# the TCPv6 error rows with the TCPv6 class unreadable are accepted. Nothing depends on the connectivity of the machine.
-#   -ReportDir: a Reports folder written by NetworkHealthCheck.ps1 (the oldest JSON report in it is used)
-#   -ConfigDir: the folder holding the NetworkHealthCheck.config.json that run used
-# Example: tests\selftest_resultset.ps1 -ReportDir <work dir>\stage\console\en-US\Reports -ConfigDir <work dir>\stage\console\en-US
+# the TCPv6 error rows with the TCPv6 class unreadable, the one step-error row and one generic row with neither TCP class
+# readable, and the two step-error rows and one aggregate counter row without adapter statistics are accepted. Nothing
+# depends on the connectivity of the machine.
+#   -ReportPath: the JSON report to use (the runner passes the en-US user report the acceptance step produced)
+#   -ReportDir:  for manual use instead of -ReportPath - the newest user-entry report in that Reports folder
+#   -ConfigDir:  the folder holding the NetworkHealthCheck.config.json that run used
+# Example: tests\selftest_resultset.ps1 -ReportPath <work dir>\stage\console\en-US\Reports\<report>.json -ConfigDir <work dir>\stage\console\en-US
 $ErrorActionPreference = 'Stop'
 $runner = Join-Path $PSScriptRoot 'Invoke-ValidationChain.ps1'
 $tokens = $null; $errors = $null
@@ -22,13 +25,17 @@ foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Lan
 $machine = Get-MachineFacts
 "machine: $($machine.ConnectedAdapters) connected adapter(s) with an address, gateway(s) $(@($machine.Gateways) -join ', '), source $($machine.Source), TCP counters v4=$($machine.TcpCounters.TCPv4) v6=$($machine.TcpCounters.TCPv6)"
 $cfg = Read-Config $ConfigDir
-$json = @(Get-ChildItem -LiteralPath $ReportDir -Filter '*.json' | Sort-Object LastWriteTime | Select-Object -First 1)[0]
-if ($null -eq $json) { "no JSON report in $ReportDir"; exit 1 }
+if ($ReportPath) { $json = Get-Item -LiteralPath $ReportPath }
+else {
+    # Manual use: the newest report of the user entry in the folder (an IT-entry report has extra rows the fixture does not model).
+    $json = @(Get-ChildItem -LiteralPath $ReportDir -Filter '*.json' | Sort-Object LastWriteTime -Descending | Where-Object { ((Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json).RunOptions.EntryPoint) -eq 'User' } | Select-Object -First 1)[0]
+}
+if ($null -eq $json) { "no user-entry JSON report to use (-ReportPath / -ReportDir)"; exit 1 }
 $text = Get-Content -LiteralPath $json.FullName -Raw -Encoding UTF8
 function Load { $text | ConvertFrom-Json }
 
 # The fixture and its facts.
-$facts = @{ ConnectedAdapters = 3; Gateways = @('192.0.2.1'); Source = 'NetCmdlets'; DataSourceRow = $false; TcpCounters = @{ TCPv4 = $true; TCPv6 = $true } }
+$facts = @{ ConnectedAdapters = 3; Gateways = @('192.0.2.1'); Source = 'NetCmdlets'; DataSourceRow = $false; TcpCounters = @{ TCPv4 = $true; TCPv6 = $true }; AdapterStatistics = $true }
 function New-Row($Template, [string]$Tag, [string]$Check, [string]$Status, [string]$Scope = 'Main') {
     $row = $Template.PSObject.Copy(); $row.Tag = $Tag; $row.Check = $Check; $row.Status = $Status; $row.Scope = $Scope; $row.Message = 'fixture row'; return $row
 }
@@ -93,5 +100,23 @@ function ConvertTo-TcpV6Unreadable($Report) {
 $r = ConvertTo-TcpV6Unreadable (New-Fixture); Assert-Case 'TCPv6 counters unreadable: two error rows, facts agree' @(Test-ResultSet $r $cfg @{} (With $facts @{ TcpCounters = @{ TCPv4 = $true; TCPv6 = $false } })) $true ''
 $r = ConvertTo-TcpV6Unreadable (New-Fixture); Assert-Case 'three retransmission rows with both counter classes readable' @(Test-ResultSet $r $cfg @{} $facts) $false 'tcp-retransmissions: 3 row(s), expected 2'
 $r = New-Fixture; foreach ($x in $r.Results) { if ($x.Tag -eq 'tcp-retransmissions') { $x.Check = 'TCPv4' } }; Assert-Case 'TCPv4 named twice, TCPv6 never' @(Test-ResultSet $r $cfg @{} $facts) $false 'no tcp-retransmissions row for TCPv6'
+# With neither TCP counter class readable the baseline step fails (one step-error row) and the analysis writes the single
+# generic "System Counters" row.
+function ConvertTo-TcpUnreadable($Report) {
+    $Report.Results = @($Report.Results | Where-Object { $_.Tag -ne 'tcp-retransmissions' })
+    $Report.Results = @($Report.Results) + @((New-Row $Report.Results[0] 'step-error' 'Get TCP Retransmission Baseline' 'ERROR'), (New-Row $Report.Results[0] 'tcp-retransmissions' 'System Counters' 'ERROR'))
+    return $Report
+}
+$r = ConvertTo-TcpUnreadable (New-Fixture); Assert-Case 'neither TCP counter class readable: one step-error row and the generic row, facts agree' @(Test-ResultSet $r $cfg @{} (With $facts @{ TcpCounters = @{ TCPv4 = $false; TCPv6 = $false } })) $true ''
+$r = ConvertTo-TcpUnreadable (New-Fixture); Assert-Case 'the same shape with both counter classes readable' @(Test-ResultSet $r $cfg @{} $facts) $false 'step-error: 1 row(s), expected 0'
+# Without adapter statistics both sampling steps fail (two step-error rows) and the analysis writes one aggregate row.
+function ConvertTo-NoAdapterStatistics($Report) {
+    $Report.Results = @($Report.Results | Where-Object { $_.Tag -ne 'adapter-errors' })
+    $Report.Results = @($Report.Results) + @((New-Row $Report.Results[0] 'step-error' 'Get Network Adapter Error Baseline' 'ERROR'), (New-Row $Report.Results[0] 'step-error' 'Get Ending Network Adapter Error Values' 'ERROR'), (New-Row $Report.Results[0] 'adapter-errors' 'Before/After Comparison' 'ERROR'))
+    return $Report
+}
+$r = ConvertTo-NoAdapterStatistics (New-Fixture); Assert-Case 'adapter statistics unavailable: two step-error rows and the aggregate row, facts agree' @(Test-ResultSet $r $cfg @{} (With $facts @{ AdapterStatistics = $false })) $true ''
+$r = ConvertTo-NoAdapterStatistics (New-Fixture); Assert-Case 'the same shape with adapter statistics available' @(Test-ResultSet $r $cfg @{} $facts) $false 'adapter-errors: 1 row(s), expected one per adapter row (3)'
+$r = New-Fixture; $r.Results = @($r.Results) + @(New-Row $r.Results[0] 'step-error' 'Collect IT diagnostics' 'ERROR' 'IT'); Assert-Case 'a step-error row the facts do not explain' @(Test-ResultSet $r $cfg @{} $facts) $false 'step-error: 1 row(s), expected 0'
 "Summary: $passes passed, $fails failed"
 exit $fails
