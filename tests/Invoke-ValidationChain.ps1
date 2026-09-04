@@ -137,6 +137,20 @@ function Get-ConfigSampling([string]$Dir) {
     return @{ PingCount = [int]$c.Tests.PingCount; SampleSeconds = [int]$c.Tests.RetransmissionSampleSeconds }
 }
 function Get-Count($Value) { if ($null -eq $Value) { return 0 }; return @($Value).Count }
+function Test-TrueFlag($Value) { return (($Value -is [bool]) -and $Value) }   # the script's Test-IsTrueFlag: only a boolean true enables a check
+function Get-MachineGateways {
+    # The distinct IPv4 default gateways of the connected adapters that have an IPv4 address - what the script's
+    # AUTO_GATEWAY placeholder resolves to (Get-PrimaryAdapters: connected adapters with an IPv4 address and a gateway,
+    # physical or virtual), read from the operating system rather than from the report under test.
+    $list = @()
+    foreach ($c in @(Get-NetIPConfiguration -ErrorAction SilentlyContinue)) {
+        if ($null -eq $c.NetAdapter -or ([string]$c.NetAdapter.Status) -ne 'Up' -or (Get-Count $c.IPv4Address) -eq 0) { continue }
+        foreach ($g in @($c.IPv4DefaultGateway)) {
+            if ($null -ne $g -and ([string]$g.NextHop) -match '^\d{1,3}(\.\d{1,3}){3}$' -and ([string]$g.NextHop) -ne '0.0.0.0') { $list += [string]$g.NextHop }
+        }
+    }
+    return @($list | Sort-Object -Unique)
+}
 function Test-ResultSet {
     # The report must carry every row the configuration and the run options call for, and nothing else: one row per
     # configured or extra target, one per enabled IT diagnostic, the fixed rows (configuration, environment, system,
@@ -149,10 +163,11 @@ function Test-ResultSet {
     $o = $Report.RunOptions
     $pingTargets = @($Config.Tests.PingTargets)
     $gatewayTargets = @($pingTargets | Where-Object { [string]$_.Address -eq 'AUTO_GATEWAY' }).Count
+    $gateways = @(Get-MachineGateways)
     $groups = @(@($Config.Tests.TcpTargets) + @($Config.Tests.HttpTargets) | ForEach-Object { [string]$_.Group } | Where-Object { $_ } | Sort-Object -Unique)
     $want = [ordered]@{
         'config-file' = 1; 'config' = 1; 'environment' = 1; 'system' = 1; 'adapters' = 1; 'gateway-config' = 1; 'dns-config' = 1; 'expected-standard' = 1
-        'ping-gateway' = $gatewayTargets
+        'ping-gateway' = $gatewayTargets * [math]::Max(1, $gateways.Count)   # one row per resolved gateway, or one "no target" row
         'ping-target' = ($pingTargets.Count - $gatewayTargets) + (Get-Count $o.ExtraTargets.Ping)
         'dns' = (Get-Count $Config.Tests.DnsNames) + (Get-Count $o.ExtraTargets.Dns)
         'tcp' = (Get-Count $Config.Tests.TcpTargets) + (Get-Count $o.ExtraTargets.Tcp)
@@ -160,8 +175,17 @@ function Test-ResultSet {
         'connectivity-group' = $groups.Count
         'tcp-retransmissions' = 2
     }
-    $itTags = [ordered]@{ 'wifi' = $o.ChecksEnabled.WifiRf; 'routes' = $o.ChecksEnabled.RouteTable; 'gateway-neighbor' = $o.ChecksEnabled.GatewayNeighbor; 'proxy' = $o.ChecksEnabled.ProxySettings; 'traceroute' = $o.ChecksEnabled.Traceroute; 'drivers' = $o.ChecksEnabled.DriverInfo }
-    foreach ($k in @($itTags.Keys)) { $want[$k] = $(if ([bool]$itTags[$k]) { 1 } else { 0 }) }
+    # The IT diagnostics to expect come from the configuration and the launch switches (-NoWifi / -NoTraceroute as
+    # Expect['NoWifi'] / Expect['NoTraceroute']), never from the report under test; the report's own ChecksEnabled must
+    # agree with them.
+    $itTags = [ordered]@{ 'wifi' = (Test-TrueFlag $Config.Checks.WifiRf); 'routes' = (Test-TrueFlag $Config.Checks.RouteTable); 'gateway-neighbor' = (Test-TrueFlag $Config.Checks.GatewayNeighbor); 'proxy' = (Test-TrueFlag $Config.Checks.ProxySettings); 'traceroute' = (Test-TrueFlag $Config.Checks.Traceroute); 'drivers' = (Test-TrueFlag $Config.Checks.DriverInfo) }
+    if ($Expect['NoWifi'] -eq $true) { $itTags['wifi'] = $false }
+    if ($Expect['NoTraceroute'] -eq $true) { $itTags['traceroute'] = $false }
+    $reported = @{ 'wifi' = $o.ChecksEnabled.WifiRf; 'routes' = $o.ChecksEnabled.RouteTable; 'gateway-neighbor' = $o.ChecksEnabled.GatewayNeighbor; 'proxy' = $o.ChecksEnabled.ProxySettings; 'traceroute' = $o.ChecksEnabled.Traceroute; 'drivers' = $o.ChecksEnabled.DriverInfo }
+    foreach ($k in @($itTags.Keys)) {
+        if ([bool]$reported[$k] -ne [bool]$itTags[$k]) { $bad += ('ChecksEnabled for {0} reported as {1}, expected {2} from the configuration and the switches' -f $k, $reported[$k], $itTags[$k]) }
+        $want[$k] = $(if ($itTags[$k]) { 1 } else { 0 })
+    }
     $rows = @($Report.Results)
     $byTag = @{}
     foreach ($r in $rows) { $t = [string]$r.Tag; if (-not $byTag.ContainsKey($t)) { $byTag[$t] = 0 }; $byTag[$t]++ }
@@ -182,6 +206,15 @@ function Test-ResultSet {
     foreach ($r in $rows) {
         $scope = $(if ($itTags.Contains([string]$r.Tag)) { 'IT' } else { 'Main' })
         if ([string]$r.Scope -ne $scope) { $bad += ('{0} row in scope {1}, expected {2}' -f $r.Tag, $r.Scope, $scope) }
+    }
+    # Gateway rows by target: when the machine has default gateways, every ping-gateway row must name one of them
+    # (the address is part of the check name in both languages), each gateway once.
+    if ($gateways.Count -gt 0) {
+        $gwRows = @($rows | Where-Object { $_.Tag -eq 'ping-gateway' })
+        $named = @($gwRows | ForEach-Object { [regex]::Match([string]$_.Check, '\d{1,3}(\.\d{1,3}){3}').Value } | Where-Object { $_ })
+        if ($named.Count -ne $gwRows.Count) { $bad += 'a ping-gateway row names no IPv4 address' }
+        foreach ($a in $named) { if ($gateways -notcontains $a) { $bad += ('ping-gateway row for {0}, which is not a default gateway of this machine ({1})' -f $a, ($gateways -join ', ')) } }
+        if (@($named | Sort-Object -Unique).Count -ne $named.Count) { $bad += 'duplicate ping-gateway rows' }
     }
     foreach ($pair in @(@('ExtraPing', 'ping-target'), @('ExtraTcp', 'tcp'))) {
         if ($Expect.ContainsKey($pair[0]) -and @($rows | Where-Object { $_.Tag -eq $pair[1] -and (($_.Check + ' ' + $_.Message) -like ('*' + $Expect[$pair[0]] + '*')) }).Count -eq 0) { $bad += ('no {0} row for {1}' -f $pair[1], $Expect[$pair[0]]) }
