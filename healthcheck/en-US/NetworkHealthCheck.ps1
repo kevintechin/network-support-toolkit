@@ -56,6 +56,15 @@ $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 # they can act on. Everything above this point and everything in Write-EnvironmentReport therefore stays inside what
 # a restricted mode allows: cmdlets, operators and property reads, no .NET types, no New-Object.
 # -----------------------------------------------------------------------------
+function Test-IsRunningFromArchive {
+    param([string]$Path)
+
+    # Windows opens a ZIP in a temporary view such as %TEMP%\Temp1_NetworkHealthCheck-1.2.2.zip\...; a double-click
+    # from there appears to work, but the folder disappears with the view, taking any file written into it.
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    return ($Path -match "\.zip[\\/]")
+}
+
 function Write-EnvironmentReport {
     param([string]$Reason)
 
@@ -85,9 +94,15 @@ function Write-EnvironmentReport {
         "Send this file with the support request."
     )
 
-    # The script folder first, the temporary folder if it is not writable - the same order the reports use.
+    # The script folder first, the temporary folder if it is not writable - the same order the reports use. With one
+    # exception: a folder inside the Windows compressed-folder view is writable but disposable, and this file is the
+    # only trace of a run that never reached the report stage, so it is written outside the view instead. The archive
+    # warning further down never runs in this path, because the guard exits first.
     $name = "NetworkHealthCheck_ENVIRONMENT_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".txt"
-    foreach ($folder in @($script:BaseDirectory, $env:TEMP)) {
+    $folders = @()
+    if (-not (Test-IsRunningFromArchive $script:BaseDirectory)) { $folders += $script:BaseDirectory }
+    $folders += $env:TEMP
+    foreach ($folder in $folders) {
         if ([string]::IsNullOrWhiteSpace($folder)) { continue }
         $path = Join-Path $folder $name
         try {
@@ -108,6 +123,9 @@ if ([string]$ExecutionContext.SessionState.LanguageMode -ne "FullLanguage") {
     Write-Host $reason
     Write-Host "No network settings were read or changed."
     Write-Host "What IT can do: allow this script in the application-control policy (WDAC / AppLocker), or run the check on a computer without that restriction."
+    if (Test-IsRunningFromArchive $script:BaseDirectory) {
+        Write-Host "This copy is running from inside a compressed folder, so the file below was written outside it. Extract the ZIP to a real folder before running."
+    }
     if (-not [string]::IsNullOrWhiteSpace($written)) { Write-Host "Details for IT were written to: $written" }
     Write-Host ""
     exit 3
@@ -305,16 +323,6 @@ function Test-IsTrueFlag {
     param([object]$Value)
 
     return ($Value -is [bool] -and $Value)
-}
-
-function Test-IsRunningFromArchive {
-    param([string]$Path)
-
-    # Windows opens a ZIP in a temporary view such as %TEMP%\Temp1_NetworkHealthCheck-1.2.2.zip\...; a double-click
-    # from there appears to work, but the reports land in a folder that disappears with the view, so the evidence the
-    # user was told to send to IT is gone by the time they look for it.
-    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-    return ($Path -match "\.zip[\\/]")
 }
 
 function Test-IsVirtualAdapter {

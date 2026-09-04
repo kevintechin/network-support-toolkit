@@ -48,6 +48,15 @@ $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 # 所以這一行以上的程式碼與 Write-EnvironmentReport 都只用受限模式允許的東西：cmdlet、運算子與屬性讀取，不用 .NET
 # 型別、不用 New-Object。
 # -----------------------------------------------------------------------------
+function Test-IsRunningFromArchive {
+    param([string]$Path)
+
+    # Windows 會把 ZIP 開在類似 %TEMP%\Temp1_NetworkHealthCheck-1.2.2.zip\... 的暫時檢視中；從那裡直接按兩下看似
+    # 可以執行，但該資料夾會隨檢視消失，寫進去的檔案也一起消失。
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    return ($Path -match "\.zip[\\/]")
+}
+
 function Write-EnvironmentReport {
     param([string]$Reason)
 
@@ -76,9 +85,14 @@ function Write-EnvironmentReport {
         "請將本檔案一併附在報修單中。"
     )
 
-    # 先寫腳本資料夾，不可寫時改寫暫存資料夾——與報告採用相同的順序。
+    # 先寫腳本資料夾，不可寫時改寫暫存資料夾——與報告採用相同的順序。唯一的例外是 Windows 壓縮檔檢視內的資料夾：
+    # 它可寫但會消失，而這個檔案是一次來不及產出報告的執行所留下的唯一痕跡，因此改寫到檢視之外。下方的壓縮檔警告
+    # 在這條路徑上永遠不會執行，因為守門會先結束程式。
     $name = "NetworkHealthCheck_ENVIRONMENT_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".txt"
-    foreach ($folder in @($script:BaseDirectory, $env:TEMP)) {
+    $folders = @()
+    if (-not (Test-IsRunningFromArchive $script:BaseDirectory)) { $folders += $script:BaseDirectory }
+    $folders += $env:TEMP
+    foreach ($folder in $folders) {
         if ([string]::IsNullOrWhiteSpace($folder)) { continue }
         $path = Join-Path $folder $name
         try {
@@ -99,6 +113,9 @@ if ([string]$ExecutionContext.SessionState.LanguageMode -ne "FullLanguage") {
     Write-Host $reason
     Write-Host "本工具未讀取或變更任何網路設定。"
     Write-Host "IT 可以怎麼做：在應用程式控制政策（WDAC / AppLocker）中放行本腳本，或改在沒有這項限制的電腦上執行檢測。"
+    if (Test-IsRunningFromArchive $script:BaseDirectory) {
+        Write-Host "目前是從壓縮檔內執行，因此下面這個檔案已改寫到壓縮檔檢視之外。請先將 ZIP 解壓縮到實際的資料夾再執行。"
+    }
     if (-not [string]::IsNullOrWhiteSpace($written)) { Write-Host "已將供 IT 參考的資訊寫入：$written" }
     Write-Host ""
     exit 3
@@ -295,15 +312,6 @@ function Test-IsTrueFlag {
     param([object]$Value)
 
     return ($Value -is [bool] -and $Value)
-}
-
-function Test-IsRunningFromArchive {
-    param([string]$Path)
-
-    # Windows 會把 ZIP 開在類似 %TEMP%\Temp1_NetworkHealthCheck-1.2.2.zip\... 的暫時檢視中；從那裡直接按兩下看似
-    # 可以執行，但報告會寫進一個隨檢視消失的資料夾，等使用者要把證據交給 IT 時已經找不到了。
-    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-    return ($Path -match "\.zip[\\/]")
 }
 
 function Test-IsVirtualAdapter {
