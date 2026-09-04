@@ -11,6 +11,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-ValidationChain
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-ValidationChain.ps1 -Package -RequireHealthy     # release: + asset round trip, Overall Healthy required
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-ValidationChain.ps1 -SkipGui                     # no interactive desktop
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-ValidationChain.ps1 -Steps parse,validator,guards,unit,report,envguard
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-ValidationChain.ps1 -Steps parse,validator,guards,unit,report,envguard,gui-headless -Package -SkipGui   # what GitHub Actions runs
 ```
 
 Steps, in the chain's order: `parse`, `validator`, `guards`, `unit`, `report`, `envguard`, `gui-headless`, `gui`, `acceptance`, `resultset`, and with `-Package` `package`.
@@ -18,6 +19,12 @@ Steps, in the chain's order: `parse`, `validator`, `guards`, `unit`, `report`, `
 Prerequisites: Windows 10 / 11 with Windows PowerShell 5.1 (the tool's own runtime), Python 3 on `PATH` for the release validator and the asset builder (`-Python` to point elsewhere), git (the guard self-test reads the v1.2.0 anchor files from history), and for the `gui` step an interactive desktop session: windows open, get clicked and close by themselves, so leave the desktop alone while they run. The default chain takes about ten minutes; the two IT-entry window runs account for most of it because each samples TCP retransmissions for 125 s.
 
 Everything the chain produces goes under `%TEMP%\nhc-tests\<timestamp>\` (`-WorkDir` to choose): staged copies of `healthcheck/<lang>/` with their `Reports/`, one `<step>_<case>.log` per run, and `summary.md` with the table the chain prints. The staged copies are refreshed from the checkout on every invocation, so a reused work dir always runs the current files (reports are selected by start time). The repository is never written to, and the exit code is the number of failed cases.
+
+## On GitHub Actions
+
+`.github/workflows/validation-chain.yml` (backlog #20) runs the deterministic part of the chain on `windows-latest` for every push to `main`, every pull request and on request (`workflow_dispatch`): the last command line above, in Windows PowerShell 5.1 (the tool's own runtime, started from `cmd` exactly as written — not the runner's `pwsh`), on a checkout with full history (`fetch-depth: 0`, because `selftest_guards.ps1` reads the v1.2.0 anchors from commit `f7c45a9`), with Python 3 from `actions/setup-python` for the validator and the asset builder. Those eight steps need neither a desktop nor a particular network, so their result depends on the files alone. `gui`, `acceptance` and `resultset` stay local, and `-SkipGui` drops the window part of `package`: the real-window runs need an interactive desktop, and the console runs assert every row of the report against the machine's own gateways, DNS servers, wireless interfaces and counter classes, which nobody controls on a hosted runner. The chain's exit code is the number of failed cases, so a red run is a failed case; the summary table is on the run's page, and `summary.md`, every `<step>_<case>.log` and the built ZIP are kept as an artifact for 30 days. There is no path filter: a required status check that is skipped for a docs-only commit blocks the merge, and the run costs a few minutes.
+
+A green run means that everything a machine can check unattended still passes on a second, clean Windows machine. It is not the release record: that remains the local `-Package -RequireHealthy` run on the reference machine, pasted into `healthcheck/VALIDATION.md`.
 
 ## Steps and what "pass" means
 
