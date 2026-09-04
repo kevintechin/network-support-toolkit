@@ -326,7 +326,8 @@ function Get-NetworkErrorCauseText {
 function Add-NetworkErrorCause {
     param(
         [object]$Exception,
-        [string]$Text
+        [string]$Text,
+        [switch]$SingleLine
     )
 
     $cause = Get-NetworkErrorCauseText $Exception
@@ -335,6 +336,11 @@ function Add-NetworkErrorCause {
     }
     if ([string]::IsNullOrWhiteSpace($Text)) {
         return ("Cause: {0}" -f $cause)
+    }
+    # A per-attempt ping line and a traceroute hop status are single lines; everywhere else the original
+    # message goes on the next one. The cause comes first in both shapes - that is the whole point.
+    if ($SingleLine) {
+        return ("Cause: {0} | {1}" -f $cause, $Text)
     }
     return (("Cause: {0}" -f $cause) + [Environment]::NewLine + $Text)
 }
@@ -1719,10 +1725,7 @@ function Invoke-PingMeasurement {
                 }
             }
             catch {
-                $cause = Get-NetworkErrorCauseText $_.Exception
-                $causeSuffix = ""
-                if (-not [string]::IsNullOrWhiteSpace($cause)) { $causeSuffix = " | Cause: $cause" }
-                [void]$attemptDetails.Add(("Attempt {0}: error, {1}{2}" -f $i, $_.Exception.Message, $causeSuffix))
+                [void]$attemptDetails.Add(("Attempt {0}: error, {1}" -f $i, (Add-NetworkErrorCause $_.Exception $_.Exception.Message -SingleLine)))
             }
             if ($script:GuiAvailable) {
                 [System.Windows.Forms.Application]::DoEvents()
@@ -2624,8 +2627,7 @@ function Invoke-TraceRoute {
             }
             catch {
                 $stopwatch.Stop()
-                $cause = Get-NetworkErrorCauseText $_.Exception
-                $status = $(if ([string]::IsNullOrWhiteSpace($cause)) { $_.Exception.Message } else { $cause })
+                $status = Add-NetworkErrorCause $_.Exception $_.Exception.Message -SingleLine
             }
             [void]$hops.Add([pscustomobject][ordered]@{
                 Hop       = $ttl

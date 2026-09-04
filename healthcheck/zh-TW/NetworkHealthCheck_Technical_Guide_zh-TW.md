@@ -161,7 +161,7 @@ IT 範圍的項目不影響整體結果與摘要計數：`Get-OverallStatus` 與
 
 - 每個主要步驟經 `Invoke-CheckStep` 包裝；例外轉成 `ERROR` 結果並繼續後續檢測。
 - `Get-ExceptionDetails` 記錄例外型別、訊息與最多五層內部例外。自 1.1.4 起，腳本位置與呼叫堆疊改由 `Get-ExceptionDiagnostics` 另外收集，只寫入 JSON 報告的 `Diagnostics` 欄位；HTML 與文字報告改為顯示一行提示，因此本機檔案路徑不會出現在給人看的報告中。緊急（`FATAL`）檔案仍保留完整內容。
-- 網路類錯誤會在報告語言中附上一行 `原因：`，依據的是錯誤碼而不是作業系統的用字：`SocketException.SocketErrorCode` 與 `WebException.Status` 都是列舉，而訊息文字跟著機器的系統地區設定，因此可能以另一種語言出現在本報告中（待辦 #14）。該行同時附上代碼（`[SocketError HostNotFound]`），表中未收錄的代碼則只顯示代碼本身，作業系統的原始訊息一律保留在下方。此行會出現在例外細節、Ping 的逐次紀錄、TCP 與 HTTP 的失敗說明，以及 traceroute 的單一躍點狀態。cmdlet、CIM/WMI 或檔案系統產生的錯誤沒有這種代碼，維持作業系統的原始用字。
+- 網路類錯誤會在報告語言中附上一行 `原因：`，依據的是錯誤碼而不是作業系統的用字：`SocketException.SocketErrorCode` 與 `WebException.Status` 都是列舉，而訊息文字跟著機器的系統地區設定，因此可能以另一種語言出現在本報告中（待辦 #14）。該行同時附上代碼（`[SocketError HostNotFound]`），表中未收錄的代碼則只顯示代碼本身；作業系統的原始訊息一律保留，且一律排在原因之後——多行處在下一行，Ping 與 traceroute 的單行紀錄則接在同一行。此行會出現在例外細節、Ping 的逐次紀錄、TCP 與 HTTP 的失敗說明，以及 traceroute 的單一躍點狀態。cmdlet、CIM/WMI 或檔案系統產生的錯誤沒有這種代碼，維持作業系統的原始用字。
 - GUI 初始化失敗時改用 Console 模式。
 - 報告資料夾不可寫時改到 `%TEMP%\NetworkHealthCheck\Reports`。
 - HTML、TXT、JSON 分別嘗試寫入。自 1.1.5 起，單一格式失敗只會記錄並在 GUI 顯示警告，成功的格式仍可使用：「開啟報告」會開啟 HTML、TXT、JSON 中第一個可用的檔案，文字模式對缺少的格式顯示「（未寫入）」。三種格式全部失敗時才寫一份緊急 `FATAL` 文字報告（含三個寫入錯誤與呼叫堆疊）並顯示一次錯誤對話框，文字模式結束碼為 1。報告階段在 `Run-AllChecks` 內只處理一次、不再重新拋出，外層處理器不會再產生第二份 FATAL 檔或第二個對話框。

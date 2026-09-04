@@ -225,6 +225,11 @@ Assert-Equal 'add: cause on its own first line' (@($withCause -split "`r`n").Cou
 Assert-Equal 'add: first line names the code' ((@($withCause -split "`r`n")[0]).EndsWith('[SocketError ConnectionRefused]')) True
 Assert-Equal 'add: no cause returns the text unchanged' (Add-NetworkErrorCause (New-Object System.InvalidOperationException 'nope') 'ORIGINAL') 'ORIGINAL'
 Assert-Equal 'add: empty text yields the cause line only' ((Add-NetworkErrorCause $refused '').EndsWith('[SocketError ConnectionRefused]')) True
+$oneLine = Add-NetworkErrorCause $refused 'ORIGINAL' -SingleLine
+Assert-Equal 'add -SingleLine: one line' (@($oneLine -split "`r`n").Count) 1
+Assert-Equal 'add -SingleLine: original text kept' ($oneLine.EndsWith('ORIGINAL')) True
+Assert-Equal 'add -SingleLine: cause before the original' (($oneLine.IndexOf('[SocketError ConnectionRefused]')) -lt ($oneLine.IndexOf('ORIGINAL'))) True
+Assert-Equal 'add -SingleLine: no cause returns the text unchanged' (Add-NetworkErrorCause (New-Object System.InvalidOperationException 'nope') 'ORIGINAL' -SingleLine) 'ORIGINAL'
 # Get-ExceptionDetails puts the cause first, above the type and the operating system's own message.
 try { throw $refused } catch { $record = $_ }
 $details = @((Get-ExceptionDetails $record) -split "`r`n")

@@ -316,7 +316,8 @@ function Get-NetworkErrorCauseText {
 function Add-NetworkErrorCause {
     param(
         [object]$Exception,
-        [string]$Text
+        [string]$Text,
+        [switch]$SingleLine
     )
 
     $cause = Get-NetworkErrorCauseText $Exception
@@ -325,6 +326,11 @@ function Add-NetworkErrorCause {
     }
     if ([string]::IsNullOrWhiteSpace($Text)) {
         return ("原因：{0}" -f $cause)
+    }
+    # Ping 的逐次紀錄與 traceroute 的躍點狀態是單行，其餘則把原始訊息放到下一行。兩種形狀都是原因在前——
+    # 這正是整件事的重點。
+    if ($SingleLine) {
+        return ("原因：{0}｜{1}" -f $cause, $Text)
     }
     return (("原因：{0}" -f $cause) + [Environment]::NewLine + $Text)
 }
@@ -1709,10 +1715,7 @@ function Invoke-PingMeasurement {
                 }
             }
             catch {
-                $cause = Get-NetworkErrorCauseText $_.Exception
-                $causeSuffix = ""
-                if (-not [string]::IsNullOrWhiteSpace($cause)) { $causeSuffix = "｜原因：$cause" }
-                [void]$attemptDetails.Add(("第 {0} 次：錯誤，{1}{2}" -f $i, $_.Exception.Message, $causeSuffix))
+                [void]$attemptDetails.Add(("第 {0} 次：錯誤，{1}" -f $i, (Add-NetworkErrorCause $_.Exception $_.Exception.Message -SingleLine)))
             }
             if ($script:GuiAvailable) {
                 [System.Windows.Forms.Application]::DoEvents()
@@ -2614,8 +2617,7 @@ function Invoke-TraceRoute {
             }
             catch {
                 $stopwatch.Stop()
-                $cause = Get-NetworkErrorCauseText $_.Exception
-                $status = $(if ([string]::IsNullOrWhiteSpace($cause)) { $_.Exception.Message } else { $cause })
+                $status = Add-NetworkErrorCause $_.Exception $_.Exception.Message -SingleLine
             }
             [void]$hops.Add([pscustomobject][ordered]@{
                 Hop       = $ttl

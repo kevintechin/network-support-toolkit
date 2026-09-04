@@ -32,6 +32,15 @@ One assertion is new in kind: **both language files must carry the same table ke
 
 **The real-window steps are still owed.** This change touches both shipped scripts, so `gui` and the window part of `package` must run before the release — the 1.2.0 rule. They were not part of this run.
 
+**Independent review — Codex, PR #7, round 1 · 2026-09-04. Two P2 findings on commit `ddfbe8a`, both accepted and fixed, and both the same defect in two places.**
+
+1. *The per-attempt ping line put the cause after the operating system's message.* The rule this change states is that the explanation comes first; the attempt line appended it instead, so a reader still had to get past a sentence in another language before reaching the part written for them.
+2. *The traceroute hop replaced the message with the cause.* Worse than the first: `Exception.Message` was discarded outright, against the "never instead of it" rule the same change states.
+
+Both sites had the rule hand-written into them, while `Add-NetworkErrorCause` — used by the TCP and both HTTP paths — implemented it properly; the two hand-written copies drifted. The fix is therefore not two patched lines but one decision point: `Add-NetworkErrorCause -SingleLine` returns `Cause: <cause> | <original>` for the two places whose output is one line, the same function keeps the two-line shape everywhere else, and both single-line sites now call it. Four unit assertions cover the switch (one line, original kept, cause before the original, no cause leaves the text alone), so the drift cannot come back unnoticed; §5 of both guides now states the order and where each shape applies. Helper unit tests 152 → 156 per language.
+
+Re-validation after round 1 — `-Steps parse,validator,guards,unit,report,gui-headless,acceptance,resultset,package -SkipGui`: 18 cases, 0 failed, 84 s. Parser 0 × 2; validator 62 / 62; guard self-test OK; unit 156 × 2; report-stage 103 × 2; headless GUI 4 / 4; acceptance 4 / 4 (28 / 30 / 28 / 31 rows), all four Overall Healthy this time; result-set self-check 41 / 41; package: validator inside the extracted package 62 / 62. The en-US report of the unreachable-targets case now reads `Attempt 1: error, Cause: The name could not be resolved (no DNS record). [SocketError HostNotFound] | Exception calling "Send" ...` — the explanation first, the operating system's own words after it.
+
 ## Guards on the PowerShell AST · 2026-09-04 — backlog #17 (`tests/`; the packaged validator drops from 66 to 62 checks)
 
 **Change** (closes backlog #17). The two guards that keep the v1.2.0 GUI regressions out of the shipped scripts were regular expressions over the comment-free logical lines of the file, inside the packaged `tools/validate_release.py`. They now run on the PowerShell AST in the test chain: `tests/ast_guards.ps1`, with `tests/selftest_guards.ps1` as the acceptance set. Nineteen of the twenty-one Codex rounds on PR #4 had gone into teaching the patterns another spelling of the same two mistakes; the parser answers all of them at once.
