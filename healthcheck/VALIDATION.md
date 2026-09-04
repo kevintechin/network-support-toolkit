@@ -41,6 +41,8 @@ Both sites had the rule hand-written into them, while `Add-NetworkErrorCause` �
 
 Re-validation after round 1 — `-Steps parse,validator,guards,unit,report,gui-headless,acceptance,resultset,package -SkipGui`: 18 cases, 0 failed, 84 s. Parser 0 × 2; validator 62 / 62; guard self-test OK; unit 156 × 2; report-stage 103 × 2; headless GUI 4 / 4; acceptance 4 / 4 (28 / 30 / 28 / 31 rows), all four Overall Healthy this time; result-set self-check 41 / 41; package: validator inside the extracted package 62 / 62. The en-US report of the unreachable-targets case now reads `Attempt 1: error, Cause: The name could not be resolved (no DNS record). [SocketError HostNotFound] | Exception calling "Send" ...` — the explanation first, the operating system's own words after it.
 
+**Round 2 · 2026-09-04: no findings on commit `0f8ebc3`, review loop closed.** Two rounds, two findings, both accepted and both traced to one cause rather than patched where they showed.
+
 ## Guards on the PowerShell AST · 2026-09-04 — backlog #17 (`tests/`; the packaged validator drops from 66 to 62 checks)
 
 **Change** (closes backlog #17). The two guards that keep the v1.2.0 GUI regressions out of the shipped scripts were regular expressions over the comment-free logical lines of the file, inside the packaged `tools/validate_release.py`. They now run on the PowerShell AST in the test chain: `tests/ast_guards.ps1`, with `tests/selftest_guards.ps1` as the acceptance set. Nineteen of the twenty-one Codex rounds on PR #4 had gone into teaching the patterns another spelling of the same two mistakes; the parser answers all of them at once.
