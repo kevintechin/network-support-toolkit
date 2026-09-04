@@ -142,10 +142,11 @@ function Get-ConfigSampling([string]$Dir) {
 function Get-Count($Value) { if ($null -eq $Value) { return 0 }; return @($Value).Count }
 function Test-TrueFlag($Value) { return (($Value -is [bool]) -and $Value) }   # the script's Test-IsTrueFlag: only a boolean true enables a check
 function Get-CimOrWmiInstance([string]$ClassName) {
-    # The script's own selection: Get-CimInstance when it exists, Get-WmiObject otherwise, nothing when neither does.
+    # The script's own selection: Get-CimInstance when it exists, Get-WmiObject otherwise, and - like the script - an
+    # exception when neither does.
     if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) { return @(Get-CimInstance -ClassName $ClassName -OperationTimeoutSec 8 -ErrorAction Stop) }
     if (Get-Command Get-WmiObject -ErrorAction SilentlyContinue) { return @(Get-WmiObject -Class $ClassName -ErrorAction Stop) }
-    return @()
+    throw 'No usable CIM/WMI command is available on this system.'
 }
 function Add-PrimaryFacts([hashtable]$Facts, [object[]]$Adapters) {
     # Get-PrimaryAdapters: the adapters with an IPv4 address and a gateway, or all with an IPv4 address when none has a
@@ -163,7 +164,7 @@ function Get-MachineFacts {
     # the adapters with an IPv4 address, which is what AUTO_GATEWAY resolves to); when that cmdlet throws, the script
     # writes a data-source row and falls back to CIM, and when it is missing or returns nothing it falls back without the
     # row - CIM counts every IP-enabled Win32_NetworkAdapterConfiguration and keeps its IPv4 default gateways.
-    $facts = @{ ConnectedAdapters = 0; Gateways = @(); DnsServers = @(); Source = 'NetCmdlets'; DataSourceRow = $false; TcpCounters = @{ TCPv4 = $false; TCPv6 = $false } }
+    $facts = @{ ConnectedAdapters = 0; Gateways = @(); DnsServers = @(); Source = 'NetCmdlets'; DataSourceRow = $false; SnapshotStepFailed = $false; TcpCounters = @{ TCPv4 = $false; TCPv6 = $false } }
     # Which TCP performance-counter classes can be read, the way Get-TcpCounterSnapshot reads them: an instance with the
     # SegmentsSentPersec and SegmentsRetransmittedPersec fields. An unreadable class yields an error row from each of the
     # two samples instead of a result row.
@@ -198,8 +199,9 @@ function Get-MachineFacts {
         catch { $facts.DataSourceRow = $true }
     }
     if ($useCim) {
-        # Every IP-enabled Win32_NetworkAdapterConfiguration, through CIM or WMI like the script; with neither available
-        # the script's fallback throws too, and the facts stay at zero adapters.
+        # Every IP-enabled Win32_NetworkAdapterConfiguration, through CIM or WMI like the script. When the fallback throws
+        # too (or neither command exists) the script's snapshot step ends as a step-error row and the run continues with
+        # the zero-adapter shape; the facts record that.
         $facts.Source = 'CIM'
         $items = @()
         try {
@@ -210,7 +212,7 @@ function Get-MachineFacts {
                 $items += @{ IPv4 = $ipv4.Count; Gateways = $gws; Dns = $dns }
             }
         }
-        catch { $items = @() }
+        catch { $items = @(); $facts.SnapshotStepFailed = $true }
         Add-PrimaryFacts $facts $items
     }
     return $facts
@@ -276,9 +278,10 @@ function Test-ResultSet {
         # One result row per readable TCP counter class and two error rows (one per sample) per unreadable one; with
         # neither readable the baseline step fails (a step-error row) and the analysis writes one generic row.
         'tcp-retransmissions' = $(if ($tcpBothUnreadable) { 1 } else { $(if ([bool]$tcpCounters.TCPv4) { 1 } else { 2 }) + $(if ([bool]$tcpCounters.TCPv6) { 1 } else { 2 }) })
-        # Step failures the machine facts explain: the TCP baseline without a readable counter class, and both
-        # adapter-statistics samples without the cmdlet. Any other step-error row is unexpected.
-        'step-error' = $(if ($tcpBothUnreadable) { 1 } else { 0 }) + $(if ($statsReadable) { 0 } else { 2 })
+        # Step failures the machine facts explain: the TCP baseline without a readable counter class, both
+        # adapter-statistics samples without the cmdlet, and the network snapshot when its fallback failed too. Any other
+        # step-error row is unexpected.
+        'step-error' = $(if ($tcpBothUnreadable) { 1 } else { 0 }) + $(if ($statsReadable) { 0 } else { 2 }) + $(if ([bool]$Machine.SnapshotStepFailed) { 1 } else { 0 })
     }
     # The IT diagnostics to expect come from the configuration and the launch switches (-NoWifi / -NoTraceroute as
     # Expect['NoWifi'] / Expect['NoTraceroute']), never from the report under test; the report's own ChecksEnabled must
@@ -289,7 +292,8 @@ function Test-ResultSet {
     $reported = @{ 'wifi' = $o.ChecksEnabled.WifiRf; 'routes' = $o.ChecksEnabled.RouteTable; 'gateway-neighbor' = $o.ChecksEnabled.GatewayNeighbor; 'proxy' = $o.ChecksEnabled.ProxySettings; 'traceroute' = $o.ChecksEnabled.Traceroute; 'drivers' = $o.ChecksEnabled.DriverInfo }
     foreach ($k in @($itTags.Keys)) {
         if ([bool]$reported[$k] -ne [bool]$itTags[$k]) { $bad += ('ChecksEnabled for {0} reported as {1}, expected {2} from the configuration and the switches' -f $k, $reported[$k], $itTags[$k]) }
-        $want[$k] = $(if ($itTags[$k]) { 1 } else { 0 })
+        # One row per enabled diagnostic; the gateway neighbour is looked up once per resolved gateway (one row without).
+        $want[$k] = $(if (-not $itTags[$k]) { 0 } elseif ($k -eq 'gateway-neighbor') { [math]::Max(1, $gateways.Count) } else { 1 })
     }
     $rows = @($Report.Results)
     $byTag = @{}

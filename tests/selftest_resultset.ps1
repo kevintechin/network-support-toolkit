@@ -35,7 +35,7 @@ $text = Get-Content -LiteralPath $json.FullName -Raw -Encoding UTF8
 function Load { $text | ConvertFrom-Json }
 
 # The fixture and its facts.
-$facts = @{ ConnectedAdapters = 3; Gateways = @('192.0.2.1'); DnsServers = @(); Source = 'NetCmdlets'; DataSourceRow = $false; TcpCounters = @{ TCPv4 = $true; TCPv6 = $true }; AdapterStatistics = $true }
+$facts = @{ ConnectedAdapters = 3; Gateways = @('192.0.2.1'); DnsServers = @(); Source = 'NetCmdlets'; DataSourceRow = $false; SnapshotStepFailed = $false; TcpCounters = @{ TCPv4 = $true; TCPv6 = $true }; AdapterStatistics = $true }
 function New-Row($Template, [string]$Tag, [string]$Check, [string]$Status, [string]$Scope = 'Main') {
     $row = $Template.PSObject.Copy(); $row.Tag = $Tag; $row.Check = $Check; $row.Status = $Status; $row.Scope = $Scope; $row.Message = 'fixture row'; return $row
 }
@@ -123,5 +123,18 @@ $cfg4 = Read-Config $ConfigDir; $cfg4.Tests.PingTargets = @($cfg4.Tests.PingTarg
 $dnsFacts = With $facts @{ DnsServers = @('192.0.2.53', '192.0.2.54') }
 $r = New-Fixture; Assert-Case 'AUTO_DNS target against two DNS servers, rows missing' @(Test-ResultSet $r $cfg4 @{} $dnsFacts) $false 'ping-target: 1 row(s), expected 3'
 $r = New-Fixture; $r.Results = @($r.Results) + @((New-Row $r.Results[0] 'ping-target' 'DNS servers: 192.0.2.53' 'PASS'), (New-Row $r.Results[0] 'ping-target' 'DNS servers: 192.0.2.54' 'PASS')); Assert-Case 'AUTO_DNS target against two DNS servers, one row each' @(Test-ResultSet $r $cfg4 @{} $dnsFacts) $true ''
+# A multihomed machine: one ping-gateway row and one gateway-neighbor row per resolved gateway.
+$twoGateways = With $facts @{ Gateways = @('192.0.2.1', '192.0.2.2') }
+$r = New-Fixture; $r.Results = @($r.Results) + @((New-Row $r.Results[0] 'ping-gateway' 'Default Gateway: 192.0.2.2' 'PASS'), (New-Row $r.Results[0] 'gateway-neighbor' 'Gateway neighbor (ARP)' 'INFO' 'IT')); Assert-Case 'two gateways: two ping-gateway rows and two neighbour rows' @(Test-ResultSet $r $cfg @{} $twoGateways) $true ''
+$r = New-Fixture; $r.Results = @($r.Results) + @(New-Row $r.Results[0] 'ping-gateway' 'Default Gateway: 192.0.2.2' 'PASS'); Assert-Case 'two gateways but one neighbour row' @(Test-ResultSet $r $cfg @{} $twoGateways) $false 'gateway-neighbor: 1 row(s), expected 2'
+# Both snapshot paths failing: the data-source row, the snapshot step's step-error row, and the zero-adapter shape.
+$failedFallback = With $facts @{ ConnectedAdapters = 0; Gateways = @(); Source = 'CIM'; DataSourceRow = $true; SnapshotStepFailed = $true }
+function ConvertTo-FailedFallbackShape($Report) {
+    $Report = ConvertTo-ZeroAdapterShape $Report
+    $Report.Results = @($Report.Results) + @((New-Row $Report.Results[0] 'data-source' 'Data Source Fallback' 'WARN'), (New-Row $Report.Results[0] 'step-error' 'Get Network Adapters, IP, Gateways, and DNS' 'ERROR'))
+    return $Report
+}
+$r = ConvertTo-FailedFallbackShape (New-Fixture); Assert-Case 'both snapshot paths failed: data-source row, step-error row, zero-adapter shape, facts agree' @(Test-ResultSet $r $cfg @{} $failedFallback) $true ''
+$r = ConvertTo-FailedFallbackShape (New-Fixture); Assert-Case 'the same shape with a fallback that worked' @(Test-ResultSet $r $cfg @{} (With $failedFallback @{ SnapshotStepFailed = $false })) $false 'step-error: 1 row(s), expected 0'
 "Summary: $passes passed, $fails failed"
 exit $fails
