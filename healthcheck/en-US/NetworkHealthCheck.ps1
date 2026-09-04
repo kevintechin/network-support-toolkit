@@ -45,8 +45,92 @@ param(
 # - Traceability: exception type, message, and inner exceptions are stored in every
 #   report; script location and call stack go to the JSON report only (Diagnostics).
 
-$script:ToolVersion = "1.2.1"
+$script:ToolVersion = "1.2.2"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# -----------------------------------------------------------------------------
+# Backlog #18: application control (WDAC, AppLocker) can restrict PowerShell to a language mode in which a script
+# may not create .NET objects. This diagnostic needs them from its very first line - the ArrayList below is already
+# out of reach - so it cannot run at all there, and what the person in front of the screen would otherwise see is the
+# engine's own "Cannot create type. Only core types are supported in this language mode.", which tells them nothing
+# they can act on. Everything above this point and everything in Write-EnvironmentReport therefore stays inside what
+# a restricted mode allows: cmdlets, operators and property reads, no .NET types, no New-Object.
+# -----------------------------------------------------------------------------
+function Test-IsRunningFromArchive {
+    param([string]$Path)
+
+    # Windows opens a ZIP in a temporary view such as %TEMP%\Temp1_NetworkHealthCheck-1.2.2.zip\...; a double-click
+    # from there appears to work, but the folder disappears with the view, taking any file written into it.
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    return ($Path -match "\.zip[\\/]")
+}
+
+function Write-EnvironmentReport {
+    param([string]$Reason)
+
+    $lines = @(
+        "Network Health Check - environment report",
+        "=========================================",
+        "The diagnostic could not run on this computer. Nothing was changed.",
+        "",
+        "Reason: $Reason",
+        ("Date/time: " + (Get-Date -Format "yyyy-MM-dd HH:mm:ss")),
+        ("Tool version: " + $script:ToolVersion),
+        ("Computer: " + $env:COMPUTERNAME),
+        ("User: " + $env:USERNAME),
+        ("Script folder: " + $script:BaseDirectory)
+    )
+    # Each fact is optional: a locked-down machine may refuse any one of these, and a missing line must not cost the
+    # report the lines that did work.
+    try { $lines += ("PowerShell: " + $PSVersionTable.PSVersion + " (" + $PSVersionTable.PSEdition + ")") } catch { $lines += "PowerShell: unknown" }
+    try { $lines += ("Language mode: " + $ExecutionContext.SessionState.LanguageMode) } catch { $lines += "Language mode: unknown" }
+    try { $lines += ("Culture: " + (Get-Culture).Name + " / UI culture: " + (Get-UICulture).Name) } catch { $lines += "Culture: unknown" }
+    try { $lines += ("Operating system: " + (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).Caption) } catch { $lines += "Operating system: unknown" }
+    $lines += @(
+        "",
+        "What IT can do:",
+        "- Allow NetworkHealthCheck.ps1 in the application-control policy (WDAC / AppLocker), or",
+        "- run the check on a computer that is not restricted in this way.",
+        "Send this file with the support request."
+    )
+
+    # The script folder first, the temporary folder if it is not writable - the same order the reports use. With one
+    # exception: a folder inside the Windows compressed-folder view is writable but disposable, and this file is the
+    # only trace of a run that never reached the report stage, so it is written outside the view instead. The archive
+    # warning further down never runs in this path, because the guard exits first.
+    $name = "NetworkHealthCheck_ENVIRONMENT_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".txt"
+    $folders = @()
+    if (-not (Test-IsRunningFromArchive $script:BaseDirectory)) { $folders += $script:BaseDirectory }
+    $folders += $env:TEMP
+    foreach ($folder in $folders) {
+        if ([string]::IsNullOrWhiteSpace($folder)) { continue }
+        $path = Join-Path $folder $name
+        try {
+            Set-Content -LiteralPath $path -Value $lines -Encoding UTF8 -ErrorAction Stop
+            return $path
+        }
+        catch { }
+    }
+    return ""
+}
+
+if ([string]$ExecutionContext.SessionState.LanguageMode -ne "FullLanguage") {
+    $mode = [string]$ExecutionContext.SessionState.LanguageMode
+    $reason = "PowerShell is restricted to '$mode' language mode by an application-control policy, so this script may not create the .NET objects it needs."
+    $written = Write-EnvironmentReport -Reason $reason
+    Write-Host ""
+    Write-Host "Network Health Check cannot run on this computer."
+    Write-Host $reason
+    Write-Host "No network settings were read or changed."
+    Write-Host "What IT can do: allow this script in the application-control policy (WDAC / AppLocker), or run the check on a computer without that restriction."
+    if (Test-IsRunningFromArchive $script:BaseDirectory) {
+        Write-Host "This copy is running from inside a compressed folder, so the file below was written outside it. Extract the ZIP to a real folder before running."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($written)) { Write-Host "Details for IT were written to: $written" }
+    Write-Host ""
+    exit 3
+}
+
 $script:Results = New-Object System.Collections.ArrayList
 $script:StartupMessages = New-Object System.Collections.ArrayList
 $script:PrimaryAdapters = @()
@@ -3488,7 +3572,7 @@ function Run-AllChecks {
         return (Complete-ReportStage -SaveResult (Save-Reports))
     }
     else {
-        Add-CheckResult -Category "Program Environment" -Check "PowerShell Version" -Status "PASS" -Message ("Current version: {0}" -f $PSVersionTable.PSVersion) -Details "" -Tag "environment" | Out-Null
+        Add-CheckResult -Category "Program Environment" -Check "PowerShell Version" -Status "PASS" -Message ("Current version: {0}" -f $PSVersionTable.PSVersion) -Details ("Language mode: {0}. A restricted mode (application control: WDAC / AppLocker) stops this tool before any check runs; it then writes an environment report instead." -f $ExecutionContext.SessionState.LanguageMode) -Tag "environment" | Out-Null
     }
 
     Invoke-CheckStep -Category "System Information" -Name "Get Computer and Operating System Information" -Progress 7 -Action {
@@ -4056,6 +4140,9 @@ $exitCode = 0
 
 try {
     $script:BaseConfig = Load-Configuration -RequestedPath $ConfigPath
+    if (Test-IsRunningFromArchive $script:BaseDirectory) {
+        [void]$script:StartupMessages.Add("This copy is running from inside a compressed folder. Extract the ZIP to a real folder first, or the reports will be written to a temporary location that disappears.")
+    }
     $entryPoint = "User"
     if ($Interactive -or $ExpandDetails) { $entryPoint = "IT" }
     Set-RunOptions -Overrides @{

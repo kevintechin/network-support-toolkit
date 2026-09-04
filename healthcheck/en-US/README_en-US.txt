@@ -1,5 +1,5 @@
-Windows Portable Network Health Check
-Version: 1.2.1
+﻿Windows Portable Network Health Check
+Version: 1.2.2
 ========================================
 
 1. Quick start
@@ -144,7 +144,10 @@ for the organization's Wi-Fi, VPN, WAN, data-center, and application baselines.
 - Default tests contact 1.1.1.1:443 and www.microsoft.com and ping 1.1.1.1. IT may
   replace these with approved targets.
 - The launcher uses a process-scoped ExecutionPolicy Bypass. AppLocker, WDAC, EDR, or
-  Group Policy can still block it.
+  Group Policy can still block it. If policy restricts PowerShell to a limited language
+  mode, the tool stops before any check and writes NetworkHealthCheck_ENVIRONMENT_<time>.txt
+  next to the program (or in the Windows temporary folder) with what IT needs to know.
+  Send that file with the support request.
 
 
 8. Documentation and source comments

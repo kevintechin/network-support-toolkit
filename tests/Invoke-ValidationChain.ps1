@@ -5,7 +5,8 @@
 .DESCRIPTION
     One command reproduces the chain recorded in healthcheck/VALIDATION.md: the Windows PowerShell 5.1 parser, the static
     release validator and the self-test of the two AST guards, the helper unit tests, the report-stage functional
-    tests, the headless Initialize-Gui smoke test, the real-window UI Automation run of both entry points, the console
+    tests, the language-mode guard, the headless Initialize-Gui smoke test, the real-window UI Automation run of both
+    entry points, the console
     acceptance runs and, on request, the release-asset round trip (build, extract, validate inside the package, open the
     extracted IT entry through the real window).
 
@@ -14,7 +15,8 @@
     table as summary.md.
 
 .PARAMETER Steps
-    Steps to run (parse, validator, guards, unit, report, gui-headless, gui, acceptance, resultset, package);
+    Steps to run (parse, validator, guards, unit, report, envguard, gui-headless, gui, acceptance, resultset,
+    package);
     comma-separated values are accepted, and the steps always execute in the chain's own order. Default: everything
     except package. The resultset step is the negative self-check of the result-set assertion; it uses the en-US user
     report of the acceptance step, or produces one through the console launcher when that step did not run.
@@ -41,7 +43,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string[]]$Steps = @('parse', 'validator', 'guards', 'unit', 'report', 'gui-headless', 'gui', 'acceptance', 'resultset'),
+    [string[]]$Steps = @('parse', 'validator', 'guards', 'unit', 'report', 'envguard', 'gui-headless', 'gui', 'acceptance', 'resultset'),
     [switch]$Package,
     [switch]$SkipGui,
     [switch]$RequireHealthy,
@@ -51,7 +53,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Order = @('parse', 'validator', 'guards', 'unit', 'report', 'gui-headless', 'gui', 'acceptance', 'resultset', 'package')
+$Order = @('parse', 'validator', 'guards', 'unit', 'report', 'envguard', 'gui-headless', 'gui', 'acceptance', 'resultset', 'package')
 $Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $PackageDir = Join-Path $Root 'healthcheck'
 $Languages = @('en-US', 'zh-TW')
@@ -519,6 +521,15 @@ try {
                 $dir = Join-Path $WorkDir ('report\' + $lang)
                 New-Item -ItemType Directory -Force -Path $dir | Out-Null
                 $r = Invoke-TestScript 'report_stage_tests.ps1' @('-ScriptPath', (Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1')), '-WorkDir', $dir) ('report_' + $lang)
+                $s = Get-SummaryLine $r.Output
+                @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
+            }
+        }
+    }
+    if ($selected -contains 'envguard') {
+        foreach ($lang in $Languages) {
+            Invoke-Case 'envguard' $lang {
+                $r = Invoke-TestScript 'env_guard_check.ps1' @('-ScriptPath', (Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1')), '-WorkDir', $WorkDir) ('envguard_' + $lang)
                 $s = Get-SummaryLine $r.Output
                 @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
             }
