@@ -14,8 +14,10 @@
     table as summary.md.
 
 .PARAMETER Steps
-    Steps to run (parse, validator, guards, unit, report, gui-headless, gui, acceptance, package); comma-separated values
-    are accepted, and the steps always execute in the chain's own order. Default: everything except package.
+    Steps to run (parse, validator, guards, unit, report, gui-headless, gui, acceptance, resultset, package);
+    comma-separated values are accepted, and the steps always execute in the chain's own order. Default: everything
+    except package. The resultset step is the negative self-check of the result-set assertion; it uses the en-US user
+    report of the acceptance step, or produces one through the console launcher when that step did not run.
 .PARAMETER Package
     Adds the package step (the same as listing it in -Steps).
 .PARAMETER SkipGui
@@ -39,7 +41,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string[]]$Steps = @('parse', 'validator', 'guards', 'unit', 'report', 'gui-headless', 'gui', 'acceptance'),
+    [string[]]$Steps = @('parse', 'validator', 'guards', 'unit', 'report', 'gui-headless', 'gui', 'acceptance', 'resultset'),
     [switch]$Package,
     [switch]$SkipGui,
     [switch]$RequireHealthy,
@@ -49,7 +51,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Order = @('parse', 'validator', 'guards', 'unit', 'report', 'gui-headless', 'gui', 'acceptance', 'package')
+$Order = @('parse', 'validator', 'guards', 'unit', 'report', 'gui-headless', 'gui', 'acceptance', 'resultset', 'package')
 $Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $PackageDir = Join-Path $Root 'healthcheck'
 $Languages = @('en-US', 'zh-TW')
@@ -138,18 +140,38 @@ function Get-ConfigSampling([string]$Dir) {
 }
 function Get-Count($Value) { if ($null -eq $Value) { return 0 }; return @($Value).Count }
 function Test-TrueFlag($Value) { return (($Value -is [bool]) -and $Value) }   # the script's Test-IsTrueFlag: only a boolean true enables a check
-function Get-MachineGateways {
-    # The distinct IPv4 default gateways of the connected adapters that have an IPv4 address - what the script's
-    # AUTO_GATEWAY placeholder resolves to (Get-PrimaryAdapters: connected adapters with an IPv4 address and a gateway,
-    # physical or virtual), read from the operating system rather than from the report under test.
-    $list = @()
+function Get-MachineFacts {
+    # What the script's snapshot sees, read from the operating system with the script's own first source and rule
+    # (Get-NetIPConfiguration: an adapter counts when it is Up and has an IPv4 or IPv6 address): the number of connected
+    # adapters with an address - one adapter row each - and the distinct IPv4 default gateways of those with an IPv4
+    # address, which is what AUTO_GATEWAY resolves to. On a machine where the script falls back to CIM the counts may differ.
+    $facts = @{ ConnectedAdapters = 0; Gateways = @() }
     foreach ($c in @(Get-NetIPConfiguration -ErrorAction SilentlyContinue)) {
-        if ($null -eq $c.NetAdapter -or ([string]$c.NetAdapter.Status) -ne 'Up' -or (Get-Count $c.IPv4Address) -eq 0) { continue }
-        foreach ($g in @($c.IPv4DefaultGateway)) {
-            if ($null -ne $g -and ([string]$g.NextHop) -match '^\d{1,3}(\.\d{1,3}){3}$' -and ([string]$g.NextHop) -ne '0.0.0.0') { $list += [string]$g.NextHop }
+        if ($null -eq $c.NetAdapter -or ([string]$c.NetAdapter.Status) -ne 'Up') { continue }
+        $v4 = @($c.IPv4Address | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_.IPAddress) })
+        $v6 = @($c.IPv6Address | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_.IPAddress) })
+        if ($v4.Count -eq 0 -and $v6.Count -eq 0) { continue }
+        $facts.ConnectedAdapters++
+        if ($v4.Count -gt 0) {
+            foreach ($g in @($c.IPv4DefaultGateway)) { if ($null -ne $g -and -not [string]::IsNullOrWhiteSpace([string]$g.NextHop)) { $facts.Gateways += [string]$g.NextHop } }
         }
     }
-    return @($list | Sort-Object -Unique)
+    $facts.Gateways = @($facts.Gateways | Sort-Object -Unique)
+    return $facts
+}
+function Get-StandardRuleCount($Config) {
+    # One expected-standard row per rule category the configuration defines (IPv4 address or subnet allowlist, prefix
+    # lengths, gateways, DNS servers, DHCP mode), the way Test-ExpectedNetworkConfiguration writes them; blank entries
+    # do not count, and a prefix length must be a whole number from 0 to 32.
+    $e = $Config.Expected
+    $nonBlank = { param($v) @(@($v) | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) }).Count }
+    $n = 0
+    if ((& $nonBlank $e.AllowedIPv4Addresses) -gt 0 -or (& $nonBlank $e.AllowedIPv4Cidrs) -gt 0) { $n++ }
+    if (@(@($e.AllowedPrefixLengths) | Where-Object { ([string]$_) -match '^\d{1,2}$' -and [int]$_ -le 32 }).Count -gt 0) { $n++ }
+    if ((& $nonBlank $e.AllowedDefaultGateways) -gt 0) { $n++ }
+    if ((& $nonBlank $e.RequiredDnsServers) -gt 0) { $n++ }
+    if ($e.DhcpEnabled -is [bool]) { $n++ }
+    return $n
 }
 function Test-ResultSet {
     # The report must carry every row the configuration and the run options call for, and nothing else: one row per
@@ -157,16 +179,25 @@ function Test-ResultSet {
     # adapters, gateway and DNS settings, standard comparison, connectivity group per group, TCPv4 and TCPv6
     # retransmissions), each in its scope. Per-adapter rows depend on the machine, so they must exist and pair up (one
     # counter row per adapter row). A Run-AllChecks that skipped a diagnostic, an unknown or renamed tag, or a missing
-    # row for an extra target given as a switch fails here. Returns the mismatches.
-    param($Report, $Config, [hashtable]$Expect)
+    # row for an extra target given as a switch fails here. Returns the mismatches. $Machine (adapters and gateways as
+    # the operating system reports them, see Get-MachineFacts) can be injected by the self-test.
+    param($Report, $Config, [hashtable]$Expect, [hashtable]$Machine)
+    if ($null -eq $Machine) { $Machine = Get-MachineFacts }
     $bad = @()
     $o = $Report.RunOptions
     $pingTargets = @($Config.Tests.PingTargets)
     $gatewayTargets = @($pingTargets | Where-Object { [string]$_.Address -eq 'AUTO_GATEWAY' }).Count
-    $gateways = @(Get-MachineGateways)
+    $gateways = @($Machine.Gateways)
+    $connected = [int]$Machine.ConnectedAdapters
     $groups = @(@($Config.Tests.TcpTargets) + @($Config.Tests.HttpTargets) | ForEach-Object { [string]$_.Group } | Where-Object { $_ } | Sort-Object -Unique)
+    $rules = Get-StandardRuleCount $Config
     $want = [ordered]@{
-        'config-file' = 1; 'config' = 1; 'environment' = 1; 'system' = 1; 'adapters' = 1; 'gateway-config' = 1; 'dns-config' = 1; 'expected-standard' = 1
+        'config-file' = 1; 'config' = 1; 'environment' = 1; 'system' = 1; 'adapters' = 1
+        # Without a connected adapter the snapshot writes the aggregate adapters row only: no gateway or DNS settings rows.
+        'gateway-config' = $(if ($connected -gt 0) { 1 } else { 0 })
+        'dns-config' = $(if ($connected -gt 0) { 1 } else { 0 })
+        # One row per configured standard rule; one informational row without rules; one failure row without adapters.
+        'expected-standard' = $(if ($rules -eq 0 -or $connected -eq 0) { 1 } else { $rules })
         'ping-gateway' = $gatewayTargets * [math]::Max(1, $gateways.Count)   # one row per resolved gateway, or one "no target" row
         'ping-target' = ($pingTargets.Count - $gatewayTargets) + (Get-Count $o.ExtraTargets.Ping)
         'dns' = (Get-Count $Config.Tests.DnsNames) + (Get-Count $o.ExtraTargets.Dns)
@@ -195,8 +226,18 @@ function Test-ResultSet {
     }
     $adapters = $(if ($byTag.ContainsKey('adapter')) { $byTag['adapter'] } else { 0 })
     $counters = $(if ($byTag.ContainsKey('adapter-errors')) { $byTag['adapter-errors'] } else { 0 })
-    if ($adapters -lt 1) { $bad += 'no adapter row' }
-    if ($counters -ne $adapters) { $bad += ('adapter-errors: {0} row(s), expected one per adapter row ({1})' -f $counters, $adapters) }
+    if ($connected -gt 0) {
+        # One adapter row per connected adapter with an address, and one counter row per adapter row.
+        if ($adapters -ne $connected) { $bad += ('adapter: {0} row(s), expected one per connected adapter with an address ({1})' -f $adapters, $connected) }
+        if ($counters -ne $adapters) { $bad += ('adapter-errors: {0} row(s), expected one per adapter row ({1})' -f $counters, $adapters) }
+    }
+    else {
+        # The zero-adapter shape: the aggregate adapters row fails, there are no adapter rows, and the counter rows come
+        # from whatever the counter sample named, so their number is not constrained.
+        if ($adapters -ne 0) { $bad += ('adapter: {0} row(s) although the machine has no connected adapter with an address' -f $adapters) }
+        $aggregate = @($rows | Where-Object { $_.Tag -eq 'adapters' })
+        if ($aggregate.Count -eq 1 -and [string]$aggregate[0].Status -ne 'FAIL') { $bad += ('adapters row is {0}, expected FAIL with no connected adapter' -f $aggregate[0].Status) }
+    }
     $known = @($want.Keys) + @('adapter', 'adapter-errors')
     $unknown = @($byTag.Keys | Where-Object { $known -notcontains $_ })
     if ($unknown.Count) { $bad += ('unexpected tag(s): ' + ($unknown -join ', ')) }
@@ -392,6 +433,21 @@ try {
                 if ($bad.Count) { $detail = ($bad -join '; ') + ' | ' + $detail }
                 @{ Passed = ($bad.Count -eq 0); Detail = $detail }
             }
+        }
+    }
+    if ($selected -contains 'resultset') {
+        Invoke-Case 'resultset' 'selftest_resultset.ps1 on the en-US user report' {
+            $stage = Join-Path $WorkDir 'stage\console\en-US'
+            $reports = Join-Path $stage 'Reports'
+            if (@(Get-ChildItem -LiteralPath $reports -Filter '*.json' -ErrorAction SilentlyContinue).Count -eq 0) {
+                # No acceptance report in this work dir: produce one the same way, through the console launcher.
+                if (-not (Test-Path -LiteralPath $stage)) { $stage = New-StagedCopy -Lang 'en-US' -Name 'console' }
+                $r0 = Invoke-Native $CmdExe @('/s', '/c', ('"' + (Join-Path $stage 'Start-NetworkCheck-Console.cmd') + '" <nul')) 'resultset_report'
+                if ($r0.ExitCode -ne 0) { return @{ Passed = $false; Detail = ('no report for the self-check: the console launcher exited with code ' + $r0.ExitCode) } }
+            }
+            $r = Invoke-TestScript 'selftest_resultset.ps1' @('-ReportDir', $reports, '-ConfigDir', $stage) 'resultset'
+            $s = Get-SummaryLine $r.Output
+            @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
         }
     }
     if ($selected -contains 'package') {

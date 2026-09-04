@@ -3,8 +3,9 @@ param([string]$ReportDir, [string]$ConfigDir)
 # functions are lifted out of the runner by AST, then a real report from an earlier run is fed to the assertion intact
 # (must be clean) and tampered with (must be reported): a row removed, a rogue tag added, an IT row moved to the Main
 # scope, an extra-target row expected but absent, every adapter counter row removed, an empty result set, a diagnostic
-# dropped by the run and by the report's ChecksEnabled alike, and a gateway row naming an address that is not a default
-# gateway of this machine.
+# dropped by the run and by the report's ChecksEnabled alike, a gateway row naming an address that is not a default
+# gateway of this machine, the zero-adapter shape (accepted for a machine without a connected adapter, reported for this
+# one), and a configuration with two standard rules against a report with one standard row.
 #   -ReportDir: a Reports folder written by NetworkHealthCheck.ps1 (the oldest JSON report in it is used)
 #   -ConfigDir: the folder holding the NetworkHealthCheck.config.json that run used
 # Example: tests\selftest_resultset.ps1 -ReportDir <work dir>\stage\console\en-US\Reports -ConfigDir <work dir>\stage\console\en-US
@@ -12,7 +13,9 @@ $ErrorActionPreference = 'Stop'
 $runner = Join-Path $PSScriptRoot 'Invoke-ValidationChain.ps1'
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($runner, [ref]$tokens, [ref]$errors)
-foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Read-Config', 'Get-Count', 'Test-TrueFlag', 'Get-MachineGateways', 'Test-ResultSet') }, $true)) { Invoke-Expression $f.Extent.Text }
+foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Read-Config', 'Get-Count', 'Test-TrueFlag', 'Get-MachineFacts', 'Get-StandardRuleCount', 'Test-ResultSet') }, $true)) { Invoke-Expression $f.Extent.Text }
+$machine = Get-MachineFacts
+"machine: $($machine.ConnectedAdapters) connected adapter(s) with an address, gateway(s) $(@($machine.Gateways) -join ', ')"
 $cfg = Read-Config $ConfigDir
 $json = @(Get-ChildItem -LiteralPath $ReportDir -Filter '*.json' | Sort-Object LastWriteTime | Select-Object -First 1)[0]
 if ($null -eq $json) { "no JSON report in $ReportDir"; exit 1 }
@@ -33,8 +36,19 @@ $r = Load; $rogue = $r.Results[0].PSObject.Copy(); $rogue.Tag = 'bogus'; $r.Resu
 $r = Load; foreach ($x in $r.Results) { if ($x.Tag -eq 'routes') { $x.Scope = 'Main' } }; Assert-Case 'routes row moved to the Main scope' @(Test-ResultSet $r $cfg @{}) $false 'routes row in scope Main'
 $r = Load; Assert-Case 'extra ping target expected but absent' @(Test-ResultSet $r $cfg @{ ExtraPing = '9.9.9.9' }) $false 'no ping-target row for 9.9.9.9'
 $r = Load; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'adapter-errors' }); Assert-Case 'every adapter counter row removed' @(Test-ResultSet $r $cfg @{}) $false 'adapter-errors: 0 row(s)'
-$r = Load; $r.Results = @(); Assert-Case 'empty result set' @(Test-ResultSet $r $cfg @{}) $false 'no adapter row'
+$r = Load; $r.Results = @(); Assert-Case 'empty result set' @(Test-ResultSet $r $cfg @{}) $false 'adapter: 0 row(s)'
 $r = Load; $r.RunOptions.ChecksEnabled.WifiRf = $false; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi' }); Assert-Case 'Wi-Fi diagnostic dropped by the run and by ChecksEnabled alike' @(Test-ResultSet $r $cfg @{}) $false 'ChecksEnabled for wifi reported as False'
 $r = Load; foreach ($x in $r.Results) { if ($x.Tag -eq 'ping-gateway') { $x.Check = ($x.Check -replace '\d{1,3}(\.\d{1,3}){3}', '10.255.255.254') } }; Assert-Case 'ping-gateway row naming an address that is not a gateway of this machine' @(Test-ResultSet $r $cfg @{}) $false 'not a default gateway of this machine'
+# The zero-adapter shape (all adapters disabled or disconnected): the aggregate adapters row fails and there are no
+# adapter, gateway-config or dns-config rows; counter rows may still name whatever the counter sample saw. Legitimate on a
+# machine without a connected adapter (injected facts), a regression on this one (real facts).
+function ConvertTo-ZeroAdapterShape($Report) {
+    $Report.Results = @($Report.Results | Where-Object { $_.Tag -notin @('adapter', 'gateway-config', 'dns-config') })
+    foreach ($x in $Report.Results) { if ($x.Tag -eq 'adapters') { $x.Status = 'FAIL' } }
+    return $Report
+}
+$r = ConvertTo-ZeroAdapterShape (Load); Assert-Case 'zero-adapter shape on a machine without a connected adapter' @(Test-ResultSet $r $cfg @{} @{ ConnectedAdapters = 0; Gateways = @() }) $true ''
+$r = ConvertTo-ZeroAdapterShape (Load); Assert-Case 'zero-adapter shape on this machine' @(Test-ResultSet $r $cfg @{}) $false 'expected one per connected adapter with an address'
+$r = Load; $cfg2 = Read-Config $ConfigDir; $cfg2.Expected.RequiredDnsServers = @('192.168.1.1'); $cfg2.Expected.AllowedDefaultGateways = @('192.168.1.1'); Assert-Case 'two standard rules configured but one standard row' @(Test-ResultSet $r $cfg2 @{}) $false 'expected-standard: 1 row(s), expected 2'
 "Summary: $passes passed, $fails failed"
 exit $fails
