@@ -342,6 +342,27 @@ function Get-ExtractedLauncher([string]$Root, [string]$Name) {
     if (-not (Test-Path -LiteralPath $Root)) { return $null }
     return @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter $Name -ErrorAction SilentlyContinue)[0]
 }
+function Test-ExtractedPackage([string]$Root, [string[]]$Launchers, [datetime]$After) {
+    # The extraction the person was asked for, and nothing else: every launcher below the folder; created after this
+    # scenario started - a tree left by an earlier campaign is refused, its launchers would run another package and,
+    # for M2, carry another download's marks; and the package's own program file byte for byte, so that the evidence
+    # is of this campaign's asset and no other release (Codex round 1 on PR #14).
+    $found = @{}
+    foreach ($name in $Launchers) { $found[$name] = Get-ExtractedLauncher $Root $name }
+    $missing = @($Launchers | Where-Object { $null -eq $found[$_] })
+    if ($missing.Count) { return @{ Ok = $false; Detail = ('nothing extracted under ' + $Root + ' (no ' + ($missing -join ' / ') + ' below it) - the Extract All dialog proposes another folder; replace the destination with ' + $Root) } }
+    $first = $found[$Launchers[0]]
+    if ($first.CreationTime -le $After) { return @{ Ok = $false; Detail = ('the package under ' + $Root + ' was extracted before this scenario started (created ' + $first.CreationTime.ToString('yyyy-MM-dd HH:mm:ss') + '): remove ' + $Root + ' and extract the downloaded ZIP again') } }
+    $script = Join-Path $first.DirectoryName 'en-US\NetworkHealthCheck.ps1'
+    if (-not (Test-Path -LiteralPath $script)) { return @{ Ok = $false; Detail = ('the extraction under ' + $Root + ' has no en-US\NetworkHealthCheck.ps1 beside its launcher: not the complete package; remove ' + $Root + ' and extract the downloaded ZIP again') } }
+    $reference = Join-Path $State.PackageRoot 'en-US\NetworkHealthCheck.ps1'
+    if ((Get-FileHash -LiteralPath $script -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $reference -Algorithm SHA256).Hash) {
+        $v = 'unknown'
+        foreach ($line in [IO.File]::ReadLines($script)) { if ($line -match '^\$script:ToolVersion\s*=\s*"([^"]+)"') { $v = $Matches[1]; break } }
+        return @{ Ok = $false; Detail = ('the package under ' + $Root + ' is not this campaign''s asset (its en-US\NetworkHealthCheck.ps1 differs; tool version ' + $v + ', the asset is ' + $State.ToolVersion + '): remove ' + $Root + ' and extract the downloaded ZIP') }
+    }
+    return @{ Ok = $true; Detail = ('extracted under ' + $first.DirectoryName + ' - this campaign''s asset, created ' + $first.CreationTime.ToString('HH:mm:ss')); Root = $first.DirectoryName }
+}
 function Get-ReportsElsewhere([string]$Except, [string]$Lang, [datetime]$After) {
     # Reports the run left somewhere other than the instructed folder: the person extracted elsewhere - the Extract All
     # dialog proposes <folder of the ZIP>\<name of the ZIP>\ (the first campaign, 2026-09-05). A few levels below the
@@ -415,11 +436,34 @@ if ($Redo) {
 $ResumeCommand = 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $State.TestsCopy 'Invoke-AcceptanceCampaign.ps1') + '" -Campaign ' + $Campaign + ' -StateDir "' + $StateDir + '" -Resume' + $(if ($Wanted.Count) { ' -Scenarios ' + ($Wanted -join ',') } else { '' })
 $RunAsStandardUser = Join-Path $StateDir 'run-as-standard-user.cmd'   # the same command, as a file the other session runs (PR #14)
 $RecoveryNotes = Join-Path $StateDir 'RECOVER.txt'
+function Get-M8MachineLines {
+    # "This machine: ..." for M8, in both languages - at script scope because the cleanup instruction, a scriptblock run
+    # long after Get-Plan returned, needs it as well (scriptblocks capture nothing).
+    $ed = $State.Edition
+    $here = $(if ($ed.HasGpedit) { 'gpedit.msc is present: take the first way' } else { 'no gpedit.msc: take the registry lines (gpupdate is not needed)' })
+    $hereZh = $(if ($ed.HasGpedit) { '有 gpedit.msc：用第一種做法' } else { '沒有 gpedit.msc：用登錄檔那兩行（不需要 gpupdate）' })
+    return @(('This machine: ' + $ed.Caption + ' (EditionID ' + $ed.EditionId + ') - ' + $here + '.'), ('這台機器：' + $ed.Caption + '（EditionID ' + $ed.EditionId + '）——' + $hereZh + '。'))
+}
+function Get-M8WayBack($Facts) {
+    # The registry lines that put the two values back as they were before M8 - re-created with their data where they
+    # existed, deleted where they did not (Codex round 1 on PR #14).
+    $k = '"HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell"'
+    $lines = @()
+    $ep = [string]$Facts.RegExecutionPolicyBefore; $es = [string]$Facts.RegEnableScriptsBefore
+    if (-not $ep -or $ep -eq 'absent') { $lines += ('reg delete ' + $k + ' /v ExecutionPolicy /f') } else { $lines += ('reg add ' + $k + ' /v ExecutionPolicy /t REG_SZ /d ' + $ep + ' /f') }
+    if (-not $es -or $es -eq 'absent') { $lines += ('reg delete ' + $k + ' /v EnableScripts /f') } else { $lines += ('reg add ' + $k + ' /v EnableScripts /t REG_DWORD /d ' + $es + ' /f') }
+    return $lines
+}
 function Write-RecoveryNotes {
     # RECOVER.txt and undo-M7.cmd in the state folder: how to put the machine back WITHOUT PowerShell, for a policy
     # scenario interrupted before its revert - under M7 every new PowerShell is ConstrainedLanguage and this script's
     # own New-Object is refused, under M8 the unsigned script does not start at all (PR #11 round 5). Written before
     # any policy is applied, and again when M9 has recorded the service's original state.
+    $m8 = $State.Scenarios['M8']
+    $m8Facts = $(if ($null -ne $m8 -and $null -ne $m8.Facts -and $m8.Facts.MachinePolicyBefore) { $m8.Facts } else { $null })
+    $m8Before = $(if ($null -ne $m8Facts) { [string]$m8Facts.MachinePolicyBefore } else { 'Undefined (assumed: M8 has not recorded the machine yet)' })
+    $m8Back = @(Get-M8WayBack $(if ($null -ne $m8Facts) { $m8Facts } else { @{ RegExecutionPolicyBefore = 'absent'; RegEnableScriptsBefore = 'absent' } }))
+    $m8Gp = $(if ($null -ne $m8Facts -and [string]$m8Facts.MachinePolicyBefore -ne 'Undefined') { 'back to the setting that gave MachinePolicy ' + $m8Facts.MachinePolicyBefore } else { 'Not Configured' })
     $m9 = $State.Scenarios['M9']
     $svcType = 'the startup type recorded in campaign.json under Scenarios.M9.Facts once M9 has started'
     $svcStop = 'net stop AppIDSvc if it was stopped'
@@ -438,13 +482,13 @@ function Write-RecoveryNotes {
         '    right-click undo-M7.cmd in this folder > Run as administrator; or, in an elevated command prompt:',
         '    reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f',
         '',
-        'M8  Group Policy execution policy (AllSigned)',
+        ('M8  Group Policy execution policy (AllSigned) - MachinePolicy was ' + $m8Before + ' before M8'),
         '    with gpedit.msc: Computer Configuration > Administrative Templates > Windows Components > Windows PowerShell',
-        '    > Turn on Script Execution > Not Configured > OK; then in a command prompt:   gpupdate /force',
-        '    (gpedit and gpupdate need no PowerShell; where a Group Policy set the value, deleting the registry values alone is undone by the next refresh)',
-        '    without gpedit.msc (Home), in an elevated command prompt:',
-        '    reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell" /v ExecutionPolicy /f',
-        '    reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell" /v EnableScripts /f',
+        ('    > Turn on Script Execution > ' + $m8Gp + ' > OK; then in a command prompt:   gpupdate /force'),
+        '    (gpedit and gpupdate need no PowerShell; where a Group Policy set the value, changing the registry values alone is undone by the next refresh)',
+        '    without gpedit.msc (Home), in an elevated command prompt - the values as they were before M8:',
+        ('    ' + $m8Back[0]),
+        ('    ' + $m8Back[1]),
         '',
         'M9  AppLocker Script rules',
         '    secpol.msc > Application Control Policies > AppLocker > Configure rule enforcement > Script rules: Not configured;',
@@ -472,18 +516,23 @@ Write-RecoveryNotes
 # Folders the extraction scenarios use, at script scope: a scenario's scriptblocks run long after Get-Plan has
 # returned, and PowerShell scriptblocks capture nothing - a local of Get-Plan read inside an action is $null at run
 # time (found by self-test case 21 in PR #11 round 12).
-if (-not $WorkRoot) { $WorkRoot = [Environment]::GetFolderPath('Desktop') }
+# The work root is part of the campaign: given once, it is kept in the state and reused by every resume - the resume
+# command does not carry it, and a resume without it must not switch the folders back to the Desktop (Codex round 1 on
+# PR #14). Given again with another value, the new one wins and the change is on record.
+if ($WorkRoot) {
+    if ($State.WorkRoot -and ([string]$State.WorkRoot -ne $WorkRoot)) { Add-Event ('work root changed from {0} to {1}' -f $State.WorkRoot, $WorkRoot) }
+    $State.WorkRoot = $WorkRoot
+}
+elseif ($State.WorkRoot) { $WorkRoot = [string]$State.WorkRoot }
+else { $WorkRoot = [Environment]::GetFolderPath('Desktop'); $State.WorkRoot = $WorkRoot }
 $M2Dir = Join-Path $WorkRoot 'NHC-M2'
 $M3Dir = Join-Path $WorkRoot 'NHC-M3'
 function Get-Plan {
     $zipName = Split-Path -Leaf $State.OriginalZip
     $top = Split-Path -Leaf $State.PackageRoot
     # M8 has two ways to the same MachinePolicy; the one this machine can take is named (Windows 11 Home has no gpedit.msc, PR #14).
-    $ed = $State.Edition
-    $m8Here = $(if ($ed.HasGpedit) { 'gpedit.msc is present: take the first way' } else { 'no gpedit.msc: take the registry lines (gpupdate is not needed)' })
-    $m8HereZh = $(if ($ed.HasGpedit) { '有 gpedit.msc：用第一種做法' } else { '沒有 gpedit.msc：用登錄檔那兩行（不需要 gpupdate）' })
-    $m8Machine = ('This machine: ' + $ed.Caption + ' (EditionID ' + $ed.EditionId + ') - ' + $m8Here + '.')
-    $m8MachineZh = ('這台機器：' + $ed.Caption + '（EditionID ' + $ed.EditionId + '）——' + $m8HereZh + '。')
+    $m8Machine = (Get-M8MachineLines)[0]
+    $m8MachineZh = (Get-M8MachineLines)[1]
     # Printed before a policy is applied: the way back that needs no PowerShell, for the case the campaign cannot resume.
     $recoverLines = @(('If this window closes before the revert, put the machine back WITHOUT PowerShell as written in ' + $RecoveryNotes + ' (for M7: run undo-M7.cmd there as administrator), then run the campaign again.'),
                       ('若這個視窗在還原前關掉了，請照 ' + $RecoveryNotes + ' 的說明、不用 PowerShell 把機器改回來（M7：以系統管理員身分執行同資料夾的 undo-M7.cmd），再重新執行 campaign。'))
@@ -573,7 +622,7 @@ function Get-Plan {
                            ('在下載的 ZIP 上按右鍵 > 全部解壓縮，解壓到 ' + $M2Dir + '（不要 Unblock）。對話框預設的是另一個資料夾——把目的地換成 ' + $M2Dir + '。解壓完成後輸入 done；下一步才雙擊。'))
            # The extraction is verified before the launcher is run: the first campaign extracted to the dialog's default, and
            # the run left its reports where the scenario did not look (PR #14).
-           Precondition = { $l = Get-ExtractedLauncher $M2Dir 'Start-English.cmd'; if ($null -ne $l) { @{ Ok = $true; Detail = ('extracted: ' + $l.FullName) } } else { @{ Ok = $false; Detail = ('nothing extracted under ' + $M2Dir + ' (no Start-English.cmd below it) - the Extract All dialog proposes another folder; replace the destination with ' + $M2Dir) } } }
+           Precondition = { param($Ctx) Test-ExtractedPackage $M2Dir @('Start-English.cmd') $Ctx.Started }
            Action = { param($Ctx)
                $null = Read-Answer $Ctx.Id 'launched' @('Open the extracted folder and double-click Start-English.cmd. As soon as a Windows prompt appears - or the tool window, if nothing appeared - answer done: a screenshot is taken at that moment.', '打開解壓出來的資料夾，雙擊 Start-English.cmd。Windows 一跳出提示（或沒有提示、工具視窗出現時）就輸入 done：那一刻會截圖。') @('done') 'done'
                $mark = Get-ZoneId $State.OriginalZip
@@ -599,12 +648,12 @@ function Get-Plan {
                            ('在下載的 ZIP 上按右鍵 > 內容 > 勾選「解除封鎖」> 確定。再全部解壓縮到 ' + $M3Dir + '——對話框預設的是另一個資料夾，把目的地換成 ' + $M3Dir + '。解壓完成後輸入 done；下一步才跑 launcher。'))
            # The Unblock and the extraction are verified before the launchers are run: the first campaign extracted to the
            # dialog's default and the run left its reports where the scenario did not look (PR #14).
-           Precondition = {
+           Precondition = { param($Ctx)
                $m = Get-ZoneId $State.OriginalZip
                if ($m -ne 'no mark') { return @{ Ok = $false; Detail = ('the ZIP still carries the Mark of the Web (' + $m + '): Unblock it first (Properties > Unblock > OK), then extract again into ' + $M3Dir) } }
-               $missing = @(@('Start-English.cmd', 'Start-Traditional-Chinese.cmd') | Where-Object { $null -eq (Get-ExtractedLauncher $M3Dir $_) })
-               if ($missing.Count) { return @{ Ok = $false; Detail = ('nothing extracted under ' + $M3Dir + ' (no ' + ($missing -join ' / ') + ' below it) - the Extract All dialog proposes another folder; replace the destination with ' + $M3Dir) } }
-               @{ Ok = $true; Detail = ('unblocked and extracted under ' + $M3Dir) } }
+               $x = Test-ExtractedPackage $M3Dir @('Start-English.cmd', 'Start-Traditional-Chinese.cmd') $Ctx.Started
+               if (-not $x.Ok) { return $x }
+               @{ Ok = $true; Detail = ('unblocked; ' + $x.Detail) } }
            Action = { param($Ctx)
                $null = Read-Answer $Ctx.Id 'launched' @('Double-click Start-English.cmd and let it run; close it. Double-click Start-Traditional-Chinese.cmd and let it run; when its run has finished and the window is still open, answer done: a screenshot of the window is taken then.', '雙擊 Start-English.cmd 讓它跑完、關閉。再雙擊 Start-Traditional-Chinese.cmd 讓它跑完；跑完、視窗還開著時輸入 done：那一刻會截圖視窗。') @('done') 'done'
                # The evidence the checklist asks for: the window after its run, and the browser showing the report (PR #11 rounds 2 and 4).
@@ -682,7 +731,15 @@ function Get-Plan {
                            '  沒有（Home）：在「以系統管理員身分執行」的命令提示字元執行 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell" /v EnableScripts /t REG_DWORD /d 1 /f，再執行 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell" /v ExecutionPolicy /t REG_SZ /d AllSigned /f',
                            $m8MachineZh,
                            '然後輸入 done。生效期間任何未簽章的 PowerShell 腳本都跑不起來——包括這個 campaign：請保持這個視窗開著。') + $recoverLines
-           Prepare = { param($Ctx) return @{ PolicyWay = $(if ($State.Edition.HasGpedit) { 'gpedit' } else { 'registry' }); Edition = ([string]$State.Edition.Caption + ' / ' + [string]$State.Edition.EditionId) } }   # how the policy is applied here, for the record
+           Prepare = { param($Ctx)
+               # What is on the machine before the change, so that the revert puts it back rather than clearing it: the
+               # effective MachinePolicy and the two registry values as they are - with their data, or absent (Codex round 1
+               # on PR #14). And how the policy is applied here, for the record.
+               $reg = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell' -ErrorAction SilentlyContinue
+               return @{ PolicyWay = $(if ($State.Edition.HasGpedit) { 'gpedit' } else { 'registry' }); Edition = ([string]$State.Edition.Caption + ' / ' + [string]$State.Edition.EditionId)
+                         MachinePolicyBefore = (Get-MachinePolicyExecutionPolicy)
+                         RegExecutionPolicyBefore = $(if ($null -ne $reg -and $null -ne $reg.PSObject.Properties['ExecutionPolicy']) { [string]$reg.ExecutionPolicy } else { 'absent' })
+                         RegEnableScriptsBefore = $(if ($null -ne $reg -and $null -ne $reg.PSObject.Properties['EnableScripts']) { [string]$reg.EnableScripts } else { 'absent' }) } }
            Precondition = { $p = Get-MachinePolicyExecutionPolicy; if ($p -eq 'AllSigned') { @{ Ok = $true; Detail = 'MachinePolicy=AllSigned' } } else { @{ Ok = $false; Detail = ('MachinePolicy is ' + $p + ', not AllSigned') } } }
            Action = { param($Ctx)
                $r = Invoke-LauncherRun $Ctx.Id 'en-US'
@@ -699,9 +756,17 @@ function Get-Plan {
                $shown = @($r.Output | Where-Object { $_.Trim() -ne '' } | Select-Object -First 4) -join ' / '
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; what the user sees: {2}' -f $r.ExitCode, $r.EnvironmentReports.Count, $shown)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError.txt') }
            }
-           Cleanup = @{ Instruction = @('Put it back - with gpedit.msc: Turn on Script Execution > Not Configured > OK, then   gpupdate /force;   without it:   reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell" /v ExecutionPolicy /f   then   reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell" /v EnableScripts /f', $m8Machine, 'Then answer done.',
-                                       '改回去——有 gpedit.msc：「開啟指令碼執行」改回「尚未設定」、確定，再執行 gpupdate /force；沒有：執行 reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell" /v ExecutionPolicy /f，再執行 reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell" /v EnableScripts /f', $m8MachineZh, '然後輸入 done。')
-                        Verify = { $p = Get-MachinePolicyExecutionPolicy; if ($p -eq 'Undefined') { @{ Ok = $true; Detail = 'MachinePolicy=Undefined' } } else { @{ Ok = $false; Detail = ('MachinePolicy is still ' + $p) } } } } },
+           # The revert restores what Prepare recorded, not a blank: a machine that had a policy before M8 gets it back, and the
+           # verification compares with that, not with Undefined (Codex round 1 on PR #14). A scriptblock, evaluated at revert time.
+           Cleanup = @{ Instruction = { param($Ctx)
+                            $before = [string]$Ctx.Facts.MachinePolicyBefore; if (-not $before) { $before = 'Undefined' }
+                            $back = @(Get-M8WayBack $Ctx.Facts)
+                            $gp = $(if ($before -eq 'Undefined') { 'Turn on Script Execution > Not Configured > OK' } else { 'Turn on Script Execution back to the setting that gave MachinePolicy ' + $before })
+                            $gpZh = $(if ($before -eq 'Undefined') { '「開啟指令碼執行」改回「尚未設定」、確定' } else { '把「開啟指令碼執行」改回原本讓 MachinePolicy 為 ' + $before + ' 的設定' })
+                            $lines = Get-M8MachineLines
+                            @(('Put it back as it was (MachinePolicy was ' + $before + ' before M8) - with gpedit.msc: ' + $gp + ', then   gpupdate /force;   without it, in an ELEVATED command prompt:   ' + ($back -join '   then   ')), $lines[0], 'Then answer done.',
+                              ('改回原本的狀態（M8 之前 MachinePolicy 是 ' + $before + '）——有 gpedit.msc：' + $gpZh + '，再執行 gpupdate /force；沒有：在「以系統管理員身分執行」的命令提示字元執行 ' + ($back -join '，再執行 ')), $lines[1], '然後輸入 done。') }
+                        Verify = { param($Ctx) $p = Get-MachinePolicyExecutionPolicy; $want = [string]$Ctx.Facts.MachinePolicyBefore; if (-not $want) { $want = 'Undefined' }; if ($p -eq $want) { @{ Ok = $true; Detail = ('MachinePolicy=' + $p + ', as before M8') } } else { @{ Ok = $false; Detail = ('MachinePolicy is ' + $p + '; it was ' + $want + ' before M8') } } } } },
         @{ Id = 'M9'; Title = 'AppLocker script rules enforced (Enterprise / Education)'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('secpol.msc > Application Control Policies > AppLocker > Script Rules > right-click > Create Default Rules, then DELETE the default rule that allows BUILTIN\Administrators all scripts - your account is an administrator, and with that rule in place it is exempt and the test measures nothing; AppLocker > Configure rule enforcement > Script rules: Configured, Enforce rules. Then in an ELEVATED command prompt:   sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force   - then answer done. The driver checks that the rules really restrict this account before it runs anything.',
                            'secpol.msc > 應用程式控制原則 > AppLocker > 指令碼規則 > 右鍵 > 建立預設規則，然後「刪除」允許 BUILTIN\Administrators 執行所有指令碼的那條預設規則——你的帳號是管理員，留著它就被豁免、什麼都量不到；AppLocker > 設定規則強制執行 > 指令碼規則：已設定、強制執行規則。再在「以系統管理員身分執行」的命令提示字元執行：sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force，然後輸入 done。driver 執行前會確認規則真的限制了這個帳號。') + $recoverLines
@@ -888,7 +953,7 @@ function Invoke-Scenario($S) {
             $attempted = $true
             if (-not $rec.Attempted) { $rec.Attempted = $true; Save-State }
             if ($null -eq $S.Precondition) { break }
-            $pc = & $S.Precondition
+            $pc = & $S.Precondition $ctx
             if ($pc.Ok) { Add-Event ('{0}: precondition met - {1}' -f $id, $pc.Detail); break }
             Write-Line @(('Not yet: ' + $pc.Detail), ('還沒好：' + $pc.Detail)) 'Yellow'
             $skipReason = 'precondition not met: ' + $pc.Detail
@@ -923,7 +988,7 @@ function Complete-Cleanup($S, $rec, $ctx) {
     # only then does the action's outcome become the scenario's result. A quit, or a revert the answers file cannot
     # verify, leaves the scenario PENDING with the change named - the exit code counts it, and a resume asks again.
     $id = $S.Id
-    Write-Line $S.Cleanup.Instruction 'Cyan'
+    Write-Line @($(if ($S.Cleanup.Instruction -is [scriptblock]) { & $S.Cleanup.Instruction $ctx } else { $S.Cleanup.Instruction })) 'Cyan'   # M8's is built from the recorded state
     while ($true) {
         $gate = Read-Answer $id 'revert' @('When reverted, answer done; quit to stop the campaign here (the change stays in place until the campaign is resumed!).', '還原後輸入 done；要在這裡中止 campaign 輸入 quit（在 campaign 續跑之前，變更會留在機器上！）。') @('done', 'quit') 'done'
         if ($gate -eq 'quit') { $rec.Reverted = 'NOT REVERTED - quit'; Set-Result $id 'PENDING' ('ran ({0}) but NOT REVERTED - quit; resume to put the machine back' -f $rec.ActionResult) @($rec.Evidence) $rec.Seconds; Add-Event ('{0}: the campaign stopped with the change still in place' -f $id); return 'stop' }
@@ -1033,6 +1098,7 @@ function Write-CampaignSummary {
     $md += ('- Real windows: {0}; state: {1}' -f $(if ($State.SkipGui) { 'none (-SkipGui)' } else { 'yes' }), $StateDir)
     $ed = $State.Edition
     if ($null -ne $ed) { $md += ('- Edition: {0} (EditionID {1}, {2}, build {3}); gpedit.msc: {4}; secpol.msc: {5}' -f $ed.Caption, $ed.EditionId, $ed.DisplayVersion, $ed.Build, $(if ($ed.HasGpedit) { 'yes' } else { 'no' }), $(if ($ed.HasSecpol) { 'yes' } else { 'no' })) }
+    $md += ('- Work root (NHC-M2, NHC-M3): {0}' -f $State.WorkRoot)
     $md += ('- Recovery without PowerShell (a policy scenario interrupted before its revert): {0}' -f $RecoveryNotes)
     $md += ('- Bundle: {0}' -f $script:BundleLine)
     $md += ''

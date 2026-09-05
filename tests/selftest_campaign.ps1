@@ -335,9 +335,16 @@ Copy-Item -LiteralPath $zip -Destination $zipMarked -Force
 Set-Content -LiteralPath $zipMarked -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
 # The extraction the scenario asks for is made under a work root of the self-test's own, so that the precondition passes
 # and the real desktop is left alone (PR #14): the built package tree under NHC-M2, the launcher included.
+function Set-ExtractedLater([string]$Root) {
+    # An extraction made before the driver starts would be refused as stale (its launchers were created before the scenario
+    # started), so the self-test stamps the launchers as created a few minutes from now - the person extracts after the
+    # instruction, the self-test cannot.
+    foreach ($f in @(Get-ChildItem -LiteralPath $Root -Recurse -File | Where-Object { $_.Name -in @('Start-English.cmd', 'Start-Traditional-Chinese.cmd') })) { $f.CreationTime = (Get-Date).AddMinutes(5) }
+}
 $desk21 = Join-Path $WorkDir 'desk21'
 New-Item -ItemType Directory -Force -Path (Join-Path $desk21 'NHC-M2') | Out-Null
 Copy-Item -LiteralPath $top -Destination (Join-Path $desk21 'NHC-M2') -Recurse -Force
+Set-ExtractedLater (Join-Path $desk21 'NHC-M2')
 $r21 = Invoke-Campaign 'marked' @('-Zip', $zipMarked, '-Scenarios', 'M2', '-WorkRoot', $desk21) "M2=done`r`nM2/windows-showed=3`r`nM2/run-finished=done`r`n"
 $s21 = Read-State $r21.State
 Assert-True '21. M2 FAIL for the missing extraction and report, with the marks recorded' ($s21.Scenarios.M2.Result -eq 'FAIL' -and $s21.Scenarios.M2.Detail -like '*no en-US report*' -and $s21.Scenarios.M2.Detail -like '*download mark: ZoneId=3*') ($s21.Scenarios.M2.Result + ' / ' + $s21.Scenarios.M2.Detail)
@@ -516,6 +523,7 @@ Write-Output '30. M3 extracted under NHC-M3 as asked, but the launchers were run
 $desk30 = (New-Item -ItemType Directory -Force -Path (Join-Path $WorkDir 'desk30')).FullName
 New-Item -ItemType Directory -Force -Path (Join-Path $desk30 'NHC-M3') | Out-Null
 Copy-Item -LiteralPath $top -Destination (Join-Path $desk30 'NHC-M3') -Recurse -Force
+Set-ExtractedLater (Join-Path $desk30 'NHC-M3')
 $elsewhere30 = Join-Path $desk30 ('NetworkHealthCheck-' + $version + '\NetworkHealthCheck-' + $version + '\zh-TW\Reports')
 New-Item -ItemType Directory -Force -Path $elsewhere30 | Out-Null
 $report30 = Join-Path $elsewhere30 'NetworkHealthCheck_20260905_171350_DESKTOP-TEST.json'
@@ -559,6 +567,43 @@ $cmd32 = Join-Path $r32.State 'run-as-standard-user.cmd'
 Assert-True '32. A2 pending for the other session, the .cmd written and named' ($s32.Scenarios.A2.Result -eq 'PENDING' -and $s32.Scenarios.A2.Detail -like ('needs a standard-user session; run ' + $cmd32 + ' there*') -and (Test-Path -LiteralPath $cmd32)) ($s32.Scenarios.A2.Result + ' / ' + $s32.Scenarios.A2.Detail)
 $cmdText32 = $(if (Test-Path -LiteralPath $cmd32) { Get-Content -LiteralPath $cmd32 -Raw } else { '' })
 Assert-True '32. the .cmd holds the resume command of this campaign' (($cmdText32 -match '^@echo off') -and ($cmdText32 -match 'Invoke-AcceptanceCampaign\.ps1" -Campaign selftest-a2cmd -StateDir "') -and ($cmdText32 -match ' -Resume') -and ($cmdText32 -match '(?m)^pause')) $cmdText32
+
+# -------------------- 33. a stale or foreign extraction is refused; the work root is the campaign's --------------------
+Write-Output ''
+Write-Output '33. M3 with a tree extracted before the scenario started: SKIPPED as stale; the same tree stamped fresh but with an altered program file: SKIPPED as not this asset - on a resume without -WorkRoot, which keeps the root the campaign was given (Codex round 1 on PR #14)'
+$desk33 = (New-Item -ItemType Directory -Force -Path (Join-Path $WorkDir 'desk33')).FullName
+New-Item -ItemType Directory -Force -Path (Join-Path $desk33 'NHC-M3') | Out-Null
+Copy-Item -LiteralPath $top -Destination (Join-Path $desk33 'NHC-M3') -Recurse -Force
+$r33a = Invoke-Campaign 'stale' @('-Zip', $zip, '-Scenarios', 'M3', '-WorkRoot', $desk33) "M3=done`r`n"
+$s33a = Read-State $r33a.State
+Assert-True '33. a tree extracted before the scenario started is refused as stale' ($s33a.Scenarios.M3.Result -eq 'SKIPPED' -and $s33a.Scenarios.M3.Detail -like ('precondition not met: the package under ' + $desk33 + '\NHC-M3 was extracted before this scenario started (created *): remove ' + $desk33 + '\NHC-M3 and extract the downloaded ZIP again')) ($s33a.Scenarios.M3.Result + ' / ' + $s33a.Scenarios.M3.Detail)
+Set-ExtractedLater (Join-Path $desk33 'NHC-M3')
+Add-Content -LiteralPath (Join-Path $desk33 ('NHC-M3\NetworkHealthCheck-' + $version + '\en-US\NetworkHealthCheck.ps1')) -Value '# altered by the self-test'
+$r33b = Invoke-Campaign 'stale' @('-Resume', '-Redo', 'M3', '-Scenarios', 'M3') "M3=done`r`n"
+$s33b = Read-State $r33a.State
+Assert-True '33. a fresh tree whose program file differs is refused as not this asset, under the root the campaign was given' ($s33b.Scenarios.M3.Result -eq 'SKIPPED' -and $s33b.Scenarios.M3.Detail -like ('precondition not met: the package under ' + $desk33 + '\NHC-M3 is not this campaign''s asset (its en-US\NetworkHealthCheck.ps1 differs; tool version ' + $version + ', the asset is ' + $version + '): remove *')) ($s33b.Scenarios.M3.Result + ' / ' + $s33b.Scenarios.M3.Detail)
+$summary33 = Get-Content -LiteralPath (Join-Path $r33a.State 'campaign_summary.md') -Raw -Encoding UTF8
+Assert-True '33. the summary names the work root, and the state kept it' (($summary33 -match ('(?m)^- Work root \(NHC-M2, NHC-M3\): ' + [regex]::Escape($desk33) + '\r?$')) -and ([string]$s33b.WorkRoot -eq $desk33)) (($summary33 -split "`n" | Where-Object { $_ -like '- Work root*' }) -join ' / ')
+
+# -------------------- 34. M8 puts back what was there --------------------
+Write-Output ''
+Write-Output '34. M8 records the MachinePolicy and the two registry values before the change; on a crafted record that had RemoteSigned, the revert instruction re-creates the values and the verification compares with RemoteSigned, not Undefined (Codex round 1 on PR #14)'
+$r34 = Invoke-Campaign 'm8facts' @('-Zip', $zip, '-Scenarios', 'M8') "M8=skip`r`n"
+$s34 = Read-State $r34.State
+$f34 = $s34.Scenarios.M8.Facts
+Assert-True '34. the facts hold the state before M8' (([string]$f34.MachinePolicyBefore -ne '') -and ([string]$f34.RegExecutionPolicyBefore -ne '') -and ([string]$f34.RegEnableScriptsBefore -ne '') -and ([string]$f34.PolicyWay -in @('gpedit', 'registry'))) ('facts: ' + ($f34 | ConvertTo-Json -Compress))
+$recover34 = Get-Content -LiteralPath (Join-Path $r34.State 'RECOVER.txt') -Raw
+Assert-True '34. RECOVER.txt names the MachinePolicy that was there' ($recover34 -match ('MachinePolicy was ' + [regex]::Escape([string]$f34.MachinePolicyBefore) + ' before M8')) (($recover34 -split "`n" | Where-Object { $_ -like 'M8*' }) -join ' / ')
+$stateFile34 = Join-Path $r34.State 'campaign.json'
+$crafted34 = Get-Content -LiteralPath $stateFile34 -Raw -Encoding UTF8 | ConvertFrom-Json
+$crafted34.Scenarios.M8.Result = 'PENDING'; $crafted34.Scenarios.M8.Detail = 'ran (PASS) but NOT REVERTED - quit (crafted by the self-test)'; $crafted34.Scenarios.M8.ActionResult = 'PASS'; $crafted34.Scenarios.M8.ActionDetail = 'crafted'; $crafted34.Scenarios.M8.Attempted = $true
+$crafted34.Scenarios.M8.Facts.MachinePolicyBefore = 'RemoteSigned'; $crafted34.Scenarios.M8.Facts.RegExecutionPolicyBefore = 'RemoteSigned'; $crafted34.Scenarios.M8.Facts.RegEnableScriptsBefore = '1'
+[IO.File]::WriteAllText($stateFile34, ($crafted34 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+$r34b = Invoke-Campaign 'm8facts' @('-Resume', '-Scenarios', 'M8') "M8/revert=done`r`n"
+$out34b = $r34b.Output -join "`n"
+Assert-True '34. the revert instruction re-creates the values as they were' (($out34b -match 'Put it back as it was \(MachinePolicy was RemoteSigned before M8\)') -and ($out34b -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_SZ /d RemoteSigned /f') -and ($out34b -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v EnableScripts /t REG_DWORD /d 1 /f')) (($r34b.Output | Where-Object { $_ -match 'Put it back|reg add' }) -join ' / ')
+$s34b = Read-State $r34.State
+Assert-True '34. the verification compares with what was there, not with Undefined' ($s34b.Scenarios.M8.Result -eq 'PENDING' -and $s34b.Scenarios.M8.Reverted -like 'NOT VERIFIED - MachinePolicy is *; it was RemoteSigned before M8' -and $r34b.ExitCode -eq 1) ($s34b.Scenarios.M8.Result + ' / ' + $s34b.Scenarios.M8.Reverted + ' / exit ' + $r34b.ExitCode)
 
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
