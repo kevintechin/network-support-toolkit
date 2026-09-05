@@ -2,6 +2,8 @@
 
 One copy per machine and scenario. `Invoke-PackageAcceptance.ps1` fills the automated part and puts this file into its bundle; the rest is what only a person at the desktop can see. An observation without an evidence file (a report, a screenshot, the probe) does not count. Bring the bundle ZIP(s), this file and the screenshots back to the record (`healthcheck/VALIDATION.md`).
 
+**Guided:** `Invoke-AcceptanceCampaign.ps1` (backlog #24) walks this list — it prompts for each change or click below, verifies the machine before running, collects the evidence and writes `campaign_summary.md`; this file stays the specification of what each scenario expects. Its scenario ids are the ones below: A1, M4, M1, M2, M3, A3, A4, M7, M8, M9, A2. Not driven: A5 (run the campaign again under another name after changing the NIC type), A6 (`-SkipGui`), M5 and M6 (the runner's console cases cover them in A1: both console launchers, and the unreachable-target cases in both languages), M10 (read the `adapter` rows and the probe in A1's bundle), M11 (optional hardware).
+
 ## The machine
 
 | | |
