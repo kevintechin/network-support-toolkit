@@ -214,6 +214,25 @@ $s13b = Read-State $r13b.State
 Assert-True '13b. dnoe is refused: PENDING with the answer named, nothing run' ($s13b.Scenarios.A4.Result -eq 'PENDING' -and $s13b.Scenarios.A4.Detail -like "unrecognized answer 'dnoe'*") ($s13b.Scenarios.A4.Result + ' / ' + $s13b.Scenarios.A4.Detail)
 Assert-True '13b. exit code 1' ($r13b.ExitCode -eq 1) ('exit code ' + $r13b.ExitCode)
 
+# -------------------- 14. an unconfirmed revert stops the campaign --------------------
+Write-Output ''
+Write-Output '14. A4 awaiting its revert (a crafted state) with an invalid revert answer, A4 and M7 selected: A4 PENDING, M7 not reached, exit 2'
+$stateFile14 = Join-Path $r3.State 'campaign.json'
+$crafted14 = Get-Content -LiteralPath $stateFile14 -Raw -Encoding UTF8 | ConvertFrom-Json
+$crafted14.Scenarios.A4.Result = 'PENDING'
+$crafted14.Scenarios.A4.Detail = 'ran (PASS); the change is still to be reverted (crafted by the self-test)'
+$crafted14.Scenarios.A4.ActionResult = 'PASS'
+$crafted14.Scenarios.A4.ActionDetail = 'exit code 0 (crafted)'
+$crafted14.Scenarios.A4.Reverted = ''
+$crafted14.Scenarios.M7.Result = ''
+$crafted14.Scenarios.M7.Detail = ''
+[IO.File]::WriteAllText($stateFile14, ($crafted14 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+$r14 = Invoke-Campaign 'quit' @('-Resume', '-Scenarios', 'A4,M7', '-SkipGui') "A4/revert=dnoe`r`nM7=done`r`n"
+$s14 = Read-State $r14.State
+Assert-True '14. A4 stays PENDING with the unrecognized revert answer named' ($s14.Scenarios.A4.Result -eq 'PENDING' -and $s14.Scenarios.A4.Detail -like "*unrecognized answer 'dnoe'*") ($s14.Scenarios.A4.Result + ' / ' + $s14.Scenarios.A4.Detail)
+Assert-True '14. M7 was not reached: the campaign stopped at the unconfirmed revert' ($s14.Scenarios.M7.Result -eq 'PENDING' -and $s14.Scenarios.M7.Detail -like 'not reached*') ($s14.Scenarios.M7.Result + ' / ' + $s14.Scenarios.M7.Detail)
+Assert-True '14. exit code 2' ($r14.ExitCode -eq 2) ('exit code ' + $r14.ExitCode)
+
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
     Write-Output ''

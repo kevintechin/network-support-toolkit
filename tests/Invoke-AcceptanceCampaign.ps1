@@ -715,7 +715,9 @@ function Complete-Cleanup($S, $rec, $ctx) {
     while ($true) {
         $gate = Read-Answer $id 'revert' @('When reverted, answer done; quit to stop the campaign here (the change stays in place until the campaign is resumed!).', '還原後輸入 done；要在這裡中止 campaign 輸入 quit（在 campaign 續跑之前，變更會留在機器上！）。') @('done', 'quit') 'done'
         if ($gate -eq 'quit') { $rec.Reverted = 'NOT REVERTED - quit'; Set-Result $id 'PENDING' ('ran ({0}) but NOT REVERTED - quit; resume to put the machine back' -f $rec.ActionResult) @($rec.Evidence) $rec.Seconds; Add-Event ('{0}: the campaign stopped with the change still in place' -f $id); return 'stop' }
-        if ($gate -ne 'done') { $rec.Reverted = 'NOT VERIFIED - unrecognized answer'; Set-Result $id 'PENDING' ("ran ({0}) but the revert was not confirmed: unrecognized answer '{1}' (done / quit); resume to put the machine back" -f $rec.ActionResult, $gate) @($rec.Evidence) $rec.Seconds; return 'next' }
+        # Anything short of a verified revert stops the campaign here, like a quit: the next scenario must not run on a
+        # machine that may still be changed (PR #11 round 8).
+        if ($gate -ne 'done') { $rec.Reverted = 'NOT VERIFIED - unrecognized answer'; Set-Result $id 'PENDING' ("ran ({0}) but the revert was not confirmed: unrecognized answer '{1}' (done / quit); resume to put the machine back" -f $rec.ActionResult, $gate) @($rec.Evidence) $rec.Seconds; Add-Event ('{0}: the campaign stopped with the revert unconfirmed' -f $id); return 'stop' }
         $v = & $S.Cleanup.Verify $ctx
         if ($v.Ok) {
             $rec.Reverted = 'yes - ' + $v.Detail
@@ -724,7 +726,7 @@ function Complete-Cleanup($S, $rec, $ctx) {
             return 'next'
         }
         Write-Line @(('Still in place: ' + $v.Detail), ('還沒還原：' + $v.Detail)) 'Yellow'
-        if ($null -ne $AnswersTable) { $rec.Reverted = 'NOT VERIFIED - ' + $v.Detail; Set-Result $id 'PENDING' ('ran ({0}) but NOT REVERTED - {1}; resume to put the machine back' -f $rec.ActionResult, $v.Detail) @($rec.Evidence) $rec.Seconds; return 'next' }
+        if ($null -ne $AnswersTable) { $rec.Reverted = 'NOT VERIFIED - ' + $v.Detail; Set-Result $id 'PENDING' ('ran ({0}) but NOT REVERTED - {1}; resume to put the machine back' -f $rec.ActionResult, $v.Detail) @($rec.Evidence) $rec.Seconds; Add-Event ('{0}: the campaign stopped with the change still in place' -f $id); return 'stop' }
     }
 }
 
