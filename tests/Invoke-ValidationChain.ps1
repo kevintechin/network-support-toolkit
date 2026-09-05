@@ -29,6 +29,9 @@
     network problem the warning is the tool doing its job, so it is off by default.
 .PARAMETER WorkDir
     Where staged copies, reports and logs go. Created if missing.
+.PARAMETER PackageDir
+    The package to run against - a folder holding en-US\ and zh-TW\. Default: the checkout's healthcheck\. An extracted
+    release asset works too; Invoke-PackageAcceptance.ps1 passes one (backlog #19).
 .PARAMETER Python
     The Python 3 command for the release validator and the asset builder.
 .PARAMETER GuiTimeoutSeconds
@@ -48,6 +51,7 @@ param(
     [switch]$SkipGui,
     [switch]$RequireHealthy,
     [string]$WorkDir,
+    [string]$PackageDir,
     [string]$Python = 'python',
     [int]$GuiTimeoutSeconds = 360
 )
@@ -55,7 +59,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $Order = @('parse', 'validator', 'guards', 'unit', 'report', 'envguard', 'gui-headless', 'gui', 'acceptance', 'resultset', 'package')
 $Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-$PackageDir = Join-Path $Root 'healthcheck'
+if (-not $PackageDir) { $PackageDir = Join-Path $Root 'healthcheck' }
+$PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $Languages = @('en-US', 'zh-TW')
 $PsExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $CmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
@@ -476,11 +481,21 @@ try { [Console]::OutputEncoding = $Utf8NoBom } catch { }
 $env:PYTHONUTF8 = '1'; $env:PYTHONIOENCODING = 'utf-8'
 try {
     $ToolVersion = Read-ToolVersion
-    $gitHead = [string]@((Invoke-Native 'git' @('-C', $Root, 'rev-parse', '--short', 'HEAD') 'env_git').Output)[0]
-    $dirty = @((Invoke-Native 'git' @('-C', $Root, 'status', '--porcelain', '--', 'healthcheck') 'env_git_status').Output | Where-Object { $_ })
-    $pythonVersion = [string]@((Invoke-Native $Python @('--version') 'env_python').Output)[0]
+    # A clean machine has neither git nor Python (backlog #19): the header says so instead of failing. Only the
+    # validator, guards and package steps need them, and those run on every commit on GitHub Actions.
+    $gitHead = 'no git'; $dirty = @(); $pythonVersion = 'no python'
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        $g = Invoke-Native 'git' @('-C', $Root, 'rev-parse', '--short', 'HEAD') 'env_git'
+        if ($g.ExitCode -eq 0) {
+            $gitHead = [string]@($g.Output)[0]
+            $dirty = @((Invoke-Native 'git' @('-C', $Root, 'status', '--porcelain', '--', 'healthcheck') 'env_git_status').Output | Where-Object { $_ })
+        }
+        else { $gitHead = 'not a git checkout' }
+    }
+    if (Get-Command $Python -ErrorAction SilentlyContinue) { $pythonVersion = [string]@((Invoke-Native $Python @('--version') 'env_python').Output)[0] }
     Write-Host ('NetworkHealthCheck {0} validation chain - {1}' -f $ToolVersion, (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
     Write-Host ('  checkout {0} at {1}{2}' -f $Root, $gitHead, $(if ($dirty.Count) { ' (healthcheck/ has uncommitted changes)' } else { '' }))
+    Write-Host ('  package {0}' -f $PackageDir)
     Write-Host ('  {0}; Windows PowerShell {1}; {2}' -f [Environment]::OSVersion.VersionString, $PSVersionTable.PSVersion, $pythonVersion)
     Write-Host ('  steps: {0}; work dir: {1}' -f ($selected -join ', '), $WorkDir)
 
@@ -561,15 +576,21 @@ try {
     if ($selected -contains 'acceptance') {
         # The two user runs go through the shipped console launcher (its trailing `pause` reads from NUL); the IT-switches
         # run calls the script directly because the launcher takes no arguments.
+        $unreachableArgs = @('-ConsoleOnly', '-PingCount', '2', '-SampleSeconds', '2', '-TracerouteHops', '2', '-ExpandDetails', '-PingTarget', 'nhc-no-such-host.invalid', '-TcpTarget', '192.0.2.1:9', '-HttpUrl', 'https://nhc-no-such-host.invalid/')
+        $unreachableExpect = @{ EntryPoint = 'IT'; ExpandDetails = $true; PingCount = 2; SampleSeconds = 2; TracerouteHops = 2; ExtraPing = 'nhc-no-such-host.invalid'; ExtraTcp = '192.0.2.1:9'; ExtraHttp = 'https://nhc-no-such-host.invalid/'; AllowUnhealthy = $true; RequireErrorCause = $true }
         $acceptance = @(
             @{ Lang = 'en-US'; Case = 'en-US user (Start-NetworkCheck-Console.cmd)'; Launcher = 'Start-NetworkCheck-Console.cmd'; Expect = @{ EntryPoint = 'User'; ExpandDetails = $false } },
             @{ Lang = 'en-US'; Case = 'en-US IT switches (direct)'; Args = @('-ConsoleOnly', '-PingCount', '6', '-SampleSeconds', '6', '-PingTarget', '8.8.8.8', '-TcpTarget', '1.1.1.1:53', '-TracerouteHops', '4', '-ExpandDetails'); Expect = @{ EntryPoint = 'IT'; ExpandDetails = $true; PingCount = 6; SampleSeconds = 6; TracerouteHops = 4; ExtraPing = '8.8.8.8'; ExtraTcp = '1.1.1.1:53' } },
             @{ Lang = 'zh-TW'; Case = 'zh-TW user (Start-NetworkCheck-Console.cmd)'; Launcher = 'Start-NetworkCheck-Console.cmd'; Expect = @{ EntryPoint = 'User'; ExpandDetails = $false } },
             # Unreachable on purpose (RFC 2606 .invalid, RFC 5737 TEST-NET-1), so the ping, TCP and HTTP failure paths -
             # and with them the error-code classification of backlog #14 - are executed on every run of the chain: a
-            # healthy machine never reaches them otherwise. The verdict is expected to be unhealthy, so -RequireHealthy
-            # skips this one case; everything else about it is asserted as usual.
-            @{ Lang = 'en-US'; Case = 'en-US unreachable targets (direct)'; Args = @('-ConsoleOnly', '-PingCount', '2', '-SampleSeconds', '2', '-TracerouteHops', '2', '-ExpandDetails', '-PingTarget', 'nhc-no-such-host.invalid', '-TcpTarget', '192.0.2.1:9', '-HttpUrl', 'https://nhc-no-such-host.invalid/'); Expect = @{ EntryPoint = 'IT'; ExpandDetails = $true; PingCount = 2; SampleSeconds = 2; TracerouteHops = 2; ExtraPing = 'nhc-no-such-host.invalid'; ExtraTcp = '192.0.2.1:9'; ExtraHttp = 'https://nhc-no-such-host.invalid/'; AllowUnhealthy = $true; RequireErrorCause = $true } }
+            # healthy machine never reaches them otherwise. In both languages, because the cause line exists for the
+            # case where the operating system's message is in the other language (backlog #19: an en-US report on a
+            # zh-TW system, a zh-TW report on an en-US one), and one of the two happens wherever the chain runs. The
+            # verdict is expected to be unhealthy, so -RequireHealthy skips these two cases; everything else about them
+            # is asserted as usual.
+            @{ Lang = 'en-US'; Case = 'en-US unreachable targets (direct)'; Args = $unreachableArgs; Expect = $unreachableExpect },
+            @{ Lang = 'zh-TW'; Case = 'zh-TW unreachable targets (direct)'; Args = $unreachableArgs; Expect = $unreachableExpect }
         )
         foreach ($a in $acceptance) {
             Invoke-Case 'acceptance' $a.Case {
