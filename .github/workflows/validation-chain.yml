@@ -51,7 +51,7 @@ jobs:
       # runner's pwsh). The chain writes nothing into the checkout; its exit code is the number of failed cases.
       - name: Run the chain
         shell: cmd
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-ValidationChain.ps1 -Steps parse,validator,guards,unit,report,envguard,gui-headless -Package -SkipGui -WorkDir "%RUNNER_TEMP%\nhc-tests"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-ValidationChain.ps1 -Steps parse,validator,guards,unit,report,envguard,campaign,gui-headless -Package -SkipGui -WorkDir "%RUNNER_TEMP%\nhc-tests"
 
       # The table the chain prints, on the run's page.
       - name: Summary table
@@ -60,7 +60,7 @@ jobs:
         run: |
           $summary = Join-Path $env:RUNNER_TEMP 'nhc-tests\summary.md'
           if (Test-Path -LiteralPath $summary) {
-            $text = "## Validation chain (parse, validator, guards, unit, report, envguard, gui-headless, package; -SkipGui)`n`n" + [IO.File]::ReadAllText($summary, [Text.Encoding]::UTF8) + "`n"
+            $text = "## Validation chain (parse, validator, guards, unit, report, envguard, campaign, gui-headless, package; -SkipGui)`n`n" + [IO.File]::ReadAllText($summary, [Text.Encoding]::UTF8) + "`n"
             [IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY, $text, (New-Object Text.UTF8Encoding($false)))
           }
 

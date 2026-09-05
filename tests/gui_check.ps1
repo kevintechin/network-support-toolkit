@@ -3,8 +3,11 @@ param(
     [ValidateSet("User", "IT")][string]$Entry = "IT",
     [ValidateSet("Launcher", "Direct")][string]$Via = "Launcher",
     [string]$LauncherPath,
-    [int]$TimeoutSeconds = 300
+    [int]$TimeoutSeconds = 300,
+    [string]$Screenshot
 )
+# -Screenshot <file.png>: a capture of the primary screen taken once the window is up (before Start is clicked on the
+#                         IT entry), for the layout observations of the acceptance campaign (backlog #24).
 # End-to-end check through the real WinForms window (UI Automation), the way a person would use the package:
 #   -Via Launcher (default): the double-click path - cmd.exe runs the shipped Start-NetworkCheck.cmd (User) or
 #                            Start-NetworkCheck-IT.cmd (IT) from the package folder, or the launcher given as
@@ -55,6 +58,19 @@ function Find-ByName($Window, [string]$Name) {
 }
 function Send-Click($Element) {
     [void][Win32Msg]::PostMessage([IntPtr]$Element.Current.NativeWindowHandle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
+}
+function Save-Screenshot([string]$Path) {
+    # The primary screen as a PNG - the whole screen, so the window is seen with the taskbar and the space around it.
+    Add-Type -AssemblyName System.Drawing
+    Add-Type -AssemblyName System.Windows.Forms
+    $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $bitmap = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+        $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+    }
+    finally { $graphics.Dispose(); $bitmap.Dispose() }
 }
 function Get-ChildProcesses([int]$ParentId) {
     # Win32_Process through CIM when it exists and WMI otherwise - the same selection the script makes for its own
@@ -115,6 +131,7 @@ try {
     if ($null -eq $win) { throw "main window not found within 60 s" }
     "$tag window: '$($win.Current.Name)' " + [int]$win.Current.BoundingRectangle.Width + "x" + [int]$win.Current.BoundingRectangle.Height
     Start-Sleep -Seconds 2
+    if ($Screenshot) { Save-Screenshot $Screenshot; "$tag screenshot: $Screenshot" }
     $startButton = Find-ByName $win $startNames[$lang]
     if ($null -eq $startButton) { throw "Start button not found" }
 

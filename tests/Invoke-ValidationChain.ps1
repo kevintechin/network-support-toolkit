@@ -46,7 +46,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string[]]$Steps = @('parse', 'validator', 'guards', 'unit', 'report', 'envguard', 'gui-headless', 'gui', 'acceptance', 'resultset'),
+    [string[]]$Steps = @('parse', 'validator', 'guards', 'unit', 'report', 'envguard', 'campaign', 'gui-headless', 'gui', 'acceptance', 'resultset'),
     [switch]$Package,
     [switch]$SkipGui,
     [switch]$RequireHealthy,
@@ -57,7 +57,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Order = @('parse', 'validator', 'guards', 'unit', 'report', 'envguard', 'gui-headless', 'gui', 'acceptance', 'resultset', 'package')
+$Order = @('parse', 'validator', 'guards', 'unit', 'report', 'envguard', 'campaign', 'gui-headless', 'gui', 'acceptance', 'resultset', 'package')
 $Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 if (-not $PackageDir) { $PackageDir = Join-Path $Root 'healthcheck' }
 $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
@@ -548,6 +548,17 @@ try {
                 $s = Get-SummaryLine $r.Output
                 @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
             }
+        }
+    }
+    if ($selected -contains 'campaign') {
+        # The acceptance campaign driver's state machine (backlog #24), replayed from answers on an asset built from
+        # this checkout: skips with reasons, resume, quit, an unknown scenario, a failing scenario.
+        Invoke-Case 'campaign' 'selftest_campaign.ps1' {
+            $dir = Join-Path $WorkDir 'campaign'
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            $r = Invoke-TestScript 'selftest_campaign.ps1' @('-WorkDir', $dir) 'campaign'
+            $s = Get-SummaryLine $r.Output
+            @{ Passed = (($r.ExitCode -eq 0) -and ($r.Output -contains 'ALL SELF-TESTS OK')); Detail = $s }
         }
     }
     if ($selected -contains 'gui-headless') {

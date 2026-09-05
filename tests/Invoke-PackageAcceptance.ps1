@@ -33,6 +33,9 @@
     Where the extraction, staged copies, reports and logs go. Default: %TEMP%\nhc-acceptance\<timestamp>.
 .PARAMETER BundleDir
     Where the bundle ZIP goes. Default: the folder of -Zip, or the parent of the work dir with -PackageDir.
+.PARAMETER ChainSteps
+    The chain steps to run, from parse, unit, report, envguard, gui-headless, gui, acceptance, resultset (all by
+    default). The acceptance campaign runs acceptance,resultset only for a scenario that changes the network.
 .PARAMETER SkipGui
     No real windows (a session without an interactive desktop): drops the gui step and the root launchers.
 .PARAMETER RequireHealthy
@@ -54,6 +57,7 @@ param(
     [string]$Label = 'acceptance',
     [string]$WorkDir,
     [string]$BundleDir,
+    [string]$ChainSteps = 'parse,unit,report,envguard,gui-headless,gui,acceptance,resultset',
     [switch]$SkipGui,
     [switch]$RequireHealthy,
     [int]$GuiTimeoutSeconds = 360
@@ -64,11 +68,22 @@ $PsExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.e
 $Tests = $PSScriptRoot
 $Label = ($Label -replace '[^\w.-]', '_')
 $Stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-$Steps = 'parse,unit,report,envguard,gui-headless,gui,acceptance,resultset'
+# The chain steps that need neither Python nor git, with the number of cases each one has.
+$ChainCases = [ordered]@{ 'parse' = 2; 'unit' = 2; 'report' = 2; 'envguard' = 2; 'gui-headless' = 4; 'gui' = 4; 'acceptance' = 5; 'resultset' = 1 }
+$SelectedSteps = @($ChainSteps -split ',' | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
+$unknownSteps = @($SelectedSteps | Where-Object { -not $ChainCases.Contains($_) })
+if ($unknownSteps.Count) { throw ('unknown chain step(s): ' + ($unknownSteps -join ', ') + '; known: ' + (@($ChainCases.Keys) -join ', ')) }
+$SelectedSteps = @($ChainCases.Keys | Where-Object { $SelectedSteps -contains $_ })
+if (-not $SelectedSteps.Count) { throw 'no chain step selected' }
+$Steps = $SelectedSteps -join ','
 if (-not $Zip -and -not $PackageDir) { throw 'give -Zip (the downloaded release asset) or -PackageDir (an extracted package)' }
 if (-not $WorkDir) { $WorkDir = Join-Path $env:TEMP ('nhc-acceptance\' + $Stamp) }
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 $WorkDir = (Resolve-Path -LiteralPath $WorkDir).Path
+# Windows PowerShell stops at 260 characters of path; the deepest file this run writes sits about 110 characters below
+# the work dir (chain\stage\gui-IT\zh-TW\Reports\NetworkHealthCheck_<time>_<computer>.json), so a long work dir is
+# said so up front rather than discovered when the bundle fails.
+if ($WorkDir.Length -gt 120) { Write-Host ('WARNING: the work dir is {0} characters long; paths under it may exceed the 260-character limit of Windows PowerShell - use a shorter -WorkDir if the run fails on a path' -f $WorkDir.Length) -ForegroundColor Yellow }
 # A reused -WorkDir may hold an earlier invocation's chain output - its summary, its logs, its reports. It goes first,
 # before anything else can complete early and bundle it as this run's (PR #10 rounds 2 to 4): a run that stops at the
 # asset digest or at the extraction must leave a bundle with nothing but its own files in it.
@@ -171,9 +186,11 @@ function Complete-Run {
             $chainBundle = Join-Path $bundle 'chain'
             New-Item -ItemType Directory -Force -Path $chainBundle | Out-Null
             Get-ChildItem -LiteralPath $chainDir -File | Where-Object { $_.Name -eq 'summary.md' -or $_.Extension -eq '.log' } | Copy-Item -Destination $chainBundle
-            # Every report the chain's runs wrote, with its stage path, and the environment reports of the envguard step.
+            # Every report the chain's runs wrote, named by the staged copy that wrote it (stage\console\en-US\Reports\x
+            # becomes console\en-US\x - shorter, because Windows PowerShell stops at 260 characters of path and a deep
+            # work dir eats most of them), and the environment reports of the envguard step.
             Get-ChildItem -LiteralPath $chainDir -Recurse -File | Where-Object { $_.FullName -match '\\Reports\\' -or $_.Name -like 'NetworkHealthCheck_ENVIRONMENT_*.txt' } | ForEach-Object {
-                $target = Join-Path $chainBundle ($_.FullName.Substring($chainDir.Length).TrimStart('\'))
+                $target = Join-Path $chainBundle (($_.FullName.Substring($chainDir.Length).TrimStart('\')) -replace '^stage\\', '' -replace '\\Reports\\', '\')
                 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
                 Copy-Item -LiteralPath $_.FullName -Destination $target
             }
@@ -316,8 +333,9 @@ Write-Host ('--- chain exit code {0} ---' -f $chainExit)
 
 # The chain's own table becomes part of this one; whatever it did not reach is listed as NOT RUN, per step, from the
 # number of cases each step has.
-$expected = [ordered]@{ 'parse' = 2; 'unit' = 2; 'report' = 2; 'envguard' = 2; 'gui-headless' = 4; 'gui' = 4; 'acceptance' = 5; 'resultset' = 1 }
-if ($SkipGui) { $expected['gui'] = 0; Add-Skipped 'chain/gui' '4 real-window cases' '-SkipGui' }
+$expected = [ordered]@{}
+foreach ($step in $SelectedSteps) { $expected[$step] = $ChainCases[$step] }
+if ($SkipGui -and $expected.Contains('gui')) { $expected['gui'] = 0; Add-Skipped 'chain/gui' '4 real-window cases' '-SkipGui' }
 $seen = @{}
 $summaryFresh = (Test-Path -LiteralPath $summary) -and ((Get-Item -LiteralPath $summary).LastWriteTime -ge $chainLaunched)
 if ($summaryFresh) {
