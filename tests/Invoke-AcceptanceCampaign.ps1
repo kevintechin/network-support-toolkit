@@ -369,7 +369,7 @@ function Get-ExtractedLauncher([string]$Root, [string]$Name) {
 }
 function Test-ExtractedPackage([string]$Root, [string[]]$Launchers, [datetime]$After) {
     # The extraction the person was asked for, and nothing else: every launcher below the folder; created after this
-    # scenario started - a tree left by an earlier campaign is refused, its launchers would run another package and,
+    # scenario started (the folder given was written after it) - a tree left by an earlier campaign is refused, its launchers would run another package and,
     # for M2, carry another download's marks; and the package's own program file byte for byte, so that the evidence
     # is of this campaign's asset and no other release (Codex round 1 on PR #14).
     $found = @{}
@@ -377,7 +377,11 @@ function Test-ExtractedPackage([string]$Root, [string[]]$Launchers, [datetime]$A
     $missing = @($Launchers | Where-Object { $null -eq $found[$_] })
     if ($missing.Count) { return @{ Ok = $false; Detail = ('nothing extracted under ' + $Root + ' (no ' + ($missing -join ' / ') + ' below it) - the Extract All dialog proposes another folder; replace the destination with ' + $Root) } }
     $first = $found[$Launchers[0]]
-    if ($first.CreationTime -le $After) { return @{ Ok = $false; Detail = ('the package under ' + $Root + ' was extracted before this scenario started (created ' + $first.CreationTime.ToString('yyyy-MM-dd HH:mm:ss') + '): remove ' + $Root + ' and extract the downloaded ZIP again') } }
+    # Freshness is read off the folder given, not off the files: Windows 11's Extract All gives the extracted files the
+    # archive's own timestamps, creation time included (the VM: created 2026-09-04 16:44:00 for a tree extracted on the
+    # 5th), while the destination folder - not an archive entry - is written when the extraction puts the package into it.
+    $rootItem = Get-Item -LiteralPath $Root
+    if ($rootItem.LastWriteTime -le $After) { return @{ Ok = $false; Detail = ('the package under ' + $Root + ' was extracted before this scenario started (the folder last changed ' + $rootItem.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss') + '): remove ' + $Root + ' and extract the downloaded ZIP again') } }
     $script = Join-Path $first.DirectoryName 'en-US\NetworkHealthCheck.ps1'
     if (-not (Test-Path -LiteralPath $script)) { return @{ Ok = $false; Detail = ('the extraction under ' + $Root + ' has no en-US\NetworkHealthCheck.ps1 beside its launcher: not the complete package; remove ' + $Root + ' and extract the downloaded ZIP again') } }
     $reference = Join-Path $State.PackageRoot 'en-US\NetworkHealthCheck.ps1'
@@ -386,7 +390,7 @@ function Test-ExtractedPackage([string]$Root, [string[]]$Launchers, [datetime]$A
         foreach ($line in [IO.File]::ReadLines($script)) { if ($line -match '^\$script:ToolVersion\s*=\s*"([^"]+)"') { $v = $Matches[1]; break } }
         return @{ Ok = $false; Detail = ('the package under ' + $Root + ' is not this campaign''s asset (its en-US\NetworkHealthCheck.ps1 differs; tool version ' + $v + ', the asset is ' + $State.ToolVersion + '): remove ' + $Root + ' and extract the downloaded ZIP') }
     }
-    return @{ Ok = $true; Detail = ('extracted under ' + $first.DirectoryName + ' - this campaign''s asset, created ' + $first.CreationTime.ToString('HH:mm:ss')); Root = $first.DirectoryName }
+    return @{ Ok = $true; Detail = ('extracted under ' + $first.DirectoryName + ' - this campaign''s asset; the folder written ' + $rootItem.LastWriteTime.ToString('HH:mm:ss')); Root = $first.DirectoryName }
 }
 function Get-ReportsElsewhere([string]$Except, [string]$Lang, [datetime]$After) {
     # Reports the run left somewhere other than the instructed folder: the person extracted elsewhere - the Extract All

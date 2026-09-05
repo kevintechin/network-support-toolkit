@@ -336,10 +336,11 @@ Set-Content -LiteralPath $zipMarked -Stream Zone.Identifier -Value "[ZoneTransfe
 # The extraction the scenario asks for is made under a work root of the self-test's own, so that the precondition passes
 # and the real desktop is left alone (PR #14): the built package tree under NHC-M2, the launcher included.
 function Set-ExtractedLater([string]$Root) {
-    # An extraction made before the driver starts would be refused as stale (its launchers were created before the scenario
-    # started), so the self-test stamps the launchers as created a few minutes from now - the person extracts after the
-    # instruction, the self-test cannot.
-    foreach ($f in @(Get-ChildItem -LiteralPath $Root -Recurse -File | Where-Object { $_.Name -in @('Start-English.cmd', 'Start-Traditional-Chinese.cmd') })) { $f.CreationTime = (Get-Date).AddMinutes(5) }
+    # An extraction made before the driver starts would be refused as stale (the folder was written before the scenario
+    # started), so the self-test stamps the folder as written a few minutes from now - the person extracts after the
+    # instruction, the self-test cannot. The folder, not the files: Windows 11's extraction gives the files the archive's
+    # timestamps, which is why the driver reads the folder.
+    (Get-Item -LiteralPath $Root).LastWriteTime = (Get-Date).AddMinutes(5)
 }
 $desk21 = Join-Path $WorkDir 'desk21'
 New-Item -ItemType Directory -Force -Path (Join-Path $desk21 'NHC-M2') | Out-Null
@@ -576,7 +577,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $desk33 'NHC-M3') | Out-Nul
 Copy-Item -LiteralPath $top -Destination (Join-Path $desk33 'NHC-M3') -Recurse -Force
 $r33a = Invoke-Campaign 'stale' @('-Zip', $zip, '-Scenarios', 'M3', '-WorkRoot', $desk33) "M3=done`r`n"
 $s33a = Read-State $r33a.State
-Assert-True '33. a tree extracted before the scenario started is refused as stale' ($s33a.Scenarios.M3.Result -eq 'SKIPPED' -and $s33a.Scenarios.M3.Detail -like ('precondition not met: the package under ' + $desk33 + '\NHC-M3 was extracted before this scenario started (created *): remove ' + $desk33 + '\NHC-M3 and extract the downloaded ZIP again')) ($s33a.Scenarios.M3.Result + ' / ' + $s33a.Scenarios.M3.Detail)
+Assert-True '33. a tree extracted before the scenario started is refused as stale' ($s33a.Scenarios.M3.Result -eq 'SKIPPED' -and $s33a.Scenarios.M3.Detail -like ('precondition not met: the package under ' + $desk33 + '\NHC-M3 was extracted before this scenario started (the folder last changed *): remove ' + $desk33 + '\NHC-M3 and extract the downloaded ZIP again')) ($s33a.Scenarios.M3.Result + ' / ' + $s33a.Scenarios.M3.Detail)
 Set-ExtractedLater (Join-Path $desk33 'NHC-M3')
 Add-Content -LiteralPath (Join-Path $desk33 ('NHC-M3\NetworkHealthCheck-' + $version + '\en-US\NetworkHealthCheck.ps1')) -Value '# altered by the self-test'
 $r33b = Invoke-Campaign 'stale' @('-Resume', '-Redo', 'M3', '-Scenarios', 'M3') "M3=done`r`n"
