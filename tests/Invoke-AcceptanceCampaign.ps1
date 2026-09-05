@@ -44,6 +44,9 @@
     cleared, the earlier evidence moved to superseded\<id>_<time> in the state folder (bundled), and the summary names
     what was superseded. A scenario pending with a change possibly still on the machine is refused - resume without
     -Redo first, so that its revert is verified.
+.PARAMETER WorkRoot
+    The folder under which the extraction scenarios ask for their folders (NHC-M2, NHC-M3). Default: the Desktop. A local
+    folder outside OneDrive keeps the sync client out of the extraction; the self-test uses it to leave the desktop alone.
 .PARAMETER SkipGui
     No real windows anywhere in the campaign (a session without an interactive desktop).
 .PARAMETER GuiTimeoutSeconds
@@ -66,6 +69,7 @@ param(
     [string]$Answers,
     [string[]]$Scenarios,
     [string[]]$Redo,
+    [string]$WorkRoot,
     [switch]$SkipGui,
     [int]$GuiTimeoutSeconds = 360
 )
@@ -277,10 +281,12 @@ function Get-NewestJson([string]$Dir, [datetime]$After) {
 }
 function Get-ArchiveViewFolders {
     # The temporary folders Explorer extracts into when a file is double-clicked inside a ZIP: %TEMP%\Temp1_<name>.zip\
-    # on Windows 10, %TEMP%\<guid>_<name>.zip.<n>\ on Windows 11 (the first campaign, 2026-09-05:
-    # 388e11bd-2056-4e77-a266-27df0c2ad684_NetworkHealthCheck-1.2.2.zip.684). Only the file clicked is extracted there,
-    # so the launcher finds no NetworkHealthCheck.ps1 beside itself and stops with its own message.
-    @(Get-ChildItem -LiteralPath $env:TEMP -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^Temp\d*_.*\.zip$' -or $_.Name -match '^[0-9a-fA-F-]{36}_.*\.zip\.\d+$' })
+    # on Windows 10, %TEMP%\<guid>_<name>.zip.<suffix>\ on Windows 11 - the suffix is a few hex digits, not a number
+    # (seen: 388e11bd-2056-4e77-a266-27df0c2ad684_NetworkHealthCheck-1.2.2.zip.684 and 5d2b5f20-...-e2e558bb2bc4_NetworkHealthCheck-1.2.2.zip.bc4,
+    # the first campaign, 2026-09-05; a pattern for digits alone missed the second). Only the file clicked is extracted there, so
+    # the launcher finds no NetworkHealthCheck.ps1 beside itself and stops with its own message - and the folder may be gone
+    # as soon as the program started from it exits, so the evidence is collected while it is still on screen.
+    @(Get-ChildItem -LiteralPath $env:TEMP -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^Temp\d*_.*\.zip$' -or $_.Name -match '^[0-9a-fA-F-]{36}_.*\.zip\.\w+$' })
 }
 function Get-ArchiveViewFiles([datetime]$After) {
     # What a run from inside a view left there since $After - reports under a Reports\ folder, the launcher's
@@ -288,6 +294,29 @@ function Get-ArchiveViewFiles([datetime]$After) {
     @(Get-ArchiveViewFolders | ForEach-Object {
         Get-ChildItem -LiteralPath $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $After -and (($_.DirectoryName -match '\\Reports$') -or ($_.Name -eq 'LauncherError.txt')) }
     })
+}
+function Get-TempFoldersSince([datetime]$After) {
+    # The folders under %TEMP% written since $After, by name - what a failed M1 shows, so that a view folder of yet another
+    # shape is recognizable in the record instead of a bare "nothing found".
+    @(Get-ChildItem -LiteralPath $env:TEMP -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $After } | Sort-Object LastWriteTime -Descending | Select-Object -First 10 | ForEach-Object { $_.Name })
+}
+function Save-ArchiveViewEvidence([datetime]$After, [string]$Dest, [hashtable]$Files) {
+    # Copies what a run from inside a view has left since $After into $Dest and adds it to $Files (by full path, the newest
+    # write wins), and returns the view folder's listing if the folder is still there. Called twice by M1: as soon as
+    # something is on screen - the launcher has written LauncherError.txt before it shows its message - and again when a
+    # tool window has finished its run, because Windows 11 may delete the folder the moment the program exits.
+    $found = @(Get-ArchiveViewFiles $After | Sort-Object LastWriteTime)
+    if ($found.Count -eq 0) { return @() }
+    New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+    foreach ($f in $found) {
+        if ($Files.ContainsKey($f.FullName) -and $Files[$f.FullName].LastWriteTime -ge $f.LastWriteTime) { continue }
+        Copy-Item -LiteralPath $f.FullName -Destination $Dest -Force -ErrorAction SilentlyContinue
+        $Files[$f.FullName] = $f
+    }
+    $primary = @($found | Sort-Object LastWriteTime -Descending)[0]
+    $viewRoot = @(Get-ArchiveViewFolders | Where-Object { $primary.FullName.StartsWith($_.FullName + '\', [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1)
+    if ($viewRoot.Count -eq 0) { return @() }
+    return @($viewRoot[0].FullName) + @(Get-ChildItem -LiteralPath $viewRoot[0].FullName -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName.Substring($viewRoot[0].FullName.Length).TrimStart('\') + ' (' + $_.Length + ' bytes)' })
 }
 function Get-NetworkFacts {
     # Adapters that are up with an IPv4 address, and IPv4 default gateways - read the way the tool reads them, with
@@ -315,6 +344,70 @@ function Get-MachinePolicyExecutionPolicy {
 }
 function Get-ReportsUnder([string]$Root, [string]$Lang, [datetime]$After) {
     @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter '*.json' -ErrorAction SilentlyContinue | Where-Object { $_.DirectoryName -match ('\\' + [regex]::Escape($Lang) + '\\Reports$') -and $_.LastWriteTime -gt $After } | Sort-Object LastWriteTime -Descending)
+}
+
+function Get-EditionFacts {
+    # What decides how a policy scenario is done on this machine: the edition - Home has no Group Policy editor and no
+    # AppLocker, Pro holds AppLocker rules without enforcing them - and whether the two consoles exist (the first campaign
+    # ran on Windows 11 Home, 2026-09-05). Recorded in the state once; the summary names it.
+    $p = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue
+    $caption = ''
+    try { $caption = [string](Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).Caption } catch { $caption = [string]$p.ProductName }
+    $id = [string]$p.EditionID
+    return [ordered]@{
+        Caption = $caption.Trim(); EditionId = $id; DisplayVersion = [string]$p.DisplayVersion
+        Build = ('{0}.{1}' -f [string]$p.CurrentBuildNumber, [string]$p.UBR)
+        IsHome = ($id -like 'Core*')
+        HasGpedit = [bool](Test-Path -LiteralPath (Join-Path $env:SystemRoot 'System32\gpedit.msc'))
+        HasSecpol = [bool](Test-Path -LiteralPath (Join-Path $env:SystemRoot 'System32\secpol.msc'))
+    }
+}
+function Get-ExtractedLauncher([string]$Root, [string]$Name) {
+    # The launcher below the folder the person was asked to extract into - the proof that the extraction went there.
+    if (-not (Test-Path -LiteralPath $Root)) { return $null }
+    return @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter $Name -ErrorAction SilentlyContinue)[0]
+}
+function Test-ExtractedPackage([string]$Root, [string[]]$Launchers, [datetime]$After) {
+    # The extraction the person was asked for, and nothing else: exactly one copy of every launcher below the folder (two
+    # package trees, one of them old, and the person may run the wrong one - Codex round 3 on PR #14); the folder written
+    # after this scenario started (the folder given was written after it) - a tree left by an earlier campaign is refused, its launchers would run another package and,
+    # for M2, carry another download's marks; and the package's own program file byte for byte, so that the evidence
+    # is of this campaign's asset and no other release (Codex round 1 on PR #14). The actions read the reports from the
+    # tree validated here (its Root), not from anywhere below the folder.
+    $found = @{}
+    foreach ($name in $Launchers) { $found[$name] = @($(if (Test-Path -LiteralPath $Root) { Get-ChildItem -LiteralPath $Root -Recurse -File -Filter $name -ErrorAction SilentlyContinue } else { @() })) }
+    $missing = @($Launchers | Where-Object { $found[$_].Count -eq 0 })
+    if ($missing.Count) { return @{ Ok = $false; Detail = ('nothing extracted under ' + $Root + ' (no ' + ($missing -join ' / ') + ' below it) - the Extract All dialog proposes another folder; replace the destination with ' + $Root) } }
+    $several = @($Launchers | Where-Object { $found[$_].Count -gt 1 })
+    if ($several.Count) { return @{ Ok = $false; Detail = ('more than one package tree under ' + $Root + ' (' + $found[$several[0]].Count + ' copies of ' + $several[0] + '): remove ' + $Root + ' and extract the downloaded ZIP once') } }
+    $first = $found[$Launchers[0]][0]
+    $apart = @($Launchers | Where-Object { $found[$_][0].DirectoryName -ne $first.DirectoryName })
+    if ($apart.Count) { return @{ Ok = $false; Detail = ('the launchers under ' + $Root + ' are not in one folder (' + $Launchers[0] + ' in ' + $first.DirectoryName + ', ' + $apart[0] + ' in ' + $found[$apart[0]][0].DirectoryName + '): remove ' + $Root + ' and extract the downloaded ZIP once') } }
+    # Freshness is read off the folder given, not off the files: Windows 11's Extract All gives the extracted files the
+    # archive's own timestamps, creation time included (the VM: created 2026-09-04 16:44:00 for a tree extracted on the
+    # 5th), while the destination folder - not an archive entry - is written when the extraction puts the package into it.
+    $rootItem = Get-Item -LiteralPath $Root
+    if ($rootItem.LastWriteTime -le $After) { return @{ Ok = $false; Detail = ('the package under ' + $Root + ' was extracted before this scenario started (the folder last changed ' + $rootItem.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss') + '): remove ' + $Root + ' and extract the downloaded ZIP again') } }
+    $script = Join-Path $first.DirectoryName 'en-US\NetworkHealthCheck.ps1'
+    if (-not (Test-Path -LiteralPath $script)) { return @{ Ok = $false; Detail = ('the extraction under ' + $Root + ' has no en-US\NetworkHealthCheck.ps1 beside its launcher: not the complete package; remove ' + $Root + ' and extract the downloaded ZIP again') } }
+    $reference = Join-Path $State.PackageRoot 'en-US\NetworkHealthCheck.ps1'
+    if ((Get-FileHash -LiteralPath $script -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $reference -Algorithm SHA256).Hash) {
+        $v = 'unknown'
+        foreach ($line in [IO.File]::ReadLines($script)) { if ($line -match '^\$script:ToolVersion\s*=\s*"([^"]+)"') { $v = $Matches[1]; break } }
+        return @{ Ok = $false; Detail = ('the package under ' + $Root + ' is not this campaign''s asset (its en-US\NetworkHealthCheck.ps1 differs; tool version ' + $v + ', the asset is ' + $State.ToolVersion + '): remove ' + $Root + ' and extract the downloaded ZIP') }
+    }
+    return @{ Ok = $true; Detail = ('extracted under ' + $first.DirectoryName + ' - this campaign''s asset; the folder written ' + $rootItem.LastWriteTime.ToString('HH:mm:ss')); Root = $first.DirectoryName }
+}
+function Get-ReportsElsewhere([string]$Except, [string]$Lang, [datetime]$After) {
+    # Reports the run left somewhere other than the instructed folder: the person extracted elsewhere - the Extract All
+    # dialog proposes <folder of the ZIP>\<name of the ZIP>\ (the first campaign, 2026-09-05). A few levels below the
+    # work root, the Desktop and Downloads are looked at, so that the failure names the place.
+    $roots = @($WorkRoot, [Environment]::GetFolderPath('Desktop'), (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads')) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
+    $found = @()
+    foreach ($root in $roots) {
+        $found += @(Get-ChildItem -LiteralPath $root -Recurse -Depth 5 -File -Filter '*.json' -ErrorAction SilentlyContinue | Where-Object { $_.DirectoryName -match ('\\' + [regex]::Escape($Lang) + '\\Reports$') -and $_.LastWriteTime -gt $After -and -not $_.FullName.StartsWith($Except + '\', [StringComparison]::OrdinalIgnoreCase) })
+    }
+    return @($found | Select-Object -ExpandProperty FullName -Unique)
 }
 
 # -------------------- The state --------------------
@@ -353,6 +446,7 @@ else {
     Write-Host ('NetworkHealthCheck {0} acceptance campaign "{1}" - started {2} on {3} as {4}' -f $version, $Campaign, $State.Created, $env:COMPUTERNAME, $env:USERNAME)
     Write-Host ('  asset {0} (SHA256 {1}{2}); state {3}' -f (Split-Path -Leaf $Zip), $digest, $(if ($ExpectedSha256) { ', matches the release notes' } else { ', not compared' }), $StateDir)
 }
+if ($null -eq $State.Edition) { $State.Edition = Get-EditionFacts }   # a state from before PR #14 gets it on its first resume
 # The plan's scenario ids, in order; -Scenarios is checked against them here so that the resume command printed for a
 # partial campaign carries the same subset (PR #11 round 1) - following it must continue what was asked, not the plan.
 $PlanIds = @('A1', 'M4', 'M1', 'M2', 'M3', 'A3', 'A4', 'M7', 'M8', 'M9', 'A2')
@@ -375,12 +469,48 @@ if ($Redo) {
     if ($Wanted.Count) { $Wanted = @($PlanIds | Where-Object { $Wanted -contains $_ -or $RedoIds -contains $_ }) }
 }
 $ResumeCommand = 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $State.TestsCopy 'Invoke-AcceptanceCampaign.ps1') + '" -Campaign ' + $Campaign + ' -StateDir "' + $StateDir + '" -Resume' + $(if ($Wanted.Count) { ' -Scenarios ' + ($Wanted -join ',') } else { '' })
+$RunAsStandardUser = Join-Path $StateDir 'run-as-standard-user.cmd'   # the same command, as a file the other session runs (PR #14)
 $RecoveryNotes = Join-Path $StateDir 'RECOVER.txt'
+function Get-M8MachineLines {
+    # "This machine: ..." for M8, in both languages - at script scope because the cleanup instruction, a scriptblock run
+    # long after Get-Plan returned, needs it as well (scriptblocks capture nothing).
+    $ed = $State.Edition
+    $here = $(if ($ed.HasGpedit) { 'gpedit.msc is present: take the first way' } else { 'no gpedit.msc: take the registry lines (gpupdate is not needed)' })
+    $hereZh = $(if ($ed.HasGpedit) { '有 gpedit.msc：用第一種做法' } else { '沒有 gpedit.msc：用登錄檔那兩行（不需要 gpupdate）' })
+    return @(('This machine: ' + $ed.Caption + ' (EditionID ' + $ed.EditionId + ') - ' + $here + '.'), ('這台機器：' + $ed.Caption + '（EditionID ' + $ed.EditionId + '）——' + $hereZh + '。'))
+}
+function Get-M8WayBack($Facts) {
+    # The registry lines that put the two values back as they were before M8 - re-created with their data AND their kind
+    # where they existed (a value stored as REG_EXPAND_SZ or REG_SZ must come back as that, not as the kind the policy
+    # editor would write - Codex round 2 on PR #14), deleted where they did not. Existence is the recorded kind, and the
+    # data is taken as recorded, whatever it says (Codex rounds 3 and 4); a record from before the kinds were recorded
+    # has only the data, and there 'absent' or an empty string means absent. REG_MULTI_SZ was recorded joined with \0
+    # and REG_BINARY as hex - the forms reg add takes - so those come back too; only a kind reg add cannot write is
+    # left to regedit, with the recorded data named.
+    $k = '"HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell"'
+    $types = @{ String = 'REG_SZ'; ExpandString = 'REG_EXPAND_SZ'; DWord = 'REG_DWORD'; QWord = 'REG_QWORD'; MultiString = 'REG_MULTI_SZ'; Binary = 'REG_BINARY' }
+    $lines = @()
+    foreach ($v in @(@{ Name = 'ExecutionPolicy'; Data = 'RegExecutionPolicyBefore'; Kind = 'RegExecutionPolicyKindBefore'; Default = 'REG_SZ' }, @{ Name = 'EnableScripts'; Data = 'RegEnableScriptsBefore'; Kind = 'RegEnableScriptsKindBefore'; Default = 'REG_DWORD' })) {
+        $data = [string]$Facts[$v.Data]; $kind = [string]$Facts[$v.Kind]
+        if ($kind) { $existed = ($kind -ne 'absent') }
+        else { $existed = ($data -and $data -ne 'absent'); if (-not $existed) { $data = '' } }   # a legacy record: the data alone
+        if (-not $existed) { $lines += ('reg delete ' + $k + ' /v ' + $v.Name + ' /f'); continue }
+        $type = $(if ($kind -and $types.ContainsKey($kind)) { $types[$kind] } elseif (-not $kind) { $v.Default } else { '' })
+        if ($type) { $lines += ('reg add ' + $k + ' /v ' + $v.Name + ' /t ' + $type + ' /d "' + $data + '" /f') }
+        else { $lines += ('(' + $v.Name + ' was a ' + $kind + ' value with data "' + $data + '" - put it back with regedit; reg add cannot write that kind)') }
+    }
+    return $lines
+}
 function Write-RecoveryNotes {
     # RECOVER.txt and undo-M7.cmd in the state folder: how to put the machine back WITHOUT PowerShell, for a policy
     # scenario interrupted before its revert - under M7 every new PowerShell is ConstrainedLanguage and this script's
     # own New-Object is refused, under M8 the unsigned script does not start at all (PR #11 round 5). Written before
     # any policy is applied, and again when M9 has recorded the service's original state.
+    $m8 = $State.Scenarios['M8']
+    $m8Facts = $(if ($null -ne $m8 -and $null -ne $m8.Facts -and $m8.Facts.MachinePolicyBefore) { $m8.Facts } else { $null })
+    $m8Before = $(if ($null -ne $m8Facts) { [string]$m8Facts.MachinePolicyBefore } else { 'Undefined (assumed: M8 has not recorded the machine yet)' })
+    $m8Back = @(Get-M8WayBack $(if ($null -ne $m8Facts) { $m8Facts } else { @{ RegExecutionPolicyBefore = 'absent'; RegEnableScriptsBefore = 'absent' } }))
+    $m8Gp = $(if ($null -ne $m8Facts -and [string]$m8Facts.MachinePolicyBefore -ne 'Undefined') { 'back to the setting that gave MachinePolicy ' + $m8Facts.MachinePolicyBefore } else { 'Not Configured' })
     $m9 = $State.Scenarios['M9']
     $svcType = 'the startup type recorded in campaign.json under Scenarios.M9.Facts once M9 has started'
     $svcStop = 'net stop AppIDSvc if it was stopped'
@@ -399,10 +529,13 @@ function Write-RecoveryNotes {
         '    right-click undo-M7.cmd in this folder > Run as administrator; or, in an elevated command prompt:',
         '    reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f',
         '',
-        'M8  Group Policy execution policy (AllSigned)',
-        '    gpedit.msc > Computer Configuration > Administrative Templates > Windows Components > Windows PowerShell',
-        '    > Turn on Script Execution > Not Configured > OK; then in a command prompt:   gpupdate /force',
-        '    (gpedit and gpupdate need no PowerShell; deleting the registry values alone is undone by the next policy refresh)',
+        ('M8  Group Policy execution policy (AllSigned) - MachinePolicy was ' + $m8Before + ' before M8'),
+        '    with gpedit.msc: Computer Configuration > Administrative Templates > Windows Components > Windows PowerShell',
+        ('    > Turn on Script Execution > ' + $m8Gp + ' > OK; then in a command prompt:   gpupdate /force'),
+        '    (gpedit and gpupdate need no PowerShell; where a Group Policy set the value, changing the registry values alone is undone by the next refresh)',
+        '    without gpedit.msc (Home), in an elevated command prompt - the values as they were before M8:',
+        ('    ' + $m8Back[0]),
+        ('    ' + $m8Back[1]),
         '',
         'M9  AppLocker Script rules',
         '    secpol.msc > Application Control Policies > AppLocker > Configure rule enforcement > Script rules: Not configured;',
@@ -430,11 +563,23 @@ Write-RecoveryNotes
 # Folders the extraction scenarios use, at script scope: a scenario's scriptblocks run long after Get-Plan has
 # returned, and PowerShell scriptblocks capture nothing - a local of Get-Plan read inside an action is $null at run
 # time (found by self-test case 21 in PR #11 round 12).
-$M2Dir = Join-Path ([Environment]::GetFolderPath('Desktop')) 'NHC-M2'
-$M3Dir = Join-Path ([Environment]::GetFolderPath('Desktop')) 'NHC-M3'
+# The work root is part of the campaign: given once, it is kept in the state and reused by every resume - the resume
+# command does not carry it, and a resume without it must not switch the folders back to the Desktop (Codex round 1 on
+# PR #14). Given again with another value, the new one wins and the change is on record.
+if ($WorkRoot) {
+    if ($State.WorkRoot -and ([string]$State.WorkRoot -ne $WorkRoot)) { Add-Event ('work root changed from {0} to {1}' -f $State.WorkRoot, $WorkRoot) }
+    $State.WorkRoot = $WorkRoot
+}
+elseif ($State.WorkRoot) { $WorkRoot = [string]$State.WorkRoot }
+else { $WorkRoot = [Environment]::GetFolderPath('Desktop'); $State.WorkRoot = $WorkRoot }
+$M2Dir = Join-Path $WorkRoot 'NHC-M2'
+$M3Dir = Join-Path $WorkRoot 'NHC-M3'
 function Get-Plan {
     $zipName = Split-Path -Leaf $State.OriginalZip
     $top = Split-Path -Leaf $State.PackageRoot
+    # M8 has two ways to the same MachinePolicy; the one this machine can take is named (Windows 11 Home has no gpedit.msc, PR #14).
+    $m8Machine = (Get-M8MachineLines)[0]
+    $m8MachineZh = (Get-M8MachineLines)[1]
     # Printed before a policy is applied: the way back that needs no PowerShell, for the case the campaign cannot resume.
     $recoverLines = @(('If this window closes before the revert, put the machine back WITHOUT PowerShell as written in ' + $RecoveryNotes + ' (for M7: run undo-M7.cmd there as administrator), then run the campaign again.'),
                       ('若這個視窗在還原前關掉了，請照 ' + $RecoveryNotes + ' 的說明、不用 PowerShell 把機器改回來（M7：以系統管理員身分執行同資料夾的 undo-M7.cmd），再重新執行 campaign。'))
@@ -478,8 +623,8 @@ function Get-Plan {
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + $window + '; observer: ' + $seen); Evidence = @('M4_IT_window_1366x768.png', 'gui_check.log') }
            } },
         @{ Id = 'M1'; Title = 'Run from inside the compressed-folder view'; Kind = 'manual'; Session = 'admin'; NeedsGui = $true
-           Instruction = @(('In Explorer, double-click the downloaded ZIP - ' + $State.OriginalZip + ' - without extracting it. Open ' + $top + ' > en-US and double-click Start-NetworkCheck.cmd. As soon as something is on screen - the launcher showing its message (stock Windows extracts only the file you clicked, so the launcher stops) or the tool window - answer done: a screenshot is taken then. Do NOT press a key in the launcher window and do NOT close the ZIP window yet.'),
-                           ('在檔案總管直接雙擊下載的 ZIP（' + $State.OriginalZip + '），不要解壓。打開 ' + $top + ' > en-US，雙擊 Start-NetworkCheck.cmd。畫面上一出現東西——launcher 顯示它的訊息（原生 Windows 只會解出你點的那個檔案，launcher 因此停下）或工具視窗——就輸入 done：那一刻會截圖。先不要在 launcher 視窗按鍵，也不要關 ZIP 視窗。'))
+           Instruction = @(('In Explorer, double-click the downloaded ZIP - ' + $State.OriginalZip + ' - without extracting it. Open ' + $top + ' > en-US and double-click Start-NetworkCheck.cmd (a security warning about the file may come first: Run). As soon as something is on screen - the launcher showing its message (stock Windows extracts only the file you clicked, so the launcher stops) or the tool window - answer done: a screenshot is taken and the evidence collected at that moment. Do NOT press a key in the launcher window and do NOT close anything yet.'),
+                           ('在檔案總管直接雙擊下載的 ZIP（' + $State.OriginalZip + '），不要解壓。打開 ' + $top + ' > en-US，雙擊 Start-NetworkCheck.cmd（可能先跳出檔案安全性警告：按執行）。畫面上一出現東西——launcher 顯示它的訊息（原生 Windows 只會解出你點的那個檔案，launcher 因此停下）或工具視窗——就輸入 done：那一刻會截圖並收集證據。先不要在 launcher 視窗按鍵，也不要關任何視窗。'))
            Action = { param($Ctx)
                # Two outcomes are the package behaving as designed (the first campaign, 2026-09-05). Stock Windows extracts
                # only the file double-clicked into the view folder, so the launcher finds no NetworkHealthCheck.ps1 beside
@@ -487,60 +632,82 @@ function Get-Plan {
                # expects. Where the whole folder was extracted (another archiver, a .ps1 double-clicked earlier in the same
                # view) the tool runs, and its report must carry the compressed-folder warning itself, in either language
                # (PR #11 rounds 4 and 11). The launcher stopped for another reason, or nothing in any view folder, fails.
+               # The evidence is collected the moment the person answers - Windows 11 may delete the view folder as soon as
+               # the program started from it exits (the first campaign lost LauncherError.txt that way) - and again after
+               # a tool run has finished, while its window is still open.
                $shot = Join-Path $Ctx.Dir 'M1_from_the_view.png'
                Save-Screenshot $shot
-               $null = Read-Answer $Ctx.Id 'run-finished' @('If the launcher shows its message, press a key in its window so that it closes; if the tool window is running, let it finish and close. Do not close the ZIP window. Then answer done.', '若 launcher 顯示的是訊息，在它的視窗按一個鍵讓它關閉；若工具視窗在跑，等它跑完關閉。不要關 ZIP 視窗。然後輸入 done。') @('done') 'done'
-               $found = @(Get-ArchiveViewFiles $Ctx.Started | Sort-Object LastWriteTime)
+               $dest = Join-Path $Ctx.Dir 'from-the-view'
+               $files = @{}
+               $listing = @(Save-ArchiveViewEvidence $Ctx.Started $dest $files)
+               $null = Read-Answer $Ctx.Id 'run-finished' @('If the tool window is running, wait until its run has finished but keep the window open; if the launcher shows its message, leave it as it is. Then answer done.', '若工具視窗在跑，等它跑完但不要關閉；若 launcher 顯示的是訊息，維持原樣。然後輸入 done。') @('done') 'done'
+               $listing2 = @(Save-ArchiveViewEvidence $Ctx.Started $dest $files)
+               if ($listing2.Count) { $listing = $listing2 }
+               $found = @($files.Values | Sort-Object LastWriteTime)
                $jsons = @($found | Where-Object { $_.Extension -eq '.json' -and $_.DirectoryName -match '\\Reports$' } | Sort-Object LastWriteTime -Descending)
                $errors = @($found | Where-Object { $_.Name -eq 'LauncherError.txt' } | Sort-Object LastWriteTime -Descending)
-               if ($jsons.Count -eq 0 -and $errors.Count -eq 0) { return @{ Passed = $false; Detail = ('nothing from a compressed-folder view under {0} (Temp*_*.zip or <guid>_*.zip.<n>) since {1}: was the ZIP opened in the view and Start-NetworkCheck.cmd double-clicked inside it?' -f $env:TEMP, $Ctx.Started.ToString('HH:mm:ss')); Evidence = @('M1_from_the_view.png') } }
-               $primary = $(if ($jsons.Count) { $jsons[0] } else { $errors[0] })
-               $viewRoot = @(Get-ArchiveViewFolders | Where-Object { $primary.FullName.StartsWith($_.FullName + '\', [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1)
-               $dest = Join-Path $Ctx.Dir 'from-the-view'
-               New-Item -ItemType Directory -Force -Path $dest | Out-Null
-               foreach ($f in $found) { Copy-Item -LiteralPath $f.FullName -Destination $dest -Force }   # oldest first, so the newest of a name is the one kept
-               # What the view folder held - on stock Windows, the launcher alone.
-               $listing = @()
-               if ($viewRoot.Count) { $listing = @(Get-ChildItem -LiteralPath $viewRoot[0].FullName -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName.Substring($viewRoot[0].FullName.Length).TrimStart('\') + ' (' + $_.Length + ' bytes)' }) }
-               [IO.File]::WriteAllLines((Join-Path $dest 'view-folder-listing.txt'), [string[]](@($(if ($viewRoot.Count) { $viewRoot[0].FullName } else { '(view folder not identified)' })) + $listing), $Utf8NoBom)
-               Write-Line @('The files were copied out of the view; you may close the ZIP window now.', '檔案已從檢視複製出來，現在可以關閉 ZIP 視窗了。') 'Cyan'
+               if ($jsons.Count -eq 0 -and $errors.Count -eq 0) {
+                   $since = @(Get-TempFoldersSince $Ctx.Started)
+                   return @{ Passed = $false; Detail = ('nothing from a compressed-folder view under {0} (Temp*_*.zip or <guid>_*.zip.<suffix>) since {1}: was the ZIP opened in the view and Start-NetworkCheck.cmd double-clicked inside it? Folders under %TEMP% written since then: {2}' -f $env:TEMP, $Ctx.Started.ToString('HH:mm:ss'), $(if ($since.Count) { $since -join ', ' } else { '(none)' })); Evidence = @('M1_from_the_view.png') }
+               }
+               [IO.File]::WriteAllLines((Join-Path $dest 'view-folder-listing.txt'), [string[]](@($(if ($listing.Count) { $listing } else { @('(the view folder was gone when the listing was taken; the files below were copied while it existed)') + @($found | ForEach-Object { $_.FullName }) }))), $Utf8NoBom)
+               Write-Line @('The evidence was copied out of the view; you may close the launcher or tool window and the ZIP window now.', '證據已從檢視複製出來，現在可以關閉 launcher／工具視窗和 ZIP 視窗了。') 'Cyan'
                if ($jsons.Count -gt 0) {
-                   $d = Read-Json $jsons[0].FullName
+                   $d = Read-Json (Join-Path $dest $jsons[0].Name)
                    $startup = @($d.Results | Where-Object { $_.Tag -eq 'startup' })
                    $archiveRows = @($startup | Where-Object { ([string]$_.Message) -match 'compressed folder|壓縮檔' })
                    return @{ Passed = ($archiveRows.Count -gt 0); Detail = ('the tool ran from the view: {0} file(s) copied out of {1}; startup rows: {2}, of which the compressed-folder warning: {3}{4}' -f $found.Count, (Split-Path -Parent $jsons[0].DirectoryName), $startup.Count, $archiveRows.Count, $(if ($archiveRows.Count) { ' - "' + [string]$archiveRows[0].Message + '"' } elseif ($startup.Count) { ' - only other startup notices: "' + [string]$startup[0].Message + '"' } else { ' - missing' })); Evidence = @('M1_from_the_view.png', 'from-the-view') }
                }
-               $reason = @(Get-Content -LiteralPath $errors[0].FullName -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^(Error|錯誤)[:：]' } | Select-Object -First 1)
+               $reason = @(Get-Content -LiteralPath (Join-Path $dest 'LauncherError.txt') -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^(Error|錯誤)[:：]' } | Select-Object -First 1)
                $reasonText = $(if ($reason.Count) { ([string]$reason[0]).Trim() } else { '(no Error line in LauncherError.txt)' })
                $missing = ($reasonText -match 'NetworkHealthCheck\.ps1 is missing|找不到程式檔 NetworkHealthCheck\.ps1')
-               @{ Passed = $missing; Detail = ('the launcher stopped in the view{0}: "{1}"; the view held {2} file(s); no report' -f $(if ($missing) { ', as stock Windows makes it - only the file clicked was extracted' } else { ' for another reason' }), $reasonText, $listing.Count); Evidence = @('M1_from_the_view.png', 'from-the-view') }
+               $held = $(if ($listing.Count -gt 1) { ($listing.Count - 1).ToString() } else { 'unknown (folder gone)' })
+               @{ Passed = $missing; Detail = ('the launcher stopped in the view{0}: "{1}"; the view held {2} file(s); no report' -f $(if ($missing) { ', as stock Windows makes it - only the file clicked was extracted' } else { ' for another reason' }), $reasonText, $held); Evidence = @('M1_from_the_view.png', 'from-the-view') }
            } },
         @{ Id = 'M2'; Title = 'Extract without Unblock and double-click the root launcher'; Kind = 'manual'; Session = 'admin'; NeedsGui = $true
            # Checked before the instruction is shown: without the Mark of the Web on the download there is no warning to
-           # measure (PR #11 round 11) - an unblocked or stripped ZIP, or M3 run first through a subset.
-           Prerequisite = { $m = Get-ZoneId $State.OriginalZip; if (-not (Test-InternetMark $m)) { @{ Ok = $false; Detail = ('the download carries no Internet-zone Mark of the Web (' + $m + ': ' + $State.OriginalZip + ') - M2 cannot measure the warning; download the ZIP again in the browser, or run M2 before M3') } } else { @{ Ok = $true; Detail = ('the download is marked: ' + $m) } } }
-           Instruction = @(('Right-click the downloaded ZIP > Extract All... into ' + $M2Dir + ' (do NOT Unblock it). Open the extracted folder and double-click Start-English.cmd. As soon as a Windows prompt appears - or the tool window, if nothing appeared - answer done: a screenshot is taken at that moment.'),
-                           ('在下載的 ZIP 上按右鍵 > 全部解壓縮，解壓到 ' + $M2Dir + '（不要 Unblock）。打開解壓出來的資料夾，雙擊 Start-English.cmd。Windows 一跳出提示（或沒有提示、工具視窗出現時）就輸入 done：那一刻會截圖。'))
+           # measure (PR #11 round 11) - an unblocked or stripped ZIP, or M3 run first through a subset. A ZIP copied from
+           # another machine (drag-and-drop, a shared folder) never had the mark - the first campaign's was such a copy (PR #14).
+           Prerequisite = { $m = Get-ZoneId $State.OriginalZip; if (-not (Test-InternetMark $m)) { @{ Ok = $false; Detail = ('the download carries no Internet-zone Mark of the Web (' + $m + ': ' + $State.OriginalZip + ') - M2 cannot measure the warning; a ZIP copied from another machine never had one: download it with the browser of this machine to the same path, or run M2 before M3') } } else { @{ Ok = $true; Detail = ('the download is marked: ' + $m) } } }
+           Instruction = @(('Right-click the downloaded ZIP > Extract All... into ' + $M2Dir + ' (do NOT Unblock it). The Extract All dialog proposes another folder - replace the destination with ' + $M2Dir + '. When the extraction has finished, answer done; the double-click comes next.'),
+                           ('在下載的 ZIP 上按右鍵 > 全部解壓縮，解壓到 ' + $M2Dir + '（不要 Unblock）。對話框預設的是另一個資料夾——把目的地換成 ' + $M2Dir + '。解壓完成後輸入 done；下一步才雙擊。'))
+           # The extraction is verified before the launcher is run: the first campaign extracted to the dialog's default, and
+           # the run left its reports where the scenario did not look (PR #14).
+           Precondition = { param($Ctx) Test-ExtractedPackage $M2Dir @('Start-English.cmd') $Ctx.Started }
            Action = { param($Ctx)
+               $null = Read-Answer $Ctx.Id 'launched' @('Open the extracted folder and double-click Start-English.cmd. As soon as a Windows prompt appears - or the tool window, if nothing appeared - answer done: a screenshot is taken at that moment.', '打開解壓出來的資料夾，雙擊 Start-English.cmd。Windows 一跳出提示（或沒有提示、工具視窗出現時）就輸入 done：那一刻會截圖。') @('done') 'done'
                $mark = Get-ZoneId $State.OriginalZip
                $shot = Join-Path $Ctx.Dir 'M2_after_double-click.png'
                Save-Screenshot $shot
                $seen = Read-Answer $Ctx.Id 'windows-showed' @('What did Windows show? 1 = Open File - Security Warning, 2 = SmartScreen (Windows protected your PC), 3 = nothing, the tool ran, 4 = something else', 'Windows 顯示了什麼？1 = 開啟檔案－安全性警告，2 = SmartScreen（Windows 已保護您的電腦），3 = 沒有，工具直接跑了，4 = 其他') @('1', '2', '3', '4') '4'
                if ($seen -eq '4') { $seen = '4: ' + (Read-Answer $Ctx.Id 'windows-showed-other' @('Describe what Windows showed.', '請描述 Windows 顯示了什麼。') @() 'not described') }
                $null = Read-Answer $Ctx.Id 'run-finished' @('If a prompt is still waiting, choose what lets the tool run. When the tool window has closed, answer done.', '若提示還在等，選擇讓工具執行的選項。工具視窗關閉後輸入 done。') @('done') 'done'
-               $launcher = @(Get-ChildItem -LiteralPath $M2Dir -Recurse -File -Filter 'Start-English.cmd' -ErrorAction SilentlyContinue)[0]
-               $json = @(Get-ReportsUnder $M2Dir 'en-US' $Ctx.Started)[0]
+               $launcher = Get-ExtractedLauncher $M2Dir 'Start-English.cmd'
+               $pkgRoot = $(if ($null -ne $launcher) { $launcher.DirectoryName } else { $M2Dir })   # the tree the precondition validated (one launcher, so one tree)
+               $json = @(Get-ReportsUnder $pkgRoot 'en-US' $Ctx.Started)[0]
                $bad = @()
                if ($null -eq $launcher) { $bad += ('Start-English.cmd not found under ' + $M2Dir) }
-               if ($null -eq $json) { $bad += 'no en-US report written after the double-click' } else { Copy-Item -LiteralPath $json.FullName -Destination $Ctx.Dir -Force }
+               if ($null -eq $json) {
+                   $elsewhere = @(Get-ReportsElsewhere $pkgRoot 'en-US' $Ctx.Started)
+                   $bad += ('no en-US report under ' + $pkgRoot + ' after the double-click' + $(if ($elsewhere.Count) { ' - report(s) found elsewhere, so the launcher run was not the one under ' + $pkgRoot + ': ' + ($elsewhere -join ', ') } else { '' }))
+               } else { Copy-Item -LiteralPath $json.FullName -Destination $Ctx.Dir -Force }
                $launcherMark = $(if ($null -ne $launcher) { Get-ZoneId $launcher.FullName } else { 'n/a' })
                if (-not (Test-InternetMark $mark)) { $bad += ('the download carried no Internet-zone Mark of the Web at the time of the run (' + $mark + '): nothing about the warning was measured') }   # the moment that matters, whatever the prerequisite saw earlier
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('download mark: {0}; extracted launcher mark: {1}; Windows showed: {2}; report: {3}' -f $mark, $launcherMark, $seen, $(if ($null -ne $json) { $json.Name } else { 'none' }))); Evidence = @('M2_after_double-click.png') }
            } },
         @{ Id = 'M3'; Title = 'Unblock, extract, both root launchers, Open Report'; Kind = 'manual'; Session = 'admin'; NeedsGui = $true
-           Instruction = @(('Right-click the downloaded ZIP > Properties > tick Unblock > OK. Extract All... into ' + $M3Dir + '. Double-click Start-English.cmd and let it run; close it. Double-click Start-Traditional-Chinese.cmd and let it run; when its run has finished and the window is still open, answer done: a screenshot of the window is taken then.'),
-                           ('在下載的 ZIP 上按右鍵 > 內容 > 勾選「解除封鎖」> 確定。全部解壓縮到 ' + $M3Dir + '。雙擊 Start-English.cmd 讓它跑完、關閉。再雙擊 Start-Traditional-Chinese.cmd 讓它跑完；跑完、視窗還開著時輸入 done：那一刻會截圖視窗。'))
+           Instruction = @(('Right-click the downloaded ZIP > Properties > tick Unblock > OK. Then Extract All... into ' + $M3Dir + ' - the Extract All dialog proposes another folder: replace the destination with ' + $M3Dir + '. When the extraction has finished, answer done; the launchers come next.'),
+                           ('在下載的 ZIP 上按右鍵 > 內容 > 勾選「解除封鎖」> 確定。再全部解壓縮到 ' + $M3Dir + '——對話框預設的是另一個資料夾，把目的地換成 ' + $M3Dir + '。解壓完成後輸入 done；下一步才跑 launcher。'))
+           # The Unblock and the extraction are verified before the launchers are run: the first campaign extracted to the
+           # dialog's default and the run left its reports where the scenario did not look (PR #14).
+           Precondition = { param($Ctx)
+               $m = Get-ZoneId $State.OriginalZip
+               if ($m -ne 'no mark') { return @{ Ok = $false; Detail = ('the ZIP still carries the Mark of the Web (' + $m + '): Unblock it first (Properties > Unblock > OK), then extract again into ' + $M3Dir) } }
+               $x = Test-ExtractedPackage $M3Dir @('Start-English.cmd', 'Start-Traditional-Chinese.cmd') $Ctx.Started
+               if (-not $x.Ok) { return $x }
+               @{ Ok = $true; Detail = ('unblocked; ' + $x.Detail) } }
            Action = { param($Ctx)
+               $null = Read-Answer $Ctx.Id 'launched' @('Double-click Start-English.cmd and let it run; close it. Double-click Start-Traditional-Chinese.cmd and let it run; when its run has finished and the window is still open, answer done: a screenshot of the window is taken then.', '雙擊 Start-English.cmd 讓它跑完、關閉。再雙擊 Start-Traditional-Chinese.cmd 讓它跑完；跑完、視窗還開著時輸入 done：那一刻會截圖視窗。') @('done') 'done'
                # The evidence the checklist asks for: the window after its run, and the browser showing the report (PR #11 rounds 2 and 4).
                $windowShot = Join-Path $Ctx.Dir 'M3_zhTW_window_after_the_run.png'
                Save-Screenshot $windowShot
@@ -550,9 +717,11 @@ function Get-Plan {
                # the launchers then did through the warnings (PR #11 round 10).
                if ($mark -ne 'no mark') { $bad += ('the ZIP still carries the Mark of the Web (' + $mark + '): the Unblock did not happen') }
                $names = @()
+               $rootLauncher = Get-ExtractedLauncher $M3Dir 'Start-English.cmd'
+               $pkgRoot = $(if ($null -ne $rootLauncher) { $rootLauncher.DirectoryName } else { $M3Dir })   # the tree the precondition validated (one launcher, so one tree)
                foreach ($lang in @('en-US', 'zh-TW')) {
-                   $json = @(Get-ReportsUnder $M3Dir $lang $Ctx.Started)[0]
-                   if ($null -eq $json) { $bad += ('no ' + $lang + ' report under ' + $M3Dir); continue }
+                   $json = @(Get-ReportsUnder $pkgRoot $lang $Ctx.Started)[0]
+                   if ($null -eq $json) { $elsewhere = @(Get-ReportsElsewhere $pkgRoot $lang $Ctx.Started); $bad += ('no ' + $lang + ' report under ' + $pkgRoot + $(if ($elsewhere.Count) { ' - found elsewhere, so the launchers were not run from there: ' + ($elsewhere -join ', ') } else { '' })); continue }
                    Copy-Item -LiteralPath $json.FullName -Destination $Ctx.Dir -Force
                    $names += $json.Name
                    $d = Read-Json $json.FullName
@@ -606,8 +775,36 @@ function Get-Plan {
            Cleanup = @{ Instruction = @('Remove it - in an ELEVATED command prompt:   reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f   - then answer done.', '移除它——在「以系統管理員身分執行」的命令提示字元執行：reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f，然後輸入 done。')
                         Verify = { $v = Get-MachineEnv '__PSLockdownPolicy'; if ($null -eq $v -or $v -eq '') { @{ Ok = $true; Detail = 'removed' } } else { @{ Ok = $false; Detail = ('__PSLockdownPolicy is still ' + $v) } } } } },
         @{ Id = 'M8'; Title = 'Group Policy execution policy: allow only signed scripts'; Kind = 'reconfigure'; Session = 'admin'
-           Instruction = @('gpedit.msc > Computer Configuration > Administrative Templates > Windows Components > Windows PowerShell > Turn on Script Execution > Enabled, "Allow only signed scripts" > OK; then in a command prompt:   gpupdate /force   - then answer done. While this is in force, no unsigned PowerShell script starts - this campaign included: keep this window open.',
-                           'gpedit.msc > 電腦設定 > 系統管理範本 > Windows 元件 > Windows PowerShell > 開啟指令碼執行 > 已啟用、「只允許已簽署的指令碼」> 確定；再在命令提示字元執行 gpupdate /force，然後輸入 done。生效期間任何未簽章的 PowerShell 腳本都跑不起來——包括這個 campaign：請保持這個視窗開著。') + $recoverLines
+           Instruction = @('Two ways to the same MachinePolicy - PowerShell reads HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell either way:',
+                           '  with gpedit.msc: Computer Configuration > Administrative Templates > Windows Components > Windows PowerShell > Turn on Script Execution > Enabled, "Allow only signed scripts" > OK; then in a command prompt:   gpupdate /force',
+                           '  without it (Home): in an ELEVATED command prompt:   reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell" /v EnableScripts /t REG_DWORD /d 1 /f   then   reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell" /v ExecutionPolicy /t REG_SZ /d AllSigned /f',
+                           $m8Machine,
+                           'Then answer done. While this is in force, no unsigned PowerShell script starts - this campaign included: keep this window open.',
+                           '同一個 MachinePolicy 有兩種做法——PowerShell 讀的都是 HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell：',
+                           '  有 gpedit.msc：電腦設定 > 系統管理範本 > Windows 元件 > Windows PowerShell > 開啟指令碼執行 > 已啟用、「只允許已簽署的指令碼」> 確定；再在命令提示字元執行 gpupdate /force',
+                           '  沒有（Home）：在「以系統管理員身分執行」的命令提示字元執行 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell" /v EnableScripts /t REG_DWORD /d 1 /f，再執行 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell" /v ExecutionPolicy /t REG_SZ /d AllSigned /f',
+                           $m8MachineZh,
+                           '然後輸入 done。生效期間任何未簽章的 PowerShell 腳本都跑不起來——包括這個 campaign：請保持這個視窗開著。') + $recoverLines
+           Prepare = { param($Ctx)
+               # What is on the machine before the change, so that the revert puts it back rather than clearing it: the
+               # effective MachinePolicy and the two registry values as they are - data and registry kind, or absent (Codex
+               # rounds 1 and 2 on PR #14). And how the policy is applied here, for the record.
+               $key = Get-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell' -ErrorAction SilentlyContinue
+               $snap = @{}
+               foreach ($name in @('ExecutionPolicy', 'EnableScripts')) {
+                   if ($null -ne $key -and @($key.GetValueNames()) -contains $name) {
+                       # The data in the text reg add takes for the kind, so that nothing is lost on the way to the record and
+                       # back: strings and numbers as they are, REG_MULTI_SZ joined with \0, REG_BINARY as hex (Codex round 4 on PR #14).
+                       $rawValue = $key.GetValue($name, $null, 'DoNotExpandEnvironmentNames'); $kind = [string]$key.GetValueKind($name)
+                       $data = $(switch ($kind) { 'MultiString' { @($rawValue) -join '\0' } 'Binary' { (@($rawValue) | ForEach-Object { ([byte]$_).ToString('x2') }) -join '' } default { [string]$rawValue } })
+                       $snap[$name] = @{ Data = $data; Kind = $kind }
+                   }
+                   else { $snap[$name] = @{ Data = 'absent'; Kind = 'absent' } }
+               }
+               return @{ PolicyWay = $(if ($State.Edition.HasGpedit) { 'gpedit' } else { 'registry' }); Edition = ([string]$State.Edition.Caption + ' / ' + [string]$State.Edition.EditionId)
+                         MachinePolicyBefore = (Get-MachinePolicyExecutionPolicy)
+                         RegExecutionPolicyBefore = $snap['ExecutionPolicy'].Data; RegExecutionPolicyKindBefore = $snap['ExecutionPolicy'].Kind
+                         RegEnableScriptsBefore = $snap['EnableScripts'].Data; RegEnableScriptsKindBefore = $snap['EnableScripts'].Kind } }
            Precondition = { $p = Get-MachinePolicyExecutionPolicy; if ($p -eq 'AllSigned') { @{ Ok = $true; Detail = 'MachinePolicy=AllSigned' } } else { @{ Ok = $false; Detail = ('MachinePolicy is ' + $p + ', not AllSigned') } } }
            Action = { param($Ctx)
                $r = Invoke-LauncherRun $Ctx.Id 'en-US'
@@ -624,11 +821,26 @@ function Get-Plan {
                $shown = @($r.Output | Where-Object { $_.Trim() -ne '' } | Select-Object -First 4) -join ' / '
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; what the user sees: {2}' -f $r.ExitCode, $r.EnvironmentReports.Count, $shown)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError.txt') }
            }
-           Cleanup = @{ Instruction = @('Set Turn on Script Execution back to Not Configured, then   gpupdate /force   - then answer done.', '把「開啟指令碼執行」改回「尚未設定」，再執行 gpupdate /force，然後輸入 done。')
-                        Verify = { $p = Get-MachinePolicyExecutionPolicy; if ($p -eq 'Undefined') { @{ Ok = $true; Detail = 'MachinePolicy=Undefined' } } else { @{ Ok = $false; Detail = ('MachinePolicy is still ' + $p) } } } } },
+           # The revert restores what Prepare recorded, not a blank: a machine that had a policy before M8 gets it back, and the
+           # verification compares with that, not with Undefined (Codex round 1 on PR #14). A scriptblock, evaluated at revert time.
+           Cleanup = @{ Instruction = { param($Ctx)
+                            $before = [string]$Ctx.Facts.MachinePolicyBefore; if (-not $before) { $before = 'Undefined' }
+                            $back = @(Get-M8WayBack $Ctx.Facts)
+                            $gp = $(if ($before -eq 'Undefined') { 'Turn on Script Execution > Not Configured > OK' } else { 'Turn on Script Execution back to the setting that gave MachinePolicy ' + $before })
+                            $gpZh = $(if ($before -eq 'Undefined') { '「開啟指令碼執行」改回「尚未設定」、確定' } else { '把「開啟指令碼執行」改回原本讓 MachinePolicy 為 ' + $before + ' 的設定' })
+                            $lines = Get-M8MachineLines
+                            @(('Put it back as it was (MachinePolicy was ' + $before + ' before M8) - with gpedit.msc: ' + $gp + ', then   gpupdate /force;   without it, in an ELEVATED command prompt:   ' + ($back -join '   then   ')), $lines[0], 'Then answer done.',
+                              ('改回原本的狀態（M8 之前 MachinePolicy 是 ' + $before + '）——有 gpedit.msc：' + $gpZh + '，再執行 gpupdate /force；沒有：在「以系統管理員身分執行」的命令提示字元執行 ' + ($back -join '，再執行 ')), $lines[1], '然後輸入 done。') }
+                        Verify = { param($Ctx) $p = Get-MachinePolicyExecutionPolicy; $want = [string]$Ctx.Facts.MachinePolicyBefore; if (-not $want) { $want = 'Undefined' }; if ($p -eq $want) { @{ Ok = $true; Detail = ('MachinePolicy=' + $p + ', as before M8') } } else { @{ Ok = $false; Detail = ('MachinePolicy is ' + $p + '; it was ' + $want + ' before M8') } } } } },
         @{ Id = 'M9'; Title = 'AppLocker script rules enforced (Enterprise / Education)'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('secpol.msc > Application Control Policies > AppLocker > Script Rules > right-click > Create Default Rules, then DELETE the default rule that allows BUILTIN\Administrators all scripts - your account is an administrator, and with that rule in place it is exempt and the test measures nothing; AppLocker > Configure rule enforcement > Script rules: Configured, Enforce rules. Then in an ELEVATED command prompt:   sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force   - then answer done. The driver checks that the rules really restrict this account before it runs anything.',
                            'secpol.msc > 應用程式控制原則 > AppLocker > 指令碼規則 > 右鍵 > 建立預設規則，然後「刪除」允許 BUILTIN\Administrators 執行所有指令碼的那條預設規則——你的帳號是管理員，留著它就被豁免、什麼都量不到；AppLocker > 設定規則強制執行 > 指令碼規則：已設定、強制執行規則。再在「以系統管理員身分執行」的命令提示字元執行：sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force，然後輸入 done。driver 執行前會確認規則真的限制了這個帳號。') + $recoverLines
+           # Checked before the person is asked to act: Home has no AppLocker at all, and Pro holds rules without enforcing
+           # them - there the precondition decides with Test-AppLockerPolicy (PR #14, after the first campaign on Windows 11 Home).
+           Prerequisite = { $e = $State.Edition
+               if ($e.IsHome) { return @{ Ok = $false; Detail = ('AppLocker is not available on this edition (' + $e.Caption + ', EditionID ' + $e.EditionId + ') - the scenario needs Enterprise or Education') } }
+               if (-not $e.HasSecpol) { return @{ Ok = $false; Detail = ('secpol.msc is not present on this machine (' + $e.Caption + ', EditionID ' + $e.EditionId + ')') } }
+               @{ Ok = $true; Detail = $(if ([string]$e.EditionId -like 'Professional*') { $e.Caption + ': Pro holds AppLocker rules but does not enforce them - the precondition decides with Test-AppLockerPolicy' } else { $e.Caption + ' (EditionID ' + $e.EditionId + ')' }) } }
            Prepare = { param($Ctx)
                # The copy the launcher will run, made now so that the precondition can ask AppLocker about the very path
                # that is executed (PR #11 round 7); and the service's state, which the instruction changes and must go back.
@@ -684,8 +896,8 @@ function Get-Plan {
                             catch { @{ Ok = $false; Detail = ('cannot read the AppLocker policy or the service now: ' + $_.Exception.Message) } }
                         } } },
         @{ Id = 'A2'; Title = 'The acceptance runner as a standard user'; Kind = 'auto'; Session = 'standard'
-           Instruction = @('Create a standard user if none exists (elevated: net user nhc-test <password> /add), sign out, sign in as that user, and run:', ('    ' + $ResumeCommand), 'Then sign back in as the administrator and run the same command once more to finish the campaign.',
-                           '若還沒有標準使用者，先建立一個（系統管理員：net user nhc-test <密碼> /add），登出、以該使用者登入，執行上面的命令。之後再以系統管理員登入、再執行一次同樣的命令來完成 campaign。')
+           Instruction = @(('Create a standard user if none exists (elevated: net user nhc-test <password> /add), sign out, sign in as that user, and run ' + $RunAsStandardUser + ' there (double-click it, or in a command prompt) - it holds:'), ('    ' + $ResumeCommand), 'Then sign back in as the administrator and run the same command once more to finish the campaign.',
+                           ('若還沒有標準使用者，先建立一個（系統管理員：net user nhc-test <密碼> /add），登出、以該使用者登入，執行 ' + $RunAsStandardUser + '（雙擊，或在命令提示字元執行；內容就是上面那行）。之後再以系統管理員登入、再執行一次同樣的命令來完成 campaign。'))
            Action = { param($Ctx)
                $extra = @('-Zip', $State.ZipCopy)
                if ($State.ExpectedSha256) { $extra += @('-ExpectedSha256', $State.ExpectedSha256) }
@@ -719,8 +931,12 @@ function Invoke-Scenario($S) {
         return 'next'
     }
     if ($S.Session -eq 'standard' -and -not $IsStandardUser) {
+        # The command for the other session goes into a .cmd next to the state, so that nobody types the long line by hand
+        # (the first campaign's standard user mistyped it, 2026-09-05); written in the console's OEM code page, what cmd reads.
+        $oem = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
+        [IO.File]::WriteAllLines($RunAsStandardUser, [string[]]@('@echo off', 'rem NetworkHealthCheck acceptance campaign - the scenarios of the standard-user session. Sign in as the standard user and run this file.', $ResumeCommand, 'pause'), $oem)
         Write-Line $S.Instruction 'Cyan'
-        Set-Result $id 'PENDING' 'needs a standard-user session; run the command above there' @() 0
+        Set-Result $id 'PENDING' ('needs a standard-user session; run ' + $RunAsStandardUser + ' there (the command above)') @() 0
         return 'next'
     }
     if ($S.Session -ne 'standard' -and $IsStandardUser) {
@@ -802,7 +1018,7 @@ function Invoke-Scenario($S) {
             $attempted = $true
             if (-not $rec.Attempted) { $rec.Attempted = $true; Save-State }
             if ($null -eq $S.Precondition) { break }
-            $pc = & $S.Precondition
+            $pc = & $S.Precondition $ctx
             if ($pc.Ok) { Add-Event ('{0}: precondition met - {1}' -f $id, $pc.Detail); break }
             Write-Line @(('Not yet: ' + $pc.Detail), ('還沒好：' + $pc.Detail)) 'Yellow'
             $skipReason = 'precondition not met: ' + $pc.Detail
@@ -837,7 +1053,7 @@ function Complete-Cleanup($S, $rec, $ctx) {
     # only then does the action's outcome become the scenario's result. A quit, or a revert the answers file cannot
     # verify, leaves the scenario PENDING with the change named - the exit code counts it, and a resume asks again.
     $id = $S.Id
-    Write-Line $S.Cleanup.Instruction 'Cyan'
+    Write-Line @($(if ($S.Cleanup.Instruction -is [scriptblock]) { & $S.Cleanup.Instruction $ctx } else { $S.Cleanup.Instruction })) 'Cyan'   # M8's is built from the recorded state
     while ($true) {
         $gate = Read-Answer $id 'revert' @('When reverted, answer done; quit to stop the campaign here (the change stays in place until the campaign is resumed!).', '還原後輸入 done；要在這裡中止 campaign 輸入 quit（在 campaign 續跑之前，變更會留在機器上！）。') @('done', 'quit') 'done'
         if ($gate -eq 'quit') { $rec.Reverted = 'NOT REVERTED - quit'; Set-Result $id 'PENDING' ('ran ({0}) but NOT REVERTED - quit; resume to put the machine back' -f $rec.ActionResult) @($rec.Evidence) $rec.Seconds; Add-Event ('{0}: the campaign stopped with the change still in place' -f $id); return 'stop' }
@@ -945,6 +1161,9 @@ function Write-CampaignSummary {
     $md += ('- Machine: {0}; started {1} by {2}; this invocation {3} by {4}{5}' -f $State.Computer, $State.Created, $State.StartedBy, (& $Now), $env:USERNAME, $(if ($IsStandardUser) { ' (standard user)' } else { '' }))
     $md += ('- Asset: {0} (SHA256 {1}{2})' -f (Split-Path -Leaf $State.ZipCopy), $State.Digest, $(if ($State.ExpectedSha256) { ', matches the release notes' } else { ', not compared' }))
     $md += ('- Real windows: {0}; state: {1}' -f $(if ($State.SkipGui) { 'none (-SkipGui)' } else { 'yes' }), $StateDir)
+    $ed = $State.Edition
+    if ($null -ne $ed) { $md += ('- Edition: {0} (EditionID {1}, {2}, build {3}); gpedit.msc: {4}; secpol.msc: {5}' -f $ed.Caption, $ed.EditionId, $ed.DisplayVersion, $ed.Build, $(if ($ed.HasGpedit) { 'yes' } else { 'no' }), $(if ($ed.HasSecpol) { 'yes' } else { 'no' })) }
+    $md += ('- Work root (NHC-M2, NHC-M3): {0}' -f $State.WorkRoot)
     $md += ('- Recovery without PowerShell (a policy scenario interrupted before its revert): {0}' -f $RecoveryNotes)
     $md += ('- Bundle: {0}' -f $script:BundleLine)
     $md += ''
