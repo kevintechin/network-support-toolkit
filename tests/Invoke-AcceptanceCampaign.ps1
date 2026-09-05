@@ -106,7 +106,15 @@ function ConvertTo-Hashtable($Object) {
     if ($Object -is [array]) { return @($Object | ForEach-Object { ConvertTo-Hashtable $_ }) }
     return $Object
 }
-function Save-State { [IO.File]::WriteAllText($StateFile, ($State | ConvertTo-Json -Depth 10), $Utf8NoBom) }
+function Save-State {
+    # Written to a temporary file and swapped in atomically, the previous version kept as campaign.json.bak: a crash or
+    # a reboot in the middle of a save must not leave half a file where the next resume - possibly the one that has to
+    # revert a machine-wide policy - would fail to read it (PR #11 round 10).
+    $tmp = $StateFile + '.tmp'
+    [IO.File]::WriteAllText($tmp, ($State | ConvertTo-Json -Depth 10), $Utf8NoBom)
+    if (Test-Path -LiteralPath $StateFile) { [IO.File]::Replace($tmp, $StateFile, ($StateFile + '.bak')) }
+    else { Move-Item -LiteralPath $tmp -Destination $StateFile -Force }
+}
 function Add-Event([string]$Text) {
     $State.Events = @($State.Events) + @([ordered]@{ Time = (& $Now); Text = $Text })
     Write-Host ('  [' + (Get-Date -Format 'HH:mm:ss') + '] ' + $Text) -ForegroundColor DarkGray
@@ -280,7 +288,8 @@ function Get-ReportsUnder([string]$Root, [string]$Lang, [datetime]$After) {
 
 # -------------------- The state --------------------
 if (Test-Path -LiteralPath $StateFile) {
-    $State = ConvertTo-Hashtable (Get-Content -LiteralPath $StateFile -Raw -Encoding UTF8 | ConvertFrom-Json)
+    try { $State = ConvertTo-Hashtable (Get-Content -LiteralPath $StateFile -Raw -Encoding UTF8 | ConvertFrom-Json) }
+    catch { throw ('the campaign state {0} cannot be read ({1}); the previous version is kept as campaign.json.bak - copy it over campaign.json to resume from there' -f $StateFile, $_.Exception.Message) }
     if ($SkipGui) { $State.SkipGui = $true }
     Write-Host ('NetworkHealthCheck acceptance campaign "{0}" - resumed {1} on {2} as {3}{4}' -f $Campaign, (& $Now), $env:COMPUTERNAME, $env:USERNAME, $(if ($IsStandardUser) { ' (standard user)' } else { '' }))
 }
@@ -471,6 +480,9 @@ function Get-Plan {
                Save-Screenshot $windowShot
                $mark = Get-ZoneId $State.OriginalZip
                $bad = @()
+               # This is the scenario after the Unblock: a ZIP that still carries the mark means it did not happen, whatever
+               # the launchers then did through the warnings (PR #11 round 10).
+               if ($mark -ne 'no mark') { $bad += ('the ZIP still carries the Mark of the Web (' + $mark + '): the Unblock did not happen') }
                $names = @()
                foreach ($lang in @('en-US', 'zh-TW')) {
                    $json = @(Get-ReportsUnder $m3Dir $lang $Ctx.Started)[0]
@@ -751,11 +763,29 @@ function Complete-Cleanup($S, $rec, $ctx) {
 # -------------------- The campaign --------------------
 $plan = Get-Plan
 if ($Wanted.Count) { $selected = @($plan | Where-Object { $Wanted -contains $_.Id }) } else { $selected = $plan }
+# A scenario left with its change possibly on the machine - pending, attempted or run, with a revert to do - comes
+# first in every invocation, whatever was selected: nothing else runs on a machine that may still be changed, and a
+# subset cannot step around it (PR #11 round 10). In a standard-user session those reverts (all policy or network
+# changes, administrator scenarios) cannot be made, so nothing runs until the administrator has resumed.
+$outstanding = @($plan | Where-Object { $r = $State.Scenarios[$_.Id]; ($null -ne $r) -and ($r.Result -eq 'PENDING') -and ($r.ActionResult -or $r.Attempted) -and ($null -ne $_.Cleanup) })
+$blocked = $false
+if ($outstanding.Count) {
+    $ids = @($outstanding | ForEach-Object { $_.Id })
+    if ($IsStandardUser) {
+        Write-Line @(('{0} await(s) a revert that only the administrator session can make; nothing runs here until then.' -f ($ids -join ', ')), ('{0} 等待只有系統管理員 session 才能做的還原；在那之前這裡不執行任何情境。' -f ($ids -join ', '))) 'Yellow'
+        $blocked = $true
+    }
+    else {
+        Write-Line @(('Outstanding revert(s) first: {0}' -f ($ids -join ', ')), ('先處理待還原的情境：{0}' -f ($ids -join ', '))) 'Yellow'
+        $selected = @($outstanding) + @($selected | Where-Object { $ids -notcontains $_.Id })
+    }
+}
 foreach ($s in $plan) { if ($null -eq $State.Scenarios[$s.Id]) { $State.Scenarios[$s.Id] = [ordered]@{ Title = $s.Title; Result = ''; Detail = ''; Seconds = 0; Started = ''; Finished = ''; Evidence = @(); Answers = [ordered]@{}; Reverted = ''; ActionResult = ''; ActionDetail = ''; Attempted = $false; Facts = [ordered]@{} } } }
 Save-State
 Add-Event ('invocation by {0}{1}: scenarios {2}{3}' -f $env:USERNAME, $(if ($IsStandardUser) { ' (standard user)' } else { '' }), (@($selected | ForEach-Object { $_.Id }) -join ','), $(if ($null -ne $AnswersTable) { '; answers from ' + $Answers } else { '' }))
 $stopped = $false
 foreach ($s in $selected) {
+    if ($blocked) { if (-not $State.Scenarios[$s.Id].Result) { Set-Result $s.Id 'PENDING' ('blocked: {0} await(s) a revert in the administrator session' -f (@($outstanding | ForEach-Object { $_.Id }) -join ', ')) @() 0 }; continue }
     if ($stopped) { if (-not $State.Scenarios[$s.Id].Result) { Set-Result $s.Id 'PENDING' 'not reached: the campaign was stopped earlier' @() 0 }; continue }
     if ((Invoke-Scenario $s) -eq 'stop') { $stopped = $true }
 }
@@ -776,7 +806,7 @@ $pending = @($rows | Where-Object { $_.Result -eq 'PENDING' }).Count
 # The exit code answers for this invocation: every failure on record, plus what this invocation selected and could
 # not finish (quit, not reached, left for another session). Scenarios never selected stay pending in the summary
 # without counting, so that a partial run on purpose (-Scenarios) can exit 0.
-$selectedIds = @($selected | ForEach-Object { $_.Id })
+$selectedIds = @($selected | ForEach-Object { $_.Id }) + @($outstanding | ForEach-Object { $_.Id })   # an outstanding revert counts whatever was selected
 $pendingSelected = @($rows | Where-Object { $_.Result -eq 'PENDING' -and $selectedIds -contains $_.Id }).Count
 $md = @()
 $md += ('# NetworkHealthCheck {0} acceptance campaign - {1}' -f $State.ToolVersion, $Campaign)

@@ -272,6 +272,35 @@ Assert-True '16. A4 PENDING, the answer named, the attempt acknowledged' ($s16.S
 Assert-True '16. M7 not reached' ($s16.Scenarios.M7.Result -eq 'PENDING' -and $s16.Scenarios.M7.Detail -like 'not reached*') ($s16.Scenarios.M7.Result + ' / ' + $s16.Scenarios.M7.Detail)
 Assert-True '16. exit code 2' ($r16.ExitCode -eq 2) ('exit code ' + $r16.ExitCode)
 
+# -------------------- 17. an outstanding revert comes first, whatever was selected --------------------
+Write-Output ''
+Write-Output '17. A4 awaiting its revert (a crafted state), only M7 selected: A4 is reverted first (PASS), then M7 runs (skipped), exit 0'
+$stateFile17 = Join-Path $r3.State 'campaign.json'
+$crafted17 = Get-Content -LiteralPath $stateFile17 -Raw -Encoding UTF8 | ConvertFrom-Json
+$crafted17.Scenarios.A4.Result = 'PENDING'
+$crafted17.Scenarios.A4.Detail = 'ran (PASS); the change is still to be reverted (crafted by the self-test)'
+$crafted17.Scenarios.A4.ActionResult = 'PASS'
+$crafted17.Scenarios.A4.ActionDetail = 'exit code 0 (crafted, case 17)'
+$crafted17.Scenarios.A4.Attempted = $true
+$crafted17.Scenarios.A4.Reverted = ''
+$crafted17.Scenarios.M7.Result = ''
+$crafted17.Scenarios.M7.Detail = ''
+[IO.File]::WriteAllText($stateFile17, ($crafted17 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+$r17 = Invoke-Campaign 'quit' @('-Resume', '-Scenarios', 'M7', '-SkipGui') "A4/revert=done`r`nM7=skip`r`n"
+$s17 = Read-State $r17.State
+Assert-True '17. the driver announced the outstanding revert' (@($r17.Output | Where-Object { $_ -match 'Outstanding revert\(s\) first: A4' }).Count -eq 1) (($r17.Output | Where-Object { $_ -match 'Outstanding' }) -join ' / ')
+Assert-True '17. A4 was reverted and finalized before M7 ran' ($s17.Scenarios.A4.Result -eq 'PASS' -and $s17.Scenarios.A4.Detail -eq 'exit code 0 (crafted, case 17)' -and $s17.Scenarios.A4.Reverted -like 'yes - *gateway*' -and $s17.Scenarios.M7.Result -eq 'SKIPPED') ($s17.Scenarios.A4.Result + ' / ' + $s17.Scenarios.A4.Reverted + ' / M7 ' + $s17.Scenarios.M7.Result)
+Assert-True '17. exit code 0' ($r17.ExitCode -eq 0) ('exit code ' + $r17.ExitCode)
+
+# -------------------- 18. the state is saved atomically --------------------
+Write-Output ''
+Write-Output '18. campaign.json.bak holds the previous version and parses; no campaign.json.tmp is left behind'
+$bak = Join-Path $r3.State 'campaign.json.bak'
+$bakOk = $false
+try { $null = Get-Content -LiteralPath $bak -Raw -Encoding UTF8 | ConvertFrom-Json; $bakOk = $true } catch { }
+Assert-True '18. campaign.json.bak exists and is valid JSON' ((Test-Path -LiteralPath $bak) -and $bakOk) $bak
+Assert-True '18. no temporary state file remains' (-not (Test-Path -LiteralPath (Join-Path $r3.State 'campaign.json.tmp'))) 'campaign.json.tmp present'
+
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
     Write-Output ''
