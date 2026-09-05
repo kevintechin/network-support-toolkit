@@ -347,8 +347,10 @@ function Get-Plan {
                    if ([int]$d.RunOptions.PingCount -ne [int]$cfg.Tests.PingCount -or [int]$d.RunOptions.SampleSeconds -ne [int]$cfg.Tests.RetransmissionSampleSeconds) { $bad += ('the report carries PingCount {0} / SampleSeconds {1}, the configuration {2} / {3}' -f $d.RunOptions.PingCount, $d.RunOptions.SampleSeconds, $cfg.Tests.PingCount, $cfg.Tests.RetransmissionSampleSeconds) }
                    Copy-Item -LiteralPath $json.FullName -Destination $Ctx.Dir -Force
                }
+               # Only a yes certifies the layout; a no is the layout failing, anything else is the observation not made (PR #11 round 2).
                $seen = Read-Answer $Ctx.Id 'panel-usable' @(('Open ' + $shot + ' and look: are the run-options panel and the Start button fully visible and usable at this size? (yes / no / unsure)'), '打開這張截圖看：執行選項面板與「開始檢測」按鈕在這個尺寸下是否完整可見、可用？（yes / no / unsure）') @('yes', 'no', 'unsure') 'unsure'
                if ($seen -eq 'no') { $bad += 'the observer reports the panel or the Start button not usable at this size' }
+               elseif ($seen -ne 'yes') { $bad += ('the layout was not confirmed usable (answer: ' + $seen + ')') }
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + $window + '; observer: ' + $seen); Evidence = @('M4_IT_window_1366x768.png', 'gui_check.log') }
            } },
         @{ Id = 'M1'; Title = 'Run from inside the compressed-folder view'; Kind = 'manual'; Session = 'admin'
@@ -384,8 +386,8 @@ function Get-Plan {
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('download mark: {0}; extracted launcher mark: {1}; Windows showed: {2}; report: {3}' -f $mark, $launcherMark, $seen, $(if ($null -ne $json) { $json.Name } else { 'none' }))); Evidence = @('M2_after_double-click.png') }
            } },
         @{ Id = 'M3'; Title = 'Unblock, extract, both root launchers, Open Report'; Kind = 'manual'; Session = 'admin'
-           Instruction = @(('Right-click the downloaded ZIP > Properties > tick Unblock > OK. Extract All... into ' + $m3Dir + '. Double-click Start-English.cmd; when its window has closed, double-click Start-Traditional-Chinese.cmd. In at least one of them click Open Report. Then answer done.'),
-                           ('在下載的 ZIP 上按右鍵 > 內容 > 勾選「解除封鎖」> 確定。全部解壓縮到 ' + $m3Dir + '。雙擊 Start-English.cmd；視窗關閉後再雙擊 Start-Traditional-Chinese.cmd。至少在其中一個按「開啟報告」。完成後輸入 done。'))
+           Instruction = @(('Right-click the downloaded ZIP > Properties > tick Unblock > OK. Extract All... into ' + $m3Dir + '. Double-click Start-English.cmd and let it run; close it; double-click Start-Traditional-Chinese.cmd and let it run, then click Open Report in it and leave the browser open. Then answer done.'),
+                           ('在下載的 ZIP 上按右鍵 > 內容 > 勾選「解除封鎖」> 確定。全部解壓縮到 ' + $m3Dir + '。雙擊 Start-English.cmd 讓它跑完、關閉；再雙擊 Start-Traditional-Chinese.cmd 讓它跑完，然後在裡面按「開啟報告」，讓瀏覽器開著。完成後輸入 done。'))
            Action = { param($Ctx)
                $mark = Get-ZoneId $State.OriginalZip
                $bad = @()
@@ -398,12 +400,15 @@ function Get-Plan {
                    $d = Read-Json $json.FullName
                    if ([string]$d.RunOptions.EntryPoint -ne 'User') { $bad += ($lang + ': EntryPoint ' + $d.RunOptions.EntryPoint + ', expected User') }
                }
-               # Only a yes certifies the item: a no is the tool failing, and 'not clicked' is the scenario not done as
-               # instructed - neither may pass (PR #11 round 1).
-               $opened = Read-Answer $Ctx.Id 'open-report' @('Did Open Report open the HTML report in the browser? (yes / no / not clicked)', '「開啟報告」有在瀏覽器打開 HTML 報告嗎？（yes / no / not clicked）') @('yes', 'no', 'not clicked') 'not clicked'
-               if ($opened -eq 'no') { $bad += 'Open Report did not open the browser' }
-               elseif ($opened -ne 'yes') { $bad += 'Open Report was not exercised: the scenario asks for it to be clicked' }
-               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('download mark after Unblock: {0}; reports: {1}; Open Report: {2}' -f $mark, ($names -join ', '), $opened)); Evidence = $names }
+               # Open Report: the evidence is a screenshot of the browser showing the HTML report, taken the moment the
+               # person says it is on screen; only that certifies the item - a no is the tool failing, anything else is
+               # the scenario not done as instructed (PR #11 rounds 1 and 2).
+               $opened = Read-Answer $Ctx.Id 'open-report' @('Is the browser showing the HTML report that Open Report opened? Bring it to the front and answer shown - a screenshot is taken then. Answer failed if Open Report did not open it, or not clicked.', '瀏覽器是否正顯示「開啟報告」打開的 HTML 報告？把它移到最前面並輸入 shown，那一刻會截圖。若「開啟報告」沒有打開，輸入 failed；沒有按則輸入 not clicked。') @('shown', 'failed', 'not clicked') 'not clicked'
+               $shot = ''
+               if ($opened -eq 'shown') { $shot = Join-Path $Ctx.Dir 'M3_open_report_browser.png'; Save-Screenshot $shot }
+               elseif ($opened -eq 'failed') { $bad += 'Open Report did not open the browser' }
+               else { $bad += 'Open Report was not exercised: the scenario asks for it to be clicked and the browser shown' }
+               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('download mark after Unblock: {0}; reports: {1}; Open Report: {2}' -f $mark, ($names -join ', '), $opened)); Evidence = @($names + @($(if ($shot) { 'M3_open_report_browser.png' }))) }
            } },
         @{ Id = 'A3'; Title = 'Host-only network (an address, no gateway, no internet)'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('VMware: VM > Settings > Network Adapter > Host-only. Wait until Windows shows the new address (about ten seconds), then answer done.',
@@ -412,7 +417,9 @@ function Get-Plan {
            Action = { param($Ctx)
                $r = Invoke-Acceptance $Ctx.Id @('-PackageDir', $State.PackageRoot, '-ChainSteps', 'acceptance,resultset', '-SkipGui')
                @{ Passed = ($r.ExitCode -eq 0); Detail = ('exit code {0}; {1}' -f $r.ExitCode, $r.Summary); Evidence = @($r.Bundle, 'acceptance.log') }
-           } },
+           }
+           Cleanup = @{ Instruction = @('Set the adapter back to NAT. When Windows has a gateway again, answer done.', '把介面卡改回 NAT。Windows 重新拿到閘道後輸入 done。')
+                        Verify = { $f = Get-NetworkFacts; if ($f.Gateways -gt 0) { @{ Ok = $true; Detail = ('{0} gateway(s)' -f $f.Gateways) } } else { @{ Ok = $false; Detail = 'still no default gateway' } } } } },
         @{ Id = 'A4'; Title = 'Network adapter disconnected'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('VMware: VM > Settings > Network Adapter > untick Connected. Wait until Windows shows no network (about ten seconds), then answer done.',
                            'VMware：VM > 設定 > 網路介面卡 > 取消勾選「已連線」。等 Windows 顯示沒有網路（約十秒）後輸入 done。')
@@ -522,7 +529,12 @@ function Invoke-Scenario($S) {
     $dir = Join-Path $StateDir $id
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $ctx = @{ Id = $id; Dir = $dir; Started = (Get-Date); Facts = [ordered]@{} }
-    if ($null -ne $S.Prepare) { $ctx.Facts = ConvertTo-Hashtable (& $S.Prepare $ctx); $rec.Facts = $ctx.Facts }   # what the machine looked like before the change
+    if ($null -ne $S.Prepare) {
+        # What the machine looked like before the change - recorded once: a campaign interrupted at the gate, after the
+        # person changed the machine, must not describe the changed machine as the original on resume (PR #11 round 2).
+        if ($null -ne $rec.Facts -and @($rec.Facts.Keys).Count -gt 0) { $ctx.Facts = $rec.Facts; Write-Host ('  facts recorded earlier are kept: ' + (@($rec.Facts.Keys | ForEach-Object { $_ + '=' + $rec.Facts[$_] }) -join ', ')) -ForegroundColor DarkGray }
+        else { $ctx.Facts = ConvertTo-Hashtable (& $S.Prepare $ctx); $rec.Facts = $ctx.Facts }
+    }
     $rec.Started = (& $Now)
     Save-State
     if ($S.Kind -ne 'auto') {
