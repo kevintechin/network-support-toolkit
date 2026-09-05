@@ -301,6 +301,14 @@ try { $null = Get-Content -LiteralPath $bak -Raw -Encoding UTF8 | ConvertFrom-Js
 Assert-True '18. campaign.json.bak exists and is valid JSON' ((Test-Path -LiteralPath $bak) -and $bakOk) $bak
 Assert-True '18. no temporary state file remains' (-not (Test-Path -LiteralPath (Join-Path $r3.State 'campaign.json.tmp'))) 'campaign.json.tmp present'
 
+# -------------------- 19. a prerequisite is checked before anyone is asked to act --------------------
+Write-Output ''
+Write-Output '19. M2 on a download without the Mark of the Web (the self-test asset is built, not downloaded): SKIPPED before the instruction, exit 0'
+$r19 = Invoke-Campaign 'prereq' @('-Zip', $zip, '-Scenarios', 'M2', '-SkipGui') "M2=done`r`n"
+$s19 = Read-State $r19.State
+Assert-True '19. M2 SKIPPED with the prerequisite named' ($s19.Scenarios.M2.Result -eq 'SKIPPED' -and $s19.Scenarios.M2.Detail -like 'prerequisite not met: the download carries no Mark of the Web*') ($s19.Scenarios.M2.Result + ' / ' + $s19.Scenarios.M2.Detail)
+Assert-True '19. no gate was asked and the exit code is 0' ((@(Get-Content -LiteralPath (Join-Path $r19.State 'answers.log') -ErrorAction SilentlyContinue | Where-Object { $_ -match ' M2/' }).Count -eq 0) -and $r19.ExitCode -eq 0) ('exit code ' + $r19.ExitCode)
+
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
     Write-Output ''

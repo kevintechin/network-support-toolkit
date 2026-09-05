@@ -449,11 +449,17 @@ function Get-Plan {
                New-Item -ItemType Directory -Force -Path $dest | Out-Null
                foreach ($f in $found) { Copy-Item -LiteralPath $f.FullName -Destination $dest -Force }
                $d = Read-Json $jsons[0].FullName
+               # The row that certifies the scenario is the compressed-folder warning itself, in either language - not
+               # any startup notice (PR #11 round 11).
                $startup = @($d.Results | Where-Object { $_.Tag -eq 'startup' })
+               $archiveRows = @($startup | Where-Object { ([string]$_.Message) -match 'compressed folder|壓縮檔' })
                Write-Line @('The reports were copied out; you may close the ZIP window now.', '報告已複製出來，現在可以關閉 ZIP 視窗了。') 'Cyan'
-               @{ Passed = ($startup.Count -gt 0); Detail = ('{0} file(s) copied out of {1}; startup rows: {2}{3}' -f $found.Count, (Split-Path -Parent $jsons[0].DirectoryName), $startup.Count, $(if ($startup.Count) { ' - "' + [string]$startup[0].Message + '"' } else { ' - the compressed-folder warning is missing' })); Evidence = @('M1_window_from_the_view.png', 'reports-from-the-view') }
+               @{ Passed = ($archiveRows.Count -gt 0); Detail = ('{0} file(s) copied out of {1}; startup rows: {2}, of which the compressed-folder warning: {3}{4}' -f $found.Count, (Split-Path -Parent $jsons[0].DirectoryName), $startup.Count, $archiveRows.Count, $(if ($archiveRows.Count) { ' - "' + [string]$archiveRows[0].Message + '"' } elseif ($startup.Count) { ' - only other startup notices: "' + [string]$startup[0].Message + '"' } else { ' - missing' })); Evidence = @('M1_window_from_the_view.png', 'reports-from-the-view') }
            } },
         @{ Id = 'M2'; Title = 'Extract without Unblock and double-click the root launcher'; Kind = 'manual'; Session = 'admin'
+           # Checked before the instruction is shown: without the Mark of the Web on the download there is no warning to
+           # measure (PR #11 round 11) - an unblocked or stripped ZIP, or M3 run first through a subset.
+           Prerequisite = { $m = Get-ZoneId $State.OriginalZip; if ($m -eq 'no mark' -or $m -eq 'file missing') { @{ Ok = $false; Detail = ('the download carries no Mark of the Web (' + $m + ': ' + $State.OriginalZip + ') - M2 cannot measure the warning; download the ZIP again in the browser, or run M2 before M3') } } else { @{ Ok = $true; Detail = ('the download is marked: ' + $m) } } }
            Instruction = @(('Right-click the downloaded ZIP > Extract All... into ' + $m2Dir + ' (do NOT Unblock it). Open the extracted folder and double-click Start-English.cmd. As soon as a Windows prompt appears - or the tool window, if nothing appeared - answer done: a screenshot is taken at that moment.'),
                            ('在下載的 ZIP 上按右鍵 > 全部解壓縮，解壓到 ' + $m2Dir + '（不要 Unblock）。打開解壓出來的資料夾，雙擊 Start-English.cmd。Windows 一跳出提示（或沒有提示、工具視窗出現時）就輸入 done：那一刻會截圖。'))
            Action = { param($Ctx)
@@ -651,6 +657,13 @@ function Invoke-Scenario($S) {
     $dir = Join-Path $StateDir $id
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $ctx = @{ Id = $id; Dir = $dir; Started = (Get-Date); Facts = [ordered]@{} }
+    if ($null -ne $S.Prerequisite -and -not $rec.Attempted) {
+        # What the scenario needs before the person is asked to do anything (a marked download, say): unmet, the scenario
+        # is skipped with the reason instead of measuring something else.
+        $pq = & $S.Prerequisite
+        if (-not $pq.Ok) { Set-Result $id 'SKIPPED' ('prerequisite not met: ' + $pq.Detail) @() 0; return 'next' }
+        Add-Event ('{0}: prerequisite met - {1}' -f $id, $pq.Detail)
+    }
     if ($S.NeedsGui -and $State.SkipGui) {
         # -SkipGui drops a real-window scenario - but one attempted earlier may have left its change on the machine, and
         # that goes through the revert first (PR #11 round 9).
