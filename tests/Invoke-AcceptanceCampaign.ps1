@@ -465,6 +465,7 @@ function Get-Plan {
         @{ Id = 'M9'; Title = 'AppLocker script rules enforced (Enterprise / Education)'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('secpol.msc > Application Control Policies > AppLocker > Script Rules > right-click > Create Default Rules; AppLocker > Configure rule enforcement > Script rules: Configured, Enforce rules. Then in an ELEVATED command prompt:   sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force   - then answer done.',
                            'secpol.msc > 應用程式控制原則 > AppLocker > 指令碼規則 > 右鍵 > 建立預設規則；AppLocker > 設定規則強制執行 > 指令碼規則：已設定、強制執行規則。再在「以系統管理員身分執行」的命令提示字元執行：sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force，然後輸入 done。')
+           Prepare = { param($Ctx) try { $svc = Get-Service -Name AppIDSvc -ErrorAction Stop; return @{ AppIDSvcStartType = [string]$svc.StartType; AppIDSvcStatus = [string]$svc.Status } } catch { return @{ AppIDSvcStartType = 'n/a'; AppIDSvcStatus = 'n/a' } } }   # the service is changed by the instruction and must go back
            Precondition = {
                try {
                    $p = Get-AppLockerPolicy -Effective -ErrorAction Stop
@@ -486,8 +487,21 @@ function Get-Plan {
                $shown = @($r.Output | Where-Object { $_.Trim() -ne '' } | Select-Object -First 4) -join ' / '
                @{ Passed = $passed; Detail = ('{0}; launcher exit {1}; environment report(s): {2}; reports: {3}; what the user sees: {4}' -f $what, $r.ExitCode, $r.EnvironmentReports.Count, $r.Reports.Count, $shown); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError.txt', 'en-US\NetworkHealthCheck_ENVIRONMENT_*.txt') }
            }
-           Cleanup = @{ Instruction = @('AppLocker > Configure rule enforcement > Script rules: Not configured; delete the Script rules; gpupdate /force - then answer done.', 'AppLocker > 設定規則強制執行 > 指令碼規則：尚未設定；刪除指令碼規則；gpupdate /force，然後輸入 done。')
-                        Verify = { try { $p = Get-AppLockerPolicy -Effective -ErrorAction Stop; $s = @($p.RuleCollections | Where-Object { [string]$_.RuleCollectionType -eq 'Script' })[0]; if ($null -eq $s -or [string]$s.EnforcementMode -ne 'Enabled') { @{ Ok = $true; Detail = 'Script rules no longer enforced' } } else { @{ Ok = $false; Detail = 'Script rules still enforced' } } } catch { @{ Ok = $true; Detail = 'AppLocker not available' } } } } },
+           Cleanup = @{ Instruction = @('AppLocker > Configure rule enforcement > Script rules: Not configured; delete the Script rules; gpupdate /force. Then put the Application Identity service back as it was before this scenario (the campaign recorded its startup type and state and checks them): in an ELEVATED command prompt   sc config AppIDSvc start= <manual|auto|disabled>   and   net stop AppIDSvc   if it was stopped. Then answer done.',
+                                        'AppLocker > 設定規則強制執行 > 指令碼規則：尚未設定；刪除指令碼規則；gpupdate /force。然後把 Application Identity 服務改回這個情境之前的狀態（campaign 有記錄啟動類型與狀態並會檢查）：在「以系統管理員身分執行」的命令提示字元執行 sc config AppIDSvc start= <manual|auto|disabled>，若原本是停止的再執行 net stop AppIDSvc。完成後輸入 done。')
+                        Verify = { param($Ctx)
+                            # The precondition proved the policy readable; a policy that cannot be read now does not certify the revert (PR #11 round 3).
+                            try {
+                                $p = Get-AppLockerPolicy -Effective -ErrorAction Stop
+                                $s = @($p.RuleCollections | Where-Object { [string]$_.RuleCollectionType -eq 'Script' })[0]
+                                if ($null -ne $s -and [string]$s.EnforcementMode -eq 'Enabled') { return @{ Ok = $false; Detail = 'Script rules still enforced' } }
+                                $svc = Get-Service -Name AppIDSvc -ErrorAction Stop
+                                $wantType = [string]$Ctx.Facts.AppIDSvcStartType; $wantStatus = [string]$Ctx.Facts.AppIDSvcStatus
+                                if ($wantType -ne 'n/a' -and ([string]$svc.StartType -ne $wantType -or [string]$svc.Status -ne $wantStatus)) { return @{ Ok = $false; Detail = ('Script rules no longer enforced, but AppIDSvc is {0} ({1}); it was {2} ({3}) before M9' -f $svc.StartType, $svc.Status, $wantType, $wantStatus) } }
+                                @{ Ok = $true; Detail = ('Script rules no longer enforced; AppIDSvc {0} ({1}) as before' -f $svc.StartType, $svc.Status) }
+                            }
+                            catch { @{ Ok = $false; Detail = ('cannot read the AppLocker policy or the service now: ' + $_.Exception.Message) } }
+                        } } },
         @{ Id = 'A2'; Title = 'The acceptance runner as a standard user'; Kind = 'auto'; Session = 'standard'
            Instruction = @('Create a standard user if none exists (elevated: net user nhc-test <password> /add), sign out, sign in as that user, and run:', ('    ' + $ResumeCommand), 'Then sign back in as the administrator and run the same command once more to finish the campaign.',
                            '若還沒有標準使用者，先建立一個（系統管理員：net user nhc-test <密碼> /add），登出、以該使用者登入，執行上面的命令。之後再以系統管理員登入、再執行一次同樣的命令來完成 campaign。')
@@ -504,7 +518,7 @@ function Get-Plan {
 function Invoke-Scenario($S) {
     # Returns 'next' or 'stop'. Records PASS / FAIL / SKIPPED / PENDING in the state.
     $id = $S.Id
-    if ($null -eq $State.Scenarios[$id]) { $State.Scenarios[$id] = [ordered]@{ Title = $S.Title; Result = ''; Detail = ''; Seconds = 0; Started = ''; Finished = ''; Evidence = @(); Answers = [ordered]@{}; Reverted = ''; ActionResult = ''; Facts = [ordered]@{} } }
+    if ($null -eq $State.Scenarios[$id]) { $State.Scenarios[$id] = [ordered]@{ Title = $S.Title; Result = ''; Detail = ''; Seconds = 0; Started = ''; Finished = ''; Evidence = @(); Answers = [ordered]@{}; Reverted = ''; ActionResult = ''; ActionDetail = ''; Facts = [ordered]@{} } }
     $rec = $State.Scenarios[$id]
     if ($rec.Result -and $rec.Result -ne 'PENDING') { Write-Host ('[{0}] {1}: recorded earlier at {2} - {3}' -f $rec.Result, $id, $rec.Finished, $rec.Detail) -ForegroundColor DarkGray; return 'next' }
     Write-Host ''
@@ -512,7 +526,7 @@ function Invoke-Scenario($S) {
     if ($rec.Result -eq 'PENDING' -and $rec.ActionResult) {
         # The scenario ran and the machine was not put back (the campaign stopped at the revert prompt, or the revert
         # could not be verified): the action is not run again - only the revert is asked for, then the result is final.
-        Write-Host ('  the scenario ran earlier ({0}: {1}); the change is still to be reverted' -f $rec.ActionResult, $rec.Detail) -ForegroundColor Yellow
+        Write-Host ('  the scenario ran earlier ({0}: {1}); the change is still to be reverted' -f $rec.ActionResult, $rec.ActionDetail) -ForegroundColor Yellow
         $ctx = @{ Id = $id; Dir = (Join-Path $StateDir $id); Started = (Get-Date); Facts = $rec.Facts }
         return (Complete-Cleanup $S $rec $ctx)
     }
@@ -539,15 +553,40 @@ function Invoke-Scenario($S) {
     Save-State
     if ($S.Kind -ne 'auto') {
         Write-Line $S.Instruction 'Cyan'
+        # Once the person has answered done, the change may be on the machine whether or not the precondition agreed
+        # (a NIC disconnected while another still has an address, a policy half applied): from then on a skip goes
+        # through the revert like a finished scenario would, and only a skip before any attempt leaves at once (PR #11
+        # round 3).
+        $attempted = $false
+        $skipReason = ''
         while ($true) {
             $gate = Read-Answer $id 'gate' @('When done, answer done; skip to leave this scenario out; quit to stop the campaign here.', '完成後輸入 done；要略過這個情境輸入 skip；要在這裡中止 campaign 輸入 quit。') @('done', 'skip', 'quit') 'skip'
             if ($gate -eq 'quit') { Set-Result $id 'PENDING' 'quit by the user' @() 0; return 'stop' }
-            if ($gate -ne 'done') { Set-Result $id 'SKIPPED' 'skipped by the user' @() 0; return 'next' }
+            if ($gate -ne 'done') {
+                if (-not $skipReason) { $skipReason = 'skipped by the user' }
+                if ($attempted -and $null -ne $S.Cleanup) {
+                    $rec.ActionResult = 'SKIPPED'; $rec.ActionDetail = $skipReason; $rec.Evidence = @(); $rec.Seconds = 0
+                    Set-Result $id 'PENDING' ('skipped after an attempt ({0}); the change, if any, is still to be reverted' -f $skipReason) @() 0
+                    return (Complete-Cleanup $S $rec $ctx)
+                }
+                Set-Result $id 'SKIPPED' $skipReason @() 0
+                return 'next'
+            }
+            $attempted = $true
             if ($null -eq $S.Precondition) { break }
             $pc = & $S.Precondition
             if ($pc.Ok) { Add-Event ('{0}: precondition met - {1}' -f $id, $pc.Detail); break }
             Write-Line @(('Not yet: ' + $pc.Detail), ('還沒好：' + $pc.Detail)) 'Yellow'
-            if ($null -ne $AnswersTable) { Set-Result $id 'SKIPPED' ('precondition not met: ' + $pc.Detail) @() 0; return 'next' }
+            $skipReason = 'precondition not met: ' + $pc.Detail
+            if ($null -ne $AnswersTable) {
+                if ($null -ne $S.Cleanup) {
+                    $rec.ActionResult = 'SKIPPED'; $rec.ActionDetail = $skipReason; $rec.Evidence = @(); $rec.Seconds = 0
+                    Set-Result $id 'PENDING' ('skipped after an attempt ({0}); the change, if any, is still to be reverted' -f $skipReason) @() 0
+                    return (Complete-Cleanup $S $rec $ctx)
+                }
+                Set-Result $id 'SKIPPED' $skipReason @() 0
+                return 'next'
+            }
         }
     }
     else { Write-Line $S.Instruction 'Cyan' }
@@ -561,7 +600,7 @@ function Invoke-Scenario($S) {
     # A scenario that changed the machine is not final until the change is verified gone (PR #11 round 1): the action's
     # outcome is kept aside and the record stays PENDING, so that a campaign stopped or killed at the revert prompt
     # resumes at the revert, counts in the exit code until then, and never exits 0 with the machine still changed.
-    $rec.ActionResult = $outcome; $rec.Detail = [string]$r.Detail; $rec.Evidence = @($r.Evidence | Where-Object { $_ }); $rec.Seconds = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+    $rec.ActionResult = $outcome; $rec.ActionDetail = [string]$r.Detail; $rec.Evidence = @($r.Evidence | Where-Object { $_ }); $rec.Seconds = [math]::Round($sw.Elapsed.TotalSeconds, 1)
     Set-Result $id 'PENDING' ('ran ({0}); the change is still to be reverted' -f $outcome) @($r.Evidence) $sw.Elapsed.TotalSeconds
     return (Complete-Cleanup $S $rec $ctx)
 }
@@ -578,7 +617,7 @@ function Complete-Cleanup($S, $rec, $ctx) {
         if ($v.Ok) {
             $rec.Reverted = 'yes - ' + $v.Detail
             Add-Event ('{0}: reverted - {1}' -f $id, $v.Detail)
-            Set-Result $id $rec.ActionResult $rec.Detail @($rec.Evidence) $rec.Seconds
+            Set-Result $id $rec.ActionResult $rec.ActionDetail @($rec.Evidence) $rec.Seconds   # the scenario's own detail, not the pending text
             return 'next'
         }
         Write-Line @(('Still in place: ' + $v.Detail), ('還沒還原：' + $v.Detail)) 'Yellow'
@@ -589,7 +628,7 @@ function Complete-Cleanup($S, $rec, $ctx) {
 # -------------------- The campaign --------------------
 $plan = Get-Plan
 if ($Wanted.Count) { $selected = @($plan | Where-Object { $Wanted -contains $_.Id }) } else { $selected = $plan }
-foreach ($s in $plan) { if ($null -eq $State.Scenarios[$s.Id]) { $State.Scenarios[$s.Id] = [ordered]@{ Title = $s.Title; Result = ''; Detail = ''; Seconds = 0; Started = ''; Finished = ''; Evidence = @(); Answers = [ordered]@{}; Reverted = ''; ActionResult = ''; Facts = [ordered]@{} } } }
+foreach ($s in $plan) { if ($null -eq $State.Scenarios[$s.Id]) { $State.Scenarios[$s.Id] = [ordered]@{ Title = $s.Title; Result = ''; Detail = ''; Seconds = 0; Started = ''; Finished = ''; Evidence = @(); Answers = [ordered]@{}; Reverted = ''; ActionResult = ''; ActionDetail = ''; Facts = [ordered]@{} } } }
 Save-State
 Add-Event ('invocation by {0}{1}: scenarios {2}{3}' -f $env:USERNAME, $(if ($IsStandardUser) { ' (standard user)' } else { '' }), (@($selected | ForEach-Object { $_.Id }) -join ','), $(if ($null -ne $AnswersTable) { '; answers from ' + $Answers } else { '' }))
 $stopped = $false
