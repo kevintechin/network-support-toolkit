@@ -255,7 +255,10 @@ Invoke-Case 'package' 'SHA256SUMS.txt' {
     $entries = 0
     $bad = @()
     foreach ($line in [IO.File]::ReadLines($manifest)) {
-        if ($line -notmatch '^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$') { continue }
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        # Every non-blank line must be an entry: a truncated or malformed one would leave its file unverified while the
+        # case passed on the others (PR #10 round 2).
+        if ($line -notmatch '^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$') { $bad += ('unparsable line: ' + $line.Trim()); continue }
         $want = $Matches[1].ToLowerInvariant()
         $rel = $Matches[2] -replace '/', '\'
         $entries++
@@ -288,6 +291,11 @@ if ($RequireHealthy) { $chainArgs += '-RequireHealthy' }
 Write-Host ''
 Write-Host ('--- Invoke-ValidationChain.ps1 -Steps {0}{1} against the extracted package ---' -f $Steps, $(if ($SkipGui) { ' -SkipGui' } else { '' }))
 $chainLines = @()
+# A reused -WorkDir may hold the summary of an earlier invocation; a child that dies before writing its own must not be
+# read as that one (PR #10 round 2): the old file goes first, and a summary older than this launch is not accepted.
+$summary = Join-Path $chainDir 'summary.md'
+if (Test-Path -LiteralPath $summary) { Remove-Item -LiteralPath $summary -Force -ErrorAction Stop }
+$chainLaunched = Get-Date
 $ErrorActionPreference = 'Continue'   # the child's stderr must not become a terminating error here
 $prevOutputEncoding = [Console]::OutputEncoding
 try { [Console]::OutputEncoding = $Utf8NoBom } catch { }   # the chain writes UTF-8; read it as such, so zh-TW text survives into chain.log
@@ -307,8 +315,8 @@ Write-Host ('--- chain exit code {0} ---' -f $chainExit)
 $expected = [ordered]@{ 'parse' = 2; 'unit' = 2; 'report' = 2; 'envguard' = 2; 'gui-headless' = 4; 'gui' = 4; 'acceptance' = 5; 'resultset' = 1 }
 if ($SkipGui) { $expected['gui'] = 0; Add-Skipped 'chain/gui' '4 real-window cases' '-SkipGui' }
 $seen = @{}
-$summary = Join-Path $chainDir 'summary.md'
-if (Test-Path -LiteralPath $summary) {
+$summaryFresh = (Test-Path -LiteralPath $summary) -and ((Get-Item -LiteralPath $summary).LastWriteTime -ge $chainLaunched)
+if ($summaryFresh) {
     foreach ($line in [IO.File]::ReadLines($summary)) {
         if ($line -notmatch '^\|\s*(?<step>[^|]+?)\s*\|\s*(?<case>[^|]+?)\s*\|\s*(?<result>PASS|FAIL)\s*\|\s*(?<s>[^|]*?)\s*\|\s*(?<detail>.*)\|\s*$') { continue }
         $step = $Matches['step']
@@ -319,7 +327,7 @@ if (Test-Path -LiteralPath $summary) {
 foreach ($step in @($expected.Keys)) {
     $have = $(if ($seen.ContainsKey($step)) { $seen[$step] } else { 0 })
     for ($i = $have; $i -lt $expected[$step]; $i++) {
-        Add-NotRun ('chain/' + $step) ('case {0} of {1}' -f ($i + 1), $expected[$step]) $(if (Test-Path -LiteralPath $summary) { 'the chain ended before this case' } else { ('no summary.md - the chain exited with code {0}; see chain.log' -f $chainExit) })
+        Add-NotRun ('chain/' + $step) ('case {0} of {1}' -f ($i + 1), $expected[$step]) $(if ($summaryFresh) { 'the chain ended before this case' } else { ('no summary.md from this invocation - the chain exited with code {0}; see chain.log' -f $chainExit) })
     }
 }
 
