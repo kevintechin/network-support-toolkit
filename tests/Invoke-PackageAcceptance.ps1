@@ -159,7 +159,8 @@ function Complete-Run {
         if (Test-Path -LiteralPath $bundle) { Remove-Item -LiteralPath $bundle -Recurse -Force }
         New-Item -ItemType Directory -Force -Path $bundle | Out-Null
         Copy-Item -LiteralPath $summaryPath -Destination $bundle
-        Get-ChildItem -LiteralPath $WorkDir -File | Where-Object { $_.Extension -eq '.log' -or $_.Name -like 'environment_probe_*.txt' } | Copy-Item -Destination $bundle
+        # This invocation's files only: a reused work dir may still hold an earlier run's logs and probe.
+        Get-ChildItem -LiteralPath $WorkDir -File | Where-Object { ($_.Extension -eq '.log' -or $_.Name -like 'environment_probe_*.txt') -and $_.LastWriteTime -ge $Started } | Copy-Item -Destination $bundle
         $chainDir = Join-Path $WorkDir 'chain'
         if (Test-Path -LiteralPath $chainDir) {
             $chainBundle = Join-Path $bundle 'chain'
@@ -291,10 +292,11 @@ if ($RequireHealthy) { $chainArgs += '-RequireHealthy' }
 Write-Host ''
 Write-Host ('--- Invoke-ValidationChain.ps1 -Steps {0}{1} against the extracted package ---' -f $Steps, $(if ($SkipGui) { ' -SkipGui' } else { '' }))
 $chainLines = @()
-# A reused -WorkDir may hold the summary of an earlier invocation; a child that dies before writing its own must not be
-# read as that one (PR #10 round 2): the old file goes first, and a summary older than this launch is not accepted.
+# A reused -WorkDir may hold an earlier invocation's chain output - its summary, its logs, its reports. A child that
+# dies before writing its own must not be read as that one, and the bundle must not carry it (PR #10 rounds 2 and 3):
+# the chain's folder is removed before the launch, and a summary older than this launch is not accepted.
 $summary = Join-Path $chainDir 'summary.md'
-if (Test-Path -LiteralPath $summary) { Remove-Item -LiteralPath $summary -Force -ErrorAction Stop }
+if (Test-Path -LiteralPath $chainDir) { Remove-Item -LiteralPath $chainDir -Recurse -Force -ErrorAction Stop }
 $chainLaunched = Get-Date
 $ErrorActionPreference = 'Continue'   # the child's stderr must not become a terminating error here
 $prevOutputEncoding = [Console]::OutputEncoding
