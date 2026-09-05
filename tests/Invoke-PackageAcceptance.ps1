@@ -69,6 +69,11 @@ if (-not $Zip -and -not $PackageDir) { throw 'give -Zip (the downloaded release 
 if (-not $WorkDir) { $WorkDir = Join-Path $env:TEMP ('nhc-acceptance\' + $Stamp) }
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 $WorkDir = (Resolve-Path -LiteralPath $WorkDir).Path
+# A reused -WorkDir may hold an earlier invocation's chain output - its summary, its logs, its reports. It goes first,
+# before anything else can complete early and bundle it as this run's (PR #10 rounds 2 to 4): a run that stops at the
+# asset digest or at the extraction must leave a bundle with nothing but its own files in it.
+$chainDir = Join-Path $WorkDir 'chain'
+if (Test-Path -LiteralPath $chainDir) { Remove-Item -LiteralPath $chainDir -Recurse -Force -ErrorAction Stop }
 
 # A restricted language mode (what application control creates) refuses the chain's first New-Object, the way it
 # refuses the tool's: describe the machine, say so, exit 3 like the tool's own guard.
@@ -285,18 +290,15 @@ Invoke-Case 'probe' 'environment_probe.ps1' {
 }
 
 # -------------------- The chain --------------------
-$chainDir = Join-Path $WorkDir 'chain'
 $chainArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Tests 'Invoke-ValidationChain.ps1'), '-PackageDir', $script:PackageRoot, '-Steps', $Steps, '-WorkDir', $chainDir, '-GuiTimeoutSeconds', $GuiTimeoutSeconds)
 if ($SkipGui) { $chainArgs += '-SkipGui' }
 if ($RequireHealthy) { $chainArgs += '-RequireHealthy' }
 Write-Host ''
 Write-Host ('--- Invoke-ValidationChain.ps1 -Steps {0}{1} against the extracted package ---' -f $Steps, $(if ($SkipGui) { ' -SkipGui' } else { '' }))
 $chainLines = @()
-# A reused -WorkDir may hold an earlier invocation's chain output - its summary, its logs, its reports. A child that
-# dies before writing its own must not be read as that one, and the bundle must not carry it (PR #10 rounds 2 and 3):
-# the chain's folder is removed before the launch, and a summary older than this launch is not accepted.
+# The chain's folder was cleared at the start; a summary older than this launch is still not accepted, so that a child
+# that dies before writing its own is never read as an earlier one.
 $summary = Join-Path $chainDir 'summary.md'
-if (Test-Path -LiteralPath $chainDir) { Remove-Item -LiteralPath $chainDir -Recurse -Force -ErrorAction Stop }
 $chainLaunched = Get-Date
 $ErrorActionPreference = 'Continue'   # the child's stderr must not become a terminating error here
 $prevOutputEncoding = [Console]::OutputEncoding
