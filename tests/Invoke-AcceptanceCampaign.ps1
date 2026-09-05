@@ -132,8 +132,18 @@ function Read-Answer([string]$Id, [string]$Key, [string[]]$Prompt, [string[]]$Ch
             if ([string]::IsNullOrWhiteSpace($a) -and $Default) { $a = $Default }
         }
     }
-    $a = [string]$a
-    $a = $a.Trim()
+    $a = ([string]$a).Trim()
+    # With choices, the answer is matched case-insensitively; a value outside them is asked again at the console, and
+    # in answers mode returned as typed for the caller to refuse (PR #11 round 7) - a typo must never become a skip.
+    if ($null -ne $Choices -and $Choices.Count -gt 0) {
+        while ($Choices -notcontains $a.ToLowerInvariant()) {
+            if ($null -ne $AnswersTable) { break }
+            Write-Host ('  answer one of: ' + ($Choices -join ' / ')) -ForegroundColor Yellow
+            $a = ([string](Read-Host ('  > ' + ($Choices -join ' / ')))).Trim()
+            if ([string]::IsNullOrWhiteSpace($a) -and $Default) { $a = $Default }
+        }
+        if ($Choices -contains $a.ToLowerInvariant()) { $a = $a.ToLowerInvariant() }
+    }
     Add-Answer $Id $Key $a
     return $a
 }
@@ -441,7 +451,8 @@ function Get-Plan {
                $mark = Get-ZoneId $State.OriginalZip
                $shot = Join-Path $Ctx.Dir 'M2_after_double-click.png'
                Save-Screenshot $shot
-               $seen = Read-Answer $Ctx.Id 'windows-showed' @('What did Windows show? 1 = Open File - Security Warning, 2 = SmartScreen (Windows protected your PC), 3 = nothing, the tool ran, 4 = something else (describe)', 'Windows 顯示了什麼？1 = 開啟檔案－安全性警告，2 = SmartScreen（Windows 已保護您的電腦），3 = 沒有，工具直接跑了，4 = 其他（請描述）') @('1', '2', '3', '4') '4'
+               $seen = Read-Answer $Ctx.Id 'windows-showed' @('What did Windows show? 1 = Open File - Security Warning, 2 = SmartScreen (Windows protected your PC), 3 = nothing, the tool ran, 4 = something else', 'Windows 顯示了什麼？1 = 開啟檔案－安全性警告，2 = SmartScreen（Windows 已保護您的電腦），3 = 沒有，工具直接跑了，4 = 其他') @('1', '2', '3', '4') '4'
+               if ($seen -eq '4') { $seen = '4: ' + (Read-Answer $Ctx.Id 'windows-showed-other' @('Describe what Windows showed.', '請描述 Windows 顯示了什麼。') @() 'not described') }
                $null = Read-Answer $Ctx.Id 'run-finished' @('If a prompt is still waiting, choose what lets the tool run. When the tool window has closed, answer done.', '若提示還在等，選擇讓工具執行的選項。工具視窗關閉後輸入 done。') @('done') 'done'
                $launcher = @(Get-ChildItem -LiteralPath $m2Dir -Recurse -File -Filter 'Start-English.cmd' -ErrorAction SilentlyContinue)[0]
                $json = @(Get-ReportsUnder $m2Dir 'en-US' $Ctx.Started)[0]
@@ -534,7 +545,12 @@ function Get-Plan {
         @{ Id = 'M9'; Title = 'AppLocker script rules enforced (Enterprise / Education)'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('secpol.msc > Application Control Policies > AppLocker > Script Rules > right-click > Create Default Rules, then DELETE the default rule that allows BUILTIN\Administrators all scripts - your account is an administrator, and with that rule in place it is exempt and the test measures nothing; AppLocker > Configure rule enforcement > Script rules: Configured, Enforce rules. Then in an ELEVATED command prompt:   sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force   - then answer done. The driver checks that the rules really restrict this account before it runs anything.',
                            'secpol.msc > 應用程式控制原則 > AppLocker > 指令碼規則 > 右鍵 > 建立預設規則，然後「刪除」允許 BUILTIN\Administrators 執行所有指令碼的那條預設規則——你的帳號是管理員，留著它就被豁免、什麼都量不到；AppLocker > 設定規則強制執行 > 指令碼規則：已設定、強制執行規則。再在「以系統管理員身分執行」的命令提示字元執行：sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force，然後輸入 done。driver 執行前會確認規則真的限制了這個帳號。') + $recoverLines
-           Prepare = { param($Ctx) try { $svc = Get-Service -Name AppIDSvc -ErrorAction Stop; return @{ AppIDSvcStartType = [string]$svc.StartType; AppIDSvcStatus = [string]$svc.Status } } catch { return @{ AppIDSvcStartType = 'n/a'; AppIDSvcStatus = 'n/a' } } }   # the service is changed by the instruction and must go back
+           Prepare = { param($Ctx)
+               # The copy the launcher will run, made now so that the precondition can ask AppLocker about the very path
+               # that is executed (PR #11 round 7); and the service's state, which the instruction changes and must go back.
+               $null = Copy-LanguageFolder 'en-US' (Join-Path $Ctx.Dir 'en-US')
+               try { $svc = Get-Service -Name AppIDSvc -ErrorAction Stop; return @{ AppIDSvcStartType = [string]$svc.StartType; AppIDSvcStatus = [string]$svc.Status } } catch { return @{ AppIDSvcStartType = 'n/a'; AppIDSvcStatus = 'n/a' } }
+           }
            Precondition = {
                try {
                    $p = Get-AppLockerPolicy -Effective -ErrorAction Stop
@@ -546,7 +562,9 @@ function Get-Plan {
                        # The rules must restrict the account that runs the test: the default rules exempt BUILTIN\Administrators,
                        # and an exempt account would run the script normally and record a FAIL that measures nothing (PR #11
                        # round 6). AppLocker's own evaluation decides, for the shipped script where the campaign keeps it.
-                       $decision = @(Test-AppLockerPolicy -PolicyObject $p -Path (Join-Path $State.PackageRoot 'en-US\NetworkHealthCheck.ps1') -User ($env:USERDOMAIN + '\' + $env:USERNAME) -ErrorAction Stop)[0]
+                       $copy = Join-Path $StateDir 'M9\en-US\NetworkHealthCheck.ps1'   # the path Invoke-LauncherRun executes, made by Prepare
+                       if (-not (Test-Path -LiteralPath $copy)) { $null = Copy-LanguageFolder 'en-US' (Join-Path $StateDir 'M9\en-US') }
+                       $decision = @(Test-AppLockerPolicy -PolicyObject $p -Path $copy -User ($env:USERDOMAIN + '\' + $env:USERNAME) -ErrorAction Stop)[0]
                        if ($null -ne $decision -and [string]$decision.PolicyDecision -eq 'Allowed') { @{ Ok = $false; Detail = ('the Script rules allow {0}\{1} to run the script here ({2}) - this account is exempt, so delete the default rule for BUILTIN\Administrators (or use rules that restrict it) before the test' -f $env:USERDOMAIN, $env:USERNAME, $decision.MatchingRule) } }
                        else { @{ Ok = $true; Detail = ('Script rules enforced ({0} rules), AppIDSvc running; the script is {1} for {2}\{3}' -f $scriptRules.Count, $(if ($null -ne $decision) { [string]$decision.PolicyDecision } else { 'not allowed' }), $env:USERDOMAIN, $env:USERNAME) } }
                    }
@@ -626,7 +644,10 @@ function Invoke-Scenario($S) {
         # What the machine looked like before the change - recorded once: a campaign interrupted at the gate, after the
         # person changed the machine, must not describe the changed machine as the original on resume (PR #11 round 2).
         if ($null -ne $rec.Facts -and @($rec.Facts.Keys).Count -gt 0) { $ctx.Facts = $rec.Facts; Write-Host ('  facts recorded earlier are kept: ' + (@($rec.Facts.Keys | ForEach-Object { $_ + '=' + $rec.Facts[$_] }) -join ', ')) -ForegroundColor DarkGray }
-        else { $ctx.Facts = ConvertTo-Hashtable (& $S.Prepare $ctx); $rec.Facts = $ctx.Facts; Write-RecoveryNotes }   # the notes name the recorded state
+        else {
+            try { $ctx.Facts = ConvertTo-Hashtable (& $S.Prepare $ctx); $rec.Facts = $ctx.Facts; Write-RecoveryNotes }   # the notes name the recorded state
+            catch { Set-Result $id 'FAIL' ('could not prepare the scenario: ' + $_.Exception.Message) @() 0; return 'next' }
+        }
     }
     $rec.Started = (& $Now)
     Save-State
@@ -641,6 +662,7 @@ function Invoke-Scenario($S) {
         while ($true) {
             $gate = Read-Answer $id 'gate' @('When done, answer done; skip to leave this scenario out; quit to stop the campaign here.', '完成後輸入 done；要略過這個情境輸入 skip；要在這裡中止 campaign 輸入 quit。') @('done', 'skip', 'quit') 'skip'
             if ($gate -eq 'quit') { Set-Result $id 'PENDING' $(if ($attempted) { 'quit by the user after an attempt; the change, if any, may still be on the machine' } else { 'quit by the user' }) @() 0; return 'stop' }
+            if ($gate -ne 'done' -and $gate -ne 'skip') { Set-Result $id 'PENDING' ("unrecognized answer '" + $gate + "' at the gate (done / skip / quit); nothing was run") @() 0; return 'next' }
             if ($gate -ne 'done') {
                 if (-not $skipReason) { $skipReason = 'skipped by the user' }
                 if ($attempted -and $null -ne $S.Cleanup) {
@@ -693,6 +715,7 @@ function Complete-Cleanup($S, $rec, $ctx) {
     while ($true) {
         $gate = Read-Answer $id 'revert' @('When reverted, answer done; quit to stop the campaign here (the change stays in place until the campaign is resumed!).', '還原後輸入 done；要在這裡中止 campaign 輸入 quit（在 campaign 續跑之前，變更會留在機器上！）。') @('done', 'quit') 'done'
         if ($gate -eq 'quit') { $rec.Reverted = 'NOT REVERTED - quit'; Set-Result $id 'PENDING' ('ran ({0}) but NOT REVERTED - quit; resume to put the machine back' -f $rec.ActionResult) @($rec.Evidence) $rec.Seconds; Add-Event ('{0}: the campaign stopped with the change still in place' -f $id); return 'stop' }
+        if ($gate -ne 'done') { $rec.Reverted = 'NOT VERIFIED - unrecognized answer'; Set-Result $id 'PENDING' ("ran ({0}) but the revert was not confirmed: unrecognized answer '{1}' (done / quit); resume to put the machine back" -f $rec.ActionResult, $gate) @($rec.Evidence) $rec.Seconds; return 'next' }
         $v = & $S.Cleanup.Verify $ctx
         if ($v.Ok) {
             $rec.Reverted = 'yes - ' + $v.Detail

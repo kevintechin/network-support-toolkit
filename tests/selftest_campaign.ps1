@@ -202,6 +202,18 @@ foreach ($l in $out12) { Write-Output ('    | ' + $l) }
 Assert-True '12. exit code 3' ($code12 -eq 3) ('exit code ' + $code12)
 Assert-True '12. the output names ConstrainedLanguage and RECOVER.txt, and no New-Object error' ((@($out12 | Where-Object { $_ -match 'ConstrainedLanguage' -and $_ -match 'cannot run or resume' }).Count -ge 1) -and (@($out12 | Where-Object { $_ -match 'RECOVER\.txt' }).Count -ge 1) -and (@($out12 | Where-Object { $_ -match 'New-Object' }).Count -eq 0)) ($out12 -join ' / ')
 
+# -------------------- 13. answers are matched case-insensitively, and a typo is never a skip --------------------
+Write-Output ''
+Write-Output '13. A4=DONE counts as done (then the precondition decides); A4=dnoe is refused: PENDING, exit 1'
+$r13a = Invoke-Campaign 'answers-a' @('-Zip', $zip, '-Scenarios', 'A4', '-SkipGui') "A4=DONE`r`n"
+$s13a = Read-State $r13a.State
+Assert-True '13a. DONE was taken as done (the precondition ran and was not met)' ($s13a.Scenarios.A4.Result -eq 'SKIPPED' -and $s13a.Scenarios.A4.Detail -like 'precondition not met:*') ($s13a.Scenarios.A4.Result + ' / ' + $s13a.Scenarios.A4.Detail)
+Assert-True '13a. the answer was recorded normalized' (@(Get-Content -LiteralPath (Join-Path $r13a.State 'answers.log') | Where-Object { $_ -match ' A4/gate = done$' }).Count -eq 1) (Get-Content -LiteralPath (Join-Path $r13a.State 'answers.log') -Raw)
+$r13b = Invoke-Campaign 'answers-b' @('-Zip', $zip, '-Scenarios', 'A4', '-SkipGui') "A4=dnoe`r`n"
+$s13b = Read-State $r13b.State
+Assert-True '13b. dnoe is refused: PENDING with the answer named, nothing run' ($s13b.Scenarios.A4.Result -eq 'PENDING' -and $s13b.Scenarios.A4.Detail -like "unrecognized answer 'dnoe'*") ($s13b.Scenarios.A4.Result + ' / ' + $s13b.Scenarios.A4.Detail)
+Assert-True '13b. exit code 1' ($r13b.ExitCode -eq 1) ('exit code ' + $r13b.ExitCode)
+
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
     Write-Output ''
