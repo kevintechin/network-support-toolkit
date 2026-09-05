@@ -374,11 +374,20 @@ Assert-True '24. exit code 1' ($r24.ExitCode -eq 1) ('exit code ' + $r24.ExitCod
 
 # -------------------- 25. the display size is measured live --------------------
 Write-Output ''
-Write-Output '25. the driver measures the display through SystemInformation.PrimaryMonitorSize (GetSystemMetrics, read on every call), never through the Screen objects Windows Forms caches until a message loop runs - the person changes the display while the campaign waits in Read-Host (the first campaign on the Windows 11 VM, 2026-09-05)'
-$driverText = [IO.File]::ReadAllText($driver, [Text.Encoding]::UTF8)
-Assert-True '25. no [System.Windows.Forms.Screen] read anywhere in the driver' ($driverText -notmatch 'Windows\.Forms\.Screen\]') 'a Screen read is in the driver'
-Assert-True '25. Get-PrimaryBounds reads SystemInformation.PrimaryMonitorSize' ($driverText -match 'function Get-PrimaryBounds \{((?!\nfunction )[\s\S])*?SystemInformation\]::PrimaryMonitorSize') 'Get-PrimaryBounds does not read PrimaryMonitorSize'
-Assert-True '25. Save-Screenshot measures through Get-PrimaryBounds' ($driverText -match 'function Save-Screenshot\(\[string\]\$Path\) \{((?!\nfunction )[\s\S])*?\$bounds = Get-PrimaryBounds') 'Save-Screenshot measures on its own'
+Write-Output '25. the driver measures the display through SystemInformation.PrimaryMonitorSize (GetSystemMetrics, read on every call), never through the Screen objects Windows Forms caches until a message loop runs - the person changes the display while the campaign waits in Read-Host (the first campaign on the Windows 11 VM, 2026-09-05). Asserted on the AST, so a comment can neither satisfy nor trip it (Codex round 1 on PR #12)'
+$tokens25 = $null; $errors25 = $null
+$ast25 = [System.Management.Automation.Language.Parser]::ParseFile($driver, [ref]$tokens25, [ref]$errors25)
+Assert-True '25. the driver parses' (@($errors25).Count -eq 0) (@($errors25 | ForEach-Object { $_.Message }) -join ' / ')
+$screenReads = @($ast25.FindAll({ param($n) $n -is [System.Management.Automation.Language.TypeExpressionAst] -and $n.TypeName.FullName -match '(^|\.)Windows\.Forms\.Screen$' }, $true))
+Assert-True '25. no [System.Windows.Forms.Screen] expression anywhere in the driver' ($screenReads.Count -eq 0) (@($screenReads | ForEach-Object { 'line ' + $_.Extent.StartLineNumber }) -join ', ')
+$functions25 = @{}
+foreach ($f in $ast25.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) { $functions25[$f.Name] = $f }
+$live25 = @()
+if ($functions25.ContainsKey('Get-PrimaryBounds')) { $live25 = @($functions25['Get-PrimaryBounds'].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.Static -and $n.Expression -is [System.Management.Automation.Language.TypeExpressionAst] -and $n.Expression.TypeName.FullName -match '(^|\.)Windows\.Forms\.SystemInformation$' -and [string]$n.Member.Value -eq 'PrimaryMonitorSize' }, $true)) }
+Assert-True '25. Get-PrimaryBounds reads [SystemInformation]::PrimaryMonitorSize - a statement, not a comment' ($live25.Count -ge 1) ('Get-PrimaryBounds defined: ' + $functions25.ContainsKey('Get-PrimaryBounds') + '; live reads: ' + $live25.Count)
+$shotCalls25 = @()
+if ($functions25.ContainsKey('Save-Screenshot')) { $shotCalls25 = @($functions25['Save-Screenshot'].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-PrimaryBounds' }, $true)) }
+Assert-True '25. Save-Screenshot measures through Get-PrimaryBounds' ($shotCalls25.Count -ge 1) ('Save-Screenshot defined: ' + $functions25.ContainsKey('Save-Screenshot') + '; calls: ' + $shotCalls25.Count)
 
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
