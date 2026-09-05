@@ -653,6 +653,13 @@ function Invoke-Scenario($S) {
         $ctx = @{ Id = $id; Dir = (Join-Path $StateDir $id); Started = (Get-Date); Facts = $rec.Facts }
         return (Complete-Cleanup $S $rec $ctx)
     }
+    if ($S.NeedsGui -and $State.SkipGui -and -not ($rec.Attempted -and $null -ne $S.Cleanup)) {
+        # -SkipGui drops a desktop scenario in any session, before the session is looked at: a standard-user session
+        # without a desktop asked for exactly that (PR #11 round 14). One attempted earlier with a revert to do is
+        # handled further down, where the revert comes first.
+        Set-Result $id 'SKIPPED' '-SkipGui' @() 0
+        return 'next'
+    }
     if ($S.Session -eq 'standard' -and -not $IsStandardUser) {
         Write-Line $S.Instruction 'Cyan'
         Set-Result $id 'PENDING' 'needs a standard-user session; run the command above there' @() 0
@@ -830,30 +837,36 @@ foreach ($s in $plan) {
     $detail = $(if ($rec.Result) { $rec.Detail } else { 'not run yet' })
     $rows += [pscustomobject]@{ Id = $s.Id; Title = $s.Title; Result = $result; Seconds = $rec.Seconds; Detail = $detail; Reverted = $rec.Reverted; Finished = $rec.Finished }
 }
-$passed = @($rows | Where-Object { $_.Result -eq 'PASS' }).Count
-$failed = @($rows | Where-Object { $_.Result -eq 'FAIL' }).Count
-$skipped = @($rows | Where-Object { $_.Result -eq 'SKIPPED' }).Count
-$pending = @($rows | Where-Object { $_.Result -eq 'PENDING' }).Count
-# The exit code answers for this invocation: every failure on record, plus what this invocation selected and could
-# not finish (quit, not reached, left for another session). Scenarios never selected stay pending in the summary
-# without counting, so that a partial run on purpose (-Scenarios) can exit 0.
-$selectedIds = @($selected | ForEach-Object { $_.Id }) + @($outstanding | ForEach-Object { $_.Id })   # an outstanding revert counts whatever was selected
-$pendingSelected = @($rows | Where-Object { $_.Result -eq 'PENDING' -and $selectedIds -contains $_.Id }).Count
-$md = @()
-$md += ('# NetworkHealthCheck {0} acceptance campaign - {1}' -f $State.ToolVersion, $Campaign)
-$md += ''
-$md += ('- Machine: {0}; started {1} by {2}; this invocation {3} by {4}{5}' -f $State.Computer, $State.Created, $State.StartedBy, (& $Now), $env:USERNAME, $(if ($IsStandardUser) { ' (standard user)' } else { '' }))
-$md += ('- Asset: {0} (SHA256 {1}{2})' -f (Split-Path -Leaf $State.ZipCopy), $State.Digest, $(if ($State.ExpectedSha256) { ', matches the release notes' } else { ', not compared' }))
-$md += ('- Real windows: {0}; state: {1}' -f $(if ($State.SkipGui) { 'none (-SkipGui)' } else { 'yes' }), $StateDir)
-$md += ('- Recovery without PowerShell (a policy scenario interrupted before its revert): {0}' -f $RecoveryNotes)
-$md += ''
-$md += '| Id | Scenario | Result | s | Detail | Reverted | Finished |'
-$md += '|---|---|---|---:|---|---|---|'
-$md += @($rows | ForEach-Object { '| {0} | {1} | {2} | {3} | {4} | {5} | {6} |' -f $_.Id, $_.Title, $_.Result, $_.Seconds, ($_.Detail -replace '\|', '\|'), $_.Reverted, $_.Finished })
-$md += ''
-$md += ('Summary: {0} passed, {1} failed, {2} skipped, {3} pending' -f $passed, $failed, $skipped, $pending)
+function Write-CampaignSummary {
+    # campaign_summary.md from $rows, and the counts the exit code uses; written at the end, and again when the bundle
+    # fails, so that the record on disk never contradicts the exit code (PR #11 round 14).
+    $script:passed = @($rows | Where-Object { $_.Result -eq 'PASS' }).Count
+    $script:failed = @($rows | Where-Object { $_.Result -eq 'FAIL' }).Count
+    $script:skipped = @($rows | Where-Object { $_.Result -eq 'SKIPPED' }).Count
+    $script:pending = @($rows | Where-Object { $_.Result -eq 'PENDING' }).Count
+    # The exit code answers for this invocation: every failure on record, plus what this invocation selected and could
+    # not finish (quit, not reached, left for another session). Scenarios never selected stay pending in the summary
+    # without counting, so that a partial run on purpose (-Scenarios) can exit 0.
+    $selectedIds = @($selected | ForEach-Object { $_.Id }) + @($outstanding | ForEach-Object { $_.Id })   # an outstanding revert counts whatever was selected
+    $script:pendingSelected = @($rows | Where-Object { $_.Result -eq 'PENDING' -and $selectedIds -contains $_.Id }).Count
+    $md = @()
+    $md += ('# NetworkHealthCheck {0} acceptance campaign - {1}' -f $State.ToolVersion, $Campaign)
+    $md += ''
+    $md += ('- Machine: {0}; started {1} by {2}; this invocation {3} by {4}{5}' -f $State.Computer, $State.Created, $State.StartedBy, (& $Now), $env:USERNAME, $(if ($IsStandardUser) { ' (standard user)' } else { '' }))
+    $md += ('- Asset: {0} (SHA256 {1}{2})' -f (Split-Path -Leaf $State.ZipCopy), $State.Digest, $(if ($State.ExpectedSha256) { ', matches the release notes' } else { ', not compared' }))
+    $md += ('- Real windows: {0}; state: {1}' -f $(if ($State.SkipGui) { 'none (-SkipGui)' } else { 'yes' }), $StateDir)
+    $md += ('- Recovery without PowerShell (a policy scenario interrupted before its revert): {0}' -f $RecoveryNotes)
+    $md += ''
+    $md += '| Id | Scenario | Result | s | Detail | Reverted | Finished |'
+    $md += '|---|---|---|---:|---|---|---|'
+    $md += @($rows | ForEach-Object { '| {0} | {1} | {2} | {3} | {4} | {5} | {6} |' -f $_.Id, $_.Title, $_.Result, $_.Seconds, ($_.Detail -replace '\|', '\|'), $_.Reverted, $_.Finished })
+    $md += ''
+    $md += ('Summary: {0} passed, {1} failed, {2} skipped, {3} pending' -f $script:passed, $script:failed, $script:skipped, $script:pending)
+    [IO.File]::WriteAllLines($summaryPath, [string[]]$md, $Utf8NoBom)
+    return $md
+}
 $summaryPath = Join-Path $StateDir 'campaign_summary.md'
-[IO.File]::WriteAllLines($summaryPath, [string[]]$md, $Utf8NoBom)
+$md = Write-CampaignSummary
 Write-Host ''
 $rows | Format-Table -AutoSize -Wrap Id, Result, Seconds, Detail | Out-String -Width 220 | Write-Host
 Write-Host $md[-1]
@@ -878,6 +891,13 @@ try {
     Compress-Archive -Path (Join-Path $bundle '*') -DestinationPath $zipOut
     Write-Host ('bundle {0} ({1} bytes)' -f $zipOut, (Get-Item -LiteralPath $zipOut).Length)
 }
-catch { Write-Host ('bundle not written: ' + $_.Exception.Message + ' - the state folder holds everything: ' + $StateDir) -ForegroundColor Red; $failed++ }
+catch {
+    # The bundle is the record's deliverable: its failure is a row of the record and counts, and the summary on disk is
+    # rewritten so that it agrees with the exit code (PR #11 round 14).
+    Write-Host ('bundle not written: ' + $_.Exception.Message + ' - the state folder holds everything: ' + $StateDir) -ForegroundColor Red
+    $rows += [pscustomobject]@{ Id = 'bundle'; Title = 'the campaign bundle'; Result = 'FAIL'; Seconds = ''; Detail = ('not written: ' + $_.Exception.Message + '; the state folder holds everything: ' + $StateDir); Reverted = ''; Finished = (& $Now) }
+    $md = Write-CampaignSummary
+    Write-Host $md[-1]
+}
 if ($pending -gt 0) { Write-Line @(('{0} scenario(s) pending. To continue: ' -f $pending), ('    ' + $ResumeCommand)) 'Cyan' }
 exit ($failed + $pendingSelected)

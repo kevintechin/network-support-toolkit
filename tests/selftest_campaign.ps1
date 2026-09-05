@@ -354,6 +354,19 @@ $s23 = Read-State $r23.State
 Assert-True '23. M2 SKIPPED: ZoneId=0 is not an Internet-zone mark' ($s23.Scenarios.M2.Result -eq 'SKIPPED' -and $s23.Scenarios.M2.Detail -like 'prerequisite not met: the download carries no Internet-zone Mark of the Web (ZoneId=0*') ($s23.Scenarios.M2.Result + ' / ' + $s23.Scenarios.M2.Detail)
 Assert-True '23. exit code 0' ($r23.ExitCode -eq 0) ('exit code ' + $r23.ExitCode)
 
+# -------------------- 24. a bundle that cannot be written is a row of the record --------------------
+Write-Output ''
+Write-Output '24. the campaign bundle path held open by another process: the bundle fails, the summary on disk carries a bundle FAIL row, exit 1'
+$bundleZip = Join-Path $r3.State ('nhc-campaign_{0}_selftest-quit.zip' -f $env:COMPUTERNAME)
+if (-not (Test-Path -LiteralPath $bundleZip)) { [IO.File]::WriteAllText($bundleZip, 'placeholder') }
+$lock = [IO.File]::Open($bundleZip, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+try { $r24 = Invoke-Campaign 'quit' @('-Resume', '-Scenarios', 'M7', '-SkipGui') "M7=skip`r`n" }
+finally { $lock.Dispose() }
+$summary24 = Get-Content -LiteralPath (Join-Path $r3.State 'campaign_summary.md') -Raw -Encoding UTF8
+Assert-True '24. the summary on disk carries the bundle failure' ($summary24 -match '\| bundle \| the campaign bundle \| FAIL \|') (($summary24 -split "`n" | Select-Object -Last 4) -join ' / ')
+Assert-True '24. the summary line counts it' ($summary24 -match 'Summary: \d+ passed, 1 failed, ') (($summary24 -split "`n")[-1])
+Assert-True '24. exit code 1' ($r24.ExitCode -eq 1) ('exit code ' + $r24.ExitCode)
+
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
     Write-Output ''
