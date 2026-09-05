@@ -309,6 +309,32 @@ $s19 = Read-State $r19.State
 Assert-True '19. M2 SKIPPED with the prerequisite named' ($s19.Scenarios.M2.Result -eq 'SKIPPED' -and $s19.Scenarios.M2.Detail -like 'prerequisite not met: the download carries no Mark of the Web*') ($s19.Scenarios.M2.Result + ' / ' + $s19.Scenarios.M2.Detail)
 Assert-True '19. no gate was asked and the exit code is 0' ((@(Get-Content -LiteralPath (Join-Path $r19.State 'answers.log') -ErrorAction SilentlyContinue | Where-Object { $_ -match ' M2/' }).Count -eq 0) -and $r19.ExitCode -eq 0) ('exit code ' + $r19.ExitCode)
 
+# -------------------- 20. a prerequisite is checked again when an attempted scenario resumes --------------------
+Write-Output ''
+Write-Output '20. M2 attempted earlier (a crafted state) on a download without the mark: the resume rechecks and skips, exit 0'
+$stateFile20 = Join-Path $r19.State 'campaign.json'
+$crafted20 = Get-Content -LiteralPath $stateFile20 -Raw -Encoding UTF8 | ConvertFrom-Json
+$crafted20.Scenarios.M2.Result = 'PENDING'
+$crafted20.Scenarios.M2.Detail = 'quit by the user after an attempt (crafted by the self-test)'
+$crafted20.Scenarios.M2.Attempted = $true
+[IO.File]::WriteAllText($stateFile20, ($crafted20 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+$r20 = Invoke-Campaign 'prereq' @('-Resume', '-Scenarios', 'M2', '-SkipGui') "M2=done`r`n"
+$s20 = Read-State $r20.State
+Assert-True '20. M2 SKIPPED on the recheck despite the earlier attempt' ($s20.Scenarios.M2.Result -eq 'SKIPPED' -and $s20.Scenarios.M2.Detail -like 'prerequisite not met:*') ($s20.Scenarios.M2.Result + ' / ' + $s20.Scenarios.M2.Detail)
+Assert-True '20. exit code 0' ($r20.ExitCode -eq 0) ('exit code ' + $r20.ExitCode)
+
+# -------------------- 21. M2 runs on a marked download and fails without a report --------------------
+Write-Output ''
+Write-Output '21. M2 on a copy of the asset given a Mark of the Web, no extraction made: the prompts run, a screenshot is taken, FAIL for the missing report, exit 1'
+$zipMarked = Join-Path $WorkDir ('NetworkHealthCheck-' + $version + '-marked.zip')
+Copy-Item -LiteralPath $zip -Destination $zipMarked -Force
+Set-Content -LiteralPath $zipMarked -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
+$r21 = Invoke-Campaign 'marked' @('-Zip', $zipMarked, '-Scenarios', 'M2', '-SkipGui') "M2=done`r`nM2/windows-showed=3`r`nM2/run-finished=done`r`n"
+$s21 = Read-State $r21.State
+Assert-True '21. M2 FAIL for the missing extraction and report, with the marks recorded' ($s21.Scenarios.M2.Result -eq 'FAIL' -and $s21.Scenarios.M2.Detail -like '*no en-US report*' -and $s21.Scenarios.M2.Detail -like '*download mark: ZoneId=3*') ($s21.Scenarios.M2.Result + ' / ' + $s21.Scenarios.M2.Detail)
+Assert-True '21. the screenshot was taken and the observation recorded' ((Test-Path -LiteralPath (Join-Path $r21.State 'M2\M2_after_double-click.png')) -and (@(Get-Content -LiteralPath (Join-Path $r21.State 'answers.log') | Where-Object { $_ -match ' M2/windows-showed = 3$' }).Count -eq 1)) 'screenshot or answer missing'
+Assert-True '21. exit code 1' ($r21.ExitCode -eq 1) ('exit code ' + $r21.ExitCode)
+
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
     Write-Output ''

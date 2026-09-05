@@ -385,10 +385,12 @@ function Write-RecoveryNotes {
 Write-RecoveryNotes
 
 # -------------------- The plan --------------------
+# Folders the extraction scenarios use, at script scope: a scenario's scriptblocks run long after Get-Plan has
+# returned, and PowerShell scriptblocks capture nothing - a local of Get-Plan read inside an action is $null at run
+# time (found by self-test case 21 in PR #11 round 12).
+$M2Dir = Join-Path ([Environment]::GetFolderPath('Desktop')) 'NHC-M2'
+$M3Dir = Join-Path ([Environment]::GetFolderPath('Desktop')) 'NHC-M3'
 function Get-Plan {
-    $desktop = [Environment]::GetFolderPath('Desktop')
-    $m2Dir = Join-Path $desktop 'NHC-M2'
-    $m3Dir = Join-Path $desktop 'NHC-M3'
     $zipName = Split-Path -Leaf $State.OriginalZip
     $top = Split-Path -Leaf $State.PackageRoot
     # Printed before a policy is applied: the way back that needs no PowerShell, for the case the campaign cannot resume.
@@ -460,8 +462,8 @@ function Get-Plan {
            # Checked before the instruction is shown: without the Mark of the Web on the download there is no warning to
            # measure (PR #11 round 11) - an unblocked or stripped ZIP, or M3 run first through a subset.
            Prerequisite = { $m = Get-ZoneId $State.OriginalZip; if ($m -eq 'no mark' -or $m -eq 'file missing') { @{ Ok = $false; Detail = ('the download carries no Mark of the Web (' + $m + ': ' + $State.OriginalZip + ') - M2 cannot measure the warning; download the ZIP again in the browser, or run M2 before M3') } } else { @{ Ok = $true; Detail = ('the download is marked: ' + $m) } } }
-           Instruction = @(('Right-click the downloaded ZIP > Extract All... into ' + $m2Dir + ' (do NOT Unblock it). Open the extracted folder and double-click Start-English.cmd. As soon as a Windows prompt appears - or the tool window, if nothing appeared - answer done: a screenshot is taken at that moment.'),
-                           ('在下載的 ZIP 上按右鍵 > 全部解壓縮，解壓到 ' + $m2Dir + '（不要 Unblock）。打開解壓出來的資料夾，雙擊 Start-English.cmd。Windows 一跳出提示（或沒有提示、工具視窗出現時）就輸入 done：那一刻會截圖。'))
+           Instruction = @(('Right-click the downloaded ZIP > Extract All... into ' + $M2Dir + ' (do NOT Unblock it). Open the extracted folder and double-click Start-English.cmd. As soon as a Windows prompt appears - or the tool window, if nothing appeared - answer done: a screenshot is taken at that moment.'),
+                           ('在下載的 ZIP 上按右鍵 > 全部解壓縮，解壓到 ' + $M2Dir + '（不要 Unblock）。打開解壓出來的資料夾，雙擊 Start-English.cmd。Windows 一跳出提示（或沒有提示、工具視窗出現時）就輸入 done：那一刻會截圖。'))
            Action = { param($Ctx)
                $mark = Get-ZoneId $State.OriginalZip
                $shot = Join-Path $Ctx.Dir 'M2_after_double-click.png'
@@ -469,17 +471,18 @@ function Get-Plan {
                $seen = Read-Answer $Ctx.Id 'windows-showed' @('What did Windows show? 1 = Open File - Security Warning, 2 = SmartScreen (Windows protected your PC), 3 = nothing, the tool ran, 4 = something else', 'Windows 顯示了什麼？1 = 開啟檔案－安全性警告，2 = SmartScreen（Windows 已保護您的電腦），3 = 沒有，工具直接跑了，4 = 其他') @('1', '2', '3', '4') '4'
                if ($seen -eq '4') { $seen = '4: ' + (Read-Answer $Ctx.Id 'windows-showed-other' @('Describe what Windows showed.', '請描述 Windows 顯示了什麼。') @() 'not described') }
                $null = Read-Answer $Ctx.Id 'run-finished' @('If a prompt is still waiting, choose what lets the tool run. When the tool window has closed, answer done.', '若提示還在等，選擇讓工具執行的選項。工具視窗關閉後輸入 done。') @('done') 'done'
-               $launcher = @(Get-ChildItem -LiteralPath $m2Dir -Recurse -File -Filter 'Start-English.cmd' -ErrorAction SilentlyContinue)[0]
-               $json = @(Get-ReportsUnder $m2Dir 'en-US' $Ctx.Started)[0]
+               $launcher = @(Get-ChildItem -LiteralPath $M2Dir -Recurse -File -Filter 'Start-English.cmd' -ErrorAction SilentlyContinue)[0]
+               $json = @(Get-ReportsUnder $M2Dir 'en-US' $Ctx.Started)[0]
                $bad = @()
-               if ($null -eq $launcher) { $bad += ('Start-English.cmd not found under ' + $m2Dir) }
+               if ($null -eq $launcher) { $bad += ('Start-English.cmd not found under ' + $M2Dir) }
                if ($null -eq $json) { $bad += 'no en-US report written after the double-click' } else { Copy-Item -LiteralPath $json.FullName -Destination $Ctx.Dir -Force }
                $launcherMark = $(if ($null -ne $launcher) { Get-ZoneId $launcher.FullName } else { 'n/a' })
+               if ($mark -eq 'no mark' -or $mark -eq 'file missing') { $bad += ('the download carried no Mark of the Web at the time of the run (' + $mark + '): nothing about the warning was measured') }   # the moment that matters, whatever the prerequisite saw earlier
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('download mark: {0}; extracted launcher mark: {1}; Windows showed: {2}; report: {3}' -f $mark, $launcherMark, $seen, $(if ($null -ne $json) { $json.Name } else { 'none' }))); Evidence = @('M2_after_double-click.png') }
            } },
         @{ Id = 'M3'; Title = 'Unblock, extract, both root launchers, Open Report'; Kind = 'manual'; Session = 'admin'
-           Instruction = @(('Right-click the downloaded ZIP > Properties > tick Unblock > OK. Extract All... into ' + $m3Dir + '. Double-click Start-English.cmd and let it run; close it. Double-click Start-Traditional-Chinese.cmd and let it run; when its run has finished and the window is still open, answer done: a screenshot of the window is taken then.'),
-                           ('在下載的 ZIP 上按右鍵 > 內容 > 勾選「解除封鎖」> 確定。全部解壓縮到 ' + $m3Dir + '。雙擊 Start-English.cmd 讓它跑完、關閉。再雙擊 Start-Traditional-Chinese.cmd 讓它跑完；跑完、視窗還開著時輸入 done：那一刻會截圖視窗。'))
+           Instruction = @(('Right-click the downloaded ZIP > Properties > tick Unblock > OK. Extract All... into ' + $M3Dir + '. Double-click Start-English.cmd and let it run; close it. Double-click Start-Traditional-Chinese.cmd and let it run; when its run has finished and the window is still open, answer done: a screenshot of the window is taken then.'),
+                           ('在下載的 ZIP 上按右鍵 > 內容 > 勾選「解除封鎖」> 確定。全部解壓縮到 ' + $M3Dir + '。雙擊 Start-English.cmd 讓它跑完、關閉。再雙擊 Start-Traditional-Chinese.cmd 讓它跑完；跑完、視窗還開著時輸入 done：那一刻會截圖視窗。'))
            Action = { param($Ctx)
                # The evidence the checklist asks for: the window after its run, and the browser showing the report (PR #11 rounds 2 and 4).
                $windowShot = Join-Path $Ctx.Dir 'M3_zhTW_window_after_the_run.png'
@@ -491,8 +494,8 @@ function Get-Plan {
                if ($mark -ne 'no mark') { $bad += ('the ZIP still carries the Mark of the Web (' + $mark + '): the Unblock did not happen') }
                $names = @()
                foreach ($lang in @('en-US', 'zh-TW')) {
-                   $json = @(Get-ReportsUnder $m3Dir $lang $Ctx.Started)[0]
-                   if ($null -eq $json) { $bad += ('no ' + $lang + ' report under ' + $m3Dir); continue }
+                   $json = @(Get-ReportsUnder $M3Dir $lang $Ctx.Started)[0]
+                   if ($null -eq $json) { $bad += ('no ' + $lang + ' report under ' + $M3Dir); continue }
                    Copy-Item -LiteralPath $json.FullName -Destination $Ctx.Dir -Force
                    $names += $json.Name
                    $d = Read-Json $json.FullName
@@ -601,8 +604,8 @@ function Get-Plan {
                $shown = @($r.Output | Where-Object { $_.Trim() -ne '' } | Select-Object -First 4) -join ' / '
                @{ Passed = $passed; Detail = ('{0}; launcher exit {1}; environment report(s): {2}; reports: {3}; what the user sees: {4}' -f $what, $r.ExitCode, $r.EnvironmentReports.Count, $r.Reports.Count, $shown); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError.txt', 'en-US\NetworkHealthCheck_ENVIRONMENT_*.txt') }
            }
-           Cleanup = @{ Instruction = @('AppLocker > Configure rule enforcement > Script rules: Not configured; delete the Script rules; gpupdate /force. Then put the Application Identity service back as it was before this scenario (the campaign recorded its startup type and state and checks them): in an ELEVATED command prompt   sc config AppIDSvc start= <manual|auto|disabled>   and   net stop AppIDSvc   if it was stopped. Then answer done.',
-                                        'AppLocker > 設定規則強制執行 > 指令碼規則：尚未設定；刪除指令碼規則；gpupdate /force。然後把 Application Identity 服務改回這個情境之前的狀態（campaign 有記錄啟動類型與狀態並會檢查）：在「以系統管理員身分執行」的命令提示字元執行 sc config AppIDSvc start= <manual|auto|disabled>，若原本是停止的再執行 net stop AppIDSvc。完成後輸入 done。')
+           Cleanup = @{ Instruction = @('AppLocker > Configure rule enforcement > Script rules: Not configured; delete the Script rules; gpupdate /force. Then put the Application Identity service back as it was before this scenario (the campaign recorded its startup type and state and checks them; RECOVER.txt in the state folder names the exact values): in an ELEVATED command prompt   sc config AppIDSvc start= <auto|demand|disabled>   (demand = Manual)   and   net stop AppIDSvc   if it was stopped. Then answer done.',
+                                        'AppLocker > 設定規則強制執行 > 指令碼規則：尚未設定；刪除指令碼規則；gpupdate /force。然後把 Application Identity 服務改回這個情境之前的狀態（campaign 有記錄啟動類型與狀態並會檢查；state 資料夾的 RECOVER.txt 寫有確切的值）：在「以系統管理員身分執行」的命令提示字元執行 sc config AppIDSvc start= <auto|demand|disabled>（demand = 手動），若原本是停止的再執行 net stop AppIDSvc。完成後輸入 done。')
                         Verify = { param($Ctx)
                             # The precondition proved the policy readable; a policy that cannot be read now does not certify the revert (PR #11 round 3).
                             try {
@@ -657,11 +660,21 @@ function Invoke-Scenario($S) {
     $dir = Join-Path $StateDir $id
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $ctx = @{ Id = $id; Dir = $dir; Started = (Get-Date); Facts = [ordered]@{} }
-    if ($null -ne $S.Prerequisite -and -not $rec.Attempted) {
+    if ($null -ne $S.Prerequisite) {
         # What the scenario needs before the person is asked to do anything (a marked download, say): unmet, the scenario
-        # is skipped with the reason instead of measuring something else.
+        # is skipped with the reason instead of measuring something else. Checked on every attempt, a resume included -
+        # the machine may have changed in between (PR #11 round 12); an attempted scenario with a revert still reverts.
         $pq = & $S.Prerequisite
-        if (-not $pq.Ok) { Set-Result $id 'SKIPPED' ('prerequisite not met: ' + $pq.Detail) @() 0; return 'next' }
+        if (-not $pq.Ok) {
+            if ($rec.Attempted -and $null -ne $S.Cleanup) {
+                $ctx.Facts = $rec.Facts
+                $rec.ActionResult = 'SKIPPED'; $rec.ActionDetail = 'prerequisite not met: ' + $pq.Detail; $rec.Evidence = @(); $rec.Seconds = 0
+                Set-Result $id 'PENDING' ('prerequisite no longer met after an attempt; the change, if any, is still to be reverted') @() 0
+                return (Complete-Cleanup $S $rec $ctx)
+            }
+            Set-Result $id 'SKIPPED' ('prerequisite not met: ' + $pq.Detail) @() 0
+            return 'next'
+        }
         Add-Event ('{0}: prerequisite met - {1}' -f $id, $pq.Detail)
     }
     if ($S.NeedsGui -and $State.SkipGui) {
