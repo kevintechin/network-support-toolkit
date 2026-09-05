@@ -281,10 +281,12 @@ function Get-NewestJson([string]$Dir, [datetime]$After) {
 }
 function Get-ArchiveViewFolders {
     # The temporary folders Explorer extracts into when a file is double-clicked inside a ZIP: %TEMP%\Temp1_<name>.zip\
-    # on Windows 10, %TEMP%\<guid>_<name>.zip.<n>\ on Windows 11 (the first campaign, 2026-09-05:
-    # 388e11bd-2056-4e77-a266-27df0c2ad684_NetworkHealthCheck-1.2.2.zip.684). Only the file clicked is extracted there,
-    # so the launcher finds no NetworkHealthCheck.ps1 beside itself and stops with its own message.
-    @(Get-ChildItem -LiteralPath $env:TEMP -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^Temp\d*_.*\.zip$' -or $_.Name -match '^[0-9a-fA-F-]{36}_.*\.zip\.\d+$' })
+    # on Windows 10, %TEMP%\<guid>_<name>.zip.<suffix>\ on Windows 11 - the suffix is a few hex digits, not a number
+    # (seen: 388e11bd-2056-4e77-a266-27df0c2ad684_NetworkHealthCheck-1.2.2.zip.684 and 5d2b5f20-...-e2e558bb2bc4_NetworkHealthCheck-1.2.2.zip.bc4,
+    # the first campaign, 2026-09-05; a pattern for digits alone missed the second). Only the file clicked is extracted there, so
+    # the launcher finds no NetworkHealthCheck.ps1 beside itself and stops with its own message - and the folder may be gone
+    # as soon as the program started from it exits, so the evidence is collected while it is still on screen.
+    @(Get-ChildItem -LiteralPath $env:TEMP -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^Temp\d*_.*\.zip$' -or $_.Name -match '^[0-9a-fA-F-]{36}_.*\.zip\.\w+$' })
 }
 function Get-ArchiveViewFiles([datetime]$After) {
     # What a run from inside a view left there since $After - reports under a Reports\ folder, the launcher's
@@ -292,6 +294,29 @@ function Get-ArchiveViewFiles([datetime]$After) {
     @(Get-ArchiveViewFolders | ForEach-Object {
         Get-ChildItem -LiteralPath $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $After -and (($_.DirectoryName -match '\\Reports$') -or ($_.Name -eq 'LauncherError.txt')) }
     })
+}
+function Get-TempFoldersSince([datetime]$After) {
+    # The folders under %TEMP% written since $After, by name - what a failed M1 shows, so that a view folder of yet another
+    # shape is recognizable in the record instead of a bare "nothing found".
+    @(Get-ChildItem -LiteralPath $env:TEMP -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $After } | Sort-Object LastWriteTime -Descending | Select-Object -First 10 | ForEach-Object { $_.Name })
+}
+function Save-ArchiveViewEvidence([datetime]$After, [string]$Dest, [hashtable]$Files) {
+    # Copies what a run from inside a view has left since $After into $Dest and adds it to $Files (by full path, the newest
+    # write wins), and returns the view folder's listing if the folder is still there. Called twice by M1: as soon as
+    # something is on screen - the launcher has written LauncherError.txt before it shows its message - and again when a
+    # tool window has finished its run, because Windows 11 may delete the folder the moment the program exits.
+    $found = @(Get-ArchiveViewFiles $After | Sort-Object LastWriteTime)
+    if ($found.Count -eq 0) { return @() }
+    New-Item -ItemType Directory -Force -Path $Dest | Out-Null
+    foreach ($f in $found) {
+        if ($Files.ContainsKey($f.FullName) -and $Files[$f.FullName].LastWriteTime -ge $f.LastWriteTime) { continue }
+        Copy-Item -LiteralPath $f.FullName -Destination $Dest -Force -ErrorAction SilentlyContinue
+        $Files[$f.FullName] = $f
+    }
+    $primary = @($found | Sort-Object LastWriteTime -Descending)[0]
+    $viewRoot = @(Get-ArchiveViewFolders | Where-Object { $primary.FullName.StartsWith($_.FullName + '\', [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1)
+    if ($viewRoot.Count -eq 0) { return @() }
+    return @($viewRoot[0].FullName) + @(Get-ChildItem -LiteralPath $viewRoot[0].FullName -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName.Substring($viewRoot[0].FullName.Length).TrimStart('\') + ' (' + $_.Length + ' bytes)' })
 }
 function Get-NetworkFacts {
     # Adapters that are up with an IPv4 address, and IPv4 default gateways - read the way the tool reads them, with
@@ -576,8 +601,8 @@ function Get-Plan {
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + $window + '; observer: ' + $seen); Evidence = @('M4_IT_window_1366x768.png', 'gui_check.log') }
            } },
         @{ Id = 'M1'; Title = 'Run from inside the compressed-folder view'; Kind = 'manual'; Session = 'admin'; NeedsGui = $true
-           Instruction = @(('In Explorer, double-click the downloaded ZIP - ' + $State.OriginalZip + ' - without extracting it. Open ' + $top + ' > en-US and double-click Start-NetworkCheck.cmd. As soon as something is on screen - the launcher showing its message (stock Windows extracts only the file you clicked, so the launcher stops) or the tool window - answer done: a screenshot is taken then. Do NOT press a key in the launcher window and do NOT close the ZIP window yet.'),
-                           ('在檔案總管直接雙擊下載的 ZIP（' + $State.OriginalZip + '），不要解壓。打開 ' + $top + ' > en-US，雙擊 Start-NetworkCheck.cmd。畫面上一出現東西——launcher 顯示它的訊息（原生 Windows 只會解出你點的那個檔案，launcher 因此停下）或工具視窗——就輸入 done：那一刻會截圖。先不要在 launcher 視窗按鍵，也不要關 ZIP 視窗。'))
+           Instruction = @(('In Explorer, double-click the downloaded ZIP - ' + $State.OriginalZip + ' - without extracting it. Open ' + $top + ' > en-US and double-click Start-NetworkCheck.cmd (a security warning about the file may come first: Run). As soon as something is on screen - the launcher showing its message (stock Windows extracts only the file you clicked, so the launcher stops) or the tool window - answer done: a screenshot is taken and the evidence collected at that moment. Do NOT press a key in the launcher window and do NOT close anything yet.'),
+                           ('在檔案總管直接雙擊下載的 ZIP（' + $State.OriginalZip + '），不要解壓。打開 ' + $top + ' > en-US，雙擊 Start-NetworkCheck.cmd（可能先跳出檔案安全性警告：按執行）。畫面上一出現東西——launcher 顯示它的訊息（原生 Windows 只會解出你點的那個檔案，launcher 因此停下）或工具視窗——就輸入 done：那一刻會截圖並收集證據。先不要在 launcher 視窗按鍵，也不要關任何視窗。'))
            Action = { param($Ctx)
                # Two outcomes are the package behaving as designed (the first campaign, 2026-09-05). Stock Windows extracts
                # only the file double-clicked into the view folder, so the launcher finds no NetworkHealthCheck.ps1 beside
@@ -585,33 +610,37 @@ function Get-Plan {
                # expects. Where the whole folder was extracted (another archiver, a .ps1 double-clicked earlier in the same
                # view) the tool runs, and its report must carry the compressed-folder warning itself, in either language
                # (PR #11 rounds 4 and 11). The launcher stopped for another reason, or nothing in any view folder, fails.
+               # The evidence is collected the moment the person answers - Windows 11 may delete the view folder as soon as
+               # the program started from it exits (the first campaign lost LauncherError.txt that way) - and again after
+               # a tool run has finished, while its window is still open.
                $shot = Join-Path $Ctx.Dir 'M1_from_the_view.png'
                Save-Screenshot $shot
-               $null = Read-Answer $Ctx.Id 'run-finished' @('If the launcher shows its message, press a key in its window so that it closes; if the tool window is running, let it finish and close. Do not close the ZIP window. Then answer done.', '若 launcher 顯示的是訊息，在它的視窗按一個鍵讓它關閉；若工具視窗在跑，等它跑完關閉。不要關 ZIP 視窗。然後輸入 done。') @('done') 'done'
-               $found = @(Get-ArchiveViewFiles $Ctx.Started | Sort-Object LastWriteTime)
+               $dest = Join-Path $Ctx.Dir 'from-the-view'
+               $files = @{}
+               $listing = @(Save-ArchiveViewEvidence $Ctx.Started $dest $files)
+               $null = Read-Answer $Ctx.Id 'run-finished' @('If the tool window is running, wait until its run has finished but keep the window open; if the launcher shows its message, leave it as it is. Then answer done.', '若工具視窗在跑，等它跑完但不要關閉；若 launcher 顯示的是訊息，維持原樣。然後輸入 done。') @('done') 'done'
+               $listing2 = @(Save-ArchiveViewEvidence $Ctx.Started $dest $files)
+               if ($listing2.Count) { $listing = $listing2 }
+               $found = @($files.Values | Sort-Object LastWriteTime)
                $jsons = @($found | Where-Object { $_.Extension -eq '.json' -and $_.DirectoryName -match '\\Reports$' } | Sort-Object LastWriteTime -Descending)
                $errors = @($found | Where-Object { $_.Name -eq 'LauncherError.txt' } | Sort-Object LastWriteTime -Descending)
-               if ($jsons.Count -eq 0 -and $errors.Count -eq 0) { return @{ Passed = $false; Detail = ('nothing from a compressed-folder view under {0} (Temp*_*.zip or <guid>_*.zip.<n>) since {1}: was the ZIP opened in the view and Start-NetworkCheck.cmd double-clicked inside it?' -f $env:TEMP, $Ctx.Started.ToString('HH:mm:ss')); Evidence = @('M1_from_the_view.png') } }
-               $primary = $(if ($jsons.Count) { $jsons[0] } else { $errors[0] })
-               $viewRoot = @(Get-ArchiveViewFolders | Where-Object { $primary.FullName.StartsWith($_.FullName + '\', [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1)
-               $dest = Join-Path $Ctx.Dir 'from-the-view'
-               New-Item -ItemType Directory -Force -Path $dest | Out-Null
-               foreach ($f in $found) { Copy-Item -LiteralPath $f.FullName -Destination $dest -Force }   # oldest first, so the newest of a name is the one kept
-               # What the view folder held - on stock Windows, the launcher alone.
-               $listing = @()
-               if ($viewRoot.Count) { $listing = @(Get-ChildItem -LiteralPath $viewRoot[0].FullName -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName.Substring($viewRoot[0].FullName.Length).TrimStart('\') + ' (' + $_.Length + ' bytes)' }) }
-               [IO.File]::WriteAllLines((Join-Path $dest 'view-folder-listing.txt'), [string[]](@($(if ($viewRoot.Count) { $viewRoot[0].FullName } else { '(view folder not identified)' })) + $listing), $Utf8NoBom)
-               Write-Line @('The files were copied out of the view; you may close the ZIP window now.', '檔案已從檢視複製出來，現在可以關閉 ZIP 視窗了。') 'Cyan'
+               if ($jsons.Count -eq 0 -and $errors.Count -eq 0) {
+                   $since = @(Get-TempFoldersSince $Ctx.Started)
+                   return @{ Passed = $false; Detail = ('nothing from a compressed-folder view under {0} (Temp*_*.zip or <guid>_*.zip.<suffix>) since {1}: was the ZIP opened in the view and Start-NetworkCheck.cmd double-clicked inside it? Folders under %TEMP% written since then: {2}' -f $env:TEMP, $Ctx.Started.ToString('HH:mm:ss'), $(if ($since.Count) { $since -join ', ' } else { '(none)' })); Evidence = @('M1_from_the_view.png') }
+               }
+               [IO.File]::WriteAllLines((Join-Path $dest 'view-folder-listing.txt'), [string[]](@($(if ($listing.Count) { $listing } else { @('(the view folder was gone when the listing was taken; the files below were copied while it existed)') + @($found | ForEach-Object { $_.FullName }) }))), $Utf8NoBom)
+               Write-Line @('The evidence was copied out of the view; you may close the launcher or tool window and the ZIP window now.', '證據已從檢視複製出來，現在可以關閉 launcher／工具視窗和 ZIP 視窗了。') 'Cyan'
                if ($jsons.Count -gt 0) {
-                   $d = Read-Json $jsons[0].FullName
+                   $d = Read-Json (Join-Path $dest $jsons[0].Name)
                    $startup = @($d.Results | Where-Object { $_.Tag -eq 'startup' })
                    $archiveRows = @($startup | Where-Object { ([string]$_.Message) -match 'compressed folder|壓縮檔' })
                    return @{ Passed = ($archiveRows.Count -gt 0); Detail = ('the tool ran from the view: {0} file(s) copied out of {1}; startup rows: {2}, of which the compressed-folder warning: {3}{4}' -f $found.Count, (Split-Path -Parent $jsons[0].DirectoryName), $startup.Count, $archiveRows.Count, $(if ($archiveRows.Count) { ' - "' + [string]$archiveRows[0].Message + '"' } elseif ($startup.Count) { ' - only other startup notices: "' + [string]$startup[0].Message + '"' } else { ' - missing' })); Evidence = @('M1_from_the_view.png', 'from-the-view') }
                }
-               $reason = @(Get-Content -LiteralPath $errors[0].FullName -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^(Error|錯誤)[:：]' } | Select-Object -First 1)
+               $reason = @(Get-Content -LiteralPath (Join-Path $dest 'LauncherError.txt') -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^(Error|錯誤)[:：]' } | Select-Object -First 1)
                $reasonText = $(if ($reason.Count) { ([string]$reason[0]).Trim() } else { '(no Error line in LauncherError.txt)' })
                $missing = ($reasonText -match 'NetworkHealthCheck\.ps1 is missing|找不到程式檔 NetworkHealthCheck\.ps1')
-               @{ Passed = $missing; Detail = ('the launcher stopped in the view{0}: "{1}"; the view held {2} file(s); no report' -f $(if ($missing) { ', as stock Windows makes it - only the file clicked was extracted' } else { ' for another reason' }), $reasonText, $listing.Count); Evidence = @('M1_from_the_view.png', 'from-the-view') }
+               $held = $(if ($listing.Count -gt 1) { ($listing.Count - 1).ToString() } else { 'unknown (folder gone)' })
+               @{ Passed = $missing; Detail = ('the launcher stopped in the view{0}: "{1}"; the view held {2} file(s); no report' -f $(if ($missing) { ', as stock Windows makes it - only the file clicked was extracted' } else { ' for another reason' }), $reasonText, $held); Evidence = @('M1_from_the_view.png', 'from-the-view') }
            } },
         @{ Id = 'M2'; Title = 'Extract without Unblock and double-click the root launcher'; Kind = 'manual'; Session = 'admin'; NeedsGui = $true
            # Checked before the instruction is shown: without the Mark of the Web on the download there is no warning to

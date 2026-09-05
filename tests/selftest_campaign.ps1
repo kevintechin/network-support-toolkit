@@ -407,7 +407,7 @@ Assert-True '25. Save-Screenshot measures through Get-PrimaryBounds' ($shotCalls
 
 # -------------------- 26. M1 - the two outcomes that are the package behaving as designed --------------------
 Write-Output ''
-Write-Output '26. M1 on crafted compressed-folder views under a redirected %TEMP%: the launcher stopped for the missing program file (the Windows 11 view folder shape) is PASS; a report carrying the compressed-folder warning (the Windows 10 shape) is PASS; the launcher stopped for another reason is FAIL'
+Write-Output '26. M1 on crafted compressed-folder views under a redirected %TEMP%: the launcher stopped for the missing program file (the Windows 11 view folder shape, hex suffix) is PASS; a report carrying the compressed-folder warning (the Windows 10 shape) is PASS; the launcher stopped for another reason is FAIL'
 function New-ViewFolder([string]$TempRoot, [string]$Name, [string]$Relative) {
     $dir = Join-Path (Join-Path $TempRoot $Name) $Relative
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -426,9 +426,9 @@ function New-LauncherError([string]$Dir, [string]$Reason) {
     Set-WrittenLater $path
 }
 $answers26 = "M1=done`r`nM1/run-finished=done`r`n"
-# 26a - Windows 11: <guid>_<zip>.zip.<n>\<top>\en-US\ holding the launcher alone and its LauncherError.txt
+# 26a - Windows 11: <guid>_<zip>.zip.<hex suffix>\<top>\en-US\ holding the launcher alone and its LauncherError.txt
 $temp26a = (New-Item -ItemType Directory -Force -Path (Join-Path $WorkDir 'temp-26a')).FullName
-$view26a = New-ViewFolder $temp26a ('388e11bd-2056-4e77-a266-27df0c2ad684_NetworkHealthCheck-' + $version + '.zip.684') ('NetworkHealthCheck-' + $version + '\en-US')
+$view26a = New-ViewFolder $temp26a ('5d2b5f20-7a4f-4428-a382-e2e558bb2bc4_NetworkHealthCheck-' + $version + '.zip.bc4') ('NetworkHealthCheck-' + $version + '\en-US')   # the suffix is hex, as seen on the VM (.684, .bc4)
 Copy-Item -LiteralPath (Join-Path $top 'en-US\Start-NetworkCheck.cmd') -Destination $view26a
 New-LauncherError $view26a 'The program file NetworkHealthCheck.ps1 is missing. Keep all files in the same folder.'
 $env:TEMP = $temp26a
