@@ -372,6 +372,14 @@ $bundlesAfter = @(Get-ChildItem -LiteralPath $r3.State -Filter 'nhc-campaign_*.z
 Assert-True '24. no new bundle appeared, and the earlier ones are named by their own time' (@($bundlesAfter | Where-Object { $bundlesBefore -notcontains $_ }).Count -eq 0 -and @($bundlesAfter | Where-Object { $_ -notmatch '_\d{8}_\d{6}\.zip$' }).Count -eq 0) ($bundlesAfter -join ' / ')
 Assert-True '24. exit code 1' ($r24.ExitCode -eq 1) ('exit code ' + $r24.ExitCode)
 
+# -------------------- 25. the display size is measured live --------------------
+Write-Output ''
+Write-Output '25. the driver measures the display through SystemInformation.PrimaryMonitorSize (GetSystemMetrics, read on every call), never through the Screen objects Windows Forms caches until a message loop runs - the person changes the display while the campaign waits in Read-Host (the first campaign on the Windows 11 VM, 2026-09-05)'
+$driverText = [IO.File]::ReadAllText($driver, [Text.Encoding]::UTF8)
+Assert-True '25. no [System.Windows.Forms.Screen] read anywhere in the driver' ($driverText -notmatch 'Windows\.Forms\.Screen\]') 'a Screen read is in the driver'
+Assert-True '25. Get-PrimaryBounds reads SystemInformation.PrimaryMonitorSize' ($driverText -match 'function Get-PrimaryBounds \{((?!\nfunction )[\s\S])*?SystemInformation\]::PrimaryMonitorSize') 'Get-PrimaryBounds does not read PrimaryMonitorSize'
+Assert-True '25. Save-Screenshot measures through Get-PrimaryBounds' ($driverText -match 'function Save-Screenshot\(\[string\]\$Path\) \{((?!\nfunction )[\s\S])*?\$bounds = Get-PrimaryBounds') 'Save-Screenshot measures on its own'
+
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
     Write-Output ''
