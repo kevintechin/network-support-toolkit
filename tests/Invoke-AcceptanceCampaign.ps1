@@ -295,7 +295,17 @@ else {
     Write-Host ('NetworkHealthCheck {0} acceptance campaign "{1}" - started {2} on {3} as {4}' -f $version, $Campaign, $State.Created, $env:COMPUTERNAME, $env:USERNAME)
     Write-Host ('  asset {0} (SHA256 {1}{2}); state {3}' -f (Split-Path -Leaf $Zip), $digest, $(if ($ExpectedSha256) { ', matches the release notes' } else { ', not compared' }), $StateDir)
 }
-$ResumeCommand = 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $State.TestsCopy 'Invoke-AcceptanceCampaign.ps1') + '" -Campaign ' + $Campaign + ' -StateDir "' + $StateDir + '" -Resume'
+# The plan's scenario ids, in order; -Scenarios is checked against them here so that the resume command printed for a
+# partial campaign carries the same subset (PR #11 round 1) - following it must continue what was asked, not the plan.
+$PlanIds = @('A1', 'M4', 'M1', 'M2', 'M3', 'A3', 'A4', 'M7', 'M8', 'M9', 'A2')
+$Wanted = @()
+if ($Scenarios) {
+    $Wanted = @($Scenarios | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().ToUpperInvariant() } | Where-Object { $_ })
+    $unknown = @($Wanted | Where-Object { $PlanIds -notcontains $_ })
+    if ($unknown.Count) { throw ('unknown scenario(s): ' + ($unknown -join ', ') + '; known: ' + ($PlanIds -join ', ')) }
+    $Wanted = @($PlanIds | Where-Object { $Wanted -contains $_ })
+}
+$ResumeCommand = 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $State.TestsCopy 'Invoke-AcceptanceCampaign.ps1') + '" -Campaign ' + $Campaign + ' -StateDir "' + $StateDir + '" -Resume' + $(if ($Wanted.Count) { ' -Scenarios ' + ($Wanted -join ',') } else { '' })
 
 # -------------------- The plan --------------------
 function Get-Plan {
@@ -317,7 +327,10 @@ function Get-Plan {
         @{ Id = 'M4'; Title = 'The IT window at 1366 x 768'; Kind = 'reconfigure'; Session = 'admin'; NeedsGui = $true
            Instruction = @('Set the display to 1366 x 768 (VMware: View > Autosize > off; Windows: Settings > System > Display > Display resolution). Then answer done.',
                            '把顯示器設成 1366 x 768（VMware：檢視 > 自動調整大小 > 關閉；Windows：設定 > 系統 > 顯示器 > 顯示器解析度）。完成後輸入 done。')
+           Prepare = { param($Ctx) $b = Get-PrimaryBounds; return @{ ScreenBefore = ('{0}x{1}' -f $b.Width, $b.Height) } }   # what to put back afterwards
            Precondition = { $b = Get-PrimaryBounds; if ($b.Width -eq 1366 -and $b.Height -eq 768) { @{ Ok = $true; Detail = '1366x768' } } else { @{ Ok = $false; Detail = ('the primary screen is {0}x{1}, not 1366x768' -f $b.Width, $b.Height) } } }
+           Cleanup = @{ Instruction = @('Set the display back to the size it had before this scenario (the campaign recorded it and checks it). Then answer done.', '把顯示器改回這個情境之前的大小（campaign 有記錄並會檢查）。完成後輸入 done。')
+                        Verify = { param($Ctx) $b = Get-PrimaryBounds; $now = ('{0}x{1}' -f $b.Width, $b.Height); if ($now -eq [string]$Ctx.Facts.ScreenBefore) { @{ Ok = $true; Detail = ('back at ' + $now) } } else { @{ Ok = $false; Detail = ('the screen is {0}; it was {1} before M4' -f $now, $Ctx.Facts.ScreenBefore) } } } }
            Action = { param($Ctx)
                $stage = Copy-LanguageFolder 'en-US' (Join-Path $Ctx.Dir 'stage\en-US')
                $shot = Join-Path $Ctx.Dir 'M4_IT_window_1366x768.png'
@@ -385,8 +398,11 @@ function Get-Plan {
                    $d = Read-Json $json.FullName
                    if ([string]$d.RunOptions.EntryPoint -ne 'User') { $bad += ($lang + ': EntryPoint ' + $d.RunOptions.EntryPoint + ', expected User') }
                }
+               # Only a yes certifies the item: a no is the tool failing, and 'not clicked' is the scenario not done as
+               # instructed - neither may pass (PR #11 round 1).
                $opened = Read-Answer $Ctx.Id 'open-report' @('Did Open Report open the HTML report in the browser? (yes / no / not clicked)', '「開啟報告」有在瀏覽器打開 HTML 報告嗎？（yes / no / not clicked）') @('yes', 'no', 'not clicked') 'not clicked'
                if ($opened -eq 'no') { $bad += 'Open Report did not open the browser' }
+               elseif ($opened -ne 'yes') { $bad += 'Open Report was not exercised: the scenario asks for it to be clicked' }
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('download mark after Unblock: {0}; reports: {1}; Open Report: {2}' -f $mark, ($names -join ', '), $opened)); Evidence = $names }
            } },
         @{ Id = 'A3'; Title = 'Host-only network (an address, no gateway, no internet)'; Kind = 'reconfigure'; Session = 'admin'
@@ -481,11 +497,18 @@ function Get-Plan {
 function Invoke-Scenario($S) {
     # Returns 'next' or 'stop'. Records PASS / FAIL / SKIPPED / PENDING in the state.
     $id = $S.Id
-    if ($null -eq $State.Scenarios[$id]) { $State.Scenarios[$id] = [ordered]@{ Title = $S.Title; Result = ''; Detail = ''; Seconds = 0; Started = ''; Finished = ''; Evidence = @(); Answers = [ordered]@{}; Reverted = '' } }
+    if ($null -eq $State.Scenarios[$id]) { $State.Scenarios[$id] = [ordered]@{ Title = $S.Title; Result = ''; Detail = ''; Seconds = 0; Started = ''; Finished = ''; Evidence = @(); Answers = [ordered]@{}; Reverted = ''; ActionResult = ''; Facts = [ordered]@{} } }
     $rec = $State.Scenarios[$id]
     if ($rec.Result -and $rec.Result -ne 'PENDING') { Write-Host ('[{0}] {1}: recorded earlier at {2} - {3}' -f $rec.Result, $id, $rec.Finished, $rec.Detail) -ForegroundColor DarkGray; return 'next' }
     Write-Host ''
     Write-Host ('=== {0} - {1} ===' -f $id, $S.Title) -ForegroundColor White
+    if ($rec.Result -eq 'PENDING' -and $rec.ActionResult) {
+        # The scenario ran and the machine was not put back (the campaign stopped at the revert prompt, or the revert
+        # could not be verified): the action is not run again - only the revert is asked for, then the result is final.
+        Write-Host ('  the scenario ran earlier ({0}: {1}); the change is still to be reverted' -f $rec.ActionResult, $rec.Detail) -ForegroundColor Yellow
+        $ctx = @{ Id = $id; Dir = (Join-Path $StateDir $id); Started = (Get-Date); Facts = $rec.Facts }
+        return (Complete-Cleanup $S $rec $ctx)
+    }
     if ($S.Session -eq 'standard' -and -not $IsStandardUser) {
         Write-Line $S.Instruction 'Cyan'
         Set-Result $id 'PENDING' 'needs a standard-user session; run the command above there' @() 0
@@ -498,7 +521,8 @@ function Invoke-Scenario($S) {
     if ($S.NeedsGui -and $State.SkipGui) { Set-Result $id 'SKIPPED' '-SkipGui' @() 0; return 'next' }
     $dir = Join-Path $StateDir $id
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    $ctx = @{ Id = $id; Dir = $dir; Started = (Get-Date) }
+    $ctx = @{ Id = $id; Dir = $dir; Started = (Get-Date); Facts = [ordered]@{} }
+    if ($null -ne $S.Prepare) { $ctx.Facts = ConvertTo-Hashtable (& $S.Prepare $ctx); $rec.Facts = $ctx.Facts }   # what the machine looked like before the change
     $rec.Started = (& $Now)
     Save-State
     if ($S.Kind -ne 'auto') {
@@ -520,34 +544,40 @@ function Invoke-Scenario($S) {
     catch { $r = @{ Passed = $false; Detail = ('exception: ' + $_.Exception.Message); Evidence = @() } }
     $sw.Stop()
     if ($null -eq $r) { $r = @{ Passed = $false; Detail = 'the scenario returned no result'; Evidence = @() } }
-    Set-Result $id $(if ($r.Passed) { 'PASS' } else { 'FAIL' }) ([string]$r.Detail) @($r.Evidence) $sw.Elapsed.TotalSeconds
-    if ($null -ne $S.Cleanup) {
-        # The machine must be put back before the next scenario: the prompt repeats until the change is verified gone,
-        # or the campaign is stopped here.
-        Write-Line $S.Cleanup.Instruction 'Cyan'
-        while ($true) {
-            $gate = Read-Answer $id 'revert' @('When reverted, answer done; quit to stop the campaign here (the change stays in place!).', '還原後輸入 done；要在這裡中止 campaign 輸入 quit（變更會留在機器上！）。') @('done', 'quit') 'done'
-            if ($gate -eq 'quit') { $rec.Reverted = 'NOT REVERTED - quit'; Save-State; Add-Event ('{0}: the campaign stopped with the change still in place' -f $id); return 'stop' }
-            $v = & $S.Cleanup.Verify
-            if ($v.Ok) { $rec.Reverted = 'yes - ' + $v.Detail; Save-State; Add-Event ('{0}: reverted - {1}' -f $id, $v.Detail); break }
-            Write-Line @(('Still in place: ' + $v.Detail), ('還沒還原：' + $v.Detail)) 'Yellow'
-            if ($null -ne $AnswersTable) { $rec.Reverted = 'NOT VERIFIED - ' + $v.Detail; Save-State; break }
+    $outcome = $(if ($r.Passed) { 'PASS' } else { 'FAIL' })
+    if ($null -eq $S.Cleanup) { Set-Result $id $outcome ([string]$r.Detail) @($r.Evidence) $sw.Elapsed.TotalSeconds; return 'next' }
+    # A scenario that changed the machine is not final until the change is verified gone (PR #11 round 1): the action's
+    # outcome is kept aside and the record stays PENDING, so that a campaign stopped or killed at the revert prompt
+    # resumes at the revert, counts in the exit code until then, and never exits 0 with the machine still changed.
+    $rec.ActionResult = $outcome; $rec.Detail = [string]$r.Detail; $rec.Evidence = @($r.Evidence | Where-Object { $_ }); $rec.Seconds = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+    Set-Result $id 'PENDING' ('ran ({0}); the change is still to be reverted' -f $outcome) @($r.Evidence) $sw.Elapsed.TotalSeconds
+    return (Complete-Cleanup $S $rec $ctx)
+}
+function Complete-Cleanup($S, $rec, $ctx) {
+    # The machine must be put back before the next scenario: the prompt repeats until the change is verified gone, and
+    # only then does the action's outcome become the scenario's result. A quit, or a revert the answers file cannot
+    # verify, leaves the scenario PENDING with the change named - the exit code counts it, and a resume asks again.
+    $id = $S.Id
+    Write-Line $S.Cleanup.Instruction 'Cyan'
+    while ($true) {
+        $gate = Read-Answer $id 'revert' @('When reverted, answer done; quit to stop the campaign here (the change stays in place until the campaign is resumed!).', '還原後輸入 done；要在這裡中止 campaign 輸入 quit（在 campaign 續跑之前，變更會留在機器上！）。') @('done', 'quit') 'done'
+        if ($gate -eq 'quit') { $rec.Reverted = 'NOT REVERTED - quit'; Set-Result $id 'PENDING' ('ran ({0}) but NOT REVERTED - quit; resume to put the machine back' -f $rec.ActionResult) @($rec.Evidence) $rec.Seconds; Add-Event ('{0}: the campaign stopped with the change still in place' -f $id); return 'stop' }
+        $v = & $S.Cleanup.Verify $ctx
+        if ($v.Ok) {
+            $rec.Reverted = 'yes - ' + $v.Detail
+            Add-Event ('{0}: reverted - {1}' -f $id, $v.Detail)
+            Set-Result $id $rec.ActionResult $rec.Detail @($rec.Evidence) $rec.Seconds
+            return 'next'
         }
+        Write-Line @(('Still in place: ' + $v.Detail), ('還沒還原：' + $v.Detail)) 'Yellow'
+        if ($null -ne $AnswersTable) { $rec.Reverted = 'NOT VERIFIED - ' + $v.Detail; Set-Result $id 'PENDING' ('ran ({0}) but NOT REVERTED - {1}; resume to put the machine back' -f $rec.ActionResult, $v.Detail) @($rec.Evidence) $rec.Seconds; return 'next' }
     }
-    return 'next'
 }
 
 # -------------------- The campaign --------------------
 $plan = Get-Plan
-$known = @($plan | ForEach-Object { $_.Id })
-if ($Scenarios) {
-    $wanted = @($Scenarios | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().ToUpperInvariant() } | Where-Object { $_ })
-    $unknown = @($wanted | Where-Object { $known -notcontains $_ })
-    if ($unknown.Count) { throw ('unknown scenario(s): ' + ($unknown -join ', ') + '; known: ' + ($known -join ', ')) }
-    $selected = @($plan | Where-Object { $wanted -contains $_.Id })
-}
-else { $selected = $plan }
-foreach ($s in $plan) { if ($null -eq $State.Scenarios[$s.Id]) { $State.Scenarios[$s.Id] = [ordered]@{ Title = $s.Title; Result = ''; Detail = ''; Seconds = 0; Started = ''; Finished = ''; Evidence = @(); Answers = [ordered]@{}; Reverted = '' } } }
+if ($Wanted.Count) { $selected = @($plan | Where-Object { $Wanted -contains $_.Id }) } else { $selected = $plan }
+foreach ($s in $plan) { if ($null -eq $State.Scenarios[$s.Id]) { $State.Scenarios[$s.Id] = [ordered]@{ Title = $s.Title; Result = ''; Detail = ''; Seconds = 0; Started = ''; Finished = ''; Evidence = @(); Answers = [ordered]@{}; Reverted = ''; ActionResult = ''; Facts = [ordered]@{} } } }
 Save-State
 Add-Event ('invocation by {0}{1}: scenarios {2}{3}' -f $env:USERNAME, $(if ($IsStandardUser) { ' (standard user)' } else { '' }), (@($selected | ForEach-Object { $_.Id }) -join ','), $(if ($null -ne $AnswersTable) { '; answers from ' + $Answers } else { '' }))
 $stopped = $false
