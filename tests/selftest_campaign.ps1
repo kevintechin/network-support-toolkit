@@ -110,7 +110,7 @@ Assert-True '4. the message names the unknown id' (@($r4.Output | Where-Object {
 # -------------------- 5. a failing scenario --------------------
 Write-Output ''
 Write-Output '5. M1 answered done with no compressed-folder run: FAIL, exit code 1'
-$r5 = Invoke-Campaign 'fail' @('-Zip', $zip, '-Scenarios', 'M1', '-SkipGui') "M1=done`r`n"
+$r5 = Invoke-Campaign 'fail' @('-Zip', $zip, '-Scenarios', 'M1') "M1=done`r`n"
 $s5 = Read-State $r5.State
 Assert-True '5. exit code 1' ($r5.ExitCode -eq 1) ('exit code ' + $r5.ExitCode)
 Assert-True '5. M1 FAIL with the reason' ($s5.Scenarios.M1.Result -eq 'FAIL' -and $s5.Scenarios.M1.Detail -like 'no report under*') ($s5.Scenarios.M1.Result + ' / ' + $s5.Scenarios.M1.Detail)
@@ -304,9 +304,9 @@ Assert-True '18. no temporary state file remains' (-not (Test-Path -LiteralPath 
 # -------------------- 19. a prerequisite is checked before anyone is asked to act --------------------
 Write-Output ''
 Write-Output '19. M2 on a download without the Mark of the Web (the self-test asset is built, not downloaded): SKIPPED before the instruction, exit 0'
-$r19 = Invoke-Campaign 'prereq' @('-Zip', $zip, '-Scenarios', 'M2', '-SkipGui') "M2=done`r`n"
+$r19 = Invoke-Campaign 'prereq' @('-Zip', $zip, '-Scenarios', 'M2') "M2=done`r`n"
 $s19 = Read-State $r19.State
-Assert-True '19. M2 SKIPPED with the prerequisite named' ($s19.Scenarios.M2.Result -eq 'SKIPPED' -and $s19.Scenarios.M2.Detail -like 'prerequisite not met: the download carries no Mark of the Web*') ($s19.Scenarios.M2.Result + ' / ' + $s19.Scenarios.M2.Detail)
+Assert-True '19. M2 SKIPPED with the prerequisite named' ($s19.Scenarios.M2.Result -eq 'SKIPPED' -and $s19.Scenarios.M2.Detail -like 'prerequisite not met: the download carries no Internet-zone Mark of the Web*') ($s19.Scenarios.M2.Result + ' / ' + $s19.Scenarios.M2.Detail)
 Assert-True '19. no gate was asked and the exit code is 0' ((@(Get-Content -LiteralPath (Join-Path $r19.State 'answers.log') -ErrorAction SilentlyContinue | Where-Object { $_ -match ' M2/' }).Count -eq 0) -and $r19.ExitCode -eq 0) ('exit code ' + $r19.ExitCode)
 
 # -------------------- 20. a prerequisite is checked again when an attempted scenario resumes --------------------
@@ -318,7 +318,7 @@ $crafted20.Scenarios.M2.Result = 'PENDING'
 $crafted20.Scenarios.M2.Detail = 'quit by the user after an attempt (crafted by the self-test)'
 $crafted20.Scenarios.M2.Attempted = $true
 [IO.File]::WriteAllText($stateFile20, ($crafted20 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
-$r20 = Invoke-Campaign 'prereq' @('-Resume', '-Scenarios', 'M2', '-SkipGui') "M2=done`r`n"
+$r20 = Invoke-Campaign 'prereq' @('-Resume', '-Scenarios', 'M2') "M2=done`r`n"
 $s20 = Read-State $r20.State
 Assert-True '20. M2 SKIPPED on the recheck despite the earlier attempt' ($s20.Scenarios.M2.Result -eq 'SKIPPED' -and $s20.Scenarios.M2.Detail -like 'prerequisite not met:*') ($s20.Scenarios.M2.Result + ' / ' + $s20.Scenarios.M2.Detail)
 Assert-True '20. exit code 0' ($r20.ExitCode -eq 0) ('exit code ' + $r20.ExitCode)
@@ -329,11 +329,30 @@ Write-Output '21. M2 on a copy of the asset given a Mark of the Web, no extracti
 $zipMarked = Join-Path $WorkDir ('NetworkHealthCheck-' + $version + '-marked.zip')
 Copy-Item -LiteralPath $zip -Destination $zipMarked -Force
 Set-Content -LiteralPath $zipMarked -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
-$r21 = Invoke-Campaign 'marked' @('-Zip', $zipMarked, '-Scenarios', 'M2', '-SkipGui') "M2=done`r`nM2/windows-showed=3`r`nM2/run-finished=done`r`n"
+$r21 = Invoke-Campaign 'marked' @('-Zip', $zipMarked, '-Scenarios', 'M2') "M2=done`r`nM2/windows-showed=3`r`nM2/run-finished=done`r`n"
 $s21 = Read-State $r21.State
 Assert-True '21. M2 FAIL for the missing extraction and report, with the marks recorded' ($s21.Scenarios.M2.Result -eq 'FAIL' -and $s21.Scenarios.M2.Detail -like '*no en-US report*' -and $s21.Scenarios.M2.Detail -like '*download mark: ZoneId=3*') ($s21.Scenarios.M2.Result + ' / ' + $s21.Scenarios.M2.Detail)
 Assert-True '21. the screenshot was taken and the observation recorded' ((Test-Path -LiteralPath (Join-Path $r21.State 'M2\M2_after_double-click.png')) -and (@(Get-Content -LiteralPath (Join-Path $r21.State 'answers.log') | Where-Object { $_ -match ' M2/windows-showed = 3$' }).Count -eq 1)) 'screenshot or answer missing'
 Assert-True '21. exit code 1' ($r21.ExitCode -eq 1) ('exit code ' + $r21.ExitCode)
+
+# -------------------- 22. -SkipGui drops every desktop scenario --------------------
+Write-Output ''
+Write-Output '22. M1, M2 and M3 under -SkipGui: all SKIPPED by -SkipGui, no prompt, exit 0'
+$r22 = Invoke-Campaign 'nodesk' @('-Zip', $zip, '-Scenarios', 'M1,M2,M3', '-SkipGui') "M1=done`r`nM2=done`r`nM3=done`r`n"
+$s22 = Read-State $r22.State
+Assert-True '22. M1, M2, M3 SKIPPED by -SkipGui' ($s22.Scenarios.M1.Detail -eq '-SkipGui' -and $s22.Scenarios.M2.Detail -eq '-SkipGui' -and $s22.Scenarios.M3.Detail -eq '-SkipGui' -and $s22.Scenarios.M1.Result -eq 'SKIPPED') ($s22.Scenarios.M1.Detail + ' / ' + $s22.Scenarios.M2.Detail + ' / ' + $s22.Scenarios.M3.Detail)
+Assert-True '22. no gate was asked and the exit code is 0' ((-not (Test-Path -LiteralPath (Join-Path $r22.State 'answers.log'))) -and $r22.ExitCode -eq 0) ('exit code ' + $r22.ExitCode)
+
+# -------------------- 23. only an Internet or Restricted zone counts as the mark --------------------
+Write-Output ''
+Write-Output '23. M2 on a copy of the asset marked ZoneId=0 (local machine): the prerequisite refuses it, exit 0'
+$zipLocal = Join-Path $WorkDir ('NetworkHealthCheck-' + $version + '-zone0.zip')
+Copy-Item -LiteralPath $zip -Destination $zipLocal -Force
+Set-Content -LiteralPath $zipLocal -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=0"
+$r23 = Invoke-Campaign 'zone0' @('-Zip', $zipLocal, '-Scenarios', 'M2') "M2=done`r`n"
+$s23 = Read-State $r23.State
+Assert-True '23. M2 SKIPPED: ZoneId=0 is not an Internet-zone mark' ($s23.Scenarios.M2.Result -eq 'SKIPPED' -and $s23.Scenarios.M2.Detail -like 'prerequisite not met: the download carries no Internet-zone Mark of the Web (ZoneId=0*') ($s23.Scenarios.M2.Result + ' / ' + $s23.Scenarios.M2.Detail)
+Assert-True '23. exit code 0' ($r23.ExitCode -eq 0) ('exit code ' + $r23.ExitCode)
 
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {

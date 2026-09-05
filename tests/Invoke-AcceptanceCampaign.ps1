@@ -247,6 +247,11 @@ function Get-ZoneId([string]$Path) {
     if ($id) { return [string]$id }
     return 'stream present'
 }
+function Test-InternetMark([string]$Zone) {
+    # The Mark of the Web a browser download carries: the Internet (3) or Restricted (4) zone. A stream without a
+    # ZoneId, or a local / intranet / trusted zone, is not the mark whose warning M2 measures (PR #11 round 13).
+    return ($Zone -match '^ZoneId=[34]$')
+}
 function Read-Json([string]$Path) { Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json }
 function Get-NewestJson([string]$Dir, [datetime]$After) {
     @(Get-ChildItem -LiteralPath $Dir -Filter '*.json' -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $After } | Sort-Object LastWriteTime -Descending | Select-Object -First 1)[0]
@@ -435,7 +440,7 @@ function Get-Plan {
                elseif ($seen -ne 'yes') { $bad += ('the layout was not confirmed usable (answer: ' + $seen + ')') }
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + $window + '; observer: ' + $seen); Evidence = @('M4_IT_window_1366x768.png', 'gui_check.log') }
            } },
-        @{ Id = 'M1'; Title = 'Run from inside the compressed-folder view'; Kind = 'manual'; Session = 'admin'
+        @{ Id = 'M1'; Title = 'Run from inside the compressed-folder view'; Kind = 'manual'; Session = 'admin'; NeedsGui = $true
            Instruction = @(('In Explorer, double-click the downloaded ZIP - ' + $State.OriginalZip + ' - without extracting it. Open ' + $top + ' > en-US and double-click Start-NetworkCheck.cmd. As soon as the tool window is up (the run started), answer done: a screenshot is taken then. Do NOT close the ZIP window.'),
                            ('在檔案總管直接雙擊下載的 ZIP（' + $State.OriginalZip + '），不要解壓。打開 ' + $top + ' > en-US，雙擊 Start-NetworkCheck.cmd。工具視窗一出現（開始跑了）就輸入 done：那一刻會截圖。不要關 ZIP 視窗。'))
            Action = { param($Ctx)
@@ -458,10 +463,10 @@ function Get-Plan {
                Write-Line @('The reports were copied out; you may close the ZIP window now.', '報告已複製出來，現在可以關閉 ZIP 視窗了。') 'Cyan'
                @{ Passed = ($archiveRows.Count -gt 0); Detail = ('{0} file(s) copied out of {1}; startup rows: {2}, of which the compressed-folder warning: {3}{4}' -f $found.Count, (Split-Path -Parent $jsons[0].DirectoryName), $startup.Count, $archiveRows.Count, $(if ($archiveRows.Count) { ' - "' + [string]$archiveRows[0].Message + '"' } elseif ($startup.Count) { ' - only other startup notices: "' + [string]$startup[0].Message + '"' } else { ' - missing' })); Evidence = @('M1_window_from_the_view.png', 'reports-from-the-view') }
            } },
-        @{ Id = 'M2'; Title = 'Extract without Unblock and double-click the root launcher'; Kind = 'manual'; Session = 'admin'
+        @{ Id = 'M2'; Title = 'Extract without Unblock and double-click the root launcher'; Kind = 'manual'; Session = 'admin'; NeedsGui = $true
            # Checked before the instruction is shown: without the Mark of the Web on the download there is no warning to
            # measure (PR #11 round 11) - an unblocked or stripped ZIP, or M3 run first through a subset.
-           Prerequisite = { $m = Get-ZoneId $State.OriginalZip; if ($m -eq 'no mark' -or $m -eq 'file missing') { @{ Ok = $false; Detail = ('the download carries no Mark of the Web (' + $m + ': ' + $State.OriginalZip + ') - M2 cannot measure the warning; download the ZIP again in the browser, or run M2 before M3') } } else { @{ Ok = $true; Detail = ('the download is marked: ' + $m) } } }
+           Prerequisite = { $m = Get-ZoneId $State.OriginalZip; if (-not (Test-InternetMark $m)) { @{ Ok = $false; Detail = ('the download carries no Internet-zone Mark of the Web (' + $m + ': ' + $State.OriginalZip + ') - M2 cannot measure the warning; download the ZIP again in the browser, or run M2 before M3') } } else { @{ Ok = $true; Detail = ('the download is marked: ' + $m) } } }
            Instruction = @(('Right-click the downloaded ZIP > Extract All... into ' + $M2Dir + ' (do NOT Unblock it). Open the extracted folder and double-click Start-English.cmd. As soon as a Windows prompt appears - or the tool window, if nothing appeared - answer done: a screenshot is taken at that moment.'),
                            ('在下載的 ZIP 上按右鍵 > 全部解壓縮，解壓到 ' + $M2Dir + '（不要 Unblock）。打開解壓出來的資料夾，雙擊 Start-English.cmd。Windows 一跳出提示（或沒有提示、工具視窗出現時）就輸入 done：那一刻會截圖。'))
            Action = { param($Ctx)
@@ -477,10 +482,10 @@ function Get-Plan {
                if ($null -eq $launcher) { $bad += ('Start-English.cmd not found under ' + $M2Dir) }
                if ($null -eq $json) { $bad += 'no en-US report written after the double-click' } else { Copy-Item -LiteralPath $json.FullName -Destination $Ctx.Dir -Force }
                $launcherMark = $(if ($null -ne $launcher) { Get-ZoneId $launcher.FullName } else { 'n/a' })
-               if ($mark -eq 'no mark' -or $mark -eq 'file missing') { $bad += ('the download carried no Mark of the Web at the time of the run (' + $mark + '): nothing about the warning was measured') }   # the moment that matters, whatever the prerequisite saw earlier
+               if (-not (Test-InternetMark $mark)) { $bad += ('the download carried no Internet-zone Mark of the Web at the time of the run (' + $mark + '): nothing about the warning was measured') }   # the moment that matters, whatever the prerequisite saw earlier
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('download mark: {0}; extracted launcher mark: {1}; Windows showed: {2}; report: {3}' -f $mark, $launcherMark, $seen, $(if ($null -ne $json) { $json.Name } else { 'none' }))); Evidence = @('M2_after_double-click.png') }
            } },
-        @{ Id = 'M3'; Title = 'Unblock, extract, both root launchers, Open Report'; Kind = 'manual'; Session = 'admin'
+        @{ Id = 'M3'; Title = 'Unblock, extract, both root launchers, Open Report'; Kind = 'manual'; Session = 'admin'; NeedsGui = $true
            Instruction = @(('Right-click the downloaded ZIP > Properties > tick Unblock > OK. Extract All... into ' + $M3Dir + '. Double-click Start-English.cmd and let it run; close it. Double-click Start-Traditional-Chinese.cmd and let it run; when its run has finished and the window is still open, answer done: a screenshot of the window is taken then.'),
                            ('在下載的 ZIP 上按右鍵 > 內容 > 勾選「解除封鎖」> 確定。全部解壓縮到 ' + $M3Dir + '。雙擊 Start-English.cmd 讓它跑完、關閉。再雙擊 Start-Traditional-Chinese.cmd 讓它跑完；跑完、視窗還開著時輸入 done：那一刻會截圖視窗。'))
            Action = { param($Ctx)
@@ -660,6 +665,18 @@ function Invoke-Scenario($S) {
     $dir = Join-Path $StateDir $id
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $ctx = @{ Id = $id; Dir = $dir; Started = (Get-Date); Facts = [ordered]@{} }
+    if ($S.NeedsGui -and $State.SkipGui) {
+        # -SkipGui drops a real-window scenario - but one attempted earlier may have left its change on the machine, and
+        # that goes through the revert first (PR #11 round 9).
+        if ($rec.Attempted -and $null -ne $S.Cleanup) {
+            $ctx.Facts = $rec.Facts
+            $rec.ActionResult = 'SKIPPED'; $rec.ActionDetail = '-SkipGui after an attempt'; $rec.Evidence = @(); $rec.Seconds = 0
+            Set-Result $id 'PENDING' 'dropped by -SkipGui after an attempt; the change, if any, is still to be reverted' @() 0
+            return (Complete-Cleanup $S $rec $ctx)
+        }
+        Set-Result $id 'SKIPPED' '-SkipGui' @() 0
+        return 'next'
+    }
     if ($null -ne $S.Prerequisite) {
         # What the scenario needs before the person is asked to do anything (a marked download, say): unmet, the scenario
         # is skipped with the reason instead of measuring something else. Checked on every attempt, a resume included -
@@ -676,18 +693,6 @@ function Invoke-Scenario($S) {
             return 'next'
         }
         Add-Event ('{0}: prerequisite met - {1}' -f $id, $pq.Detail)
-    }
-    if ($S.NeedsGui -and $State.SkipGui) {
-        # -SkipGui drops a real-window scenario - but one attempted earlier may have left its change on the machine, and
-        # that goes through the revert first (PR #11 round 9).
-        if ($rec.Attempted -and $null -ne $S.Cleanup) {
-            $ctx.Facts = $rec.Facts
-            $rec.ActionResult = 'SKIPPED'; $rec.ActionDetail = '-SkipGui after an attempt'; $rec.Evidence = @(); $rec.Seconds = 0
-            Set-Result $id 'PENDING' 'dropped by -SkipGui after an attempt; the change, if any, is still to be reverted' @() 0
-            return (Complete-Cleanup $S $rec $ctx)
-        }
-        Set-Result $id 'SKIPPED' '-SkipGui' @() 0
-        return 'next'
     }
     if ($null -ne $S.Prepare) {
         # What the machine looked like before the change - recorded once: a campaign interrupted at the gate, after the
