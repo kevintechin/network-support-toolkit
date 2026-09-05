@@ -563,6 +563,12 @@ function Get-Plan {
                if ($r.ExitCode -eq 0) { $bad += 'the launcher exited 0: the unsigned script ran under AllSigned' }
                if ($r.Reports.Count) { $bad += 'a report was written: the unsigned script ran' }
                if (-not $r.LauncherError) { $bad += 'no LauncherError.txt' }
+               # The refusal must be the signature refusal itself, not any failure the launcher maps to exit 1 (PR #11
+               # round 15): PowerShell's error carries UnauthorizedAccess / SecurityError whatever the language, and an
+               # environment report would mean the script started - a different policy, not this one.
+               $signatureRefusal = @($r.Output | Where-Object { $_ -match 'UnauthorizedAccess|SecurityError|not digitally signed|未經數位簽署' }).Count -gt 0
+               if (-not $signatureRefusal) { $bad += 'the captured output does not carry the signature refusal (UnauthorizedAccess / SecurityError / not digitally signed): the launcher failed for another reason' }
+               if ($r.EnvironmentReports.Count) { $bad += ('an environment report was written ({0}): the script started, so it was not AllSigned that stopped it' -f $r.EnvironmentReports.Count) }
                $shown = @($r.Output | Where-Object { $_.Trim() -ne '' } | Select-Object -First 4) -join ' / '
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; what the user sees: {2}' -f $r.ExitCode, $r.EnvironmentReports.Count, $shown)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError.txt') }
            }
@@ -856,6 +862,7 @@ function Write-CampaignSummary {
     $md += ('- Asset: {0} (SHA256 {1}{2})' -f (Split-Path -Leaf $State.ZipCopy), $State.Digest, $(if ($State.ExpectedSha256) { ', matches the release notes' } else { ', not compared' }))
     $md += ('- Real windows: {0}; state: {1}' -f $(if ($State.SkipGui) { 'none (-SkipGui)' } else { 'yes' }), $StateDir)
     $md += ('- Recovery without PowerShell (a policy scenario interrupted before its revert): {0}' -f $RecoveryNotes)
+    $md += ('- Bundle: {0}' -f $script:BundleLine)
     $md += ''
     $md += '| Id | Scenario | Result | s | Detail | Reverted | Finished |'
     $md += '|---|---|---|---:|---|---|---|'
@@ -866,6 +873,8 @@ function Write-CampaignSummary {
     return $md
 }
 $summaryPath = Join-Path $StateDir 'campaign_summary.md'
+$zipOut = Join-Path $StateDir ('nhc-campaign_{0}_{1}_{2}.zip' -f $State.Computer, $Campaign, (Get-Date -Format 'yyyyMMdd_HHmmss'))
+$script:BundleLine = (Split-Path -Leaf $zipOut) + ' (written at the end of this invocation; if it is missing, the bundle failed - see its row)'
 $md = Write-CampaignSummary
 Write-Host ''
 $rows | Format-Table -AutoSize -Wrap Id, Result, Seconds, Detail | Out-String -Width 220 | Write-Host
@@ -886,16 +895,18 @@ try {
             Copy-Item -LiteralPath $_.FullName -Destination $target -Force
         }
     }
-    $zipOut = Join-Path $StateDir ('nhc-campaign_{0}_{1}.zip' -f $State.Computer, $Campaign)
-    if (Test-Path -LiteralPath $zipOut) { Remove-Item -LiteralPath $zipOut -Force }
     Compress-Archive -Path (Join-Path $bundle '*') -DestinationPath $zipOut
     Write-Host ('bundle {0} ({1} bytes)' -f $zipOut, (Get-Item -LiteralPath $zipOut).Length)
+    # Earlier bundles of this campaign go, best effort: the name carries the time, so one that cannot be removed is
+    # distinguishable from this invocation's and the summary names the current one (PR #11 round 15).
+    Get-ChildItem -LiteralPath $StateDir -Filter ('nhc-campaign_{0}_{1}_*.zip' -f $State.Computer, $Campaign) -ErrorAction SilentlyContinue | Where-Object { $_.FullName -ne $zipOut } | ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop } catch { Write-Host ('  an earlier bundle could not be removed: ' + $_.Exception.Message) -ForegroundColor Yellow } }
 }
 catch {
     # The bundle is the record's deliverable: its failure is a row of the record and counts, and the summary on disk is
     # rewritten so that it agrees with the exit code (PR #11 round 14).
     Write-Host ('bundle not written: ' + $_.Exception.Message + ' - the state folder holds everything: ' + $StateDir) -ForegroundColor Red
     $rows += [pscustomobject]@{ Id = 'bundle'; Title = 'the campaign bundle'; Result = 'FAIL'; Seconds = ''; Detail = ('not written: ' + $_.Exception.Message + '; the state folder holds everything: ' + $StateDir); Reverted = ''; Finished = (& $Now) }
+    $script:BundleLine = 'NOT WRITTEN - ' + $_.Exception.Message + ' (an earlier nhc-campaign_*.zip in the state folder, if any, is from an earlier invocation and does not carry this one)'
     $md = Write-CampaignSummary
     Write-Host $md[-1]
 }

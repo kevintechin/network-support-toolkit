@@ -76,7 +76,7 @@ Assert-True '1. answers.log has the two gate answers (M4 was dropped by -SkipGui
 $summary1 = Get-Content -LiteralPath (Join-Path $r1.State 'campaign_summary.md') -Raw -Encoding UTF8
 Assert-True '1. campaign_summary.md ends with 0 passed, 0 failed, 3 skipped and the rest pending' ($summary1 -match 'Summary: 0 passed, 0 failed, 3 skipped, 8 pending') (($summary1 -split "`n")[-1])
 $bundle1 = @(Get-ChildItem -LiteralPath $r1.State -Filter 'nhc-campaign_*.zip')
-Assert-True '1. the campaign bundle was written' ($bundle1.Count -eq 1) ('bundles: ' + $bundle1.Count)
+Assert-True '1. the campaign bundle was written under a time-stamped name, and the summary names it' ($bundle1.Count -eq 1 -and $bundle1[0].Name -match '^nhc-campaign_.+_\d{8}_\d{6}\.zip$' -and $summary1 -match ('- Bundle: ' + [regex]::Escape($bundle1[0].Name))) ('bundles: ' + (($bundle1 | ForEach-Object { $_.Name }) -join ', '))
 
 # -------------------- 2. resume leaves the record alone --------------------
 Write-Output ''
@@ -357,14 +357,19 @@ Assert-True '23. exit code 0' ($r23.ExitCode -eq 0) ('exit code ' + $r23.ExitCod
 # -------------------- 24. a bundle that cannot be written is a row of the record --------------------
 Write-Output ''
 Write-Output '24. the campaign bundle path held open by another process: the bundle fails, the summary on disk carries a bundle FAIL row, exit 1'
-$bundleZip = Join-Path $r3.State ('nhc-campaign_{0}_selftest-quit.zip' -f $env:COMPUTERNAME)
-if (-not (Test-Path -LiteralPath $bundleZip)) { [IO.File]::WriteAllText($bundleZip, 'placeholder') }
-$lock = [IO.File]::Open($bundleZip, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+# The staging folder is rebuilt on every invocation; a file inside it held open by another process makes that fail.
+$staged = Join-Path $r3.State 'bundle\campaign_summary.md'
+if (-not (Test-Path -LiteralPath $staged)) { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $staged) | Out-Null; [IO.File]::WriteAllText($staged, 'placeholder') }
+$bundlesBefore = @(Get-ChildItem -LiteralPath $r3.State -Filter 'nhc-campaign_*.zip' | ForEach-Object { $_.Name })
+$lock = [IO.File]::Open($staged, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
 try { $r24 = Invoke-Campaign 'quit' @('-Resume', '-Scenarios', 'M7', '-SkipGui') "M7=skip`r`n" }
 finally { $lock.Dispose() }
 $summary24 = Get-Content -LiteralPath (Join-Path $r3.State 'campaign_summary.md') -Raw -Encoding UTF8
 Assert-True '24. the summary on disk carries the bundle failure' ($summary24 -match '\| bundle \| the campaign bundle \| FAIL \|') (($summary24 -split "`n" | Select-Object -Last 4) -join ' / ')
 Assert-True '24. the summary line counts it' ($summary24 -match 'Summary: \d+ passed, 1 failed, ') (($summary24 -split "`n")[-1])
+Assert-True '24. the summary header says the bundle was NOT WRITTEN' ($summary24 -match '- Bundle: NOT WRITTEN - ') (($summary24 -split "`n" | Where-Object { $_ -like '- Bundle:*' }) -join ' / ')
+$bundlesAfter = @(Get-ChildItem -LiteralPath $r3.State -Filter 'nhc-campaign_*.zip' | ForEach-Object { $_.Name })
+Assert-True '24. no new bundle appeared, and the earlier ones are named by their own time' (@($bundlesAfter | Where-Object { $bundlesBefore -notcontains $_ }).Count -eq 0 -and @($bundlesAfter | Where-Object { $_ -notmatch '_\d{8}_\d{6}\.zip$' }).Count -eq 0) ($bundlesAfter -join ' / ')
 Assert-True '24. exit code 1' ($r24.ExitCode -eq 1) ('exit code ' + $r24.ExitCode)
 
 # -------------------- 6. the baseline for real --------------------
