@@ -482,20 +482,22 @@ function Get-M8MachineLines {
 function Get-M8WayBack($Facts) {
     # The registry lines that put the two values back as they were before M8 - re-created with their data AND their kind
     # where they existed (a value stored as REG_EXPAND_SZ or REG_SZ must come back as that, not as the kind the policy
-    # editor would write - Codex round 2 on PR #14), deleted where they did not. Existence is the recorded kind, not the
-    # data: an empty string value existed and comes back empty (Codex round 3). A record from before the kinds were
-    # recorded has only the data; there, 'absent' and an empty string both mean absent.
+    # editor would write - Codex round 2 on PR #14), deleted where they did not. Existence is the recorded kind, and the
+    # data is taken as recorded, whatever it says (Codex rounds 3 and 4); a record from before the kinds were recorded
+    # has only the data, and there 'absent' or an empty string means absent. REG_MULTI_SZ was recorded joined with \0
+    # and REG_BINARY as hex - the forms reg add takes - so those come back too; only a kind reg add cannot write is
+    # left to regedit, with the recorded data named.
     $k = '"HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell"'
-    $types = @{ String = 'REG_SZ'; ExpandString = 'REG_EXPAND_SZ'; DWord = 'REG_DWORD'; QWord = 'REG_QWORD' }
+    $types = @{ String = 'REG_SZ'; ExpandString = 'REG_EXPAND_SZ'; DWord = 'REG_DWORD'; QWord = 'REG_QWORD'; MultiString = 'REG_MULTI_SZ'; Binary = 'REG_BINARY' }
     $lines = @()
     foreach ($v in @(@{ Name = 'ExecutionPolicy'; Data = 'RegExecutionPolicyBefore'; Kind = 'RegExecutionPolicyKindBefore'; Default = 'REG_SZ' }, @{ Name = 'EnableScripts'; Data = 'RegEnableScriptsBefore'; Kind = 'RegEnableScriptsKindBefore'; Default = 'REG_DWORD' })) {
         $data = [string]$Facts[$v.Data]; $kind = [string]$Facts[$v.Kind]
-        $existed = $(if ($kind) { $kind -ne 'absent' } else { $data -and $data -ne 'absent' })
+        if ($kind) { $existed = ($kind -ne 'absent') }
+        else { $existed = ($data -and $data -ne 'absent'); if (-not $existed) { $data = '' } }   # a legacy record: the data alone
         if (-not $existed) { $lines += ('reg delete ' + $k + ' /v ' + $v.Name + ' /f'); continue }
-        if ($data -eq 'absent') { $data = '' }
-        $type = $(if ($kind -and $types.ContainsKey($kind)) { $types[$kind] } elseif (-not $kind -or $kind -eq 'absent') { $v.Default } else { '' })
+        $type = $(if ($kind -and $types.ContainsKey($kind)) { $types[$kind] } elseif (-not $kind) { $v.Default } else { '' })
         if ($type) { $lines += ('reg add ' + $k + ' /v ' + $v.Name + ' /t ' + $type + ' /d "' + $data + '" /f') }
-        else { $lines += ('(' + $v.Name + ' was a ' + $kind + ' value with data "' + $data + '" - put it back with regedit; reg add cannot write that kind from this record)') }
+        else { $lines += ('(' + $v.Name + ' was a ' + $kind + ' value with data "' + $data + '" - put it back with regedit; reg add cannot write that kind)') }
     }
     return $lines
 }
@@ -790,7 +792,13 @@ function Get-Plan {
                $key = Get-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell' -ErrorAction SilentlyContinue
                $snap = @{}
                foreach ($name in @('ExecutionPolicy', 'EnableScripts')) {
-                   if ($null -ne $key -and @($key.GetValueNames()) -contains $name) { $snap[$name] = @{ Data = [string]$key.GetValue($name, $null, 'DoNotExpandEnvironmentNames'); Kind = [string]$key.GetValueKind($name) } }
+                   if ($null -ne $key -and @($key.GetValueNames()) -contains $name) {
+                       # The data in the text reg add takes for the kind, so that nothing is lost on the way to the record and
+                       # back: strings and numbers as they are, REG_MULTI_SZ joined with \0, REG_BINARY as hex (Codex round 4 on PR #14).
+                       $rawValue = $key.GetValue($name, $null, 'DoNotExpandEnvironmentNames'); $kind = [string]$key.GetValueKind($name)
+                       $data = $(switch ($kind) { 'MultiString' { @($rawValue) -join '\0' } 'Binary' { (@($rawValue) | ForEach-Object { ([byte]$_).ToString('x2') }) -join '' } default { [string]$rawValue } })
+                       $snap[$name] = @{ Data = $data; Kind = $kind }
+                   }
                    else { $snap[$name] = @{ Data = 'absent'; Kind = 'absent' } }
                }
                return @{ PolicyWay = $(if ($State.Edition.HasGpedit) { 'gpedit' } else { 'registry' }); Edition = ([string]$State.Edition.Caption + ' / ' + [string]$State.Edition.EditionId)

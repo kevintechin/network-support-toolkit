@@ -628,6 +628,14 @@ $r34c = Invoke-Campaign 'm8facts' @('-Resume', '-Scenarios', 'M8') "M8/revert=do
 $out34c = $r34c.Output -join "`n"
 Assert-True '34. an existing empty value comes back empty, an absent one is deleted (Codex round 3)' (($out34c -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_SZ /d "" /f') -and ($out34c -match 'reg delete "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v EnableScripts /f')) (($r34c.Output | Where-Object { $_ -match 'reg add|reg delete' }) -join ' / ')
 
+$crafted34d = Get-Content -LiteralPath $stateFile34 -Raw -Encoding UTF8 | ConvertFrom-Json
+$crafted34d.Scenarios.M8.Facts.RegExecutionPolicyBefore = 'absent'; $crafted34d.Scenarios.M8.Facts.RegExecutionPolicyKindBefore = 'String'   # a value whose data happens to read 'absent'
+$crafted34d.Scenarios.M8.Facts.RegEnableScriptsBefore = 'a\0b'; $crafted34d.Scenarios.M8.Facts.RegEnableScriptsKindBefore = 'MultiString'
+[IO.File]::WriteAllText($stateFile34, ($crafted34d | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+$r34d = Invoke-Campaign 'm8facts' @('-Resume', '-Scenarios', 'M8') "M8/revert=done`r`n"
+$out34d = $r34d.Output -join "`n"
+Assert-True '34. the data comes back as recorded, whatever it says, and a REG_MULTI_SZ comes back as one (Codex round 4)' (($out34d -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_SZ /d "absent" /f') -and ($out34d -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v EnableScripts /t REG_MULTI_SZ /d "a\\0b" /f')) (($r34d.Output | Where-Object { $_ -match 'reg add|reg delete' }) -join ' / ')
+
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
     Write-Output ''
