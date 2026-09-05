@@ -14,7 +14,8 @@
     Everything ends up in one bundle - acceptance_summary.md, the chain's summary and logs, every report the runs wrote,
     the environment probe, and the checklist for the observations only a person can make - named by machine, label and
     time, next to the ZIP. Cases the chain did not reach are listed as NOT RUN, so a gap is visible rather than silent;
-    cases dropped on purpose by -SkipGui are listed as SKIPPED. The exit code is the number of failed and not-run cases.
+    cases dropped on purpose by -SkipGui are listed as SKIPPED. The exit code is the number of failed and not-run cases,
+    and a bundle that cannot be written is a failed case: the bundle is the evidence, so a run without one is not a pass.
 
     On a machine restricted to a limited language mode the chain cannot run at all (its first New-Object is refused);
     the probe is written, the situation is stated, and the exit code is 3 - like the tool's own guard.
@@ -118,8 +119,9 @@ function Add-Skipped([string]$Step, [string]$Case, [string]$Why) {
     [void]$Results.Add([pscustomobject]@{ Step = $Step; Case = $Case; Result = 'SKIPPED'; Seconds = ''; Detail = $Why })
     Write-Host ('[SKIPPED] {0} / {1}: {2}' -f $Step, $Case, $Why) -ForegroundColor DarkGray
 }
-function Complete-Run {
-    # The summary, the bundle, the exit code. Called at the end and after a failed asset case.
+function Write-Summary {
+    # acceptance_summary.md from the results so far; returns the counts. Written before the bundle (it goes into it) and
+    # again when the bundle fails, so that the file on disk carries that failure too.
     $passed = @($Results | Where-Object { $_.Result -eq 'PASS' }).Count
     $failed = @($Results | Where-Object { $_.Result -eq 'FAIL' }).Count
     $notRun = @($Results | Where-Object { $_.Result -eq 'NOT RUN' }).Count
@@ -139,11 +141,19 @@ function Complete-Run {
     $md += @($Results | ForEach-Object { '| {0} | {1} | {2} | {3} | {4} |' -f $_.Step, $_.Case, $_.Result, $_.Seconds, ($_.Detail -replace '\|', '\|') })
     $md += ''
     $md += ('Summary: {0} passed, {1} failed, {2} not run, {3} skipped; {4} s' -f $passed, $failed, $notRun, $skipped, $elapsed)
+    [IO.File]::WriteAllLines((Join-Path $WorkDir 'acceptance_summary.md'), [string[]]$md, $Utf8NoBom)
+    return @{ Passed = $passed; Failed = $failed; NotRun = $notRun; Skipped = $skipped; Line = $md[-1] }
+}
+function Complete-Run {
+    # The summary, the bundle, the exit code. Called at the end and after a failed asset case. The bundle is the
+    # evidence this script exists to produce, so a bundle that cannot be written is a failed case and a nonzero exit code
+    # even when every other case passed (PR #10 round 1).
+    $counts = Write-Summary
     $summaryPath = Join-Path $WorkDir 'acceptance_summary.md'
-    [IO.File]::WriteAllLines($summaryPath, [string[]]$md, $Utf8NoBom)
     Write-Host ''
     $Results | Format-Table -AutoSize -Wrap Step, Case, Result, Seconds, Detail | Out-String -Width 250 | Write-Host
-    Write-Host $md[-1]
+    Write-Host $counts.Line
+    $zipName = 'nhc-acceptance_{0}_{1}_{2}.zip' -f $env:COMPUTERNAME, $Label, $Stamp
     try {
         $bundle = Join-Path $WorkDir 'bundle'
         if (Test-Path -LiteralPath $bundle) { Remove-Item -LiteralPath $bundle -Recurse -Force }
@@ -174,14 +184,19 @@ function Complete-Run {
         }
         $checklist = Join-Path $Tests 'package-acceptance-checklist.md'
         if (Test-Path -LiteralPath $checklist) { Copy-Item -LiteralPath $checklist -Destination (Join-Path $bundle ('checklist_' + $Label + '.md')) }
-        New-Item -ItemType Directory -Force -Path $BundleDir | Out-Null
-        $zipOut = Join-Path (Resolve-Path -LiteralPath $BundleDir).Path ('nhc-acceptance_{0}_{1}_{2}.zip' -f $env:COMPUTERNAME, $Label, $Stamp)
+        New-Item -ItemType Directory -Force -Path $BundleDir -ErrorAction Stop | Out-Null
+        $zipOut = Join-Path (Resolve-Path -LiteralPath $BundleDir).Path $zipName
         if (Test-Path -LiteralPath $zipOut) { Remove-Item -LiteralPath $zipOut -Force }
-        Compress-Archive -Path (Join-Path $bundle '*') -DestinationPath $zipOut
+        Compress-Archive -Path (Join-Path $bundle '*') -DestinationPath $zipOut -ErrorAction Stop
         Write-Host ('bundle {0} ({1} bytes, SHA256 {2})' -f $zipOut, (Get-Item -LiteralPath $zipOut).Length, (Get-FileHash -LiteralPath $zipOut -Algorithm SHA256).Hash.ToLowerInvariant())
     }
-    catch { Write-Host ('bundle not written: ' + $_.Exception.Message) -ForegroundColor Red }
-    exit ($failed + $notRun)
+    catch {
+        [void]$Results.Add([pscustomobject]@{ Step = 'bundle'; Case = $zipName; Result = 'FAIL'; Seconds = ''; Detail = ('not written: ' + $_.Exception.Message + '; the work dir still holds everything: ' + $WorkDir) })
+        Write-Host ('[FAIL] bundle / {0}: not written: {1}' -f $zipName, $_.Exception.Message) -ForegroundColor Red
+        $counts = Write-Summary   # the file on disk carries the bundle failure as well
+        Write-Host $counts.Line
+    }
+    exit ($counts.Failed + $counts.NotRun)
 }
 
 Write-Host ('NetworkHealthCheck package acceptance - {0} - {1} on {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Label, $env:COMPUTERNAME)
