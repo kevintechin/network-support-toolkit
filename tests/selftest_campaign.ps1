@@ -181,6 +181,27 @@ Assert-True '10. the skip after a remembered attempt went through the revert che
 Assert-True '10. the revert was asked' (@(Get-Content -LiteralPath (Join-Path $r10.State 'answers.log') | Where-Object { $_ -match ' A4/revert = ' }).Count -ge 1) 'answers.log'
 Assert-True '10. exit code 0' ($r10.ExitCode -eq 0) ('exit code ' + $r10.ExitCode)
 
+# -------------------- 11. the way back without PowerShell --------------------
+Write-Output ''
+Write-Output '11. RECOVER.txt and undo-M7.cmd are written at the start of a campaign, before any policy is applied'
+$recover = Get-Content -LiteralPath (Join-Path $r1.State 'RECOVER.txt') -Raw -Encoding UTF8
+Assert-True '11. RECOVER.txt names the M7 undo, the M8 gpedit path, the M9 secpol path and the resume command' (($recover -match 'reg delete "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" /v __PSLockdownPolicy /f') -and ($recover -match 'gpedit\.msc') -and ($recover -match 'secpol\.msc') -and ($recover -match 'Invoke-AcceptanceCampaign\.ps1.*-Resume')) (($recover -split "`n" | Select-Object -First 6) -join ' / ')
+$undo = Get-Content -LiteralPath (Join-Path $r1.State 'undo-M7.cmd') -Raw
+Assert-True '11. undo-M7.cmd is a plain cmd file with the reg delete and no PowerShell invocation' (($undo -match '^@echo off') -and ($undo -match 'reg delete "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" /v __PSLockdownPolicy /f') -and ($undo -notmatch '(?im)^\s*(powershell|pwsh)\b') -and ($undo -notmatch '-ExecutionPolicy|-Command ')) ($undo -replace "`r?`n", ' / ')
+
+# -------------------- 12. a resume under ConstrainedLanguage stops at the door --------------------
+Write-Output ''
+Write-Output '12. resumed in ConstrainedLanguage (what M7 leaves behind): exit 3 and the recovery notes named, not a New-Object failure'
+$driver = Join-Path $tests 'Invoke-AcceptanceCampaign.ps1'
+$command = '$ExecutionContext.SessionState.LanguageMode = ''ConstrainedLanguage''; & ''' + $driver + ''' -Campaign selftest-skips -StateDir ''' + $r1.State + ''' -Resume -Scenarios A3; exit $LASTEXITCODE'
+$ErrorActionPreference = 'Continue'
+$out12 = @(& $psExe -NoProfile -ExecutionPolicy Bypass -Command $command 2>&1 | ForEach-Object { [string]$_ })
+$code12 = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+foreach ($l in $out12) { Write-Output ('    | ' + $l) }
+Assert-True '12. exit code 3' ($code12 -eq 3) ('exit code ' + $code12)
+Assert-True '12. the output names ConstrainedLanguage and RECOVER.txt, and no New-Object error' ((@($out12 | Where-Object { $_ -match 'ConstrainedLanguage' -and $_ -match 'cannot run or resume' }).Count -ge 1) -and (@($out12 | Where-Object { $_ -match 'RECOVER\.txt' }).Count -ge 1) -and (@($out12 | Where-Object { $_ -match 'New-Object' }).Count -eq 0)) ($out12 -join ' / ')
+
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
     Write-Output ''

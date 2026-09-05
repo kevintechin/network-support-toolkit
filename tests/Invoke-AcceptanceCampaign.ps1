@@ -66,13 +66,21 @@ $ErrorActionPreference = 'Stop'
 $PsExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $CmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
 $Tests = $PSScriptRoot
-$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $Base = 'C:\Users\Public\NetworkHealthCheck-acceptance'
 if (-not $Campaign) { $Campaign = $env:COMPUTERNAME + '_' + (Get-Date -Format 'yyyyMMdd') }
 $Campaign = $Campaign -replace '[^\w.-]', '_'
 if (-not $StateDir) { $StateDir = Join-Path $Base $Campaign }
 $StateFile = Join-Path $StateDir 'campaign.json'
 $AnswersLog = Join-Path $StateDir 'answers.log'
+# A campaign interrupted after M7 leaves every new PowerShell in ConstrainedLanguage, where this script's own New-Object
+# below is refused: say where the recovery notes are and stop, instead of dying on that line (PR #11 round 5). Under M8
+# the unsigned script does not start at all, which is why the notes are written before either policy is applied.
+if ([string]$ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
+    Write-Host ('PowerShell is in {0} language mode on this machine: the campaign cannot run or resume here.' -f [string]$ExecutionContext.SessionState.LanguageMode)
+    Write-Host ('Put the machine back first without PowerShell - see ' + (Join-Path $StateDir 'RECOVER.txt') + ' (after M7: run undo-M7.cmd in that folder as administrator) - then run this command again.')
+    exit 3
+}
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)   # the first .NET object: nothing above this line needs FullLanguage
 $Now = { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' }
 # A standard user has no Administrators group in the token at all; an administrator under UAC has it, marked deny-only
 # until elevated - so presence, not enabled state, is the question (the probe asks it the same way).
@@ -306,6 +314,56 @@ if ($Scenarios) {
     $Wanted = @($PlanIds | Where-Object { $Wanted -contains $_ })
 }
 $ResumeCommand = 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $State.TestsCopy 'Invoke-AcceptanceCampaign.ps1') + '" -Campaign ' + $Campaign + ' -StateDir "' + $StateDir + '" -Resume' + $(if ($Wanted.Count) { ' -Scenarios ' + ($Wanted -join ',') } else { '' })
+$RecoveryNotes = Join-Path $StateDir 'RECOVER.txt'
+function Write-RecoveryNotes {
+    # RECOVER.txt and undo-M7.cmd in the state folder: how to put the machine back WITHOUT PowerShell, for a policy
+    # scenario interrupted before its revert - under M7 every new PowerShell is ConstrainedLanguage and this script's
+    # own New-Object is refused, under M8 the unsigned script does not start at all (PR #11 round 5). Written before
+    # any policy is applied, and again when M9 has recorded the service's original state.
+    $m9 = $State.Scenarios['M9']
+    $svcType = 'the startup type recorded in campaign.json under Scenarios.M9.Facts once M9 has started'
+    $svcStop = 'net stop AppIDSvc if it was stopped'
+    if ($null -ne $m9 -and $null -ne $m9.Facts -and $m9.Facts.AppIDSvcStartType -and [string]$m9.Facts.AppIDSvcStartType -ne 'n/a') {
+        $map = @{ Automatic = 'auto'; Manual = 'demand'; Disabled = 'disabled' }
+        $t = [string]$m9.Facts.AppIDSvcStartType
+        $svcType = $(if ($map.ContainsKey($t)) { $map[$t] } else { $t.ToLowerInvariant() }) + '   (it was ' + $t + ', ' + [string]$m9.Facts.AppIDSvcStatus + ')'
+        $svcStop = $(if ([string]$m9.Facts.AppIDSvcStatus -eq 'Stopped') { 'net stop AppIDSvc   (it was stopped)' } else { 'leave it running (it was running)' })
+    }
+    $lines = @(
+        ('NetworkHealthCheck acceptance campaign "' + $Campaign + '" - how to put the machine back WITHOUT PowerShell'),
+        ('Written ' + (& $Now) + '. For a policy scenario interrupted before its revert: under M7 every new PowerShell is'),
+        'ConstrainedLanguage and the campaign cannot resume; under M8 the unsigned campaign script does not start at all.',
+        '',
+        'M7  __PSLockdownPolicy (every new PowerShell in ConstrainedLanguage)',
+        '    right-click undo-M7.cmd in this folder > Run as administrator; or, in an elevated command prompt:',
+        '    reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f',
+        '',
+        'M8  Group Policy execution policy (AllSigned)',
+        '    gpedit.msc > Computer Configuration > Administrative Templates > Windows Components > Windows PowerShell',
+        '    > Turn on Script Execution > Not Configured > OK; then in a command prompt:   gpupdate /force',
+        '    (gpedit and gpupdate need no PowerShell; deleting the registry values alone is undone by the next policy refresh)',
+        '',
+        'M9  AppLocker Script rules',
+        '    secpol.msc > Application Control Policies > AppLocker > Configure rule enforcement > Script rules: Not configured;',
+        '    delete the Script rules; then   gpupdate /force. The Application Identity service back as it was:',
+        ('    sc config AppIDSvc start= ' + $svcType),
+        ('    ' + $svcStop),
+        '',
+        'Then run the campaign again, so that the revert is recorded:',
+        ('    ' + $ResumeCommand)
+    )
+    Set-Content -LiteralPath $RecoveryNotes -Value $lines -Encoding UTF8
+    $cmd = @(
+        '@echo off',
+        'rem Undo M7 of the NetworkHealthCheck acceptance campaign: remove the machine-wide __PSLockdownPolicy. Run as administrator.',
+        'reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f',
+        'if errorlevel 1 echo Could not delete the value - is this prompt running as administrator? & pause & exit /b 1',
+        'echo __PSLockdownPolicy removed: new PowerShell windows are FullLanguage again. Resume the campaign to record the revert.',
+        'pause'
+    )
+    [IO.File]::WriteAllLines((Join-Path $StateDir 'undo-M7.cmd'), [string[]]$cmd, [Text.Encoding]::ASCII)
+}
+Write-RecoveryNotes
 
 # -------------------- The plan --------------------
 function Get-Plan {
@@ -314,6 +372,9 @@ function Get-Plan {
     $m3Dir = Join-Path $desktop 'NHC-M3'
     $zipName = Split-Path -Leaf $State.OriginalZip
     $top = Split-Path -Leaf $State.PackageRoot
+    # Printed before a policy is applied: the way back that needs no PowerShell, for the case the campaign cannot resume.
+    $recoverLines = @(('If this window closes before the revert, put the machine back WITHOUT PowerShell as written in ' + $RecoveryNotes + ' (for M7: run undo-M7.cmd there as administrator), then run the campaign again.'),
+                      ('若這個視窗在還原前關掉了，請照 ' + $RecoveryNotes + ' 的說明、不用 PowerShell 把機器改回來（M7：以系統管理員身分執行同資料夾的 undo-M7.cmd），再重新執行 campaign。'))
     return @(
         @{ Id = 'A1'; Title = 'Baseline: the acceptance runner on this machine as it is'; Kind = 'auto'; Session = 'admin'
            Instruction = @('The acceptance runner: the asset, the package, the probe, the chain (real windows included unless -SkipGui) and the root launchers. Leave the desktop alone while windows open and close (about ten minutes).',
@@ -440,7 +501,7 @@ function Get-Plan {
                         Verify = { $f = Get-NetworkFacts; if ($f.Gateways -gt 0) { @{ Ok = $true; Detail = ('{0} gateway(s)' -f $f.Gateways) } } else { @{ Ok = $false; Detail = 'still no default gateway' } } } } },
         @{ Id = 'M7'; Title = 'Every new PowerShell in ConstrainedLanguage (__PSLockdownPolicy = 4)'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('In an ELEVATED command prompt run:   setx /M __PSLockdownPolicy 4   - then answer done. This puts every new PowerShell on this machine into ConstrainedLanguage until it is removed; you will be asked to remove it afterwards.',
-                           '在「以系統管理員身分執行」的命令提示字元執行：setx /M __PSLockdownPolicy 4，然後輸入 done。移除之前，這台機器每個新的 PowerShell 都會是 ConstrainedLanguage；之後會提示你移除。')
+                           '在「以系統管理員身分執行」的命令提示字元執行：setx /M __PSLockdownPolicy 4，然後輸入 done。移除之前，這台機器每個新的 PowerShell 都會是 ConstrainedLanguage；之後會提示你移除。') + $recoverLines
            Precondition = { $v = Get-MachineEnv '__PSLockdownPolicy'; if ($v -eq '4') { @{ Ok = $true; Detail = '__PSLockdownPolicy=4 in the machine environment' } } else { @{ Ok = $false; Detail = ('__PSLockdownPolicy is ' + $(if ($v) { $v } else { 'not set' }) + ' in the machine environment') } } }
            Action = { param($Ctx)
                $env:__PSLockdownPolicy = '4'   # what a double-click inherits from Explorer after the broadcast; PowerShell reads the machine value itself
@@ -456,8 +517,8 @@ function Get-Plan {
            Cleanup = @{ Instruction = @('Remove it - in an ELEVATED command prompt:   reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f   - then answer done.', '移除它——在「以系統管理員身分執行」的命令提示字元執行：reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f，然後輸入 done。')
                         Verify = { $v = Get-MachineEnv '__PSLockdownPolicy'; if ($null -eq $v -or $v -eq '') { @{ Ok = $true; Detail = 'removed' } } else { @{ Ok = $false; Detail = ('__PSLockdownPolicy is still ' + $v) } } } } },
         @{ Id = 'M8'; Title = 'Group Policy execution policy: allow only signed scripts'; Kind = 'reconfigure'; Session = 'admin'
-           Instruction = @('gpedit.msc > Computer Configuration > Administrative Templates > Windows Components > Windows PowerShell > Turn on Script Execution > Enabled, "Allow only signed scripts" > OK; then in a command prompt:   gpupdate /force   - then answer done.',
-                           'gpedit.msc > 電腦設定 > 系統管理範本 > Windows 元件 > Windows PowerShell > 開啟指令碼執行 > 已啟用、「只允許已簽署的指令碼」> 確定；再在命令提示字元執行 gpupdate /force，然後輸入 done。')
+           Instruction = @('gpedit.msc > Computer Configuration > Administrative Templates > Windows Components > Windows PowerShell > Turn on Script Execution > Enabled, "Allow only signed scripts" > OK; then in a command prompt:   gpupdate /force   - then answer done. While this is in force, no unsigned PowerShell script starts - this campaign included: keep this window open.',
+                           'gpedit.msc > 電腦設定 > 系統管理範本 > Windows 元件 > Windows PowerShell > 開啟指令碼執行 > 已啟用、「只允許已簽署的指令碼」> 確定；再在命令提示字元執行 gpupdate /force，然後輸入 done。生效期間任何未簽章的 PowerShell 腳本都跑不起來——包括這個 campaign：請保持這個視窗開著。') + $recoverLines
            Precondition = { $p = Get-MachinePolicyExecutionPolicy; if ($p -eq 'AllSigned') { @{ Ok = $true; Detail = 'MachinePolicy=AllSigned' } } else { @{ Ok = $false; Detail = ('MachinePolicy is ' + $p + ', not AllSigned') } } }
            Action = { param($Ctx)
                $r = Invoke-LauncherRun $Ctx.Id 'en-US'
@@ -472,14 +533,16 @@ function Get-Plan {
                         Verify = { $p = Get-MachinePolicyExecutionPolicy; if ($p -eq 'Undefined') { @{ Ok = $true; Detail = 'MachinePolicy=Undefined' } } else { @{ Ok = $false; Detail = ('MachinePolicy is still ' + $p) } } } } },
         @{ Id = 'M9'; Title = 'AppLocker script rules enforced (Enterprise / Education)'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('secpol.msc > Application Control Policies > AppLocker > Script Rules > right-click > Create Default Rules; AppLocker > Configure rule enforcement > Script rules: Configured, Enforce rules. Then in an ELEVATED command prompt:   sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force   - then answer done.',
-                           'secpol.msc > 應用程式控制原則 > AppLocker > 指令碼規則 > 右鍵 > 建立預設規則；AppLocker > 設定規則強制執行 > 指令碼規則：已設定、強制執行規則。再在「以系統管理員身分執行」的命令提示字元執行：sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force，然後輸入 done。')
+                           'secpol.msc > 應用程式控制原則 > AppLocker > 指令碼規則 > 右鍵 > 建立預設規則；AppLocker > 設定規則強制執行 > 指令碼規則：已設定、強制執行規則。再在「以系統管理員身分執行」的命令提示字元執行：sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force，然後輸入 done。') + $recoverLines
            Prepare = { param($Ctx) try { $svc = Get-Service -Name AppIDSvc -ErrorAction Stop; return @{ AppIDSvcStartType = [string]$svc.StartType; AppIDSvcStatus = [string]$svc.Status } } catch { return @{ AppIDSvcStartType = 'n/a'; AppIDSvcStatus = 'n/a' } } }   # the service is changed by the instruction and must go back
            Precondition = {
                try {
                    $p = Get-AppLockerPolicy -Effective -ErrorAction Stop
                    $scriptRules = @($p.RuleCollections | Where-Object { [string]$_.RuleCollectionType -eq 'Script' })[0]
                    $svc = Get-Service -Name AppIDSvc -ErrorAction Stop
-                   if ($null -ne $scriptRules -and [string]$scriptRules.EnforcementMode -eq 'Enabled' -and [string]$svc.Status -eq 'Running') { @{ Ok = $true; Detail = ('Script rules enforced ({0} rules), AppIDSvc running' -f $scriptRules.Count) } }
+                   # Enforcement with no rule at all lets every script run: the experiment would then measure nothing (PR #11 round 5).
+                   if ($null -ne $scriptRules -and [string]$scriptRules.EnforcementMode -eq 'Enabled' -and [int]$scriptRules.Count -eq 0) { @{ Ok = $false; Detail = 'Script rules enforced but empty - create the default rules first, or nothing is enforced' } }
+                   elseif ($null -ne $scriptRules -and [string]$scriptRules.EnforcementMode -eq 'Enabled' -and [string]$svc.Status -eq 'Running') { @{ Ok = $true; Detail = ('Script rules enforced ({0} rules), AppIDSvc running' -f $scriptRules.Count) } }
                    else { @{ Ok = $false; Detail = ('Script rules: ' + $(if ($null -ne $scriptRules) { [string]$scriptRules.EnforcementMode + ', ' + $scriptRules.Count + ' rules' } else { 'none' }) + '; AppIDSvc ' + $svc.Status) } }
                }
                catch { @{ Ok = $false; Detail = ('AppLocker is not available here: ' + $_.Exception.Message) } }
@@ -556,7 +619,7 @@ function Invoke-Scenario($S) {
         # What the machine looked like before the change - recorded once: a campaign interrupted at the gate, after the
         # person changed the machine, must not describe the changed machine as the original on resume (PR #11 round 2).
         if ($null -ne $rec.Facts -and @($rec.Facts.Keys).Count -gt 0) { $ctx.Facts = $rec.Facts; Write-Host ('  facts recorded earlier are kept: ' + (@($rec.Facts.Keys | ForEach-Object { $_ + '=' + $rec.Facts[$_] }) -join ', ')) -ForegroundColor DarkGray }
-        else { $ctx.Facts = ConvertTo-Hashtable (& $S.Prepare $ctx); $rec.Facts = $ctx.Facts }
+        else { $ctx.Facts = ConvertTo-Hashtable (& $S.Prepare $ctx); $rec.Facts = $ctx.Facts; Write-RecoveryNotes }   # the notes name the recorded state
     }
     $rec.Started = (& $Now)
     Save-State
@@ -671,6 +734,7 @@ $md += ''
 $md += ('- Machine: {0}; started {1} by {2}; this invocation {3} by {4}{5}' -f $State.Computer, $State.Created, $State.StartedBy, (& $Now), $env:USERNAME, $(if ($IsStandardUser) { ' (standard user)' } else { '' }))
 $md += ('- Asset: {0} (SHA256 {1}{2})' -f (Split-Path -Leaf $State.ZipCopy), $State.Digest, $(if ($State.ExpectedSha256) { ', matches the release notes' } else { ', not compared' }))
 $md += ('- Real windows: {0}; state: {1}' -f $(if ($State.SkipGui) { 'none (-SkipGui)' } else { 'yes' }), $StateDir)
+$md += ('- Recovery without PowerShell (a policy scenario interrupted before its revert): {0}' -f $RecoveryNotes)
 $md += ''
 $md += '| Id | Scenario | Result | s | Detail | Reverted | Finished |'
 $md += '|---|---|---|---:|---|---|---|'
@@ -688,7 +752,7 @@ try {
     $bundle = Join-Path $StateDir 'bundle'
     if (Test-Path -LiteralPath $bundle) { Remove-Item -LiteralPath $bundle -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $bundle | Out-Null
-    foreach ($f in @($summaryPath, $StateFile, $AnswersLog)) { if (Test-Path -LiteralPath $f) { Copy-Item -LiteralPath $f -Destination $bundle } }
+    foreach ($f in @($summaryPath, $StateFile, $AnswersLog, $RecoveryNotes, (Join-Path $StateDir 'undo-M7.cmd'))) { if (Test-Path -LiteralPath $f) { Copy-Item -LiteralPath $f -Destination $bundle } }
     foreach ($s in $plan) {
         $dir = Join-Path $StateDir $s.Id
         if (-not (Test-Path -LiteralPath $dir)) { continue }
