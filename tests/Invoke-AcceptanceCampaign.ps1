@@ -230,14 +230,25 @@ function Invoke-LauncherRun([string]$Id, [string]$Lang) {
 }
 function Save-Screenshot([string]$Path) {
     Add-Type -AssemblyName System.Drawing
-    Add-Type -AssemblyName System.Windows.Forms
-    $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $bounds = Get-PrimaryBounds
     $bitmap = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     try { $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size); $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png) }
     finally { $graphics.Dispose(); $bitmap.Dispose() }
 }
-function Get-PrimaryBounds { Add-Type -AssemblyName System.Windows.Forms; return [System.Windows.Forms.Screen]::PrimaryScreen.Bounds }
+function Get-PrimaryBounds {
+    # The size of the primary display as it is NOW. Not Screen.PrimaryScreen.Bounds: Windows Forms builds its Screen
+    # objects once and keeps them until a WM_DISPLAYCHANGE reaches its SystemEvents window - which, on the STA
+    # thread powershell.exe runs the pipeline on, is delivered only while that thread pumps messages, and it never
+    # does while this script waits in Read-Host. So the first measurement of a campaign was the only one: after the
+    # person had set 1366 x 768, M4's precondition kept reporting the earlier size, and the revert check would have
+    # accepted anything (the first campaign on the Windows 11 VM, 2026-09-05). GetSystemMetrics, which
+    # SystemInformation.PrimaryMonitorSize calls every time, reads the live value; the primary display starts at 0,0.
+    Add-Type -AssemblyName System.Drawing
+    Add-Type -AssemblyName System.Windows.Forms
+    $size = [System.Windows.Forms.SystemInformation]::PrimaryMonitorSize
+    return New-Object System.Drawing.Rectangle(0, 0, $size.Width, $size.Height)
+}
 function Get-ZoneId([string]$Path) {
     # The Mark of the Web: the Zone.Identifier stream's ZoneId line, 'stream present' without one, 'no mark' without a stream.
     if (-not (Test-Path -LiteralPath $Path)) { return 'file missing' }
