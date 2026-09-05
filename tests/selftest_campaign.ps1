@@ -329,11 +329,16 @@ Assert-True '20. exit code 0' ($r20.ExitCode -eq 0) ('exit code ' + $r20.ExitCod
 
 # -------------------- 21. M2 runs on a marked download and fails without a report --------------------
 Write-Output ''
-Write-Output '21. M2 on a copy of the asset given a Mark of the Web, no extraction made: the prompts run, a screenshot is taken, FAIL for the missing report, exit 1'
+Write-Output '21. M2 on a copy of the asset given a Mark of the Web, extracted as asked but the launcher never run: the prompts run, a screenshot is taken, FAIL for the missing report, exit 1'
 $zipMarked = Join-Path $WorkDir ('NetworkHealthCheck-' + $version + '-marked.zip')
 Copy-Item -LiteralPath $zip -Destination $zipMarked -Force
 Set-Content -LiteralPath $zipMarked -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
-$r21 = Invoke-Campaign 'marked' @('-Zip', $zipMarked, '-Scenarios', 'M2') "M2=done`r`nM2/windows-showed=3`r`nM2/run-finished=done`r`n"
+# The extraction the scenario asks for is made under a work root of the self-test's own, so that the precondition passes
+# and the real desktop is left alone (PR #14): the built package tree under NHC-M2, the launcher included.
+$desk21 = Join-Path $WorkDir 'desk21'
+New-Item -ItemType Directory -Force -Path (Join-Path $desk21 'NHC-M2') | Out-Null
+Copy-Item -LiteralPath $top -Destination (Join-Path $desk21 'NHC-M2') -Recurse -Force
+$r21 = Invoke-Campaign 'marked' @('-Zip', $zipMarked, '-Scenarios', 'M2', '-WorkRoot', $desk21) "M2=done`r`nM2/windows-showed=3`r`nM2/run-finished=done`r`n"
 $s21 = Read-State $r21.State
 Assert-True '21. M2 FAIL for the missing extraction and report, with the marks recorded' ($s21.Scenarios.M2.Result -eq 'FAIL' -and $s21.Scenarios.M2.Detail -like '*no en-US report*' -and $s21.Scenarios.M2.Detail -like '*download mark: ZoneId=3*') ($s21.Scenarios.M2.Result + ' / ' + $s21.Scenarios.M2.Detail)
 Assert-True '21. the screenshot was taken and the observation recorded' ((Test-Path -LiteralPath (Join-Path $r21.State 'M2\M2_after_double-click.png')) -and (@(Get-Content -LiteralPath (Join-Path $r21.State 'answers.log') | Where-Object { $_ -match ' M2/windows-showed = 3$' }).Count -eq 1)) 'screenshot or answer missing'
@@ -492,6 +497,68 @@ $s28 = Read-State $r1.State
 Assert-True '28. refused for A4' ($r28.ExitCode -ne 0 -and (($r28.Output -join ' ') -match 'cannot redo A4: it is pending with a change possibly still on the machine')) ('exit code ' + $r28.ExitCode + ' / ' + (($r28.Output | Select-Object -Last 3) -join ' / '))
 Assert-True '28. the A3 folder and its evidence did not move' ((Test-Path -LiteralPath (Join-Path $a3Dir27 'evidence-of-the-redo.txt')) -and @(Get-ChildItem -LiteralPath (Join-Path $r1.State 'superseded') -Directory -Filter 'A3_*' -ErrorAction SilentlyContinue).Count -eq $asideBefore28) ('superseded A3_* folders: ' + @(Get-ChildItem -LiteralPath (Join-Path $r1.State 'superseded') -Directory -Filter 'A3_*' -ErrorAction SilentlyContinue).Count)
 Assert-True '28. the A3 record is as it was' ($s28.Scenarios.A3.Result -eq $s28before.Scenarios.A3.Result -and $s28.Scenarios.A3.Finished -eq $s28before.Scenarios.A3.Finished -and @($s28.Scenarios.A3.Superseded).Count -eq @($s28before.Scenarios.A3.Superseded).Count) ($s28.Scenarios.A3.Result + ' / ' + $s28.Scenarios.A3.Finished + ' / superseded entries ' + @($s28.Scenarios.A3.Superseded).Count)
+
+# -------------------- 29. the extraction is verified before anyone double-clicks --------------------
+Write-Output ''
+Write-Output '29. M2 (marked ZIP) and M3 (unmarked ZIP) with nothing extracted under the work root: SKIPPED at the precondition, the folder and the Extract All hint named, no launcher prompt, exit 0'
+$desk29 = (New-Item -ItemType Directory -Force -Path (Join-Path $WorkDir 'desk29')).FullName
+$r29a = Invoke-Campaign 'noextract-m2' @('-Zip', $zipMarked, '-Scenarios', 'M2', '-WorkRoot', $desk29) "M2=done`r`nM2/windows-showed=3`r`n"
+$s29a = Read-State $r29a.State
+Assert-True '29. M2 SKIPPED: nothing extracted under NHC-M2, with the hint' ($s29a.Scenarios.M2.Result -eq 'SKIPPED' -and $s29a.Scenarios.M2.Detail -like ('precondition not met: nothing extracted under ' + $desk29 + '\NHC-M2 (no Start-English.cmd below it) - the Extract All dialog proposes another folder; replace the destination with *')) ($s29a.Scenarios.M2.Result + ' / ' + $s29a.Scenarios.M2.Detail)
+Assert-True '29. no launcher prompt was reached for M2' (@(Get-Content -LiteralPath (Join-Path $r29a.State 'answers.log') | Where-Object { $_ -match ' M2/(launched|windows-showed) ' }).Count -eq 0) ((Get-Content -LiteralPath (Join-Path $r29a.State 'answers.log')) -join ' / ')
+$r29b = Invoke-Campaign 'noextract-m3' @('-Zip', $zip, '-Scenarios', 'M3', '-WorkRoot', $desk29) "M3=done`r`nM3/open-report=shown`r`n"
+$s29b = Read-State $r29b.State
+Assert-True '29. M3 SKIPPED: nothing extracted under NHC-M3, both launchers named; exit codes 0' ($s29b.Scenarios.M3.Result -eq 'SKIPPED' -and $s29b.Scenarios.M3.Detail -like ('precondition not met: nothing extracted under ' + $desk29 + '\NHC-M3 (no Start-English.cmd / Start-Traditional-Chinese.cmd below it)*') -and $r29a.ExitCode -eq 0 -and $r29b.ExitCode -eq 0) ($s29b.Scenarios.M3.Result + ' / ' + $s29b.Scenarios.M3.Detail + ' / exit ' + $r29a.ExitCode + ',' + $r29b.ExitCode)
+
+# -------------------- 30. a run made from the wrong folder is named --------------------
+Write-Output ''
+Write-Output '30. M3 extracted under NHC-M3 as asked, but the launchers were run from the folder the Extract All dialog proposes (a zh-TW report there): FAIL naming where the report was found, exit 1'
+$desk30 = (New-Item -ItemType Directory -Force -Path (Join-Path $WorkDir 'desk30')).FullName
+New-Item -ItemType Directory -Force -Path (Join-Path $desk30 'NHC-M3') | Out-Null
+Copy-Item -LiteralPath $top -Destination (Join-Path $desk30 'NHC-M3') -Recurse -Force
+$elsewhere30 = Join-Path $desk30 ('NetworkHealthCheck-' + $version + '\NetworkHealthCheck-' + $version + '\zh-TW\Reports')
+New-Item -ItemType Directory -Force -Path $elsewhere30 | Out-Null
+$report30 = Join-Path $elsewhere30 'NetworkHealthCheck_20260905_171350_DESKTOP-TEST.json'
+[IO.File]::WriteAllText($report30, (@{ SchemaVersion = 2; RunOptions = @{ EntryPoint = 'User' }; Results = @() } | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+Set-WrittenLater $report30
+$r30 = Invoke-Campaign 'elsewhere' @('-Zip', $zip, '-Scenarios', 'M3', '-WorkRoot', $desk30) "M3=done`r`nM3/open-report=failed`r`n"
+$s30 = Read-State $r30.State
+Assert-True '30. M3 FAIL: the en-US report is missing with nothing found elsewhere' ($s30.Scenarios.M3.Result -eq 'FAIL' -and $s30.Scenarios.M3.Detail -like ('*no en-US report under ' + $desk30 + '\NHC-M3;*')) ($s30.Scenarios.M3.Result + ' / ' + $s30.Scenarios.M3.Detail)
+Assert-True '30. the zh-TW report found elsewhere is named with its path' ($s30.Scenarios.M3.Detail -like ('*no zh-TW report under ' + $desk30 + '\NHC-M3 - found elsewhere, so the launchers were not run from there: ' + $report30 + '*')) $s30.Scenarios.M3.Detail
+Assert-True '30. exit code 1' ($r30.ExitCode -eq 1) ('exit code ' + $r30.ExitCode)
+
+# -------------------- 31. the edition decides how the policy scenarios are done --------------------
+Write-Output ''
+Write-Output '31. the summary names the edition; on a crafted Windows Home state M9 is skipped before anyone is asked and M8 names the registry lines as the way for this machine, recorded in its facts and in RECOVER.txt'
+$r31 = Invoke-Campaign 'edition' @('-Zip', $zip, '-Scenarios', 'M9') "M9=skip`r`n"
+$summary31 = Get-Content -LiteralPath (Join-Path $r31.State 'campaign_summary.md') -Raw -Encoding UTF8
+Assert-True '31. the summary header names the edition and the consoles' ($summary31 -match '(?m)^- Edition: .+ \(EditionID \w+, .*build \d+\.\d+\); gpedit\.msc: (yes|no); secpol\.msc: (yes|no)\r?$') (($summary31 -split "`n" | Where-Object { $_ -like '- Edition:*' }) -join ' / ')
+$s31 = Read-State $r31.State
+Assert-True '31. on this machine (not Home) M9 reached the gate and was skipped there' ($s31.Scenarios.M9.Result -eq 'SKIPPED' -and $s31.Scenarios.M9.Detail -eq 'skipped by the user' -and (-not $s31.Edition.IsHome)) ($s31.Scenarios.M9.Result + ' / ' + $s31.Scenarios.M9.Detail + ' / IsHome ' + $s31.Edition.IsHome)
+$stateFile31 = Join-Path $r31.State 'campaign.json'
+$crafted31 = Get-Content -LiteralPath $stateFile31 -Raw -Encoding UTF8 | ConvertFrom-Json
+$crafted31.Edition.IsHome = $true; $crafted31.Edition.EditionId = 'Core'; $crafted31.Edition.Caption = 'Microsoft Windows 11 Home'; $crafted31.Edition.HasGpedit = $false; $crafted31.Edition.HasSecpol = $false
+[IO.File]::WriteAllText($stateFile31, ($crafted31 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+$r31b = Invoke-Campaign 'edition' @('-Resume', '-Redo', 'M9', '-Scenarios', 'M9') "M9=done`r`n"
+$s31b = Read-State $r31.State
+Assert-True '31. on Home, M9 is skipped before anyone is asked, with the edition named' ($s31b.Scenarios.M9.Result -eq 'SKIPPED' -and $s31b.Scenarios.M9.Detail -like 'prerequisite not met: AppLocker is not available on this edition (Microsoft Windows 11 Home, EditionID Core)*' -and @(Get-Content -LiteralPath (Join-Path $r31.State 'answers.log') | Where-Object { $_ -match ' M9/gate ' }).Count -eq 1) ($s31b.Scenarios.M9.Result + ' / ' + $s31b.Scenarios.M9.Detail)
+$r31c = Invoke-Campaign 'edition' @('-Resume', '-Scenarios', 'M8') "M8=skip`r`n"
+$out31c = $r31c.Output -join "`n"
+Assert-True '31. on Home, M8 names the registry lines as the way for this machine' (($out31c -match 'This machine: Microsoft Windows 11 Home \(EditionID Core\) - no gpedit\.msc: take the registry lines') -and ($out31c -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_SZ /d AllSigned /f')) (($r31c.Output | Where-Object { $_ -match 'This machine|reg add' }) -join ' / ')
+$s31c = Read-State $r31.State
+Assert-True '31. M8 recorded how the policy is applied here' ([string]$s31c.Scenarios.M8.Facts.PolicyWay -eq 'registry' -and [string]$s31c.Scenarios.M8.Facts.Edition -eq 'Microsoft Windows 11 Home / Core') ('facts: ' + ($s31c.Scenarios.M8.Facts | ConvertTo-Json -Compress))
+$recover31 = $(if (Test-Path -LiteralPath (Join-Path $r31.State 'RECOVER.txt')) { Get-Content -LiteralPath (Join-Path $r31.State 'RECOVER.txt') -Raw } else { '' })
+Assert-True '31. RECOVER.txt carries the way back without gpedit as well' ($recover31 -match 'reg delete "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /f') ('RECOVER.txt length ' + $recover31.Length)
+
+# -------------------- 32. the standard-user session gets a file to run --------------------
+Write-Output ''
+Write-Output '32. A2 in an administrator session: left PENDING for the standard-user session, and run-as-standard-user.cmd next to the state holds the resume command'
+$r32 = Invoke-Campaign 'a2cmd' @('-Zip', $zip, '-Scenarios', 'A2') ''
+$s32 = Read-State $r32.State
+$cmd32 = Join-Path $r32.State 'run-as-standard-user.cmd'
+Assert-True '32. A2 pending for the other session, the .cmd written and named' ($s32.Scenarios.A2.Result -eq 'PENDING' -and $s32.Scenarios.A2.Detail -like ('needs a standard-user session; run ' + $cmd32 + ' there*') -and (Test-Path -LiteralPath $cmd32)) ($s32.Scenarios.A2.Result + ' / ' + $s32.Scenarios.A2.Detail)
+$cmdText32 = $(if (Test-Path -LiteralPath $cmd32) { Get-Content -LiteralPath $cmd32 -Raw } else { '' })
+Assert-True '32. the .cmd holds the resume command of this campaign' (($cmdText32 -match '^@echo off') -and ($cmdText32 -match 'Invoke-AcceptanceCampaign\.ps1" -Campaign selftest-a2cmd -StateDir "') -and ($cmdText32 -match ' -Resume') -and ($cmdText32 -match '(?m)^pause')) $cmdText32
 
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
