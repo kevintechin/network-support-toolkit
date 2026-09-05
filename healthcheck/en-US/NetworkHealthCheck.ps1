@@ -45,7 +45,7 @@ param(
 # - Traceability: exception type, message, and inner exceptions are stored in every
 #   report; script location and call stack go to the JSON report only (Diagnostics).
 
-$script:ToolVersion = "1.2.2"
+$script:ToolVersion = "1.2.3"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -59,10 +59,12 @@ $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 function Test-IsRunningFromArchive {
     param([string]$Path)
 
-    # Windows opens a ZIP in a temporary view such as %TEMP%\Temp1_NetworkHealthCheck-1.2.2.zip\...; a double-click
-    # from there appears to work, but the folder disappears with the view, taking any file written into it.
+    # Windows opens a ZIP in a temporary view and extracts the file double-clicked there into it: %TEMP%\Temp1_<name>.zip\...
+    # on Windows 10, %TEMP%\<guid>_<name>.zip.<hex>\... on Windows 11, where the suffix is a few hex digits (.684, .bc4),
+    # not a number (backlog #26). A run from such a folder appears to work, but the folder disappears with the view,
+    # taking any file written into it.
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-    return ($Path -match "\.zip[\\/]")
+    return ($Path -match "\.zip(\.[0-9a-f]+)?[\\/]")
 }
 
 function Write-EnvironmentReport {
@@ -399,6 +401,12 @@ function Get-NetworkErrorCauseText {
                 return ("{0} [WebExceptionStatus {1}]" -f $webCauses[$status], $status)
             }
             return ("[WebExceptionStatus {0}]" -f $status)
+        }
+        if ($current -is [System.TimeoutException]) {
+            # The tool's own limit (Invoke-DnsLookup, Invoke-TcpConnectionTest) expired while the operating system was
+            # still waiting: nothing answered and nothing refused, which is what a firewall that drops packets, or an
+            # unreachable host, looks like. Until 1.2.3 this was a bare RuntimeException without a cause line (backlog #27).
+            return "No answer within the tool's own time limit: nothing replied and nothing refused, which is what a firewall dropping packets or an unreachable host looks like. [ToolTimeout]"
         }
         $current = $current.InnerException
         $depth++
@@ -1959,7 +1967,7 @@ function Invoke-DnsLookup {
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $task = [System.Net.Dns]::GetHostAddressesAsync($HostName)
     if (-not $task.Wait($TimeoutMs)) {
-        throw "DNS lookup timed out (more than $TimeoutMs ms)."
+        throw (New-Object System.TimeoutException "DNS lookup timed out (more than $TimeoutMs ms).")
     }
 
     $addresses = @()
@@ -2028,7 +2036,7 @@ function Invoke-TcpConnectionTest {
     try {
         $asyncResult = $client.BeginConnect($HostName, $Port, $null, $null)
         if (-not $asyncResult.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) {
-            throw "TCP connection timed out (more than $TimeoutMs ms)."
+            throw (New-Object System.TimeoutException "TCP connection timed out (more than $TimeoutMs ms).")
         }
         $client.EndConnect($asyncResult)
         $stopwatch.Stop()
@@ -2571,8 +2579,16 @@ function Add-RouteTableResult {
         $routes = @(Sort-DefaultRoutes -Routes @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop))
     }
     catch {
-        Add-CheckResult -Category "IT Diagnostics" -Check "IPv4 default routes" -Status "ERROR" -Message "The route table could not be read." -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + "Manual check: route print -4") -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "routes" -Scope "IT" | Out-Null
-        return
+        # A CIM query that matches nothing is not an empty result in Windows PowerShell: Get-NetRoute throws
+        # CimJobException (FullyQualifiedErrorId CmdletizationQuery_NotFound, category ObjectNotFound), with a message
+        # in the machine's display language. That is the normal state of a machine without a default route - the
+        # host-only case of backlog #19 - and until 1.2.3 it was written as an engine error (backlog #27). The id is
+        # the cmdlet's own and does not follow the display language; anything else is a real failure.
+        if ($_.FullyQualifiedErrorId -notmatch "^CmdletizationQuery_NotFound") {
+            Add-CheckResult -Category "IT Diagnostics" -Check "IPv4 default routes" -Status "ERROR" -Message "The route table could not be read." -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + "Manual check: route print -4") -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "routes" -Scope "IT" | Out-Null
+            return
+        }
+        $routes = @()
     }
 
     if ($routes.Count -eq 0) {

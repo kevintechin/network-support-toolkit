@@ -219,6 +219,27 @@ Assert-Equal 'cause: null has none' (Get-NetworkErrorCauseText $null) ''
 $deep = $refused
 foreach ($i in 1..8) { $deep = New-Object System.InvalidOperationException ('level ' + $i), $deep }
 Assert-Equal 'cause: deeper than the walk gives none' (Get-NetworkErrorCauseText $deep) ''
+# backlog #27: the tool's own limits (Invoke-DnsLookup, Invoke-TcpConnectionTest) throw a TimeoutException and get a
+# cause line like any other network failure - until 1.2.3 they were bare RuntimeExceptions with no cause at all.
+$timedOut = New-Object System.TimeoutException 'DNS lookup timed out (more than 1 ms).'
+Assert-Equal 'cause: the tool''s own timeout names its marker' ((Get-NetworkErrorCauseText $timedOut).EndsWith('[ToolTimeout]')) True
+Assert-Equal 'cause: the tool''s own timeout has a sentence' ((Get-NetworkErrorCauseText $timedOut).Length -gt ('[ToolTimeout]'.Length + 8)) True
+Assert-Equal 'cause: the tool''s own timeout is found when wrapped' ((Get-NetworkErrorCauseText (New-Object System.InvalidOperationException 'wrap', $timedOut)).EndsWith('[ToolTimeout]')) True
+try { throw $timedOut } catch { $timedOutRecord = $_ }
+$timedOutDetails = @((Get-ExceptionDetails $timedOutRecord) -split "`r`n")
+Assert-Equal 'details: the tool''s own timeout has the cause first' ($timedOutDetails[0].EndsWith('[ToolTimeout]')) True
+Assert-Equal 'details: the tool''s own timeout is not a RuntimeException' (@($timedOutDetails | Where-Object { $_ -match 'RuntimeException' }).Count) 0
+Assert-Equal 'details: the tool''s own timeout keeps its message' (@($timedOutDetails | Where-Object { $_ -like '*more than 1 ms*' }).Count -gt 0) True
+# And the two functions really throw that type: read off the AST, because a real timeout needs a network that drops
+# packets, which the machine running this may not have.
+$tokens = $null; $errors = $null
+$scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
+foreach ($timeoutFunction in @('Invoke-DnsLookup', 'Invoke-TcpConnectionTest')) {
+    $fn = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $timeoutFunction }, $true)
+    $throws = @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.ThrowStatementAst] }, $true))
+    Assert-Equal "throws: $timeoutFunction has one throw" $throws.Count 1
+    Assert-Equal "throws: $timeoutFunction throws a TimeoutException" (($throws | ForEach-Object { $_.Extent.Text }) -match 'New-Object System\.TimeoutException') True
+}
 $withCause = Add-NetworkErrorCause $refused 'ORIGINAL'
 Assert-Equal 'add: original text kept' ($withCause.EndsWith('ORIGINAL')) True
 Assert-Equal 'add: cause on its own first line' (@($withCause -split "`r`n").Count) 2
@@ -265,6 +286,13 @@ Assert-Equal "tables: $peerLang holds the same keys" ($peerKeys -join ',') ($thi
 Assert-Equal 'archive: extracted folder' (Test-IsRunningFromArchive 'C:\Tools\NetworkHealthCheck\en-US') False
 Assert-Equal 'archive: Windows compressed-folder view' (Test-IsRunningFromArchive 'C:\Users\x\AppData\Local\Temp\Temp1_NetworkHealthCheck-1.2.2.zip\NetworkHealthCheck-1.2.2\en-US') True
 Assert-Equal 'archive: forward slashes' (Test-IsRunningFromArchive 'C:/Temp/Temp1_pack.zip/en-US') True
+# backlog #26: Windows 11 extracts into %TEMP%\<guid>_<name>.zip.<hex>\ - the suffix is a few hex digits (.684, .bc4),
+# not a number, and the 1.2.2 pattern (".zip" followed by a separator) missed it.
+Assert-Equal 'archive: Windows 11 view folder' (Test-IsRunningFromArchive 'C:\Users\x\AppData\Local\Temp\388e11bd-2056-4e77-a266-27df0c2ad684_NetworkHealthCheck-1.2.2.zip.684\NetworkHealthCheck-1.2.2\en-US') True
+Assert-Equal 'archive: Windows 11 view folder, letters in the suffix' (Test-IsRunningFromArchive 'C:\Users\x\AppData\Local\Temp\5d2b5f20-1111-4222-8333-e2e558bb2bc4_NetworkHealthCheck-1.2.2.zip.bc4\NetworkHealthCheck-1.2.2\zh-TW') True
+Assert-Equal 'archive: Windows 11 view folder, forward slashes' (Test-IsRunningFromArchive 'C:/Temp/5d2b5f20-1111-4222-8333-e2e558bb2bc4_pack.zip.bc4/en-US') True
+Assert-Equal 'archive: the Windows 11 view folder itself, not a folder inside it' (Test-IsRunningFromArchive 'C:\Temp\5d2b5f20-1111-4222-8333-e2e558bb2bc4_pack.zip.bc4') False
+Assert-Equal 'archive: a backup folder named after the archive' (Test-IsRunningFromArchive 'C:\Backups\pack.zip.old\en-US') False
 Assert-Equal 'archive: a folder merely named zipped' (Test-IsRunningFromArchive 'C:\zipped\en-US') False
 Assert-Equal 'archive: the archive itself, not a folder inside it' (Test-IsRunningFromArchive 'C:\Downloads\pack.zip') False
 Assert-Equal 'archive: empty path' (Test-IsRunningFromArchive '') False

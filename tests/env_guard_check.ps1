@@ -11,8 +11,9 @@ param([string]$ScriptPath, [string]$WorkDir)
 # Two scenarios, because they meet in the field: a locked-down machine is exactly where a user is likely to double-click
 # straight out of the downloaded ZIP.
 #   1. from a normal folder - the environment report is written next to the script;
-#   2. from a path that looks like the Windows compressed-folder view (a real folder named *.zip) - the report must go to
-#      the temporary folder instead, because the view disappears and would take the only evidence with it (PR #8 round 1).
+#   2. from a path that looks like the Windows compressed-folder view (a real folder named like the Windows 10 view, and
+#      one named like the Windows 11 view) - the report must go to the temporary folder instead, because the view
+#      disappears and would take the only evidence with it (PR #8 round 1; the Windows 11 shape since backlog #26).
 #
 # The script is run from a copy, so the checkout stays clean, and the assertions are language-independent (exit code,
 # the code name in the file, the absence of a report).
@@ -83,28 +84,37 @@ if ($written.Count -eq 1) {
 
 # -------------------- 2. the compressed-folder view --------------------
 
-# A real folder named *.zip reproduces the shape of the path Windows uses for a ZIP opened in Explorer
-# (%TEMP%\Temp1_<name>.zip\...), which is what Test-IsRunningFromArchive matches on.
-$archiveStage = Join-Path $WorkDir ('envguard\Temp1_NetworkHealthCheck.zip\' + $lang)
-$archiveStaged = New-Copy $archiveStage
-Write-Output ("Running {0} in ConstrainedLanguage from a compressed-folder path: {1}" -f $lang, $archiveStage)
-$before = Get-Date
-$archiveRun = Invoke-Restricted $archiveStaged
-
-Assert-Equal 'archive run: exit code is the language-mode code' $archiveRun.ExitCode 3
-Assert-Equal 'archive run: nothing was written inside the view' (@(Get-ChildItem -LiteralPath $archiveStage -Filter 'NetworkHealthCheck_ENVIRONMENT_*.txt')).Count 0
-# The work dir itself lives under %TEMP%, so "the path mentions %TEMP%" would prove nothing; what matters is that the
-# path the user is told to send is not inside the view that is about to disappear.
-Assert-Equal 'archive run: the reported path is not inside the view' (@($archiveRun.Output | Where-Object { $_ -match 'NetworkHealthCheck_ENVIRONMENT_.*\.zip[\\/]' }).Count) 0
+# A real folder shaped like the path Windows uses for a ZIP opened in Explorer reproduces what Test-IsRunningFromArchive
+# matches on. There are two shapes: %TEMP%\Temp1_<name>.zip\... on Windows 10 and %TEMP%\<guid>_<name>.zip.<hex>\... on
+# Windows 11, where the suffix is a few hex digits (.684, .bc4 on the first campaign's VM) - the 1.2.2 pattern accepted
+# the first only (backlog #26), so both run here.
 # The zh-TW word for a compressed file is spelled as character codes so this file can stay ASCII: Windows
 # PowerShell 5.1 reads a script without a byte-order mark in the system code page (the same reason gui_check.ps1
 # spells its button names this way).
 $archiveWord = [string]([char]0x58D3 + [char]0x7E2E)
-Assert-True 'archive run: the output tells the user to extract the ZIP first' (@($archiveRun.Output | Where-Object { $_ -match ('ZIP|zip|' + $archiveWord) }).Count -gt 0) 'nothing in the output mentioned the compressed folder'
+$viewShapes = [ordered]@{
+    'Windows 10' = 'Temp1_NetworkHealthCheck.zip'
+    'Windows 11' = '388e11bd-2056-4e77-a266-27df0c2ad684_NetworkHealthCheck.zip.684'
+}
+foreach ($shape in $viewShapes.Keys) {
+    $archiveStage = Join-Path $WorkDir ('envguard\' + $viewShapes[$shape] + '\' + $lang)
+    $archiveStaged = New-Copy $archiveStage
+    Write-Output ("Running {0} in ConstrainedLanguage from a {1} compressed-folder path: {2}" -f $lang, $shape, $archiveStage)
+    $before = Get-Date
+    $archiveRun = Invoke-Restricted $archiveStaged
 
-$fallback = @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'NetworkHealthCheck_ENVIRONMENT_*.txt' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $before })
-Assert-Equal 'archive run: the report went to the temporary folder instead' $fallback.Count 1
-foreach ($file in $fallback) { Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue }
+    Assert-Equal "$shape view: exit code is the language-mode code" $archiveRun.ExitCode 3
+    Assert-Equal "$shape view: nothing was written inside the view" (@(Get-ChildItem -LiteralPath $archiveStage -Filter 'NetworkHealthCheck_ENVIRONMENT_*.txt')).Count 0
+    # The work dir itself lives under %TEMP%, so "the path mentions %TEMP%" would prove nothing; what matters is that the
+    # path the user is told to send is not inside the view that is about to disappear: no line that names the report
+    # may also name a view folder.
+    Assert-Equal "$shape view: the reported path is not inside the view" (@($archiveRun.Output | Where-Object { $_ -match 'NetworkHealthCheck_ENVIRONMENT_' -and $_ -match '\.zip(\.[0-9a-f]+)?[\\/]' }).Count) 0
+    Assert-True "$shape view: the output tells the user to extract the ZIP first" (@($archiveRun.Output | Where-Object { $_ -match ('ZIP|zip|' + $archiveWord) }).Count -gt 0) 'nothing in the output mentioned the compressed folder'
+
+    $fallback = @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'NetworkHealthCheck_ENVIRONMENT_*.txt' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $before })
+    Assert-Equal "$shape view: the report went to the temporary folder instead" $fallback.Count 1
+    foreach ($file in $fallback) { Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue }
+}
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

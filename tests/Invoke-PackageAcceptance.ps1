@@ -57,7 +57,7 @@ param(
     [string]$Label = 'acceptance',
     [string]$WorkDir,
     [string]$BundleDir,
-    [string]$ChainSteps = 'parse,unit,report,envguard,gui-headless,gui,acceptance,resultset',
+    [string]$ChainSteps = 'parse,unit,report,envguard,launcher,gui-headless,gui,acceptance,resultset',
     [switch]$SkipGui,
     [switch]$RequireHealthy,
     [int]$GuiTimeoutSeconds = 360
@@ -69,7 +69,7 @@ $Tests = $PSScriptRoot
 $Label = ($Label -replace '[^\w.-]', '_')
 $Stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 # The chain steps that need neither Python nor git, with the number of cases each one has.
-$ChainCases = [ordered]@{ 'parse' = 2; 'unit' = 2; 'report' = 2; 'envguard' = 2; 'gui-headless' = 4; 'gui' = 4; 'acceptance' = 5; 'resultset' = 1 }
+$ChainCases = [ordered]@{ 'parse' = 2; 'unit' = 2; 'report' = 2; 'envguard' = 2; 'launcher' = 1; 'gui-headless' = 4; 'gui' = 4; 'acceptance' = 5; 'resultset' = 1 }
 $SelectedSteps = @($ChainSteps -split ',' | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
 $unknownSteps = @($SelectedSteps | Where-Object { -not $ChainCases.Contains($_) })
 if ($unknownSteps.Count) { throw ('unknown chain step(s): ' + ($unknownSteps -join ', ') + '; known: ' + (@($ChainCases.Keys) -join ', ')) }
