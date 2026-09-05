@@ -532,8 +532,8 @@ function Get-Plan {
            Cleanup = @{ Instruction = @('Set Turn on Script Execution back to Not Configured, then   gpupdate /force   - then answer done.', '把「開啟指令碼執行」改回「尚未設定」，再執行 gpupdate /force，然後輸入 done。')
                         Verify = { $p = Get-MachinePolicyExecutionPolicy; if ($p -eq 'Undefined') { @{ Ok = $true; Detail = 'MachinePolicy=Undefined' } } else { @{ Ok = $false; Detail = ('MachinePolicy is still ' + $p) } } } } },
         @{ Id = 'M9'; Title = 'AppLocker script rules enforced (Enterprise / Education)'; Kind = 'reconfigure'; Session = 'admin'
-           Instruction = @('secpol.msc > Application Control Policies > AppLocker > Script Rules > right-click > Create Default Rules; AppLocker > Configure rule enforcement > Script rules: Configured, Enforce rules. Then in an ELEVATED command prompt:   sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force   - then answer done.',
-                           'secpol.msc > 應用程式控制原則 > AppLocker > 指令碼規則 > 右鍵 > 建立預設規則；AppLocker > 設定規則強制執行 > 指令碼規則：已設定、強制執行規則。再在「以系統管理員身分執行」的命令提示字元執行：sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force，然後輸入 done。') + $recoverLines
+           Instruction = @('secpol.msc > Application Control Policies > AppLocker > Script Rules > right-click > Create Default Rules, then DELETE the default rule that allows BUILTIN\Administrators all scripts - your account is an administrator, and with that rule in place it is exempt and the test measures nothing; AppLocker > Configure rule enforcement > Script rules: Configured, Enforce rules. Then in an ELEVATED command prompt:   sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force   - then answer done. The driver checks that the rules really restrict this account before it runs anything.',
+                           'secpol.msc > 應用程式控制原則 > AppLocker > 指令碼規則 > 右鍵 > 建立預設規則，然後「刪除」允許 BUILTIN\Administrators 執行所有指令碼的那條預設規則——你的帳號是管理員，留著它就被豁免、什麼都量不到；AppLocker > 設定規則強制執行 > 指令碼規則：已設定、強制執行規則。再在「以系統管理員身分執行」的命令提示字元執行：sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force，然後輸入 done。driver 執行前會確認規則真的限制了這個帳號。') + $recoverLines
            Prepare = { param($Ctx) try { $svc = Get-Service -Name AppIDSvc -ErrorAction Stop; return @{ AppIDSvcStartType = [string]$svc.StartType; AppIDSvcStatus = [string]$svc.Status } } catch { return @{ AppIDSvcStartType = 'n/a'; AppIDSvcStatus = 'n/a' } } }   # the service is changed by the instruction and must go back
            Precondition = {
                try {
@@ -542,7 +542,14 @@ function Get-Plan {
                    $svc = Get-Service -Name AppIDSvc -ErrorAction Stop
                    # Enforcement with no rule at all lets every script run: the experiment would then measure nothing (PR #11 round 5).
                    if ($null -ne $scriptRules -and [string]$scriptRules.EnforcementMode -eq 'Enabled' -and [int]$scriptRules.Count -eq 0) { @{ Ok = $false; Detail = 'Script rules enforced but empty - create the default rules first, or nothing is enforced' } }
-                   elseif ($null -ne $scriptRules -and [string]$scriptRules.EnforcementMode -eq 'Enabled' -and [string]$svc.Status -eq 'Running') { @{ Ok = $true; Detail = ('Script rules enforced ({0} rules), AppIDSvc running' -f $scriptRules.Count) } }
+                   elseif ($null -ne $scriptRules -and [string]$scriptRules.EnforcementMode -eq 'Enabled' -and [string]$svc.Status -eq 'Running') {
+                       # The rules must restrict the account that runs the test: the default rules exempt BUILTIN\Administrators,
+                       # and an exempt account would run the script normally and record a FAIL that measures nothing (PR #11
+                       # round 6). AppLocker's own evaluation decides, for the shipped script where the campaign keeps it.
+                       $decision = @(Test-AppLockerPolicy -PolicyObject $p -Path (Join-Path $State.PackageRoot 'en-US\NetworkHealthCheck.ps1') -User ($env:USERDOMAIN + '\' + $env:USERNAME) -ErrorAction Stop)[0]
+                       if ($null -ne $decision -and [string]$decision.PolicyDecision -eq 'Allowed') { @{ Ok = $false; Detail = ('the Script rules allow {0}\{1} to run the script here ({2}) - this account is exempt, so delete the default rule for BUILTIN\Administrators (or use rules that restrict it) before the test' -f $env:USERDOMAIN, $env:USERNAME, $decision.MatchingRule) } }
+                       else { @{ Ok = $true; Detail = ('Script rules enforced ({0} rules), AppIDSvc running; the script is {1} for {2}\{3}' -f $scriptRules.Count, $(if ($null -ne $decision) { [string]$decision.PolicyDecision } else { 'not allowed' }), $env:USERDOMAIN, $env:USERNAME) } }
+                   }
                    else { @{ Ok = $false; Detail = ('Script rules: ' + $(if ($null -ne $scriptRules) { [string]$scriptRules.EnforcementMode + ', ' + $scriptRules.Count + ' rules' } else { 'none' }) + '; AppIDSvc ' + $svc.Status) } }
                }
                catch { @{ Ok = $false; Detail = ('AppLocker is not available here: ' + $_.Exception.Message) } }
