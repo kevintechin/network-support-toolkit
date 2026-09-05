@@ -233,6 +233,45 @@ Assert-True '14. A4 stays PENDING with the unrecognized revert answer named' ($s
 Assert-True '14. M7 was not reached: the campaign stopped at the unconfirmed revert' ($s14.Scenarios.M7.Result -eq 'PENDING' -and $s14.Scenarios.M7.Detail -like 'not reached*') ($s14.Scenarios.M7.Result + ' / ' + $s14.Scenarios.M7.Detail)
 Assert-True '14. exit code 2' ($r14.ExitCode -eq 2) ('exit code ' + $r14.ExitCode)
 
+# -------------------- 15. -SkipGui does not skip the revert of an attempted display scenario --------------------
+Write-Output ''
+Write-Output '15. M4 attempted earlier (a crafted state, its recorded size = the screen now), resumed with -SkipGui: the revert is verified, then SKIPPED, exit 0'
+Add-Type -AssemblyName System.Windows.Forms
+$bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+$stateFile15 = Join-Path $r3.State 'campaign.json'
+$crafted15 = Get-Content -LiteralPath $stateFile15 -Raw -Encoding UTF8 | ConvertFrom-Json
+$crafted15.Scenarios.M4.Result = 'PENDING'
+$crafted15.Scenarios.M4.Detail = 'quit by the user after an attempt (crafted by the self-test)'
+$crafted15.Scenarios.M4.Attempted = $true
+$crafted15.Scenarios.M4.ActionResult = ''
+$crafted15.Scenarios.M4.Reverted = ''
+$crafted15.Scenarios.M4.Facts = [pscustomobject]@{ ScreenBefore = ('{0}x{1}' -f $bounds.Width, $bounds.Height) }
+[IO.File]::WriteAllText($stateFile15, ($crafted15 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+$r15 = Invoke-Campaign 'quit' @('-Resume', '-Scenarios', 'M4', '-SkipGui') "M4/revert=done`r`n"
+$s15 = Read-State $r15.State
+Assert-True '15. the revert was verified before the -SkipGui skip took effect' ($s15.Scenarios.M4.Result -eq 'SKIPPED' -and $s15.Scenarios.M4.Detail -eq '-SkipGui after an attempt' -and $s15.Scenarios.M4.Reverted -like 'yes - back at *') ($s15.Scenarios.M4.Result + ' / ' + $s15.Scenarios.M4.Detail + ' / ' + $s15.Scenarios.M4.Reverted)
+Assert-True '15. exit code 0' ($r15.ExitCode -eq 0) ('exit code ' + $r15.ExitCode)
+
+# -------------------- 16. an unrecognized gate answer after an attempt stops the campaign --------------------
+Write-Output ''
+Write-Output '16. A4 attempted earlier (a crafted state), A4=dnoe, A4 and M7 selected: A4 PENDING, M7 not reached, exit 2'
+$stateFile16 = Join-Path $r3.State 'campaign.json'
+$crafted16 = Get-Content -LiteralPath $stateFile16 -Raw -Encoding UTF8 | ConvertFrom-Json
+$crafted16.Scenarios.A4.Result = 'PENDING'
+$crafted16.Scenarios.A4.Detail = 'quit by the user after an attempt (crafted by the self-test)'
+$crafted16.Scenarios.A4.Attempted = $true
+$crafted16.Scenarios.A4.ActionResult = ''
+$crafted16.Scenarios.A4.ActionDetail = ''
+$crafted16.Scenarios.A4.Reverted = ''
+$crafted16.Scenarios.M7.Result = ''
+$crafted16.Scenarios.M7.Detail = ''
+[IO.File]::WriteAllText($stateFile16, ($crafted16 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+$r16 = Invoke-Campaign 'quit' @('-Resume', '-Scenarios', 'A4,M7', '-SkipGui') "A4=dnoe`r`nM7=done`r`n"
+$s16 = Read-State $r16.State
+Assert-True '16. A4 PENDING, the answer named, the attempt acknowledged' ($s16.Scenarios.A4.Result -eq 'PENDING' -and $s16.Scenarios.A4.Detail -like "unrecognized answer 'dnoe'*after an attempt*") ($s16.Scenarios.A4.Result + ' / ' + $s16.Scenarios.A4.Detail)
+Assert-True '16. M7 not reached' ($s16.Scenarios.M7.Result -eq 'PENDING' -and $s16.Scenarios.M7.Detail -like 'not reached*') ($s16.Scenarios.M7.Result + ' / ' + $s16.Scenarios.M7.Detail)
+Assert-True '16. exit code 2' ($r16.ExitCode -eq 2) ('exit code ' + $r16.ExitCode)
+
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
     Write-Output ''

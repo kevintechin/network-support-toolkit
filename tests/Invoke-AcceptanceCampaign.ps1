@@ -636,10 +636,21 @@ function Invoke-Scenario($S) {
         Set-Result $id 'PENDING' 'left for the administrator session' @() 0
         return 'next'
     }
-    if ($S.NeedsGui -and $State.SkipGui) { Set-Result $id 'SKIPPED' '-SkipGui' @() 0; return 'next' }
     $dir = Join-Path $StateDir $id
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $ctx = @{ Id = $id; Dir = $dir; Started = (Get-Date); Facts = [ordered]@{} }
+    if ($S.NeedsGui -and $State.SkipGui) {
+        # -SkipGui drops a real-window scenario - but one attempted earlier may have left its change on the machine, and
+        # that goes through the revert first (PR #11 round 9).
+        if ($rec.Attempted -and $null -ne $S.Cleanup) {
+            $ctx.Facts = $rec.Facts
+            $rec.ActionResult = 'SKIPPED'; $rec.ActionDetail = '-SkipGui after an attempt'; $rec.Evidence = @(); $rec.Seconds = 0
+            Set-Result $id 'PENDING' 'dropped by -SkipGui after an attempt; the change, if any, is still to be reverted' @() 0
+            return (Complete-Cleanup $S $rec $ctx)
+        }
+        Set-Result $id 'SKIPPED' '-SkipGui' @() 0
+        return 'next'
+    }
     if ($null -ne $S.Prepare) {
         # What the machine looked like before the change - recorded once: a campaign interrupted at the gate, after the
         # person changed the machine, must not describe the changed machine as the original on resume (PR #11 round 2).
@@ -662,7 +673,14 @@ function Invoke-Scenario($S) {
         while ($true) {
             $gate = Read-Answer $id 'gate' @('When done, answer done; skip to leave this scenario out; quit to stop the campaign here.', '完成後輸入 done；要略過這個情境輸入 skip；要在這裡中止 campaign 輸入 quit。') @('done', 'skip', 'quit') 'skip'
             if ($gate -eq 'quit') { Set-Result $id 'PENDING' $(if ($attempted) { 'quit by the user after an attempt; the change, if any, may still be on the machine' } else { 'quit by the user' }) @() 0; return 'stop' }
-            if ($gate -ne 'done' -and $gate -ne 'skip') { Set-Result $id 'PENDING' ("unrecognized answer '" + $gate + "' at the gate (done / skip / quit); nothing was run") @() 0; return 'next' }
+            if ($gate -ne 'done' -and $gate -ne 'skip') {
+                # After an attempt the change may be on the machine: an answer that settles nothing stops the campaign
+                # here, like an unconfirmed revert (PR #11 round 9); before any attempt nothing has changed and the next
+                # scenario may run.
+                if ($attempted -and $null -ne $S.Cleanup) { Set-Result $id 'PENDING' ("unrecognized answer '" + $gate + "' at the gate (done / skip / quit) after an attempt; the change, if any, may still be on the machine - resume to continue") @() 0; Add-Event ('{0}: the campaign stopped at an unrecognized gate answer after an attempt' -f $id); return 'stop' }
+                Set-Result $id 'PENDING' ("unrecognized answer '" + $gate + "' at the gate (done / skip / quit); nothing was run") @() 0
+                return 'next'
+            }
             if ($gate -ne 'done') {
                 if (-not $skipReason) { $skipReason = 'skipped by the user' }
                 if ($attempted -and $null -ne $S.Cleanup) {
