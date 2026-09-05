@@ -163,6 +163,24 @@ Assert-True '9. A4 SKIPPED by the user' ($s9.Scenarios.A4.Result -eq 'SKIPPED' -
 Assert-True '9. no revert was asked (nothing was attempted)' (-not $s9.Scenarios.A4.Reverted -and @(Get-Content -LiteralPath (Join-Path $r9.State 'answers.log') | Where-Object { $_ -match '/revert' }).Count -eq 0) ('Reverted: ' + $s9.Scenarios.A4.Reverted)
 Assert-True '9. exit code 0' ($r9.ExitCode -eq 0) ('exit code ' + $r9.ExitCode)
 
+# -------------------- 10. an attempt survives a quit --------------------
+Write-Output ''
+Write-Output '10. A4 quit at its gate after a done (a crafted state, Attempted): a skip on resume goes through the revert check'
+$stateFile10 = Join-Path $r3.State 'campaign.json'
+$crafted10 = Get-Content -LiteralPath $stateFile10 -Raw -Encoding UTF8 | ConvertFrom-Json
+$crafted10.Scenarios.A4.Result = 'PENDING'
+$crafted10.Scenarios.A4.Detail = 'quit by the user after an attempt (crafted by the self-test)'
+$crafted10.Scenarios.A4.ActionResult = ''
+$crafted10.Scenarios.A4.ActionDetail = ''
+$crafted10.Scenarios.A4.Reverted = ''
+$crafted10.Scenarios.A4.Attempted = $true
+[IO.File]::WriteAllText($stateFile10, ($crafted10 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+$r10 = Invoke-Campaign 'quit' @('-Resume', '-Scenarios', 'A4', '-SkipGui') "A4=skip`r`n"
+$s10 = Read-State $r10.State
+Assert-True '10. the skip after a remembered attempt went through the revert check' ($s10.Scenarios.A4.Result -eq 'SKIPPED' -and $s10.Scenarios.A4.Reverted -like 'yes - *gateway*') ($s10.Scenarios.A4.Result + ' / ' + $s10.Scenarios.A4.Reverted)
+Assert-True '10. the revert was asked' (@(Get-Content -LiteralPath (Join-Path $r10.State 'answers.log') | Where-Object { $_ -match ' A4/revert = ' }).Count -ge 1) 'answers.log'
+Assert-True '10. exit code 0' ($r10.ExitCode -eq 0) ('exit code ' + $r10.ExitCode)
+
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
     Write-Output ''

@@ -354,19 +354,24 @@ function Get-Plan {
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + $window + '; observer: ' + $seen); Evidence = @('M4_IT_window_1366x768.png', 'gui_check.log') }
            } },
         @{ Id = 'M1'; Title = 'Run from inside the compressed-folder view'; Kind = 'manual'; Session = 'admin'
-           Instruction = @(('In Explorer, double-click the downloaded ZIP - ' + $State.OriginalZip + ' - without extracting it. Open ' + $top + ' > en-US and double-click Start-NetworkCheck.cmd. Let the run finish and the window close. Do NOT close the ZIP window yet. Then answer done.'),
-                           ('在檔案總管直接雙擊下載的 ZIP（' + $State.OriginalZip + '），不要解壓。打開 ' + $top + ' > en-US，雙擊 Start-NetworkCheck.cmd。等它跑完、視窗關閉。先不要關 ZIP 視窗。完成後輸入 done。'))
+           Instruction = @(('In Explorer, double-click the downloaded ZIP - ' + $State.OriginalZip + ' - without extracting it. Open ' + $top + ' > en-US and double-click Start-NetworkCheck.cmd. As soon as the tool window is up (the run started), answer done: a screenshot is taken then. Do NOT close the ZIP window.'),
+                           ('在檔案總管直接雙擊下載的 ZIP（' + $State.OriginalZip + '），不要解壓。打開 ' + $top + ' > en-US，雙擊 Start-NetworkCheck.cmd。工具視窗一出現（開始跑了）就輸入 done：那一刻會截圖。不要關 ZIP 視窗。'))
            Action = { param($Ctx)
+               # The evidence the checklist asks for: the window running from inside the view, and the reports the view
+               # is about to delete (PR #11 round 4).
+               $shot = Join-Path $Ctx.Dir 'M1_window_from_the_view.png'
+               Save-Screenshot $shot
+               $null = Read-Answer $Ctx.Id 'run-finished' @('Let the run finish and the tool window close (do not close the ZIP window). Then answer done.', '等它跑完、工具視窗關閉（不要關 ZIP 視窗）。然後輸入 done。') @('done') 'done'
                $found = @(Get-ArchiveViewReports $Ctx.Started)
                $jsons = @($found | Where-Object { $_.Extension -eq '.json' } | Sort-Object LastWriteTime -Descending)
-               if ($jsons.Count -eq 0) { return @{ Passed = $false; Detail = ('no report under {0}\Temp*_*.zip since {1}: was the ZIP opened in the view and Start-NetworkCheck.cmd double-clicked inside it?' -f $env:TEMP, $Ctx.Started.ToString('HH:mm:ss')); Evidence = @() } }
+               if ($jsons.Count -eq 0) { return @{ Passed = $false; Detail = ('no report under {0}\Temp*_*.zip since {1}: was the ZIP opened in the view and Start-NetworkCheck.cmd double-clicked inside it?' -f $env:TEMP, $Ctx.Started.ToString('HH:mm:ss')); Evidence = @('M1_window_from_the_view.png') } }
                $dest = Join-Path $Ctx.Dir 'reports-from-the-view'
                New-Item -ItemType Directory -Force -Path $dest | Out-Null
                foreach ($f in $found) { Copy-Item -LiteralPath $f.FullName -Destination $dest -Force }
                $d = Read-Json $jsons[0].FullName
                $startup = @($d.Results | Where-Object { $_.Tag -eq 'startup' })
                Write-Line @('The reports were copied out; you may close the ZIP window now.', '報告已複製出來，現在可以關閉 ZIP 視窗了。') 'Cyan'
-               @{ Passed = ($startup.Count -gt 0); Detail = ('{0} file(s) copied out of {1}; startup rows: {2}{3}' -f $found.Count, (Split-Path -Parent $jsons[0].DirectoryName), $startup.Count, $(if ($startup.Count) { ' - "' + [string]$startup[0].Message + '"' } else { ' - the compressed-folder warning is missing' })); Evidence = @('reports-from-the-view') }
+               @{ Passed = ($startup.Count -gt 0); Detail = ('{0} file(s) copied out of {1}; startup rows: {2}{3}' -f $found.Count, (Split-Path -Parent $jsons[0].DirectoryName), $startup.Count, $(if ($startup.Count) { ' - "' + [string]$startup[0].Message + '"' } else { ' - the compressed-folder warning is missing' })); Evidence = @('M1_window_from_the_view.png', 'reports-from-the-view') }
            } },
         @{ Id = 'M2'; Title = 'Extract without Unblock and double-click the root launcher'; Kind = 'manual'; Session = 'admin'
            Instruction = @(('Right-click the downloaded ZIP > Extract All... into ' + $m2Dir + ' (do NOT Unblock it). Open the extracted folder and double-click Start-English.cmd. As soon as a Windows prompt appears - or the tool window, if nothing appeared - answer done: a screenshot is taken at that moment.'),
@@ -386,9 +391,12 @@ function Get-Plan {
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('download mark: {0}; extracted launcher mark: {1}; Windows showed: {2}; report: {3}' -f $mark, $launcherMark, $seen, $(if ($null -ne $json) { $json.Name } else { 'none' }))); Evidence = @('M2_after_double-click.png') }
            } },
         @{ Id = 'M3'; Title = 'Unblock, extract, both root launchers, Open Report'; Kind = 'manual'; Session = 'admin'
-           Instruction = @(('Right-click the downloaded ZIP > Properties > tick Unblock > OK. Extract All... into ' + $m3Dir + '. Double-click Start-English.cmd and let it run; close it; double-click Start-Traditional-Chinese.cmd and let it run, then click Open Report in it and leave the browser open. Then answer done.'),
-                           ('在下載的 ZIP 上按右鍵 > 內容 > 勾選「解除封鎖」> 確定。全部解壓縮到 ' + $m3Dir + '。雙擊 Start-English.cmd 讓它跑完、關閉；再雙擊 Start-Traditional-Chinese.cmd 讓它跑完，然後在裡面按「開啟報告」，讓瀏覽器開著。完成後輸入 done。'))
+           Instruction = @(('Right-click the downloaded ZIP > Properties > tick Unblock > OK. Extract All... into ' + $m3Dir + '. Double-click Start-English.cmd and let it run; close it. Double-click Start-Traditional-Chinese.cmd and let it run; when its run has finished and the window is still open, answer done: a screenshot of the window is taken then.'),
+                           ('在下載的 ZIP 上按右鍵 > 內容 > 勾選「解除封鎖」> 確定。全部解壓縮到 ' + $m3Dir + '。雙擊 Start-English.cmd 讓它跑完、關閉。再雙擊 Start-Traditional-Chinese.cmd 讓它跑完；跑完、視窗還開著時輸入 done：那一刻會截圖視窗。'))
            Action = { param($Ctx)
+               # The evidence the checklist asks for: the window after its run, and the browser showing the report (PR #11 rounds 2 and 4).
+               $windowShot = Join-Path $Ctx.Dir 'M3_zhTW_window_after_the_run.png'
+               Save-Screenshot $windowShot
                $mark = Get-ZoneId $State.OriginalZip
                $bad = @()
                $names = @()
@@ -403,12 +411,12 @@ function Get-Plan {
                # Open Report: the evidence is a screenshot of the browser showing the HTML report, taken the moment the
                # person says it is on screen; only that certifies the item - a no is the tool failing, anything else is
                # the scenario not done as instructed (PR #11 rounds 1 and 2).
-               $opened = Read-Answer $Ctx.Id 'open-report' @('Is the browser showing the HTML report that Open Report opened? Bring it to the front and answer shown - a screenshot is taken then. Answer failed if Open Report did not open it, or not clicked.', '瀏覽器是否正顯示「開啟報告」打開的 HTML 報告？把它移到最前面並輸入 shown，那一刻會截圖。若「開啟報告」沒有打開，輸入 failed；沒有按則輸入 not clicked。') @('shown', 'failed', 'not clicked') 'not clicked'
+               $opened = Read-Answer $Ctx.Id 'open-report' @('Now click Open Report in that window. Is the browser showing the HTML report? Bring it to the front and answer shown - a screenshot is taken then. Answer failed if Open Report did not open it, or not clicked.', '現在在那個視窗按「開啟報告」。瀏覽器是否正顯示 HTML 報告？把它移到最前面並輸入 shown，那一刻會截圖。若「開啟報告」沒有打開，輸入 failed；沒有按則輸入 not clicked。') @('shown', 'failed', 'not clicked') 'not clicked'
                $shot = ''
                if ($opened -eq 'shown') { $shot = Join-Path $Ctx.Dir 'M3_open_report_browser.png'; Save-Screenshot $shot }
                elseif ($opened -eq 'failed') { $bad += 'Open Report did not open the browser' }
                else { $bad += 'Open Report was not exercised: the scenario asks for it to be clicked and the browser shown' }
-               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('download mark after Unblock: {0}; reports: {1}; Open Report: {2}' -f $mark, ($names -join ', '), $opened)); Evidence = @($names + @($(if ($shot) { 'M3_open_report_browser.png' }))) }
+               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('download mark after Unblock: {0}; reports: {1}; Open Report: {2}' -f $mark, ($names -join ', '), $opened)); Evidence = @(@('M3_zhTW_window_after_the_run.png') + $names + @($(if ($shot) { 'M3_open_report_browser.png' }))) }
            } },
         @{ Id = 'A3'; Title = 'Host-only network (an address, no gateway, no internet)'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('VMware: VM > Settings > Network Adapter > Host-only. Wait until Windows shows the new address (about ten seconds), then answer done.',
@@ -495,6 +503,7 @@ function Get-Plan {
                                 $p = Get-AppLockerPolicy -Effective -ErrorAction Stop
                                 $s = @($p.RuleCollections | Where-Object { [string]$_.RuleCollectionType -eq 'Script' })[0]
                                 if ($null -ne $s -and [string]$s.EnforcementMode -eq 'Enabled') { return @{ Ok = $false; Detail = 'Script rules still enforced' } }
+                                if ($null -ne $s -and [int]$s.Count -gt 0) { return @{ Ok = $false; Detail = ('{0} Script rule(s) still present ({1}); the revert asks for them deleted' -f $s.Count, $s.EnforcementMode) } }
                                 $svc = Get-Service -Name AppIDSvc -ErrorAction Stop
                                 $wantType = [string]$Ctx.Facts.AppIDSvcStartType; $wantStatus = [string]$Ctx.Facts.AppIDSvcStatus
                                 if ($wantType -ne 'n/a' -and ([string]$svc.StartType -ne $wantType -or [string]$svc.Status -ne $wantStatus)) { return @{ Ok = $false; Detail = ('Script rules no longer enforced, but AppIDSvc is {0} ({1}); it was {2} ({3}) before M9' -f $svc.StartType, $svc.Status, $wantType, $wantStatus) } }
@@ -518,7 +527,7 @@ function Get-Plan {
 function Invoke-Scenario($S) {
     # Returns 'next' or 'stop'. Records PASS / FAIL / SKIPPED / PENDING in the state.
     $id = $S.Id
-    if ($null -eq $State.Scenarios[$id]) { $State.Scenarios[$id] = [ordered]@{ Title = $S.Title; Result = ''; Detail = ''; Seconds = 0; Started = ''; Finished = ''; Evidence = @(); Answers = [ordered]@{}; Reverted = ''; ActionResult = ''; ActionDetail = ''; Facts = [ordered]@{} } }
+    if ($null -eq $State.Scenarios[$id]) { $State.Scenarios[$id] = [ordered]@{ Title = $S.Title; Result = ''; Detail = ''; Seconds = 0; Started = ''; Finished = ''; Evidence = @(); Answers = [ordered]@{}; Reverted = ''; ActionResult = ''; ActionDetail = ''; Attempted = $false; Facts = [ordered]@{} } }
     $rec = $State.Scenarios[$id]
     if ($rec.Result -and $rec.Result -ne 'PENDING') { Write-Host ('[{0}] {1}: recorded earlier at {2} - {3}' -f $rec.Result, $id, $rec.Finished, $rec.Detail) -ForegroundColor DarkGray; return 'next' }
     Write-Host ''
@@ -557,11 +566,11 @@ function Invoke-Scenario($S) {
         # (a NIC disconnected while another still has an address, a policy half applied): from then on a skip goes
         # through the revert like a finished scenario would, and only a skip before any attempt leaves at once (PR #11
         # round 3).
-        $attempted = $false
+        $attempted = [bool]$rec.Attempted   # persisted: a quit or a crash after the first done must not forget the attempt (PR #11 round 4)
         $skipReason = ''
         while ($true) {
             $gate = Read-Answer $id 'gate' @('When done, answer done; skip to leave this scenario out; quit to stop the campaign here.', '完成後輸入 done；要略過這個情境輸入 skip；要在這裡中止 campaign 輸入 quit。') @('done', 'skip', 'quit') 'skip'
-            if ($gate -eq 'quit') { Set-Result $id 'PENDING' 'quit by the user' @() 0; return 'stop' }
+            if ($gate -eq 'quit') { Set-Result $id 'PENDING' $(if ($attempted) { 'quit by the user after an attempt; the change, if any, may still be on the machine' } else { 'quit by the user' }) @() 0; return 'stop' }
             if ($gate -ne 'done') {
                 if (-not $skipReason) { $skipReason = 'skipped by the user' }
                 if ($attempted -and $null -ne $S.Cleanup) {
@@ -573,6 +582,7 @@ function Invoke-Scenario($S) {
                 return 'next'
             }
             $attempted = $true
+            if (-not $rec.Attempted) { $rec.Attempted = $true; Save-State }
             if ($null -eq $S.Precondition) { break }
             $pc = & $S.Precondition
             if ($pc.Ok) { Add-Event ('{0}: precondition met - {1}' -f $id, $pc.Detail); break }
@@ -628,7 +638,7 @@ function Complete-Cleanup($S, $rec, $ctx) {
 # -------------------- The campaign --------------------
 $plan = Get-Plan
 if ($Wanted.Count) { $selected = @($plan | Where-Object { $Wanted -contains $_.Id }) } else { $selected = $plan }
-foreach ($s in $plan) { if ($null -eq $State.Scenarios[$s.Id]) { $State.Scenarios[$s.Id] = [ordered]@{ Title = $s.Title; Result = ''; Detail = ''; Seconds = 0; Started = ''; Finished = ''; Evidence = @(); Answers = [ordered]@{}; Reverted = ''; ActionResult = ''; ActionDetail = ''; Facts = [ordered]@{} } } }
+foreach ($s in $plan) { if ($null -eq $State.Scenarios[$s.Id]) { $State.Scenarios[$s.Id] = [ordered]@{ Title = $s.Title; Result = ''; Detail = ''; Seconds = 0; Started = ''; Finished = ''; Evidence = @(); Answers = [ordered]@{}; Reverted = ''; ActionResult = ''; ActionDetail = ''; Attempted = $false; Facts = [ordered]@{} } } }
 Save-State
 Add-Event ('invocation by {0}{1}: scenarios {2}{3}' -f $env:USERNAME, $(if ($IsStandardUser) { ' (standard user)' } else { '' }), (@($selected | ForEach-Object { $_.Id }) -join ','), $(if ($null -ne $AnswersTable) { '; answers from ' + $Answers } else { '' }))
 $stopped = $false
