@@ -15,8 +15,8 @@
     table as summary.md.
 
 .PARAMETER Steps
-    Steps to run (parse, validator, guards, unit, report, envguard, gui-headless, gui, acceptance, resultset,
-    package);
+    Steps to run (parse, validator, guards, unit, report, envguard, launcher, campaign, gui-headless, gui, acceptance,
+    resultset, package);
     comma-separated values are accepted, and the steps always execute in the chain's own order. Default: everything
     except package. The resultset step is the negative self-check of the result-set assertion; it uses the en-US user
     report of the acceptance step, or produces one through the console launcher when that step did not run.
@@ -46,7 +46,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string[]]$Steps = @('parse', 'validator', 'guards', 'unit', 'report', 'envguard', 'campaign', 'gui-headless', 'gui', 'acceptance', 'resultset'),
+    [string[]]$Steps = @('parse', 'validator', 'guards', 'unit', 'report', 'envguard', 'launcher', 'campaign', 'gui-headless', 'gui', 'acceptance', 'resultset'),
     [switch]$Package,
     [switch]$SkipGui,
     [switch]$RequireHealthy,
@@ -57,7 +57,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Order = @('parse', 'validator', 'guards', 'unit', 'report', 'envguard', 'campaign', 'gui-headless', 'gui', 'acceptance', 'resultset', 'package')
+$Order = @('parse', 'validator', 'guards', 'unit', 'report', 'envguard', 'launcher', 'campaign', 'gui-headless', 'gui', 'acceptance', 'resultset', 'package')
 $Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 if (-not $PackageDir) { $PackageDir = Join-Path $Root 'healthcheck' }
 $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
@@ -422,10 +422,11 @@ function Test-ReportExpectations {
     if ($RequireHealthy -and (-not $Expect['AllowUnhealthy']) -and ([string]$Report.Overall.Code -ne 'PASS')) { $bad += ('Overall {0}, not PASS' -f $Report.Overall.Code) }
     # backlog #14: a run whose targets cannot be reached must classify the failures by their error code, in the report
     # language, with the operating system's own message kept underneath. Which code appears depends on the network (a
-    # resolver that answers for an unknown name turns a name failure into a connect failure), so any code counts.
+    # resolver that answers for an unknown name turns a name failure into a connect failure), so any code counts - the
+    # tool's own timeout included, which is classified like the others since 1.2.3 (backlog #27).
     if ($Expect['RequireErrorCause']) {
-        $classified = @($Report.Results | Where-Object { ([string]$_.Details + [string]$_.Message) -match '\[(SocketError|WebExceptionStatus) \w+\]' })
-        if (-not $classified.Count) { $bad += 'no result carries a [SocketError ...] / [WebExceptionStatus ...] cause' }
+        $classified = @($Report.Results | Where-Object { ([string]$_.Details + [string]$_.Message) -match '\[(SocketError|WebExceptionStatus) \w+\]|\[ToolTimeout\]' })
+        if (-not $classified.Count) { $bad += 'no result carries a [SocketError ...] / [WebExceptionStatus ...] / [ToolTimeout] cause' }
     }
     return $bad
 }
@@ -548,6 +549,15 @@ try {
                 $s = Get-SummaryLine $r.Output
                 @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
             }
+        }
+    }
+    if ($selected -contains 'launcher') {
+        # The six language launchers through every reason they can stop for (backlog #28): the LauncherError.txt they
+        # leave suggests the action that fits the reason, not "extract the ZIP" for everything.
+        Invoke-Case 'launcher' 'both languages' {
+            $r = Invoke-TestScript 'launcher_check.ps1' @('-PackageDir', $PackageDir, '-WorkDir', $WorkDir) 'launcher'
+            $s = Get-SummaryLine $r.Output
+            @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
         }
     }
     if ($selected -contains 'campaign') {

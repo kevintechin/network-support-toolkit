@@ -38,7 +38,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：報告保存例外類型、訊息與內部例外；腳本位置與呼叫堆疊只寫入 JSON 報告（Diagnostics）。
 
-$script:ToolVersion = "1.2.2"
+$script:ToolVersion = "1.2.3"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -51,10 +51,11 @@ $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 function Test-IsRunningFromArchive {
     param([string]$Path)
 
-    # Windows 會把 ZIP 開在類似 %TEMP%\Temp1_NetworkHealthCheck-1.2.2.zip\... 的暫時檢視中；從那裡直接按兩下看似
-    # 可以執行，但該資料夾會隨檢視消失，寫進去的檔案也一起消失。
+    # Windows 會把 ZIP 開在暫時檢視中，並把被按兩下的那個檔案解到裡面：Windows 10 是 %TEMP%\Temp1_<名稱>.zip\...，
+    # Windows 11 是 %TEMP%\<guid>_<名稱>.zip.<hex>\...，後綴是幾位十六進位數字（.684、.bc4），不是十進位數字（待辦 #26）。
+    # 從那裡執行看似可以，但該資料夾會隨檢視消失，寫進去的檔案也一起消失。
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-    return ($Path -match "\.zip[\\/]")
+    return ($Path -match "\.zip(\.[0-9a-f]+)?[\\/]")
 }
 
 function Write-EnvironmentReport {
@@ -386,6 +387,11 @@ function Get-NetworkErrorCauseText {
                 return ("{0} [WebExceptionStatus {1}]" -f $webCauses[$status], $status)
             }
             return ("[WebExceptionStatus {0}]" -f $status)
+        }
+        if ($current -is [System.TimeoutException]) {
+            # 本工具自己的時限（Invoke-DnsLookup、Invoke-TcpConnectionTest）到期時作業系統仍在等待：沒有回應也沒有被拒絕，
+            # 這正是防火牆默默丟棄封包或主機無法到達時的樣子。1.2.3 之前這只是一個沒有原因行的 RuntimeException（待辦 #27）。
+            return "在本工具自訂的時限內沒有回應：沒有任何回覆，也沒有被拒絕——這通常是防火牆默默丟棄封包，或主機無法到達。[ToolTimeout]"
         }
         $current = $current.InnerException
         $depth++
@@ -1946,7 +1952,7 @@ function Invoke-DnsLookup {
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $task = [System.Net.Dns]::GetHostAddressesAsync($HostName)
     if (-not $task.Wait($TimeoutMs)) {
-        throw "DNS 查詢逾時（超過 $TimeoutMs ms）。"
+        throw (New-Object System.TimeoutException "DNS 查詢逾時（超過 $TimeoutMs ms）。")
     }
 
     $addresses = @()
@@ -2015,7 +2021,7 @@ function Invoke-TcpConnectionTest {
     try {
         $asyncResult = $client.BeginConnect($HostName, $Port, $null, $null)
         if (-not $asyncResult.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) {
-            throw "TCP 連線逾時（超過 $TimeoutMs ms）。"
+            throw (New-Object System.TimeoutException "TCP 連線逾時（超過 $TimeoutMs ms）。")
         }
         $client.EndConnect($asyncResult)
         $stopwatch.Stop()
@@ -2558,8 +2564,15 @@ function Add-RouteTableResult {
         $routes = @(Sort-DefaultRoutes -Routes @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction Stop))
     }
     catch {
-        Add-CheckResult -Category "IT 診斷資料" -Check "IPv4 預設路由" -Status "ERROR" -Message "無法讀取路由表。" -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + "手動驗證：route print -4") -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "routes" -Scope "IT" | Out-Null
-        return
+        # 在 Windows PowerShell 裡，CIM 查詢沒有符合項目並不是空結果：Get-NetRoute 會拋出 CimJobException
+        # （FullyQualifiedErrorId 為 CmdletizationQuery_NotFound，分類 ObjectNotFound），訊息用的是機器的顯示語言。
+        # 這是沒有預設路由的機器的正常狀態（待辦 #19 的 host-only 情境），1.2.3 之前卻被寫成引擎錯誤（待辦 #27）。
+        # 這個識別碼是 cmdlet 自己的，不隨顯示語言改變；其他任何錯誤都是真的失敗。
+        if ($_.FullyQualifiedErrorId -notmatch "^CmdletizationQuery_NotFound") {
+            Add-CheckResult -Category "IT 診斷資料" -Check "IPv4 預設路由" -Status "ERROR" -Message "無法讀取路由表。" -Details ((Get-ExceptionDetails $_) + [Environment]::NewLine + "手動驗證：route print -4") -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "routes" -Scope "IT" | Out-Null
+            return
+        }
+        $routes = @()
     }
 
     if ($routes.Count -eq 0) {

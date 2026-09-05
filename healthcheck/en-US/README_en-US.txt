@@ -1,5 +1,5 @@
 ﻿Windows Portable Network Health Check
-Version: 1.2.2
+Version: 1.2.3
 ========================================
 
 1. Quick start
@@ -72,7 +72,8 @@ long-running problem is absent. Run the tool while the problem is occurring.
   components, unavailable counters, or an execution error. Detailed exception data is
   included in the report.
 - Launcher failure: the command window displays the reason and tries to write
-  LauncherError.txt.
+  LauncherError.txt; the suggested action in that file follows the reason (a missing
+  program file, a restricted PowerShell, or a message PowerShell printed above).
 - Unhandled program failure: the tool tries to write
   NetworkHealthCheck_FATAL_yyyyMMdd_HHmmss.txt.
 - Report format failure: if one of HTML/TXT/JSON cannot be written, the others are
