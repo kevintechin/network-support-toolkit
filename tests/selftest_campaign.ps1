@@ -110,10 +110,14 @@ Assert-True '4. the message names the unknown id' (@($r4.Output | Where-Object {
 # -------------------- 5. a failing scenario --------------------
 Write-Output ''
 Write-Output '5. M1 answered done with no compressed-folder run: FAIL, exit code 1'
-$r5 = Invoke-Campaign 'fail' @('-Zip', $zip, '-Scenarios', 'M1') "M1=done`r`n"
+# %TEMP% is redirected to an empty folder for the duration: the driver looks for compressed-folder view folders there, and
+# a view left on the machine by something else must not decide this case (the same redirection serves case 26).
+$tempSave = $env:TEMP
+$env:TEMP = (New-Item -ItemType Directory -Force -Path (Join-Path $WorkDir 'temp-5')).FullName
+try { $r5 = Invoke-Campaign 'fail' @('-Zip', $zip, '-Scenarios', 'M1') "M1=done`r`n" } finally { $env:TEMP = $tempSave }
 $s5 = Read-State $r5.State
 Assert-True '5. exit code 1' ($r5.ExitCode -eq 1) ('exit code ' + $r5.ExitCode)
-Assert-True '5. M1 FAIL with the reason' ($s5.Scenarios.M1.Result -eq 'FAIL' -and $s5.Scenarios.M1.Detail -like 'no report under*') ($s5.Scenarios.M1.Result + ' / ' + $s5.Scenarios.M1.Detail)
+Assert-True '5. M1 FAIL with the reason' ($s5.Scenarios.M1.Result -eq 'FAIL' -and $s5.Scenarios.M1.Detail -like 'nothing from a compressed-folder view under*') ($s5.Scenarios.M1.Result + ' / ' + $s5.Scenarios.M1.Detail)
 Assert-True '5. the summary counts one failure' ((Get-Content -LiteralPath (Join-Path $r5.State 'campaign_summary.md') -Raw) -match 'Summary: 0 passed, 1 failed, 0 skipped, 10 pending') 'summary line'
 
 # -------------------- 7. a scenario that changed the machine is final only once the change is verified gone --------------------
@@ -388,6 +392,94 @@ Assert-True '25. Get-PrimaryBounds reads [SystemInformation]::PrimaryMonitorSize
 $shotCalls25 = @()
 if ($functions25.ContainsKey('Save-Screenshot')) { $shotCalls25 = @($functions25['Save-Screenshot'].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-PrimaryBounds' }, $true)) }
 Assert-True '25. Save-Screenshot measures through Get-PrimaryBounds' ($shotCalls25.Count -ge 1) ('Save-Screenshot defined: ' + $functions25.ContainsKey('Save-Screenshot') + '; calls: ' + $shotCalls25.Count)
+
+# -------------------- 26. M1 - the two outcomes that are the package behaving as designed --------------------
+Write-Output ''
+Write-Output '26. M1 on crafted compressed-folder views under a redirected %TEMP%: the launcher stopped for the missing program file (the Windows 11 view folder shape) is PASS; a report carrying the compressed-folder warning (the Windows 10 shape) is PASS; the launcher stopped for another reason is FAIL'
+function New-ViewFolder([string]$TempRoot, [string]$Name, [string]$Relative) {
+    $dir = Join-Path (Join-Path $TempRoot $Name) $Relative
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    return $dir
+}
+function Set-WrittenLater([string]$Path) {
+    # The self-test cannot act between the gate and the check, so what the person would have left in the view is stamped
+    # as written after the campaign started.
+    (Get-Item -LiteralPath $Path).LastWriteTime = (Get-Date).AddMinutes(5)
+}
+function New-LauncherError([string]$Dir, [string]$Reason) {
+    # The file the shipped launcher writes beside itself when it stops (Start-NetworkCheck.cmd, :launcher_error).
+    $text = "Network Health Check launcher error`r`n===================================`r`nDate/time: 05/09/2026 16:59:00`r`nComputer: DESKTOP-TEST`r`nUser: tester`r`nFolder: $Dir\`r`nScript: $Dir\NetworkHealthCheck.ps1`r`nPowerShell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`r`n`r`nError: $Reason`r`n`r`nSuggested action: extract the complete ZIP file to a local folder, then run Start-NetworkCheck.cmd again.`r`n"
+    $path = Join-Path $Dir 'LauncherError.txt'
+    [IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
+    Set-WrittenLater $path
+}
+$answers26 = "M1=done`r`nM1/run-finished=done`r`n"
+# 26a - Windows 11: <guid>_<zip>.zip.<n>\<top>\en-US\ holding the launcher alone and its LauncherError.txt
+$temp26a = (New-Item -ItemType Directory -Force -Path (Join-Path $WorkDir 'temp-26a')).FullName
+$view26a = New-ViewFolder $temp26a ('388e11bd-2056-4e77-a266-27df0c2ad684_NetworkHealthCheck-' + $version + '.zip.684') ('NetworkHealthCheck-' + $version + '\en-US')
+Copy-Item -LiteralPath (Join-Path $top 'en-US\Start-NetworkCheck.cmd') -Destination $view26a
+New-LauncherError $view26a 'The program file NetworkHealthCheck.ps1 is missing. Keep all files in the same folder.'
+$env:TEMP = $temp26a
+try { $r26a = Invoke-Campaign 'view-w11' @('-Zip', $zip, '-Scenarios', 'M1') $answers26 } finally { $env:TEMP = $tempSave }
+$s26a = Read-State $r26a.State
+Assert-True '26a. M1 PASS: the launcher stopped for the missing program file, as stock Windows makes it' ($s26a.Scenarios.M1.Result -eq 'PASS' -and $s26a.Scenarios.M1.Detail -like 'the launcher stopped in the view, as stock Windows makes it*NetworkHealthCheck.ps1 is missing*no report') ($s26a.Scenarios.M1.Result + ' / ' + $s26a.Scenarios.M1.Detail)
+$fromView26a = Join-Path $r26a.State 'M1\from-the-view'
+$listing26a = $(if (Test-Path -LiteralPath (Join-Path $fromView26a 'view-folder-listing.txt')) { Get-Content -LiteralPath (Join-Path $fromView26a 'view-folder-listing.txt') -Raw } else { '' })
+Assert-True '26a. LauncherError.txt was copied out and the listing shows the launcher alone, no program file' ((Test-Path -LiteralPath (Join-Path $fromView26a 'LauncherError.txt')) -and ($listing26a -match 'Start-NetworkCheck\.cmd \(') -and ($listing26a -notmatch 'NetworkHealthCheck\.ps1 \(')) ((@(Get-ChildItem -LiteralPath $fromView26a -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ', ') + ' / ' + $listing26a)
+Assert-True '26a. the screenshot is there and the exit code is 0' ((Test-Path -LiteralPath (Join-Path $r26a.State 'M1\M1_from_the_view.png')) -and $r26a.ExitCode -eq 0) ('exit code ' + $r26a.ExitCode)
+# 26b - Windows 10: Temp1_<zip>.zip\<top>\en-US\Reports\ holding a report with the compressed-folder warning row
+$temp26b = (New-Item -ItemType Directory -Force -Path (Join-Path $WorkDir 'temp-26b')).FullName
+$view26b = New-ViewFolder $temp26b ('Temp1_NetworkHealthCheck-' + $version + '.zip') ('NetworkHealthCheck-' + $version + '\en-US\Reports')
+$report26b = Join-Path $view26b 'NetworkHealthCheck_20260905_170000.json'
+[IO.File]::WriteAllText($report26b, (@{ SchemaVersion = 2; Results = @(@{ Tag = 'startup'; Message = 'This copy is running from inside a compressed folder. Extract the ZIP to a real folder first, or the reports will be written to a temporary location that disappears.' }) } | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+Set-WrittenLater $report26b
+$env:TEMP = $temp26b
+try { $r26b = Invoke-Campaign 'view-w10' @('-Zip', $zip, '-Scenarios', 'M1') $answers26 } finally { $env:TEMP = $tempSave }
+$s26b = Read-State $r26b.State
+Assert-True '26b. M1 PASS on the report carrying the compressed-folder warning' ($s26b.Scenarios.M1.Result -eq 'PASS' -and $s26b.Scenarios.M1.Detail -like 'the tool ran from the view:*compressed-folder warning: 1*') ($s26b.Scenarios.M1.Result + ' / ' + $s26b.Scenarios.M1.Detail)
+Assert-True '26b. the report was copied out of the view and the exit code is 0' ((Test-Path -LiteralPath (Join-Path $r26b.State 'M1\from-the-view\NetworkHealthCheck_20260905_170000.json')) -and $r26b.ExitCode -eq 0) ('exit code ' + $r26b.ExitCode)
+# 26c - the launcher stopped for another reason
+$temp26c = (New-Item -ItemType Directory -Force -Path (Join-Path $WorkDir 'temp-26c')).FullName
+$view26c = New-ViewFolder $temp26c ('Temp1_NetworkHealthCheck-' + $version + '.zip') ('NetworkHealthCheck-' + $version + '\en-US')
+New-LauncherError $view26c 'PowerShell was not found on this computer.'
+$env:TEMP = $temp26c
+try { $r26c = Invoke-Campaign 'view-other' @('-Zip', $zip, '-Scenarios', 'M1') $answers26 } finally { $env:TEMP = $tempSave }
+$s26c = Read-State $r26c.State
+Assert-True '26c. M1 FAIL with the other reason quoted' ($s26c.Scenarios.M1.Result -eq 'FAIL' -and $s26c.Scenarios.M1.Detail -like 'the launcher stopped in the view for another reason: "Error: PowerShell was not found on this computer."*') ($s26c.Scenarios.M1.Result + ' / ' + $s26c.Scenarios.M1.Detail)
+Assert-True '26c. exit code 1' ($r26c.ExitCode -eq 1) ('exit code ' + $r26c.ExitCode)
+
+# -------------------- 27. -Redo runs a recorded scenario again and keeps what it superseded --------------------
+Write-Output ''
+Write-Output '27. -Redo A3 on the campaign of case 1 (A3 SKIPPED): the record is cleared and A3 runs again (SKIPPED again here), the earlier evidence is moved to superseded\ and bundled, the summary names it; a pending scenario with a revert to do is refused; an unknown id is refused'
+$s27before = Read-State $r1.State
+$a3Dir27 = Join-Path $r1.State 'A3'
+New-Item -ItemType Directory -Force -Path $a3Dir27 | Out-Null
+[IO.File]::WriteAllText((Join-Path $a3Dir27 'earlier-evidence.txt'), 'from the first run')
+$r27 = Invoke-Campaign 'skips' @('-Resume', '-Scenarios', 'A3', '-Redo', 'A3', '-SkipGui') "A3=done`r`n"
+$s27 = Read-State $r27.State
+Assert-True '27. A3 ran again: SKIPPED for its precondition, with a new finish time' ($s27.Scenarios.A3.Result -eq 'SKIPPED' -and $s27.Scenarios.A3.Detail -like 'precondition not met*' -and $s27.Scenarios.A3.Finished -ne $s27before.Scenarios.A3.Finished) ($s27.Scenarios.A3.Result + ' / ' + $s27.Scenarios.A3.Detail + ' / ' + $s27.Scenarios.A3.Finished + ' vs ' + $s27before.Scenarios.A3.Finished)
+$superseded27 = @($s27.Scenarios.A3.Superseded)
+Assert-True '27. the record names what it superseded, with the evidence location' ($superseded27.Count -eq 1 -and ([string]$superseded27[0]) -like ('SKIPPED - ' + $s27before.Scenarios.A3.Detail + ' (finished ' + $s27before.Scenarios.A3.Finished + '; evidence under superseded\A3_*)')) ($superseded27 -join ' / ')
+$aside27 = @(Get-ChildItem -LiteralPath (Join-Path $r1.State 'superseded') -Directory -Filter 'A3_*' -ErrorAction SilentlyContinue)
+Assert-True '27. the earlier evidence was moved aside, out of the scenario folder' ($aside27.Count -eq 1 -and (Test-Path -LiteralPath (Join-Path $aside27[0].FullName 'earlier-evidence.txt')) -and -not (Test-Path -LiteralPath (Join-Path $a3Dir27 'earlier-evidence.txt'))) (($aside27 | ForEach-Object { $_.FullName }) -join ', ')
+$summary27 = Get-Content -LiteralPath (Join-Path $r1.State 'campaign_summary.md') -Raw -Encoding UTF8
+Assert-True '27. the summary names the redo' ($summary27 -match '- Redone: A3 - earlier: SKIPPED - precondition not met') (($summary27 -split "`n" | Where-Object { $_ -like '- Redone:*' }) -join ' / ')
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$bundle27 = @(Get-ChildItem -LiteralPath $r1.State -Filter 'nhc-campaign_*.zip' | Sort-Object LastWriteTime -Descending)
+$entries27 = @()
+if ($bundle27.Count) { $z = [IO.Compression.ZipFile]::OpenRead($bundle27[0].FullName); try { $entries27 = @($z.Entries | ForEach-Object { $_.FullName }) } finally { $z.Dispose() } }
+Assert-True '27. the moved evidence travels in the bundle' (@($entries27 | Where-Object { $_ -match 'superseded[\\/]A3_[^\\/]+[\\/]earlier-evidence\.txt$' }).Count -eq 1) (($entries27 | Where-Object { $_ -match 'superseded' }) -join ', ')
+Assert-True '27. exit code 0' ($r27.ExitCode -eq 0) ('exit code ' + $r27.ExitCode)
+$stateFile27 = Join-Path $r1.State 'campaign.json'
+$crafted27 = Get-Content -LiteralPath $stateFile27 -Raw -Encoding UTF8 | ConvertFrom-Json
+$crafted27.Scenarios.A4.Result = 'PENDING'
+$crafted27.Scenarios.A4.Detail = 'quit by the user after an attempt (crafted by the self-test)'
+$crafted27.Scenarios.A4.Attempted = $true
+[IO.File]::WriteAllText($stateFile27, ($crafted27 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+$r27b = Invoke-Campaign 'skips' @('-Resume', '-Scenarios', 'A4', '-Redo', 'A4', '-SkipGui') "A4=done`r`n"
+Assert-True '27. a pending scenario with a revert to do is refused' ($r27b.ExitCode -ne 0 -and (($r27b.Output -join ' ') -match 'cannot redo A4: it is pending with a change possibly still on the machine')) ('exit code ' + $r27b.ExitCode + ' / ' + (($r27b.Output | Select-Object -Last 3) -join ' / '))
+$r27c = Invoke-Campaign 'skips' @('-Resume', '-Redo', 'ZZ', '-SkipGui') ''
+Assert-True '27. an unknown id in -Redo is refused' ($r27c.ExitCode -ne 0 -and (($r27c.Output -join ' ') -match 'unknown scenario\(s\) in -Redo: ZZ')) ('exit code ' + $r27c.ExitCode + ' / ' + (($r27c.Output | Select-Object -Last 3) -join ' / '))
 
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {

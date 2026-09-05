@@ -39,6 +39,11 @@
     Replay from a file of answers instead of asking.
 .PARAMETER Scenarios
     Run these scenario ids only, in the plan's order.
+.PARAMETER Redo
+    Run these scenarios again although they have a result on record (a fixed driver, a corrected step): the record is
+    cleared, the earlier evidence moved to superseded\<id>_<time> in the state folder (bundled), and the summary names
+    what was superseded. A scenario pending with a change possibly still on the machine is refused - resume without
+    -Redo first, so that its revert is verified.
 .PARAMETER SkipGui
     No real windows anywhere in the campaign (a session without an interactive desktop).
 .PARAMETER GuiTimeoutSeconds
@@ -48,6 +53,8 @@
     powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-AcceptanceCampaign.ps1 -Zip "$env:USERPROFILE\Downloads\NetworkHealthCheck-1.2.2.zip" -ExpectedSha256 5dde92c7f6a5e05a525b92b401beb65edc850a4f92fda7a41adfc5b4e4ea78f7 -Campaign win10-zhTW
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\Public\NetworkHealthCheck-acceptance\win10-zhTW\tests\Invoke-AcceptanceCampaign.ps1 -Campaign win10-zhTW -Resume
+.EXAMPLE
+    powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-AcceptanceCampaign.ps1 -Campaign win11-enUS -Resume -Redo M4,M1 -Scenarios M4,M1
 #>
 [CmdletBinding()]
 param(
@@ -58,6 +65,7 @@ param(
     [switch]$Resume,
     [string]$Answers,
     [string[]]$Scenarios,
+    [string[]]$Redo,
     [switch]$SkipGui,
     [int]$GuiTimeoutSeconds = 360
 )
@@ -267,11 +275,18 @@ function Read-Json([string]$Path) { Get-Content -LiteralPath $Path -Raw -Encodin
 function Get-NewestJson([string]$Dir, [datetime]$After) {
     @(Get-ChildItem -LiteralPath $Dir -Filter '*.json' -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $After } | Sort-Object LastWriteTime -Descending | Select-Object -First 1)[0]
 }
-function Get-ArchiveViewReports([datetime]$After) {
-    # Files written under a Windows compressed-folder view (%TEMP%\Temp1_*.zip\...\Reports\) since $After - the reports
-    # a run from inside the view leaves where the view will delete them.
-    @(Get-ChildItem -LiteralPath $env:TEMP -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^Temp\d*_.*\.zip$' } | ForEach-Object {
-        Get-ChildItem -LiteralPath $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.DirectoryName -match '\\Reports$' -and $_.LastWriteTime -gt $After }
+function Get-ArchiveViewFolders {
+    # The temporary folders Explorer extracts into when a file is double-clicked inside a ZIP: %TEMP%\Temp1_<name>.zip\
+    # on Windows 10, %TEMP%\<guid>_<name>.zip.<n>\ on Windows 11 (the first campaign, 2026-09-05:
+    # 388e11bd-2056-4e77-a266-27df0c2ad684_NetworkHealthCheck-1.2.2.zip.684). Only the file clicked is extracted there,
+    # so the launcher finds no NetworkHealthCheck.ps1 beside itself and stops with its own message.
+    @(Get-ChildItem -LiteralPath $env:TEMP -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^Temp\d*_.*\.zip$' -or $_.Name -match '^[0-9a-fA-F-]{36}_.*\.zip\.\d+$' })
+}
+function Get-ArchiveViewFiles([datetime]$After) {
+    # What a run from inside a view left there since $After - reports under a Reports\ folder, the launcher's
+    # LauncherError.txt - before the view deletes them.
+    @(Get-ArchiveViewFolders | ForEach-Object {
+        Get-ChildItem -LiteralPath $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $After -and (($_.DirectoryName -match '\\Reports$') -or ($_.Name -eq 'LauncherError.txt')) }
     })
 }
 function Get-NetworkFacts {
@@ -347,6 +362,17 @@ if ($Scenarios) {
     $unknown = @($Wanted | Where-Object { $PlanIds -notcontains $_ })
     if ($unknown.Count) { throw ('unknown scenario(s): ' + ($unknown -join ', ') + '; known: ' + ($PlanIds -join ', ')) }
     $Wanted = @($PlanIds | Where-Object { $Wanted -contains $_ })
+}
+# -Redo: scenarios with a result on record that are to run again (a fixed driver, a corrected step - M4 and M1 after
+# the first campaign, 2026-09-05). Parsed here so that a subset given with -Scenarios includes them and the resume
+# command carries them; the records are cleared further down, once the plan is known.
+$RedoIds = @()
+if ($Redo) {
+    $RedoIds = @($Redo | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().ToUpperInvariant() } | Where-Object { $_ })
+    $unknown = @($RedoIds | Where-Object { $PlanIds -notcontains $_ })
+    if ($unknown.Count) { throw ('unknown scenario(s) in -Redo: ' + ($unknown -join ', ') + '; known: ' + ($PlanIds -join ', ')) }
+    $RedoIds = @($PlanIds | Where-Object { $RedoIds -contains $_ })
+    if ($Wanted.Count) { $Wanted = @($PlanIds | Where-Object { $Wanted -contains $_ -or $RedoIds -contains $_ }) }
 }
 $ResumeCommand = 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $State.TestsCopy 'Invoke-AcceptanceCampaign.ps1') + '" -Campaign ' + $Campaign + ' -StateDir "' + $StateDir + '" -Resume' + $(if ($Wanted.Count) { ' -Scenarios ' + ($Wanted -join ',') } else { '' })
 $RecoveryNotes = Join-Path $StateDir 'RECOVER.txt'
@@ -452,27 +478,42 @@ function Get-Plan {
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + $window + '; observer: ' + $seen); Evidence = @('M4_IT_window_1366x768.png', 'gui_check.log') }
            } },
         @{ Id = 'M1'; Title = 'Run from inside the compressed-folder view'; Kind = 'manual'; Session = 'admin'; NeedsGui = $true
-           Instruction = @(('In Explorer, double-click the downloaded ZIP - ' + $State.OriginalZip + ' - without extracting it. Open ' + $top + ' > en-US and double-click Start-NetworkCheck.cmd. As soon as the tool window is up (the run started), answer done: a screenshot is taken then. Do NOT close the ZIP window.'),
-                           ('在檔案總管直接雙擊下載的 ZIP（' + $State.OriginalZip + '），不要解壓。打開 ' + $top + ' > en-US，雙擊 Start-NetworkCheck.cmd。工具視窗一出現（開始跑了）就輸入 done：那一刻會截圖。不要關 ZIP 視窗。'))
+           Instruction = @(('In Explorer, double-click the downloaded ZIP - ' + $State.OriginalZip + ' - without extracting it. Open ' + $top + ' > en-US and double-click Start-NetworkCheck.cmd. As soon as something is on screen - the launcher showing its message (stock Windows extracts only the file you clicked, so the launcher stops) or the tool window - answer done: a screenshot is taken then. Do NOT press a key in the launcher window and do NOT close the ZIP window yet.'),
+                           ('在檔案總管直接雙擊下載的 ZIP（' + $State.OriginalZip + '），不要解壓。打開 ' + $top + ' > en-US，雙擊 Start-NetworkCheck.cmd。畫面上一出現東西——launcher 顯示它的訊息（原生 Windows 只會解出你點的那個檔案，launcher 因此停下）或工具視窗——就輸入 done：那一刻會截圖。先不要在 launcher 視窗按鍵，也不要關 ZIP 視窗。'))
            Action = { param($Ctx)
-               # The evidence the checklist asks for: the window running from inside the view, and the reports the view
-               # is about to delete (PR #11 round 4).
-               $shot = Join-Path $Ctx.Dir 'M1_window_from_the_view.png'
+               # Two outcomes are the package behaving as designed (the first campaign, 2026-09-05). Stock Windows extracts
+               # only the file double-clicked into the view folder, so the launcher finds no NetworkHealthCheck.ps1 beside
+               # itself and stops with its own message and LauncherError.txt, no report - what the checklist's M1 row
+               # expects. Where the whole folder was extracted (another archiver, a .ps1 double-clicked earlier in the same
+               # view) the tool runs, and its report must carry the compressed-folder warning itself, in either language
+               # (PR #11 rounds 4 and 11). The launcher stopped for another reason, or nothing in any view folder, fails.
+               $shot = Join-Path $Ctx.Dir 'M1_from_the_view.png'
                Save-Screenshot $shot
-               $null = Read-Answer $Ctx.Id 'run-finished' @('Let the run finish and the tool window close (do not close the ZIP window). Then answer done.', '等它跑完、工具視窗關閉（不要關 ZIP 視窗）。然後輸入 done。') @('done') 'done'
-               $found = @(Get-ArchiveViewReports $Ctx.Started)
-               $jsons = @($found | Where-Object { $_.Extension -eq '.json' } | Sort-Object LastWriteTime -Descending)
-               if ($jsons.Count -eq 0) { return @{ Passed = $false; Detail = ('no report under {0}\Temp*_*.zip since {1}: was the ZIP opened in the view and Start-NetworkCheck.cmd double-clicked inside it?' -f $env:TEMP, $Ctx.Started.ToString('HH:mm:ss')); Evidence = @('M1_window_from_the_view.png') } }
-               $dest = Join-Path $Ctx.Dir 'reports-from-the-view'
+               $null = Read-Answer $Ctx.Id 'run-finished' @('If the launcher shows its message, press a key in its window so that it closes; if the tool window is running, let it finish and close. Do not close the ZIP window. Then answer done.', '若 launcher 顯示的是訊息，在它的視窗按一個鍵讓它關閉；若工具視窗在跑，等它跑完關閉。不要關 ZIP 視窗。然後輸入 done。') @('done') 'done'
+               $found = @(Get-ArchiveViewFiles $Ctx.Started | Sort-Object LastWriteTime)
+               $jsons = @($found | Where-Object { $_.Extension -eq '.json' -and $_.DirectoryName -match '\\Reports$' } | Sort-Object LastWriteTime -Descending)
+               $errors = @($found | Where-Object { $_.Name -eq 'LauncherError.txt' } | Sort-Object LastWriteTime -Descending)
+               if ($jsons.Count -eq 0 -and $errors.Count -eq 0) { return @{ Passed = $false; Detail = ('nothing from a compressed-folder view under {0} (Temp*_*.zip or <guid>_*.zip.<n>) since {1}: was the ZIP opened in the view and Start-NetworkCheck.cmd double-clicked inside it?' -f $env:TEMP, $Ctx.Started.ToString('HH:mm:ss')); Evidence = @('M1_from_the_view.png') } }
+               $primary = $(if ($jsons.Count) { $jsons[0] } else { $errors[0] })
+               $viewRoot = @(Get-ArchiveViewFolders | Where-Object { $primary.FullName.StartsWith($_.FullName + '\', [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1)
+               $dest = Join-Path $Ctx.Dir 'from-the-view'
                New-Item -ItemType Directory -Force -Path $dest | Out-Null
-               foreach ($f in $found) { Copy-Item -LiteralPath $f.FullName -Destination $dest -Force }
-               $d = Read-Json $jsons[0].FullName
-               # The row that certifies the scenario is the compressed-folder warning itself, in either language - not
-               # any startup notice (PR #11 round 11).
-               $startup = @($d.Results | Where-Object { $_.Tag -eq 'startup' })
-               $archiveRows = @($startup | Where-Object { ([string]$_.Message) -match 'compressed folder|壓縮檔' })
-               Write-Line @('The reports were copied out; you may close the ZIP window now.', '報告已複製出來，現在可以關閉 ZIP 視窗了。') 'Cyan'
-               @{ Passed = ($archiveRows.Count -gt 0); Detail = ('{0} file(s) copied out of {1}; startup rows: {2}, of which the compressed-folder warning: {3}{4}' -f $found.Count, (Split-Path -Parent $jsons[0].DirectoryName), $startup.Count, $archiveRows.Count, $(if ($archiveRows.Count) { ' - "' + [string]$archiveRows[0].Message + '"' } elseif ($startup.Count) { ' - only other startup notices: "' + [string]$startup[0].Message + '"' } else { ' - missing' })); Evidence = @('M1_window_from_the_view.png', 'reports-from-the-view') }
+               foreach ($f in $found) { Copy-Item -LiteralPath $f.FullName -Destination $dest -Force }   # oldest first, so the newest of a name is the one kept
+               # What the view folder held - on stock Windows, the launcher alone.
+               $listing = @()
+               if ($viewRoot.Count) { $listing = @(Get-ChildItem -LiteralPath $viewRoot[0].FullName -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName.Substring($viewRoot[0].FullName.Length).TrimStart('\') + ' (' + $_.Length + ' bytes)' }) }
+               [IO.File]::WriteAllLines((Join-Path $dest 'view-folder-listing.txt'), [string[]](@($(if ($viewRoot.Count) { $viewRoot[0].FullName } else { '(view folder not identified)' })) + $listing), $Utf8NoBom)
+               Write-Line @('The files were copied out of the view; you may close the ZIP window now.', '檔案已從檢視複製出來，現在可以關閉 ZIP 視窗了。') 'Cyan'
+               if ($jsons.Count -gt 0) {
+                   $d = Read-Json $jsons[0].FullName
+                   $startup = @($d.Results | Where-Object { $_.Tag -eq 'startup' })
+                   $archiveRows = @($startup | Where-Object { ([string]$_.Message) -match 'compressed folder|壓縮檔' })
+                   return @{ Passed = ($archiveRows.Count -gt 0); Detail = ('the tool ran from the view: {0} file(s) copied out of {1}; startup rows: {2}, of which the compressed-folder warning: {3}{4}' -f $found.Count, (Split-Path -Parent $jsons[0].DirectoryName), $startup.Count, $archiveRows.Count, $(if ($archiveRows.Count) { ' - "' + [string]$archiveRows[0].Message + '"' } elseif ($startup.Count) { ' - only other startup notices: "' + [string]$startup[0].Message + '"' } else { ' - missing' })); Evidence = @('M1_from_the_view.png', 'from-the-view') }
+               }
+               $reason = @(Get-Content -LiteralPath $errors[0].FullName -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^(Error|錯誤)[:：]' } | Select-Object -First 1)
+               $reasonText = $(if ($reason.Count) { ([string]$reason[0]).Trim() } else { '(no Error line in LauncherError.txt)' })
+               $missing = ($reasonText -match 'NetworkHealthCheck\.ps1 is missing|找不到程式檔 NetworkHealthCheck\.ps1')
+               @{ Passed = $missing; Detail = ('the launcher stopped in the view{0}: "{1}"; the view held {2} file(s); no report' -f $(if ($missing) { ', as stock Windows makes it - only the file clicked was extracted' } else { ' for another reason' }), $reasonText, $listing.Count); Evidence = @('M1_from_the_view.png', 'from-the-view') }
            } },
         @{ Id = 'M2'; Title = 'Extract without Unblock and double-click the root launcher'; Kind = 'manual'; Session = 'admin'; NeedsGui = $true
            # Checked before the instruction is shown: without the Mark of the Web on the download there is no warning to
@@ -817,6 +858,30 @@ function Complete-Cleanup($S, $rec, $ctx) {
 
 # -------------------- The campaign --------------------
 $plan = Get-Plan
+# The records -Redo named are cleared now that the plan is known: the earlier evidence goes to superseded\<id>_<time>
+# (bundled), the record keeps what it superseded for the summary. A scenario pending with a change possibly still on
+# the machine is refused - the revert comes first, in the administrator session, and a redo must not step around it.
+foreach ($id in $RedoIds) {
+    $S = @($plan | Where-Object { $_.Id -eq $id })[0]
+    $r = $State.Scenarios[$id]
+    if ($null -eq $r -or -not $r.Result) { Write-Line @(('{0}: nothing on record yet - it runs as usual' -f $id)) 'DarkGray'; continue }
+    if ($r.Result -eq 'PENDING' -and ($r.ActionResult -or $r.Attempted) -and $null -ne $S.Cleanup) { throw ('cannot redo {0}: it is pending with a change possibly still on the machine ({1}); resume without -Redo first, so that the revert is verified' -f $id, $r.Detail) }
+    if ($IsStandardUser -and $S.Session -ne 'standard') { throw ('cannot redo {0} in a standard-user session: it belongs to the administrator session' -f $id) }
+    $aside = ''
+    $dir = Join-Path $StateDir $id
+    if (Test-Path -LiteralPath $dir) {
+        $aside = 'superseded\' + $id + '_' + (Get-Date -Format 'yyyyMMdd_HHmmss')
+        if (Test-Path -LiteralPath (Join-Path $StateDir $aside)) { $aside += '_' + [Guid]::NewGuid().ToString('N').Substring(0, 4) }
+        New-Item -ItemType Directory -Force -Path (Join-Path $StateDir 'superseded') | Out-Null
+        Move-Item -LiteralPath $dir -Destination (Join-Path $StateDir $aside)
+    }
+    $was = ('{0} - {1} (finished {2}{3})' -f $r.Result, $r.Detail, $r.Finished, $(if ($aside) { '; evidence under ' + $aside } else { '' }))
+    $history = @(@($r.Superseded) | Where-Object { $_ }) + @($was)
+    foreach ($k in @('Result', 'Detail', 'Started', 'Finished', 'Reverted', 'ActionResult', 'ActionDetail')) { $r[$k] = '' }
+    $r.Seconds = 0; $r.Evidence = @(); $r.Answers = [ordered]@{}; $r.Attempted = $false; $r.Facts = [ordered]@{}; $r.Superseded = $history
+    Add-Event ('{0}: record cleared for a redo (was {1})' -f $id, $was)
+}
+if ($RedoIds.Count) { Save-State }
 if ($Wanted.Count) { $selected = @($plan | Where-Object { $Wanted -contains $_.Id }) } else { $selected = $plan }
 # A scenario left with its change possibly on the machine - pending, attempted or run, with a revert to do - comes
 # first in every invocation, whatever was selected: nothing else runs on a machine that may still be changed, and a
@@ -878,6 +943,9 @@ function Write-CampaignSummary {
     $md += '| Id | Scenario | Result | s | Detail | Reverted | Finished |'
     $md += '|---|---|---|---:|---|---|---|'
     $md += @($rows | ForEach-Object { '| {0} | {1} | {2} | {3} | {4} | {5} | {6} |' -f $_.Id, $_.Title, $_.Result, $_.Seconds, ($_.Detail -replace '\|', '\|'), $_.Reverted, $_.Finished })
+    $redoneLines = @()
+    foreach ($s in $plan) { $r = $State.Scenarios[$s.Id]; $h = @(@($r.Superseded) | Where-Object { $_ }); if ($h.Count) { $redoneLines += ('- Redone: {0} - earlier: {1}' -f $s.Id, ($h -join '; then ')) } }
+    if ($redoneLines.Count) { $md += ''; $md += $redoneLines }
     $md += ''
     $md += ('Summary: {0} passed, {1} failed, {2} skipped, {3} pending' -f $script:passed, $script:failed, $script:skipped, $script:pending)
     [IO.File]::WriteAllLines($summaryPath, [string[]]$md, $Utf8NoBom)
@@ -892,13 +960,12 @@ $rows | Format-Table -AutoSize -Wrap Id, Result, Seconds, Detail | Out-String -W
 Write-Host $md[-1]
 try {
     # The bundle: the summary, the state, the answers, and per scenario its evidence - never the work dirs, the staged
-    # package copies' program files, or the package itself.
+    # package copies' program files, or the package itself. What a redo moved aside (superseded\) travels too.
     $bundle = Join-Path $StateDir 'bundle'
     if (Test-Path -LiteralPath $bundle) { Remove-Item -LiteralPath $bundle -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $bundle | Out-Null
     foreach ($f in @($summaryPath, $StateFile, $AnswersLog, $RecoveryNotes, (Join-Path $StateDir 'undo-M7.cmd'))) { if (Test-Path -LiteralPath $f) { Copy-Item -LiteralPath $f -Destination $bundle } }
-    foreach ($s in $plan) {
-        $dir = Join-Path $StateDir $s.Id
+    foreach ($dir in (@($plan | ForEach-Object { Join-Path $StateDir $_.Id }) + @(Join-Path $StateDir 'superseded'))) {
         if (-not (Test-Path -LiteralPath $dir)) { continue }
         Get-ChildItem -LiteralPath $dir -Recurse -File | Where-Object { $_.FullName -notmatch '\\work\\' -and ($_.Extension -in @('.log', '.png', '.zip', '.json', '.html', '.txt')) -and $_.Name -notlike '*.config.json' -and $_.Name -notlike 'README_*' } | ForEach-Object {
             $target = Join-Path $bundle ($_.FullName.Substring($StateDir.Length).TrimStart('\'))
