@@ -861,12 +861,20 @@ $plan = Get-Plan
 # The records -Redo named are cleared now that the plan is known: the earlier evidence goes to superseded\<id>_<time>
 # (bundled), the record keeps what it superseded for the summary. A scenario pending with a change possibly still on
 # the machine is refused - the revert comes first, in the administrator session, and a redo must not step around it.
+# Every id is checked before anything is moved or cleared, and each record is saved as soon as its evidence has moved,
+# so that a refusal or a crash never leaves campaign.json describing evidence that is no longer where it says (Codex
+# round 1 on PR #13).
+$redoNow = @()
 foreach ($id in $RedoIds) {
     $S = @($plan | Where-Object { $_.Id -eq $id })[0]
     $r = $State.Scenarios[$id]
     if ($null -eq $r -or -not $r.Result) { Write-Line @(('{0}: nothing on record yet - it runs as usual' -f $id)) 'DarkGray'; continue }
     if ($r.Result -eq 'PENDING' -and ($r.ActionResult -or $r.Attempted) -and $null -ne $S.Cleanup) { throw ('cannot redo {0}: it is pending with a change possibly still on the machine ({1}); resume without -Redo first, so that the revert is verified' -f $id, $r.Detail) }
     if ($IsStandardUser -and $S.Session -ne 'standard') { throw ('cannot redo {0} in a standard-user session: it belongs to the administrator session' -f $id) }
+    $redoNow += $id
+}
+foreach ($id in $redoNow) {
+    $r = $State.Scenarios[$id]
     $aside = ''
     $dir = Join-Path $StateDir $id
     if (Test-Path -LiteralPath $dir) {
@@ -879,9 +887,9 @@ foreach ($id in $RedoIds) {
     $history = @(@($r.Superseded) | Where-Object { $_ }) + @($was)
     foreach ($k in @('Result', 'Detail', 'Started', 'Finished', 'Reverted', 'ActionResult', 'ActionDetail')) { $r[$k] = '' }
     $r.Seconds = 0; $r.Evidence = @(); $r.Answers = [ordered]@{}; $r.Attempted = $false; $r.Facts = [ordered]@{}; $r.Superseded = $history
+    Save-State
     Add-Event ('{0}: record cleared for a redo (was {1})' -f $id, $was)
 }
-if ($RedoIds.Count) { Save-State }
 if ($Wanted.Count) { $selected = @($plan | Where-Object { $Wanted -contains $_.Id }) } else { $selected = $plan }
 # A scenario left with its change possibly on the machine - pending, attempted or run, with a revert to do - comes
 # first in every invocation, whatever was selected: nothing else runs on a machine that may still be changed, and a

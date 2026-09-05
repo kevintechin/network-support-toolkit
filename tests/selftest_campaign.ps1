@@ -481,6 +481,18 @@ Assert-True '27. a pending scenario with a revert to do is refused' ($r27b.ExitC
 $r27c = Invoke-Campaign 'skips' @('-Resume', '-Redo', 'ZZ', '-SkipGui') ''
 Assert-True '27. an unknown id in -Redo is refused' ($r27c.ExitCode -ne 0 -and (($r27c.Output -join ' ') -match 'unknown scenario\(s\) in -Redo: ZZ')) ('exit code ' + $r27c.ExitCode + ' / ' + (($r27c.Output | Select-Object -Last 3) -join ' / '))
 
+# -------------------- 28. a refused -Redo moves nothing --------------------
+Write-Output ''
+Write-Output '28. -Redo A3,A4 while A4 is pending with a revert to do (the crafted state of case 27): refused before anything moves - A3 keeps its folder, its record and its single superseded entry (Codex round 1 on PR #13)'
+$s28before = Read-State $r1.State
+[IO.File]::WriteAllText((Join-Path $a3Dir27 'evidence-of-the-redo.txt'), 'from the second run')
+$asideBefore28 = @(Get-ChildItem -LiteralPath (Join-Path $r1.State 'superseded') -Directory -Filter 'A3_*' -ErrorAction SilentlyContinue).Count
+$r28 = Invoke-Campaign 'skips' @('-Resume', '-Scenarios', 'A3,A4', '-Redo', 'A3,A4', '-SkipGui') "A3=done`r`nA4=done`r`n"
+$s28 = Read-State $r1.State
+Assert-True '28. refused for A4' ($r28.ExitCode -ne 0 -and (($r28.Output -join ' ') -match 'cannot redo A4: it is pending with a change possibly still on the machine')) ('exit code ' + $r28.ExitCode + ' / ' + (($r28.Output | Select-Object -Last 3) -join ' / '))
+Assert-True '28. the A3 folder and its evidence did not move' ((Test-Path -LiteralPath (Join-Path $a3Dir27 'evidence-of-the-redo.txt')) -and @(Get-ChildItem -LiteralPath (Join-Path $r1.State 'superseded') -Directory -Filter 'A3_*' -ErrorAction SilentlyContinue).Count -eq $asideBefore28) ('superseded A3_* folders: ' + @(Get-ChildItem -LiteralPath (Join-Path $r1.State 'superseded') -Directory -Filter 'A3_*' -ErrorAction SilentlyContinue).Count)
+Assert-True '28. the A3 record is as it was' ($s28.Scenarios.A3.Result -eq $s28before.Scenarios.A3.Result -and $s28.Scenarios.A3.Finished -eq $s28before.Scenarios.A3.Finished -and @($s28.Scenarios.A3.Superseded).Count -eq @($s28before.Scenarios.A3.Superseded).Count) ($s28.Scenarios.A3.Result + ' / ' + $s28.Scenarios.A3.Finished + ' / superseded entries ' + @($s28.Scenarios.A3.Superseded).Count)
+
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
     Write-Output ''
