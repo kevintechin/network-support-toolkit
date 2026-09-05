@@ -474,13 +474,20 @@ function Get-M8MachineLines {
     return @(('This machine: ' + $ed.Caption + ' (EditionID ' + $ed.EditionId + ') - ' + $here + '.'), ('這台機器：' + $ed.Caption + '（EditionID ' + $ed.EditionId + '）——' + $hereZh + '。'))
 }
 function Get-M8WayBack($Facts) {
-    # The registry lines that put the two values back as they were before M8 - re-created with their data where they
-    # existed, deleted where they did not (Codex round 1 on PR #14).
+    # The registry lines that put the two values back as they were before M8 - re-created with their data AND their kind
+    # where they existed (a value stored as REG_EXPAND_SZ or REG_SZ must come back as that, not as the kind the policy
+    # editor would write - Codex round 2 on PR #14), deleted where they did not. A record from before the kinds were
+    # recorded falls back to the kinds the policy editor writes.
     $k = '"HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell"'
+    $types = @{ String = 'REG_SZ'; ExpandString = 'REG_EXPAND_SZ'; DWord = 'REG_DWORD'; QWord = 'REG_QWORD' }
     $lines = @()
-    $ep = [string]$Facts.RegExecutionPolicyBefore; $es = [string]$Facts.RegEnableScriptsBefore
-    if (-not $ep -or $ep -eq 'absent') { $lines += ('reg delete ' + $k + ' /v ExecutionPolicy /f') } else { $lines += ('reg add ' + $k + ' /v ExecutionPolicy /t REG_SZ /d ' + $ep + ' /f') }
-    if (-not $es -or $es -eq 'absent') { $lines += ('reg delete ' + $k + ' /v EnableScripts /f') } else { $lines += ('reg add ' + $k + ' /v EnableScripts /t REG_DWORD /d ' + $es + ' /f') }
+    foreach ($v in @(@{ Name = 'ExecutionPolicy'; Data = 'RegExecutionPolicyBefore'; Kind = 'RegExecutionPolicyKindBefore'; Default = 'REG_SZ' }, @{ Name = 'EnableScripts'; Data = 'RegEnableScriptsBefore'; Kind = 'RegEnableScriptsKindBefore'; Default = 'REG_DWORD' })) {
+        $data = [string]$Facts[$v.Data]; $kind = [string]$Facts[$v.Kind]
+        if (-not $data -or $data -eq 'absent') { $lines += ('reg delete ' + $k + ' /v ' + $v.Name + ' /f'); continue }
+        $type = $(if ($kind -and $types.ContainsKey($kind)) { $types[$kind] } elseif (-not $kind -or $kind -eq 'absent') { $v.Default } else { '' })
+        if ($type) { $lines += ('reg add ' + $k + ' /v ' + $v.Name + ' /t ' + $type + ' /d ' + $data + ' /f') }
+        else { $lines += ('(' + $v.Name + ' was a ' + $kind + ' value with data ' + $data + ' - put it back with regedit; reg add cannot write that kind from this record)') }
+    }
     return $lines
 }
 function Write-RecoveryNotes {
@@ -766,13 +773,18 @@ function Get-Plan {
                            '然後輸入 done。生效期間任何未簽章的 PowerShell 腳本都跑不起來——包括這個 campaign：請保持這個視窗開著。') + $recoverLines
            Prepare = { param($Ctx)
                # What is on the machine before the change, so that the revert puts it back rather than clearing it: the
-               # effective MachinePolicy and the two registry values as they are - with their data, or absent (Codex round 1
-               # on PR #14). And how the policy is applied here, for the record.
-               $reg = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell' -ErrorAction SilentlyContinue
+               # effective MachinePolicy and the two registry values as they are - data and registry kind, or absent (Codex
+               # rounds 1 and 2 on PR #14). And how the policy is applied here, for the record.
+               $key = Get-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell' -ErrorAction SilentlyContinue
+               $snap = @{}
+               foreach ($name in @('ExecutionPolicy', 'EnableScripts')) {
+                   if ($null -ne $key -and @($key.GetValueNames()) -contains $name) { $snap[$name] = @{ Data = [string]$key.GetValue($name, $null, 'DoNotExpandEnvironmentNames'); Kind = [string]$key.GetValueKind($name) } }
+                   else { $snap[$name] = @{ Data = 'absent'; Kind = 'absent' } }
+               }
                return @{ PolicyWay = $(if ($State.Edition.HasGpedit) { 'gpedit' } else { 'registry' }); Edition = ([string]$State.Edition.Caption + ' / ' + [string]$State.Edition.EditionId)
                          MachinePolicyBefore = (Get-MachinePolicyExecutionPolicy)
-                         RegExecutionPolicyBefore = $(if ($null -ne $reg -and $null -ne $reg.PSObject.Properties['ExecutionPolicy']) { [string]$reg.ExecutionPolicy } else { 'absent' })
-                         RegEnableScriptsBefore = $(if ($null -ne $reg -and $null -ne $reg.PSObject.Properties['EnableScripts']) { [string]$reg.EnableScripts } else { 'absent' }) } }
+                         RegExecutionPolicyBefore = $snap['ExecutionPolicy'].Data; RegExecutionPolicyKindBefore = $snap['ExecutionPolicy'].Kind
+                         RegEnableScriptsBefore = $snap['EnableScripts'].Data; RegEnableScriptsKindBefore = $snap['EnableScripts'].Kind } }
            Precondition = { $p = Get-MachinePolicyExecutionPolicy; if ($p -eq 'AllSigned') { @{ Ok = $true; Detail = 'MachinePolicy=AllSigned' } } else { @{ Ok = $false; Detail = ('MachinePolicy is ' + $p + ', not AllSigned') } } }
            Action = { param($Ctx)
                $r = Invoke-LauncherRun $Ctx.Id 'en-US'

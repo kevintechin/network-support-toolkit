@@ -538,19 +538,25 @@ Assert-True '30. exit code 1' ($r30.ExitCode -eq 1) ('exit code ' + $r30.ExitCod
 
 # -------------------- 31. the edition decides how the policy scenarios are done --------------------
 Write-Output ''
-Write-Output '31. the summary names the edition; on a crafted Windows Home state M9 is skipped before anyone is asked and M8 names the registry lines as the way for this machine, recorded in its facts and in RECOVER.txt'
+Write-Output '31. the summary names the edition; on a crafted Pro state M9 reaches the gate with the Pro note, on a crafted Home state it is skipped before anyone is asked, and M8 names the registry lines as the way for this machine, recorded in its facts and in RECOVER.txt - whatever the edition of the host running the self-test (Codex round 2 on PR #14)'
 $r31 = Invoke-Campaign 'edition' @('-Zip', $zip, '-Scenarios', 'M9') "M9=skip`r`n"
 $summary31 = Get-Content -LiteralPath (Join-Path $r31.State 'campaign_summary.md') -Raw -Encoding UTF8
 Assert-True '31. the summary header names the edition and the consoles' ($summary31 -match '(?m)^- Edition: .+ \(EditionID \w+, .*build \d+\.\d+\); gpedit\.msc: (yes|no); secpol\.msc: (yes|no)\r?$') (($summary31 -split "`n" | Where-Object { $_ -like '- Edition:*' }) -join ' / ')
-$s31 = Read-State $r31.State
-Assert-True '31. on this machine (not Home) M9 reached the gate and was skipped there' ($s31.Scenarios.M9.Result -eq 'SKIPPED' -and $s31.Scenarios.M9.Detail -eq 'skipped by the user' -and (-not $s31.Edition.IsHome)) ($s31.Scenarios.M9.Result + ' / ' + $s31.Scenarios.M9.Detail + ' / IsHome ' + $s31.Edition.IsHome)
 $stateFile31 = Join-Path $r31.State 'campaign.json'
-$crafted31 = Get-Content -LiteralPath $stateFile31 -Raw -Encoding UTF8 | ConvertFrom-Json
-$crafted31.Edition.IsHome = $true; $crafted31.Edition.EditionId = 'Core'; $crafted31.Edition.Caption = 'Microsoft Windows 11 Home'; $crafted31.Edition.HasGpedit = $false; $crafted31.Edition.HasSecpol = $false
-[IO.File]::WriteAllText($stateFile31, ($crafted31 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+function Set-CraftedEdition([string]$Path, [bool]$HomeEdition, [string]$Id, [string]$Caption, [bool]$Consoles) {   # not $Home: that is PowerShell's own read-only variable
+    $c = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $c.Edition.IsHome = $HomeEdition; $c.Edition.EditionId = $Id; $c.Edition.Caption = $Caption; $c.Edition.HasGpedit = $Consoles; $c.Edition.HasSecpol = $Consoles
+    [IO.File]::WriteAllText($Path, ($c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+}
+Set-CraftedEdition $stateFile31 $false 'Professional' 'Microsoft Windows 11 Pro' $true
+$r31a = Invoke-Campaign 'edition' @('-Resume', '-Redo', 'M9', '-Scenarios', 'M9') "M9=skip`r`n"
+$s31a = Read-State $r31.State
+$gates31 = @(Get-Content -LiteralPath (Join-Path $r31.State 'answers.log') | Where-Object { $_ -match ' M9/gate ' }).Count
+Assert-True '31. on Pro, M9 reaches the gate with the note that Pro does not enforce' ($s31a.Scenarios.M9.Result -eq 'SKIPPED' -and $s31a.Scenarios.M9.Detail -eq 'skipped by the user' -and (($r31a.Output -join ' ') -match 'prerequisite met - Microsoft Windows 11 Pro: Pro holds AppLocker rules but does not enforce them') -and $gates31 -ge 1) ($s31a.Scenarios.M9.Result + ' / ' + $s31a.Scenarios.M9.Detail + ' / gates ' + $gates31)
+Set-CraftedEdition $stateFile31 $true 'Core' 'Microsoft Windows 11 Home' $false
 $r31b = Invoke-Campaign 'edition' @('-Resume', '-Redo', 'M9', '-Scenarios', 'M9') "M9=done`r`n"
 $s31b = Read-State $r31.State
-Assert-True '31. on Home, M9 is skipped before anyone is asked, with the edition named' ($s31b.Scenarios.M9.Result -eq 'SKIPPED' -and $s31b.Scenarios.M9.Detail -like 'prerequisite not met: AppLocker is not available on this edition (Microsoft Windows 11 Home, EditionID Core)*' -and @(Get-Content -LiteralPath (Join-Path $r31.State 'answers.log') | Where-Object { $_ -match ' M9/gate ' }).Count -eq 1) ($s31b.Scenarios.M9.Result + ' / ' + $s31b.Scenarios.M9.Detail)
+Assert-True '31. on Home, M9 is skipped before anyone is asked, with the edition named' ($s31b.Scenarios.M9.Result -eq 'SKIPPED' -and $s31b.Scenarios.M9.Detail -like 'prerequisite not met: AppLocker is not available on this edition (Microsoft Windows 11 Home, EditionID Core)*' -and @(Get-Content -LiteralPath (Join-Path $r31.State 'answers.log') | Where-Object { $_ -match ' M9/gate ' }).Count -eq $gates31) ($s31b.Scenarios.M9.Result + ' / ' + $s31b.Scenarios.M9.Detail)
 $r31c = Invoke-Campaign 'edition' @('-Resume', '-Scenarios', 'M8') "M8=skip`r`n"
 $out31c = $r31c.Output -join "`n"
 Assert-True '31. on Home, M8 names the registry lines as the way for this machine' (($out31c -match 'This machine: Microsoft Windows 11 Home \(EditionID Core\) - no gpedit\.msc: take the registry lines') -and ($out31c -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_SZ /d AllSigned /f')) (($r31c.Output | Where-Object { $_ -match 'This machine|reg add' }) -join ' / ')
@@ -588,21 +594,23 @@ Assert-True '33. the summary names the work root, and the state kept it' (($summ
 
 # -------------------- 34. M8 puts back what was there --------------------
 Write-Output ''
-Write-Output '34. M8 records the MachinePolicy and the two registry values before the change; on a crafted record that had RemoteSigned, the revert instruction re-creates the values and the verification compares with RemoteSigned, not Undefined (Codex round 1 on PR #14)'
+Write-Output '34. M8 records the MachinePolicy and the two registry values - data and kind - before the change; on a crafted record that had RemoteSigned (REG_EXPAND_SZ) and EnableScripts 1 (REG_SZ), the revert instruction re-creates the values with their kinds and the verification compares with RemoteSigned, not Undefined (Codex rounds 1 and 2 on PR #14)'
 $r34 = Invoke-Campaign 'm8facts' @('-Zip', $zip, '-Scenarios', 'M8') "M8=skip`r`n"
 $s34 = Read-State $r34.State
 $f34 = $s34.Scenarios.M8.Facts
-Assert-True '34. the facts hold the state before M8' (([string]$f34.MachinePolicyBefore -ne '') -and ([string]$f34.RegExecutionPolicyBefore -ne '') -and ([string]$f34.RegEnableScriptsBefore -ne '') -and ([string]$f34.PolicyWay -in @('gpedit', 'registry'))) ('facts: ' + ($f34 | ConvertTo-Json -Compress))
+Assert-True '34. the facts hold the state before M8, kinds included' (([string]$f34.MachinePolicyBefore -ne '') -and ([string]$f34.RegExecutionPolicyBefore -ne '') -and ([string]$f34.RegEnableScriptsBefore -ne '') -and ([string]$f34.RegExecutionPolicyKindBefore -ne '') -and ([string]$f34.RegEnableScriptsKindBefore -ne '') -and ([string]$f34.PolicyWay -in @('gpedit', 'registry'))) ('facts: ' + ($f34 | ConvertTo-Json -Compress))
 $recover34 = Get-Content -LiteralPath (Join-Path $r34.State 'RECOVER.txt') -Raw
 Assert-True '34. RECOVER.txt names the MachinePolicy that was there' ($recover34 -match ('MachinePolicy was ' + [regex]::Escape([string]$f34.MachinePolicyBefore) + ' before M8')) (($recover34 -split "`n" | Where-Object { $_ -like 'M8*' }) -join ' / ')
 $stateFile34 = Join-Path $r34.State 'campaign.json'
 $crafted34 = Get-Content -LiteralPath $stateFile34 -Raw -Encoding UTF8 | ConvertFrom-Json
 $crafted34.Scenarios.M8.Result = 'PENDING'; $crafted34.Scenarios.M8.Detail = 'ran (PASS) but NOT REVERTED - quit (crafted by the self-test)'; $crafted34.Scenarios.M8.ActionResult = 'PASS'; $crafted34.Scenarios.M8.ActionDetail = 'crafted'; $crafted34.Scenarios.M8.Attempted = $true
-$crafted34.Scenarios.M8.Facts.MachinePolicyBefore = 'RemoteSigned'; $crafted34.Scenarios.M8.Facts.RegExecutionPolicyBefore = 'RemoteSigned'; $crafted34.Scenarios.M8.Facts.RegEnableScriptsBefore = '1'
+$crafted34.Scenarios.M8.Facts.MachinePolicyBefore = 'RemoteSigned'
+$crafted34.Scenarios.M8.Facts.RegExecutionPolicyBefore = 'RemoteSigned'; $crafted34.Scenarios.M8.Facts.RegExecutionPolicyKindBefore = 'ExpandString'
+$crafted34.Scenarios.M8.Facts.RegEnableScriptsBefore = '1'; $crafted34.Scenarios.M8.Facts.RegEnableScriptsKindBefore = 'String'
 [IO.File]::WriteAllText($stateFile34, ($crafted34 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
 $r34b = Invoke-Campaign 'm8facts' @('-Resume', '-Scenarios', 'M8') "M8/revert=done`r`n"
 $out34b = $r34b.Output -join "`n"
-Assert-True '34. the revert instruction re-creates the values as they were' (($out34b -match 'Put it back as it was \(MachinePolicy was RemoteSigned before M8\)') -and ($out34b -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_SZ /d RemoteSigned /f') -and ($out34b -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v EnableScripts /t REG_DWORD /d 1 /f')) (($r34b.Output | Where-Object { $_ -match 'Put it back|reg add' }) -join ' / ')
+Assert-True '34. the revert instruction re-creates the values as they were, kinds included' (($out34b -match 'Put it back as it was \(MachinePolicy was RemoteSigned before M8\)') -and ($out34b -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_EXPAND_SZ /d RemoteSigned /f') -and ($out34b -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v EnableScripts /t REG_SZ /d 1 /f')) (($r34b.Output | Where-Object { $_ -match 'Put it back|reg add' }) -join ' / ')
 $s34b = Read-State $r34.State
 Assert-True '34. the verification compares with what was there, not with Undefined' ($s34b.Scenarios.M8.Result -eq 'PENDING' -and $s34b.Scenarios.M8.Reverted -like 'NOT VERIFIED - MachinePolicy is *; it was RemoteSigned before M8' -and $r34b.ExitCode -eq 1) ($s34b.Scenarios.M8.Result + ' / ' + $s34b.Scenarios.M8.Reverted + ' / exit ' + $r34b.ExitCode)
 
