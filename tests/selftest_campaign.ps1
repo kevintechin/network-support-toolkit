@@ -532,8 +532,8 @@ $report30 = Join-Path $elsewhere30 'NetworkHealthCheck_20260905_171350_DESKTOP-T
 Set-WrittenLater $report30
 $r30 = Invoke-Campaign 'elsewhere' @('-Zip', $zip, '-Scenarios', 'M3', '-WorkRoot', $desk30) "M3=done`r`nM3/open-report=failed`r`n"
 $s30 = Read-State $r30.State
-Assert-True '30. M3 FAIL: the en-US report is missing with nothing found elsewhere' ($s30.Scenarios.M3.Result -eq 'FAIL' -and $s30.Scenarios.M3.Detail -like ('*no en-US report under ' + $desk30 + '\NHC-M3;*')) ($s30.Scenarios.M3.Result + ' / ' + $s30.Scenarios.M3.Detail)
-Assert-True '30. the zh-TW report found elsewhere is named with its path' ($s30.Scenarios.M3.Detail -like ('*no zh-TW report under ' + $desk30 + '\NHC-M3 - found elsewhere, so the launchers were not run from there: ' + $report30 + '*')) $s30.Scenarios.M3.Detail
+Assert-True '30. M3 FAIL: the en-US report is missing under the validated tree, with nothing found elsewhere' ($s30.Scenarios.M3.Result -eq 'FAIL' -and $s30.Scenarios.M3.Detail -like ('*no en-US report under ' + $desk30 + '\NHC-M3\NetworkHealthCheck-' + $version + ';*')) ($s30.Scenarios.M3.Result + ' / ' + $s30.Scenarios.M3.Detail)
+Assert-True '30. the zh-TW report found elsewhere is named with its path' ($s30.Scenarios.M3.Detail -like ('*no zh-TW report under ' + $desk30 + '\NHC-M3\NetworkHealthCheck-' + $version + ' - found elsewhere, so the launchers were not run from there: ' + $report30 + '*')) $s30.Scenarios.M3.Detail
 Assert-True '30. exit code 1' ($r30.ExitCode -eq 1) ('exit code ' + $r30.ExitCode)
 
 # -------------------- 31. the edition decides how the policy scenarios are done --------------------
@@ -592,6 +592,12 @@ Assert-True '33. a fresh tree whose program file differs is refused as not this 
 $summary33 = Get-Content -LiteralPath (Join-Path $r33a.State 'campaign_summary.md') -Raw -Encoding UTF8
 Assert-True '33. the summary names the work root, and the state kept it' (($summary33 -match ('(?m)^- Work root \(NHC-M2, NHC-M3\): ' + [regex]::Escape($desk33) + '\r?$')) -and ([string]$s33b.WorkRoot -eq $desk33)) (($summary33 -split "`n" | Where-Object { $_ -like '- Work root*' }) -join ' / ')
 
+Copy-Item -LiteralPath $top -Destination (Join-Path $desk33 ('NHC-M3\NetworkHealthCheck-' + $version + '-old')) -Recurse -Force   # a second tree beside the first
+Set-ExtractedLater (Join-Path $desk33 'NHC-M3')
+$r33c = Invoke-Campaign 'stale' @('-Resume', '-Redo', 'M3', '-Scenarios', 'M3') "M3=done`r`n"
+$s33c = Read-State $r33a.State
+Assert-True '33. two package trees under the folder are refused (Codex round 3)' ($s33c.Scenarios.M3.Result -eq 'SKIPPED' -and $s33c.Scenarios.M3.Detail -like ('precondition not met: more than one package tree under ' + $desk33 + '\NHC-M3 (2 copies of Start-English.cmd): remove *')) ($s33c.Scenarios.M3.Result + ' / ' + $s33c.Scenarios.M3.Detail)
+
 # -------------------- 34. M8 puts back what was there --------------------
 Write-Output ''
 Write-Output '34. M8 records the MachinePolicy and the two registry values - data and kind - before the change; on a crafted record that had RemoteSigned (REG_EXPAND_SZ) and EnableScripts 1 (REG_SZ), the revert instruction re-creates the values with their kinds and the verification compares with RemoteSigned, not Undefined (Codex rounds 1 and 2 on PR #14)'
@@ -610,9 +616,17 @@ $crafted34.Scenarios.M8.Facts.RegEnableScriptsBefore = '1'; $crafted34.Scenarios
 [IO.File]::WriteAllText($stateFile34, ($crafted34 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
 $r34b = Invoke-Campaign 'm8facts' @('-Resume', '-Scenarios', 'M8') "M8/revert=done`r`n"
 $out34b = $r34b.Output -join "`n"
-Assert-True '34. the revert instruction re-creates the values as they were, kinds included' (($out34b -match 'Put it back as it was \(MachinePolicy was RemoteSigned before M8\)') -and ($out34b -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_EXPAND_SZ /d RemoteSigned /f') -and ($out34b -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v EnableScripts /t REG_SZ /d 1 /f')) (($r34b.Output | Where-Object { $_ -match 'Put it back|reg add' }) -join ' / ')
+Assert-True '34. the revert instruction re-creates the values as they were, kinds included' (($out34b -match 'Put it back as it was \(MachinePolicy was RemoteSigned before M8\)') -and ($out34b -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_EXPAND_SZ /d "RemoteSigned" /f') -and ($out34b -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v EnableScripts /t REG_SZ /d "1" /f')) (($r34b.Output | Where-Object { $_ -match 'Put it back|reg add' }) -join ' / ')
 $s34b = Read-State $r34.State
 Assert-True '34. the verification compares with what was there, not with Undefined' ($s34b.Scenarios.M8.Result -eq 'PENDING' -and $s34b.Scenarios.M8.Reverted -like 'NOT VERIFIED - MachinePolicy is *; it was RemoteSigned before M8' -and $r34b.ExitCode -eq 1) ($s34b.Scenarios.M8.Result + ' / ' + $s34b.Scenarios.M8.Reverted + ' / exit ' + $r34b.ExitCode)
+
+$crafted34c = Get-Content -LiteralPath $stateFile34 -Raw -Encoding UTF8 | ConvertFrom-Json
+$crafted34c.Scenarios.M8.Facts.RegExecutionPolicyBefore = ''; $crafted34c.Scenarios.M8.Facts.RegExecutionPolicyKindBefore = 'String'
+$crafted34c.Scenarios.M8.Facts.RegEnableScriptsBefore = 'absent'; $crafted34c.Scenarios.M8.Facts.RegEnableScriptsKindBefore = 'absent'
+[IO.File]::WriteAllText($stateFile34, ($crafted34c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+$r34c = Invoke-Campaign 'm8facts' @('-Resume', '-Scenarios', 'M8') "M8/revert=done`r`n"
+$out34c = $r34c.Output -join "`n"
+Assert-True '34. an existing empty value comes back empty, an absent one is deleted (Codex round 3)' (($out34c -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_SZ /d "" /f') -and ($out34c -match 'reg delete "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v EnableScripts /f')) (($r34c.Output | Where-Object { $_ -match 'reg add|reg delete' }) -join ' / ')
 
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {

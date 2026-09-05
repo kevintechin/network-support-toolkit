@@ -368,15 +368,21 @@ function Get-ExtractedLauncher([string]$Root, [string]$Name) {
     return @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter $Name -ErrorAction SilentlyContinue)[0]
 }
 function Test-ExtractedPackage([string]$Root, [string[]]$Launchers, [datetime]$After) {
-    # The extraction the person was asked for, and nothing else: every launcher below the folder; created after this
-    # scenario started (the folder given was written after it) - a tree left by an earlier campaign is refused, its launchers would run another package and,
+    # The extraction the person was asked for, and nothing else: exactly one copy of every launcher below the folder (two
+    # package trees, one of them old, and the person may run the wrong one - Codex round 3 on PR #14); the folder written
+    # after this scenario started (the folder given was written after it) - a tree left by an earlier campaign is refused, its launchers would run another package and,
     # for M2, carry another download's marks; and the package's own program file byte for byte, so that the evidence
-    # is of this campaign's asset and no other release (Codex round 1 on PR #14).
+    # is of this campaign's asset and no other release (Codex round 1 on PR #14). The actions read the reports from the
+    # tree validated here (its Root), not from anywhere below the folder.
     $found = @{}
-    foreach ($name in $Launchers) { $found[$name] = Get-ExtractedLauncher $Root $name }
-    $missing = @($Launchers | Where-Object { $null -eq $found[$_] })
+    foreach ($name in $Launchers) { $found[$name] = @($(if (Test-Path -LiteralPath $Root) { Get-ChildItem -LiteralPath $Root -Recurse -File -Filter $name -ErrorAction SilentlyContinue } else { @() })) }
+    $missing = @($Launchers | Where-Object { $found[$_].Count -eq 0 })
     if ($missing.Count) { return @{ Ok = $false; Detail = ('nothing extracted under ' + $Root + ' (no ' + ($missing -join ' / ') + ' below it) - the Extract All dialog proposes another folder; replace the destination with ' + $Root) } }
-    $first = $found[$Launchers[0]]
+    $several = @($Launchers | Where-Object { $found[$_].Count -gt 1 })
+    if ($several.Count) { return @{ Ok = $false; Detail = ('more than one package tree under ' + $Root + ' (' + $found[$several[0]].Count + ' copies of ' + $several[0] + '): remove ' + $Root + ' and extract the downloaded ZIP once') } }
+    $first = $found[$Launchers[0]][0]
+    $apart = @($Launchers | Where-Object { $found[$_][0].DirectoryName -ne $first.DirectoryName })
+    if ($apart.Count) { return @{ Ok = $false; Detail = ('the launchers under ' + $Root + ' are not in one folder (' + $Launchers[0] + ' in ' + $first.DirectoryName + ', ' + $apart[0] + ' in ' + $found[$apart[0]][0].DirectoryName + '): remove ' + $Root + ' and extract the downloaded ZIP once') } }
     # Freshness is read off the folder given, not off the files: Windows 11's Extract All gives the extracted files the
     # archive's own timestamps, creation time included (the VM: created 2026-09-04 16:44:00 for a tree extracted on the
     # 5th), while the destination folder - not an archive entry - is written when the extraction puts the package into it.
@@ -476,17 +482,20 @@ function Get-M8MachineLines {
 function Get-M8WayBack($Facts) {
     # The registry lines that put the two values back as they were before M8 - re-created with their data AND their kind
     # where they existed (a value stored as REG_EXPAND_SZ or REG_SZ must come back as that, not as the kind the policy
-    # editor would write - Codex round 2 on PR #14), deleted where they did not. A record from before the kinds were
-    # recorded falls back to the kinds the policy editor writes.
+    # editor would write - Codex round 2 on PR #14), deleted where they did not. Existence is the recorded kind, not the
+    # data: an empty string value existed and comes back empty (Codex round 3). A record from before the kinds were
+    # recorded has only the data; there, 'absent' and an empty string both mean absent.
     $k = '"HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell"'
     $types = @{ String = 'REG_SZ'; ExpandString = 'REG_EXPAND_SZ'; DWord = 'REG_DWORD'; QWord = 'REG_QWORD' }
     $lines = @()
     foreach ($v in @(@{ Name = 'ExecutionPolicy'; Data = 'RegExecutionPolicyBefore'; Kind = 'RegExecutionPolicyKindBefore'; Default = 'REG_SZ' }, @{ Name = 'EnableScripts'; Data = 'RegEnableScriptsBefore'; Kind = 'RegEnableScriptsKindBefore'; Default = 'REG_DWORD' })) {
         $data = [string]$Facts[$v.Data]; $kind = [string]$Facts[$v.Kind]
-        if (-not $data -or $data -eq 'absent') { $lines += ('reg delete ' + $k + ' /v ' + $v.Name + ' /f'); continue }
+        $existed = $(if ($kind) { $kind -ne 'absent' } else { $data -and $data -ne 'absent' })
+        if (-not $existed) { $lines += ('reg delete ' + $k + ' /v ' + $v.Name + ' /f'); continue }
+        if ($data -eq 'absent') { $data = '' }
         $type = $(if ($kind -and $types.ContainsKey($kind)) { $types[$kind] } elseif (-not $kind -or $kind -eq 'absent') { $v.Default } else { '' })
-        if ($type) { $lines += ('reg add ' + $k + ' /v ' + $v.Name + ' /t ' + $type + ' /d ' + $data + ' /f') }
-        else { $lines += ('(' + $v.Name + ' was a ' + $kind + ' value with data ' + $data + ' - put it back with regedit; reg add cannot write that kind from this record)') }
+        if ($type) { $lines += ('reg add ' + $k + ' /v ' + $v.Name + ' /t ' + $type + ' /d "' + $data + '" /f') }
+        else { $lines += ('(' + $v.Name + ' was a ' + $kind + ' value with data "' + $data + '" - put it back with regedit; reg add cannot write that kind from this record)') }
     }
     return $lines
 }
@@ -671,13 +680,14 @@ function Get-Plan {
                $seen = Read-Answer $Ctx.Id 'windows-showed' @('What did Windows show? 1 = Open File - Security Warning, 2 = SmartScreen (Windows protected your PC), 3 = nothing, the tool ran, 4 = something else', 'Windows 顯示了什麼？1 = 開啟檔案－安全性警告，2 = SmartScreen（Windows 已保護您的電腦），3 = 沒有，工具直接跑了，4 = 其他') @('1', '2', '3', '4') '4'
                if ($seen -eq '4') { $seen = '4: ' + (Read-Answer $Ctx.Id 'windows-showed-other' @('Describe what Windows showed.', '請描述 Windows 顯示了什麼。') @() 'not described') }
                $null = Read-Answer $Ctx.Id 'run-finished' @('If a prompt is still waiting, choose what lets the tool run. When the tool window has closed, answer done.', '若提示還在等，選擇讓工具執行的選項。工具視窗關閉後輸入 done。') @('done') 'done'
-               $launcher = @(Get-ChildItem -LiteralPath $M2Dir -Recurse -File -Filter 'Start-English.cmd' -ErrorAction SilentlyContinue)[0]
-               $json = @(Get-ReportsUnder $M2Dir 'en-US' $Ctx.Started)[0]
+               $launcher = Get-ExtractedLauncher $M2Dir 'Start-English.cmd'
+               $pkgRoot = $(if ($null -ne $launcher) { $launcher.DirectoryName } else { $M2Dir })   # the tree the precondition validated (one launcher, so one tree)
+               $json = @(Get-ReportsUnder $pkgRoot 'en-US' $Ctx.Started)[0]
                $bad = @()
                if ($null -eq $launcher) { $bad += ('Start-English.cmd not found under ' + $M2Dir) }
                if ($null -eq $json) {
-                   $elsewhere = @(Get-ReportsElsewhere $M2Dir 'en-US' $Ctx.Started)
-                   $bad += ('no en-US report written after the double-click' + $(if ($elsewhere.Count) { ' - report(s) found elsewhere, so the launcher run was not the one under ' + $M2Dir + ': ' + ($elsewhere -join ', ') } else { '' }))
+                   $elsewhere = @(Get-ReportsElsewhere $pkgRoot 'en-US' $Ctx.Started)
+                   $bad += ('no en-US report under ' + $pkgRoot + ' after the double-click' + $(if ($elsewhere.Count) { ' - report(s) found elsewhere, so the launcher run was not the one under ' + $pkgRoot + ': ' + ($elsewhere -join ', ') } else { '' }))
                } else { Copy-Item -LiteralPath $json.FullName -Destination $Ctx.Dir -Force }
                $launcherMark = $(if ($null -ne $launcher) { Get-ZoneId $launcher.FullName } else { 'n/a' })
                if (-not (Test-InternetMark $mark)) { $bad += ('the download carried no Internet-zone Mark of the Web at the time of the run (' + $mark + '): nothing about the warning was measured') }   # the moment that matters, whatever the prerequisite saw earlier
@@ -705,9 +715,11 @@ function Get-Plan {
                # the launchers then did through the warnings (PR #11 round 10).
                if ($mark -ne 'no mark') { $bad += ('the ZIP still carries the Mark of the Web (' + $mark + '): the Unblock did not happen') }
                $names = @()
+               $rootLauncher = Get-ExtractedLauncher $M3Dir 'Start-English.cmd'
+               $pkgRoot = $(if ($null -ne $rootLauncher) { $rootLauncher.DirectoryName } else { $M3Dir })   # the tree the precondition validated (one launcher, so one tree)
                foreach ($lang in @('en-US', 'zh-TW')) {
-                   $json = @(Get-ReportsUnder $M3Dir $lang $Ctx.Started)[0]
-                   if ($null -eq $json) { $elsewhere = @(Get-ReportsElsewhere $M3Dir $lang $Ctx.Started); $bad += ('no ' + $lang + ' report under ' + $M3Dir + $(if ($elsewhere.Count) { ' - found elsewhere, so the launchers were not run from there: ' + ($elsewhere -join ', ') } else { '' })); continue }
+                   $json = @(Get-ReportsUnder $pkgRoot $lang $Ctx.Started)[0]
+                   if ($null -eq $json) { $elsewhere = @(Get-ReportsElsewhere $pkgRoot $lang $Ctx.Started); $bad += ('no ' + $lang + ' report under ' + $pkgRoot + $(if ($elsewhere.Count) { ' - found elsewhere, so the launchers were not run from there: ' + ($elsewhere -join ', ') } else { '' })); continue }
                    Copy-Item -LiteralPath $json.FullName -Destination $Ctx.Dir -Force
                    $names += $json.Name
                    $d = Read-Json $json.FullName
