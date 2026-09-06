@@ -190,9 +190,6 @@ Write-Output ''
 Write-Output '11. RECOVER.txt and undo-M7.cmd are written at the start of a campaign, before any policy is applied'
 $recover = Get-Content -LiteralPath (Join-Path $r1.State 'RECOVER.txt') -Raw -Encoding UTF8
 Assert-True '11. RECOVER.txt names the M7 undo, the M8 gpedit path, the M9 secpol path and the resume command' (($recover -match 'reg delete "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" /v __PSLockdownPolicy /f') -and ($recover -match 'gpedit\.msc') -and ($recover -match 'secpol\.msc') -and ($recover -match 'Invoke-AcceptanceCampaign\.ps1.*-Resume')) (($recover -split "`n" | Select-Object -First 6) -join ' / ')
-# M9's way back needs the service's registry value as well: sc config is refused once the Script rules are gone
-# (measured on the Windows 10 Pro VM, 2026-09-06), and without this line the machine keeps a startup type it did not have.
-Assert-True '11. RECOVER.txt names the registry value for AppIDSvc, for the case where sc config is refused' (($recover -match 'sc config AppIDSvc start=') -and ($recover -match 'Access is denied') -and ($recover -match 'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\AppIDSvc" /v Start /t REG_DWORD /d')) (($recover -split "`n" | Where-Object { $_ -match 'AppIDSvc' }) -join ' / ')
 $undo = Get-Content -LiteralPath (Join-Path $r1.State 'undo-M7.cmd') -Raw
 Assert-True '11. undo-M7.cmd is a plain cmd file with the reg delete and no PowerShell invocation' (($undo -match '^@echo off') -and ($undo -match 'reg delete "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" /v __PSLockdownPolicy /f') -and ($undo -notmatch '(?im)^\s*(powershell|pwsh)\b') -and ($undo -notmatch '-ExecutionPolicy|-Command ')) ($undo -replace "`r?`n", ' / ')
 
@@ -541,7 +538,7 @@ Assert-True '30. exit code 1' ($r30.ExitCode -eq 1) ('exit code ' + $r30.ExitCod
 
 # -------------------- 31. the edition decides how the policy scenarios are done --------------------
 Write-Output ''
-Write-Output '31. the summary names the edition; on a crafted Pro state and on a crafted Home state M9 is skipped before anyone is asked - neither edition enforces AppLocker, so the scenario cannot succeed there - and M8 names the registry lines as the way for this machine, recorded in its facts and in RECOVER.txt - whatever the edition of the host running the self-test (Codex round 2 on PR #14; Pro added after the campaign on the Windows 10 Pro VM, 2026-09-06)'
+Write-Output '31. the summary names the edition; on a crafted Home state M9 is skipped before anyone is asked while on a crafted Pro state it reaches the gate - since Windows 10 2004 with KB 5024351 the edition no longer decides enforcement - and M8 names the registry lines as the way for this machine, recorded in its facts and in RECOVER.txt - whatever the edition of the host running the self-test (Codex round 2 on PR #14; the Pro reading corrected in Codex round 1 on PR #16)'
 $r31 = Invoke-Campaign 'edition' @('-Zip', $zip, '-Scenarios', 'M9') "M9=skip`r`n"
 $summary31 = Get-Content -LiteralPath (Join-Path $r31.State 'campaign_summary.md') -Raw -Encoding UTF8
 Assert-True '31. the summary header names the edition and the consoles' ($summary31 -match '(?m)^- Edition: .+ \(EditionID \w+, .*build \d+\.\d+\); gpedit\.msc: (yes|no); secpol\.msc: (yes|no)\r?$') (($summary31 -split "`n" | Where-Object { $_ -like '- Edition:*' }) -join ' / ')
@@ -565,11 +562,16 @@ $gatesBefore31 = Get-M9GateCount $r31.State
 $r31a = Invoke-Campaign 'edition' @('-Resume', '-Redo', 'M9', '-Scenarios', 'M9') "M9=skip`r`n"
 $s31a = Read-State $r31.State
 $gates31 = Get-M9GateCount $r31.State
-Assert-True '31. on Pro, M9 is skipped before anyone is asked: the rules can be configured, nothing enforces them' ($s31a.Scenarios.M9.Result -eq 'SKIPPED' -and $s31a.Scenarios.M9.Detail -like 'prerequisite not met: AppLocker rules can be configured on this edition but nothing enforces them at run time (Microsoft Windows 11 Pro, EditionID Professional)*' -and $gates31 -eq $gatesBefore31) ($s31a.Scenarios.M9.Result + ' / ' + $s31a.Scenarios.M9.Detail + ' / gates ' + $gatesBefore31 + ' -> ' + $gates31)
+Assert-True '31. on Pro, M9 reaches the gate: since Windows 10 2004 with KB 5024351 the edition does not decide enforcement' ($s31a.Scenarios.M9.Result -eq 'SKIPPED' -and $s31a.Scenarios.M9.Detail -eq 'skipped by the user' -and (($r31a.Output -join ' ') -match 'prerequisite met - Microsoft Windows 11 Pro \(EditionID Professional\)') -and $gates31 -eq ($gatesBefore31 + 1)) ($s31a.Scenarios.M9.Result + ' / ' + $s31a.Scenarios.M9.Detail + ' / gates ' + $gatesBefore31 + ' -> ' + $gates31)
 Set-CraftedEdition $stateFile31 $true 'Core' 'Microsoft Windows 11 Home' $false
 $r31b = Invoke-Campaign 'edition' @('-Resume', '-Redo', 'M9', '-Scenarios', 'M9') "M9=done`r`n"
 $s31b = Read-State $r31.State
 Assert-True '31. on Home, M9 is skipped before anyone is asked, with the edition named' ($s31b.Scenarios.M9.Result -eq 'SKIPPED' -and $s31b.Scenarios.M9.Detail -like 'prerequisite not met: AppLocker is not available on this edition (Microsoft Windows 11 Home, EditionID Core)*' -and (Get-M9GateCount $r31.State) -eq $gates31) ($s31b.Scenarios.M9.Result + ' / ' + $s31b.Scenarios.M9.Detail)
+# M9's service facts are crafted rather than measured, so that the way-back lines below do not depend on the
+# Application Identity service of whatever host runs the self-test; every invocation rewrites RECOVER.txt from the state.
+$crafted31 = Get-Content -LiteralPath $stateFile31 -Raw -Encoding UTF8 | ConvertFrom-Json
+$crafted31.Scenarios.M9.Facts = [pscustomobject]@{ AppIDSvcStartType = 'Manual'; AppIDSvcStatus = 'Stopped' }
+[IO.File]::WriteAllText($stateFile31, ($crafted31 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
 $r31c = Invoke-Campaign 'edition' @('-Resume', '-Scenarios', 'M8') "M8=skip`r`n"
 $out31c = $r31c.Output -join "`n"
 Assert-True '31. on Home, M8 names the registry lines as the way for this machine' (($out31c -match 'This machine: Microsoft Windows 11 Home \(EditionID Core\) - no gpedit\.msc: take the registry lines') -and ($out31c -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_SZ /d AllSigned /f')) (($r31c.Output | Where-Object { $_ -match 'This machine|reg add' }) -join ' / ')
@@ -577,6 +579,14 @@ $s31c = Read-State $r31.State
 Assert-True '31. M8 recorded how the policy is applied here' ([string]$s31c.Scenarios.M8.Facts.PolicyWay -eq 'registry' -and [string]$s31c.Scenarios.M8.Facts.Edition -eq 'Microsoft Windows 11 Home / Core') ('facts: ' + ($s31c.Scenarios.M8.Facts | ConvertTo-Json -Compress))
 $recover31 = $(if (Test-Path -LiteralPath (Join-Path $r31.State 'RECOVER.txt')) { Get-Content -LiteralPath (Join-Path $r31.State 'RECOVER.txt') -Raw } else { '' })
 Assert-True '31. RECOVER.txt carries the way back without gpedit as well' ($recover31 -match 'reg delete "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /f') ('RECOVER.txt length ' + $recover31.Length)
+# M9's way back: the recorded startup type as a command that runs as written. A note after the command on the same
+# line is not a comment to sc.exe or reg.exe, it is more arguments, and this file exists to be copied from (Codex
+# round 1 on PR #16). The registry line is there because sc config is refused once the Script rules are gone.
+$recoverLines31 = @(Get-Content -LiteralPath (Join-Path $r31.State 'RECOVER.txt'))
+$scLine31 = @($recoverLines31 | Where-Object { $_ -match '^\s*sc config AppIDSvc start= demand\s*$' })
+$stopLine31 = @($recoverLines31 | Where-Object { $_ -match '^\s*net stop AppIDSvc\s*$' })
+$regLine31 = @($recoverLines31 | Where-Object { $_ -match '^\s*reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\AppIDSvc" /v Start /t REG_DWORD /d 3 /f\s*$' })
+Assert-True '31. RECOVER.txt gives M9 its recorded service commands, one per line and runnable as written' ($scLine31.Count -eq 1 -and $stopLine31.Count -eq 1 -and $regLine31.Count -eq 1 -and ($recover31 -match 'Access is denied')) (($recoverLines31 | Where-Object { $_ -match 'AppIDSvc' }) -join ' | ')
 
 # -------------------- 32. the standard-user session gets a file to run --------------------
 Write-Output ''
