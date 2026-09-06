@@ -348,8 +348,9 @@ function Get-ReportsUnder([string]$Root, [string]$Lang, [datetime]$After) {
 
 function Get-EditionFacts {
     # What decides how a policy scenario is done on this machine: the edition - Home has no Group Policy editor and no
-    # AppLocker, Pro holds AppLocker rules without enforcing them - and whether the two consoles exist (the first campaign
-    # ran on Windows 11 Home, 2026-09-05). Recorded in the state once; the summary names it.
+    # AppLocker - the build, and whether the two consoles exist (the first campaign ran on Windows 11 Home, 2026-09-05).
+    # The build matters because AppLocker enforcement stopped depending on the edition in Windows 10 2004 with
+    # KB 5024351; M9's prerequisite is where that rule lives. Recorded in the state once; the summary names it.
     $p = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue
     $caption = ''
     try { $caption = [string](Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).Caption } catch { $caption = [string]$p.ProductName }
@@ -856,13 +857,12 @@ function Get-Plan {
         @{ Id = 'M9'; Title = 'AppLocker script rules enforced'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('secpol.msc > Application Control Policies > AppLocker > Script Rules > right-click > Create Default Rules, then DELETE the default rule that allows BUILTIN\Administrators all scripts - your account is an administrator, and with that rule in place it is exempt and the test measures nothing; AppLocker > Configure rule enforcement > Script rules: Configured, Enforce rules. Then in an ELEVATED command prompt:   sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force   - then answer done. The driver checks that the rules really restrict this account before it runs anything.',
                            'secpol.msc > 應用程式控制原則 > AppLocker > 指令碼規則 > 右鍵 > 建立預設規則，然後「刪除」允許 BUILTIN\Administrators 執行所有指令碼的那條預設規則——你的帳號是管理員，留著它就被豁免、什麼都量不到；AppLocker > 設定規則強制執行 > 指令碼規則：已設定、強制執行規則。再在「以系統管理員身分執行」的命令提示字元執行：sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force，然後輸入 done。driver 執行前會確認規則真的限制了這個帳號。') + $recoverLines
-           # Checked before the person is asked to act: Home has no AppLocker at all. Every other edition is allowed
-           # through, because the edition rule this scenario's title still names is history - "as of KB 5024351,
-           # Windows 10 versions 2004 and newer and all Windows 11 versions no longer require a specific edition of
-           # Windows to enforce AppLocker policies" (Microsoft, "Requirements to use AppLocker"). Only on a build older
-           # than 2004 does the edition still decide, and the branch below says which editions this code admits there -
-           # the wording of that sentence in the documentation and the wording of the branch differ, deliberately.
-           # The scenario's title no longer names an edition at all.
+           # Checked before the person is asked to act: Home has no AppLocker at all. On every other edition the build
+           # decides, not the edition - "as of KB 5024351, Windows 10 versions 2004 and newer and all Windows 11
+           # versions no longer require a specific edition of Windows to enforce AppLocker policies" (Microsoft,
+           # "Requirements to use AppLocker"). Only below that build does the edition still decide, and the branch
+           # further down says which editions this code admits there; the wording of that sentence in the documentation
+           # and the wording of the branch differ, deliberately, for the reason given with it.
            # The Windows 10 Pro VM of campaign win10-zhTW (22H2, build 19045.3803, 2026-09-06) nevertheless did not
            # enforce: Script rules Enabled, two rules, AppIDSvc running, Test-AppLockerPolicy answering DeniedByDefault
            # for the account, and the launcher ran the script and wrote a report. That is one machine disagreeing with
