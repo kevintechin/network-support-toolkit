@@ -12,7 +12,7 @@ Network Health Check looks at the network from this computer's point of view and
 
 **It changes nothing.** The tool reads network information and runs connection tests — a few pings, a name lookup, a TCP connection and one HTTPS request. It does not modify your IP address, DNS, routes, firewall, proxy or adapter settings, and it installs nothing. Administrator rights are normally not required.
 
-**It sends nothing.** The report stays on this computer until you send it yourself.
+**It uploads nothing.** The tests reach the addresses listed in section 9 and nothing else; the report stays on this computer until you send it yourself.
 
 **How long it takes.** About ten seconds on a working network. When things do not answer it takes longer — up to a minute or so — because every test waits for its time limit before giving up.
 
