@@ -2,7 +2,7 @@
 
 **For the person who runs the check.** One double-click, a window that runs by itself, and a report you send to IT.
 
-This manual covers the English package (the `en-US` folder). The Traditional Chinese package in the `zh-TW` folder is the same tool with its own copy of this manual. IT staff will find the configuration notes in `README_en-US.txt` and the design, decision rules and validation record in the technical guide.
+This manual covers the English package (the `en-US` folder). The Traditional Chinese package in the `zh-TW` folder is the same tool with its own copy of this manual. IT staff have the IT deployment manual beside this file (`NetworkHealthCheck_IT_Deployment_Manual_en-US.html`) and the design, decision rules and validation record in the technical guide.
 
 ---
 
@@ -165,7 +165,7 @@ A Startup Notice row is a warning, so on its own it turns the verdict to **Atten
 | `en-US\NetworkHealthCheck.ps1` | The program. Do not edit it |
 | `en-US\NetworkHealthCheck.config.json` | The settings — company standards, test targets, thresholds. IT edits it; you do not |
 | `en-US\NetworkHealthCheck_User_Manual_en-US.md`, `.html` | This manual, as text and as a web page |
-| `en-US\README_en-US.txt` | Configuration notes for IT |
+| `en-US\NetworkHealthCheck_IT_Deployment_Manual_en-US.md`, `.html` | The IT deployment manual — configuration, deployment, verification, security policy — for IT |
 | `en-US\NetworkHealthCheck_Technical_Guide_*.md`, `docs\` | The technical guide, in both languages: design, decision rules, limitations |
 | `en-US\Reports\` | Created when the tool first starts; holds the reports |
 | `README_BILINGUAL.md` | The package's front page, in both languages |

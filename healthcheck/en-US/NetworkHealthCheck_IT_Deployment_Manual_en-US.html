@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Network Health Check 1.2.4 — IT Deployment Manual</title>
+<style>
+  :root{
+    --ink:#16233b; --muted:#5b6b85; --line:#d8e0ec; --bg:#f4f7fb; --card:#ffffff;
+    --blue:#1d4ed8; --blue-soft:#e8effd; --green:#0f7b52; --green-soft:#e6f5ee;
+    --red:#b3372e; --red-soft:#faeae8; --amber:#9a6700; --amber-soft:#fcf3e1;
+    --mono:Consolas,"Cascadia Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);color:var(--ink);line-height:1.55;padding:2.2rem 1.4rem}
+  .page{max-width:1060px;margin:0 auto}
+  code{font-family:var(--mono);background:#eef2f8;border:1px solid var(--line);
+    border-radius:4px;padding:.08rem .35rem;font-size:.86em;white-space:nowrap}
+  pre{font-family:var(--mono);font-size:.86rem;background:#eef2f8;border:1px solid var(--line);
+    border-radius:6px;padding:.6rem .8rem;overflow-x:auto;margin-top:.5rem}
+  pre code{background:none;border:none;padding:0;white-space:pre;font-size:inherit}
+  a{color:var(--blue)}
+  b{font-weight:600}
+
+  header{margin-bottom:1.4rem}
+  header h1{font-size:1.7rem;letter-spacing:-.01em}
+  header h1 .ver{color:var(--muted);font-weight:500}
+  header .tag{color:var(--muted);font-size:1.02rem;margin-top:.2rem}
+  header .meta{color:var(--muted);font-size:.82rem;margin-top:.45rem}
+  .principle{display:flex;gap:.7rem;flex-wrap:wrap;margin:1.1rem 0 .4rem}
+  .principle span{background:var(--blue-soft);color:var(--blue);border:1px solid #c4d5fb;
+    border-radius:999px;padding:.35rem .9rem;font-weight:600;font-size:.9rem}
+
+  nav.toc{font-size:.88rem;color:var(--muted);margin:0 0 1.6rem;display:flex;flex-wrap:wrap;gap:.3rem 1.1rem}
+  nav.toc a{text-decoration:none;color:var(--blue)}
+
+  section{margin-bottom:1.5rem}
+  h2{font-size:1.12rem;margin-bottom:.7rem;display:flex;align-items:baseline;gap:.55rem;flex-wrap:wrap}
+  h2 .num{color:var(--blue);font-weight:700}
+  h3{font-size:.98rem;margin:1rem 0 .45rem}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:1rem 1.15rem;box-shadow:0 1px 2px rgba(22,35,59,.05)}
+  .card p{font-size:.92rem}
+  .card p + p{margin-top:.55rem}
+  .card > h3:first-child{margin-top:0}
+  .card pre + p, .card table + p{margin-top:.7rem}
+
+  ol.steps{font-size:.92rem;margin:.3rem 0 0 1.3rem}
+  ol.steps li{margin-bottom:.5rem}
+  ul.plain{font-size:.92rem;margin:.3rem 0 0 1.2rem}
+  ul.plain li{margin-bottom:.45rem}
+
+  table{width:100%;border-collapse:collapse;font-size:.9rem;margin-top:.5rem}
+  th,td{text-align:left;padding:.5rem .65rem;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+  tr:last-child td{border-bottom:none}
+  td:first-child{font-weight:600}
+  table.plainfirst td:first-child{font-weight:400}
+
+  .flag{background:var(--amber-soft);border:1px solid #eddcb4;border-radius:8px;
+    padding:.6rem .8rem;font-size:.9rem;margin-top:.8rem}
+  .flag b{color:var(--amber)}
+  .note{font-size:.84rem;color:var(--muted);margin-top:.6rem}
+
+  .badge{display:inline-block;border-radius:999px;padding:2px 9px;font-weight:700;white-space:nowrap;font-size:.84em}
+  .badge.pass{background:#c6f6d5;color:#22543d}
+  .badge.warn{background:#feebc8;color:#7b341e}
+  .badge.fail{background:#fed7d7;color:#822727}
+  .badge.info{background:#bee3f8;color:#2a4365}
+  .badge.error{background:#e9d8fd;color:#553c9a}
+  .verdict{display:inline-block;border-left:5px solid;padding:.05rem .5rem;font-weight:700;white-space:nowrap}
+  .verdict.pass{border-color:#14804a}
+  .verdict.warn{border-color:#b7791f}
+  .verdict.fail{border-color:#c53030}
+  .verdict.error{border-color:#805ad5}
+
+  kbd{font-family:inherit;font-weight:600;background:#f2f5fa;border:1px solid var(--line);border-bottom-width:2px;
+    border-radius:5px;padding:.02rem .4rem;font-size:.9em;white-space:nowrap}
+
+  footer{color:var(--muted);font-size:.8rem;border-top:1px solid var(--line);padding-top:.8rem;margin-top:1rem}
+
+  @media (max-width:760px){
+    body{padding:1.2rem .8rem}
+    table{display:block;overflow-x:auto}
+  }
+  @media print{
+    body{background:#fff;padding:0;font-size:11px}
+    .card{box-shadow:none}
+    section{break-inside:avoid}
+    nav.toc{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <h1>Network Health Check <span class="ver">1.2.4</span></h1>
+  <div class="tag">IT Deployment Manual — for the IT department that hands the tool out</div>
+  <div class="meta">English package (the <code>en-US</code> folder) · the <code>zh-TW</code> folder holds the Traditional Chinese package with its own copy of this manual and its own configuration file · the person who runs the check has the user manual beside this file; the design and the decision rules are in the technical guide</div>
+  <div class="principle">
+    <span>A folder, not an installer</span>
+    <span>Configure, do not edit</span>
+    <span>Decide the report rule first</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <a href="#s1">1 · What you are deploying</a>
+  <a href="#s2">2 · Before you hand it out</a>
+  <a href="#s3">3 · The configuration file</a>
+  <a href="#s4">4 · Run options</a>
+  <a href="#s5">5 · Deploying</a>
+  <a href="#s6">6 · Verifying the package</a>
+  <a href="#s7">7 · The reports</a>
+  <a href="#s8">8 · Security policy</a>
+  <a href="#s9">9 · The files</a>
+  <a href="#s10">10 · Related documents</a>
+</nav>
+
+<section id="s1">
+  <h2><span class="num">1</span> What you are deploying</h2>
+  <div class="card">
+    <p><b>A folder, not an installer.</b> Network Health Check is a Windows PowerShell script with a batch launcher, a JSON configuration file and its documents. It installs no service, driver or packet-capture component and registers nothing; what it writes is its reports (section 3.1) and, when a run cannot start or finish, an error file beside the program or in the user's temporary folder (sections 3.6 and 8). It is read-only with respect to the system: it does not change IP, DNS, routes, firewall, proxy or adapter settings. Its active behaviour is a few pings, a name lookup, TCP connections and HTTP/HTTPS GET requests to the targets in the configuration file.</p>
+    <p><b>What a machine needs.</b></p>
+    <table class="plainfirst">
+      <tr><th>Requirement</th><th>Detail</th></tr>
+      <tr><td>Windows 10 or Windows 11 (or a compatible Windows Server)</td><td>Another platform, or a PowerShell older than 5, gets a <span class="badge fail">Fail</span> row after the configuration rows, and the run stops there</td></tr>
+      <tr><td>Windows PowerShell 5.1</td><td>Part of Windows. The launchers start <code>%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe</code>; when that file is missing they look for <code>pwsh.exe</code> (PowerShell 7) on the PATH, and stop with <i>PowerShell was not found on this computer</i> when neither exists</td></tr>
+      <tr><td>.NET Framework with Windows Forms</td><td>Part of Windows; needed for the window only. When the window cannot be created, the tool runs the same checks in text mode by itself and says so in a warning row</td></tr>
+      <tr><td>A standard user account</td><td>Administrator rights are not required. What a standard user cannot read becomes an <span class="badge error">Unable to Check</span> row, and the check continues</td></tr>
+      <tr><td>A folder the user can write to</td><td>The reports go beside the program by default (section 3.1). When that folder is not writable the tool falls back to the user's temporary folder</td></tr>
+    </table>
+    <p><b>Three ways in.</b> Each language folder holds three launchers; the two at the package root open the user entry of their language.</p>
+    <table class="plainfirst">
+      <tr><th>Launcher</th><th>What it starts</th><th>Who uses it</th></tr>
+      <tr><td><code>Start-NetworkCheck.cmd</code> (root: <code>Start-English.cmd</code>)</td><td>The window, which starts the check by itself</td><td>The person with the problem</td></tr>
+      <tr><td><code>Start-NetworkCheck-IT.cmd</code></td><td>The window with a <b>Run options (IT)</b> panel; nothing runs until Start is clicked; the HTML report opens with every detail expanded</td><td>IT at the machine</td></tr>
+      <tr><td><code>Start-NetworkCheck-Console.cmd</code></td><td>Text mode (<code>-ConsoleOnly</code>), pausing at the end with the report paths on screen</td><td>A machine where the window cannot open, or a remote session</td></tr>
+    </table>
+    <p>Every launcher runs PowerShell with <code>-NoProfile -ExecutionPolicy Bypass</code> and its own fixed switches, and forwards nothing typed after the <code>.cmd</code>. Section 4 says how to pass options.</p>
+    <p><b>What it contacts, as shipped.</b> The default gateway of the machine (ping), <code>1.1.1.1</code> (ping, a TCP connection to port 443, and the first three hops of a traceroute toward it), <code>www.microsoft.com</code> (a name lookup through the operating system's resolver and one HTTPS request through the proxy Windows is set to use, following redirects). Section 3.3 says how to replace them. Nothing is uploaded: the reports are files in the report folder.</p>
+  </div>
+</section>
+
+<section id="s2">
+  <h2><span class="num">2</span> Before you hand it out</h2>
+  <div class="card">
+    <ol class="steps">
+      <li><b>Verify what you downloaded</b> (section 6): the ZIP's SHA-256 against the release notes, then the manifest inside the package.</li>
+      <li><b>Decide the test targets</b> (section 3.3). Replace the public addresses with the services your users actually need, and decide whether outbound internet is something the check should require.</li>
+      <li><b>Set the company standards</b> (section 3.2) if you want the report to say whether an address, gateway, DNS server or DHCP mode is <i>right</i>. As shipped, the tool displays the current settings and says that no standard has been defined.</li>
+      <li><b>Calibrate the thresholds</b> (section 3.5) against your own baselines — Wi-Fi, VPN, WAN and data-centre links do not share one set of numbers.</li>
+      <li><b>Decide where the reports go and how they are handled</b> (sections 3.1 and 7). A report carries computer and user names, addresses, the Wi-Fi network, the proxy and the first-hop routers; the user manual (section 5, <i>What the report contains</i>) keeps the inventory. Decide the handling rule before the tool is in anyone's hands.</li>
+      <li><b>Run it once on a representative machine</b> with <code>Start-NetworkCheck-IT.cmd</code>, read the report's first rows (section 5), and keep that report as a baseline. Repeat for each kind of connection you support (wired, Wi-Fi, VPN, restricted internet).</li>
+      <li><b>Configure both language folders</b> if you ship both. <code>en-US\NetworkHealthCheck.config.json</code> and <code>zh-TW\NetworkHealthCheck.config.json</code> are separate files; as shipped they differ only in the display names of the default targets.</li>
+    </ol>
+  </div>
+</section>
+
+<section id="s3">
+  <h2><span class="num">3</span> The configuration file</h2>
+  <div class="card">
+    <p><code>NetworkHealthCheck.config.json</code> sits beside the program. The tool reads it at every start, merges it over its built-in defaults and never writes to it — run options (section 4) change a run, not the file.</p>
+    <p><b>How it is read.</b> A key you leave out keeps its built-in default; a key you set replaces it. Objects merge key by key, so you can give <code>Expected</code> two rules and omit the rest. Lists replace as a whole: a <code>PingTargets</code> list in the file <i>is</i> the list, and the shipped entries you do not repeat are gone. Keys the tool does not know are ignored.</p>
+    <p><b>When it cannot be read.</b> A missing file, or one that is not valid JSON, does not stop the run: the tool uses its built-in defaults, and the report's first row — <b>Configuration File</b> — is <span class="badge error">Unable to Check</span> with the reason (<i>Configuration file not found: …</i> or <i>The configuration file is invalid.</i> with the parser's message). That row alone makes the verdict <span class="verdict error">Test Incomplete</span>, so a broken configuration is visible in every report. A file that parses is then checked value by value (section 3.6).</p>
+    <p><b>JSON rules.</b> Strings in double quotes; a comma between items and none after the last; <code>true</code>, <code>false</code> and <code>null</code> without quotes; no comments. The shipped file is UTF-8 with a byte-order mark and Windows line endings, which Notepad preserves; the tool reads the file with or without the mark and with either line ending, but the release validator (section 6) expects the shipped form.</p>
+    <p><b>Testing a change without replacing the file.</b> The script accepts <code>-ConfigPath &lt;file&gt;</code>, so a candidate configuration can be tried from a console before it goes into the folder:</p>
+<pre>powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -ConsoleOnly -ConfigPath C:\Temp\candidate.config.json</pre>
+    <p>The report's <i>Configuration File</i> row names the file that was loaded, and the <i>Computer and Run Information</i> section repeats it.</p>
+
+    <h3>3.1 · Identity and the report folder</h3>
+    <table>
+      <tr><th>Key</th><th>Default</th><th>What it does</th></tr>
+      <tr><td><code>OrganizationName</code></td><td><code>""</code></td><td>Printed in the HTML report's header; an empty value prints <i>Organization Not Specified</i>. The text and JSON reports do not carry it</td></tr>
+      <tr><td><code>ReportFolderName</code></td><td><code>"Reports"</code></td><td>A relative name is created beside the program (<code>en-US\Reports</code>); a rooted path — a drive letter or a UNC path — is taken as given. The folder is created when missing. When it cannot be written, the reports go to <code>%TEMP%\NetworkHealthCheck\Reports</code> and the report carries a <b>Startup Notice</b> warning row saying so, which on its own turns the verdict to Attention Required</td></tr>
+    </table>
+    <p>Each run writes three files, <code>NetworkHealthCheck_&lt;yyyyMMdd&gt;_&lt;HHmmss&gt;_&lt;COMPUTERNAME&gt;.html</code>, <code>.txt</code> and <code>.json</code>, UTF-8 with a byte-order mark. Names are unique for one copy of the tool at a time; nothing is deleted, so the folder grows by three files per run until someone clears it.</p>
+    <div class="flag"><b>A rooted <code>ReportFolderName</code> on a share</b> is the one setting that moves reports off the machine without anyone sending them: every report of every user then lands there directly, and the person is told in the report — the <i>Report Directory</i> line — but not asked. Use it deliberately, with the handling rule of section 7 in place, and make sure every user can write to it: a user who cannot gets the temporary-folder fallback instead.</div>
+
+    <h3>3.2 · Company standards (<code>Expected</code>)</h3>
+    <p>As shipped every rule is empty, and the report says so in an Information row: <i>No company standard has been defined in the configuration file. The current settings can be displayed, but compliance cannot be determined.</i> Fill in the rules that describe your site; leave the others empty. The comparison runs as soon as one rule is set.</p>
+<pre>"Expected": {
+  "AllowedIPv4Addresses": [],
+  "AllowedIPv4Cidrs": ["192.168.10.0/24"],
+  "AllowedPrefixLengths": [24],
+  "AllowedDefaultGateways": ["192.168.10.1"],
+  "RequiredDnsServers": ["192.168.10.5"],
+  "DhcpEnabled": true
+}</pre>
+    <table>
+      <tr><th>Rule</th><th>Passes when</th><th>Row when it does not</th></tr>
+      <tr><td><code>AllowedIPv4Addresses</code>, <code>AllowedIPv4Cidrs</code> (one rule)</td><td>Any IPv4 address of a primary adapter equals a listed address or falls inside a listed subnet</td><td><b>IPv4 Address/Subnet</b> — <span class="badge fail">Fail</span></td></tr>
+      <tr><td><code>AllowedPrefixLengths</code></td><td>Any current prefix length of a primary adapter is in the list</td><td><b>Subnet Prefix</b> — <span class="badge fail">Fail</span></td></tr>
+      <tr><td><code>AllowedDefaultGateways</code></td><td>Any current gateway of a primary adapter is in the list</td><td><b>Default Gateway</b> — <span class="badge fail">Fail</span></td></tr>
+      <tr><td><code>RequiredDnsServers</code></td><td><i>Every</i> listed server appears among the DNS servers of the primary adapters (IPv6 addresses are accepted)</td><td><b>DNS Servers</b> — <span class="badge fail">Fail</span>, naming the missing ones</td></tr>
+      <tr><td><code>DhcpEnabled</code> (<code>true</code> / <code>false</code> / <code>null</code>)</td><td>Every primary adapter whose DHCP state is known matches the value; <code>null</code> skips the rule</td><td><b>DHCP Mode</b> — <span class="badge fail">Fail</span>; <span class="badge error">Unable to Check</span> when no adapter reports its DHCP state</td></tr>
+    </table>
+    <p><i>Primary adapters</i> are the connected adapters that have an IPv4 address and a default gateway; when none has a gateway, every connected adapter with an IPv4 address. The values of all primary adapters are pooled before the rules run, so on a machine with a VPN or a second connection one adapter can satisfy a rule that another breaks; the technical guide (section 4.3) discusses the limit. With rules set and no usable adapter at all, the comparison is one Fail row.</p>
+
+    <h3>3.3 · Test targets (<code>Tests</code>)</h3>
+    <p>Four lists and one list of group names. Every target takes a display <code>Name</code> (the row's title) and a <code>Required</code> flag; TCP and HTTP targets may also carry a <code>Group</code>.</p>
+<pre>"Tests": {
+  "PingTargets": [
+    { "Name": "Default Gateway", "Address": "AUTO_GATEWAY", "Required": true },
+    { "Name": "File server", "Address": "10.0.0.20", "Required": false }
+  ],
+  "DnsNames": [
+    { "Name": "DNS Name Resolution", "Host": "intranet.company.local", "Required": true }
+  ],
+  "TcpTargets": [
+    { "Name": "ERP System", "Host": "erp.company.local", "Port": 443, "Required": true, "Group": "Company" }
+  ],
+  "HttpTargets": [
+    { "Name": "Company portal", "Url": "https://portal.company.local/", "Required": false, "Group": "Company" }
+  ],
+  "RequiredConnectivityGroups": ["Company"]
+}</pre>
+    <table>
+      <tr><th>List</th><th>Fields</th><th><code>Required</code> when omitted</th><th>Notes</th></tr>
+      <tr><td><code>PingTargets</code></td><td><code>Name</code>, <code>Address</code>, <code>Required</code></td><td><code>false</code></td><td><code>AUTO_GATEWAY</code> stands for the IPv4 default gateways of the primary adapters, <code>AUTO_DNS</code> for their DNS servers — one row per address they resolve to. When a placeholder resolves to nothing, the row is Fail if required, Warning otherwise</td></tr>
+      <tr><td><code>DnsNames</code></td><td><code>Name</code>, <code>Host</code>, <code>Required</code></td><td><b><code>true</code></b></td><td>A bare string in the list is accepted and treated as required. The lookup goes through the operating system's resolver; it does not query each configured server</td></tr>
+      <tr><td><code>TcpTargets</code></td><td><code>Name</code>, <code>Host</code>, <code>Port</code>, <code>Required</code>, <code>Group</code></td><td><code>false</code></td><td>A TCP connection to the port, closed once it is established; the tool sends no data on it</td></tr>
+      <tr><td><code>HttpTargets</code></td><td><code>Name</code>, <code>Url</code>, <code>Required</code>, <code>Group</code></td><td><code>false</code></td><td>One GET through the system proxy, TLS 1.2 offered, redirects followed; a 4xx or 5xx answer still counts as reachable and keeps its status code. Use side-effect-free URLs: the target's logs will show the request</td></tr>
+      <tr><td><code>RequiredConnectivityGroups</code></td><td>names</td><td>—</td><td>The groups the verdict depends on</td></tr>
+    </table>
+    <p><b>What a failed target does to the verdict.</b> The rule is the same one the run options use (section 4), and the reader of the report needs to know it:</p>
+    <table class="plainfirst">
+      <tr><th>Target</th><th>Required</th><th>Optional</th></tr>
+      <tr><td>Ping, no reply at all</td><td><span class="badge fail">Fail</span></td><td><span class="badge info">Information</span> (ICMP may simply be blocked)</td></tr>
+      <tr><td>Ping, replies but loss or latency over a threshold</td><td><span class="badge fail">Fail</span> at the critical threshold, <span class="badge warn">Warning</span> at the warning threshold</td><td><span class="badge warn">Warning</span></td></tr>
+      <tr><td>DNS name that does not resolve</td><td><span class="badge fail">Fail</span></td><td><span class="badge warn">Warning</span></td></tr>
+      <tr><td>TCP or HTTP target that cannot connect</td><td><span class="badge fail">Fail</span></td><td><span class="badge info">Information</span></td></tr>
+    </table>
+    <p>An Information row never moves the verdict, so an optional TCP or HTTP target can fail in a report that reads <span class="verdict pass">Overall Healthy</span> with <i>Everything passed</i> above it; the user manual tells the person to read those rows. Groups are how optional targets are made to count together: a group's row passes when <b>at least one</b> member succeeded, and when every member failed it is Fail for a group named in <code>RequiredConnectivityGroups</code> and Warning for any other group. A required group with no member at all — the name is listed but no target carries it — is an <i>Unable to Check</i> row (<i>This group has no executable test items.</i>), which on its own makes the verdict Test Incomplete.</p>
+    <p><b>Timeouts and counts</b> (whole numbers; a decimal, a word or a value of zero or less is reported in the <i>Configuration Thresholds</i> row and replaced):</p>
+    <table>
+      <tr><th>Key</th><th>Default</th><th>Floor</th><th>Notes</th></tr>
+      <tr><td><code>PingCount</code></td><td>4</td><td>1</td><td>Echo requests per ping target. With four probes and the shipped 20 % critical-loss threshold, one lost reply is 25 % and severe; raise the count or the threshold if that is too sensitive</td></tr>
+      <tr><td><code>PingTimeoutMs</code></td><td>1200</td><td>250</td><td>Per echo request</td></tr>
+      <tr><td><code>DnsTimeoutMs</code></td><td>4000</td><td>500</td><td>Per name</td></tr>
+      <tr><td><code>TcpTimeoutMs</code></td><td>4000</td><td>500</td><td>Per connection</td></tr>
+      <tr><td><code>HttpTimeoutMs</code></td><td>6000</td><td>500</td><td>Per request, connect and read alike</td></tr>
+      <tr><td><code>RetransmissionSampleSeconds</code></td><td>8</td><td>1</td><td>The TCP counters are sampled at the start and again once this many seconds have passed, so this is the run's minimum length; the tests run inside the window and, when targets do not answer, their timeouts add up on top of it</td></tr>
+    </table>
+    <div class="flag"><b>A site without outbound internet.</b> Remove the public ping, TCP and HTTP targets, replace the <code>Internet</code> group with your internal services — or remove <code>Internet</code> from <code>RequiredConnectivityGroups</code>, otherwise the group row is <i>Unable to Check</i> for want of members — and set <code>Checks.Traceroute</code> to <code>false</code>: the traceroute probes toward the first ping target that is not a placeholder, and when there is none it probes toward <code>1.1.1.1</code> regardless.</div>
+
+    <h3>3.4 · Optional checks (<code>Checks</code>)</h3>
+    <p>The IT diagnostics — Information rows for IT in the collapsed section at the bottom of the report, never counted in the verdict — can each be switched off, here or for one run in the IT panel.</p>
+    <table>
+      <tr><th>Key</th><th>Default</th><th>Collects</th></tr>
+      <tr><td><code>WifiRf</code></td><td><code>true</code></td><td>The wireless interface's SSID, BSSID, band, channel, rates and signal, parsed from <code>netsh wlan show interfaces</code></td></tr>
+      <tr><td><code>RouteTable</code></td><td><code>true</code></td><td>The IPv4 default routes in the order Windows uses them</td></tr>
+      <tr><td><code>GatewayNeighbor</code></td><td><code>true</code></td><td>The gateway's hardware address from the neighbour (ARP) table</td></tr>
+      <tr><td><code>ProxySettings</code></td><td><code>true</code></td><td>The user's proxy settings, the WinHTTP proxy, and which proxy Windows would use for the first HTTP target (<code>https://www.microsoft.com/</code> when there is none) — the resolver is asked, no request is made</td></tr>
+      <tr><td><code>Traceroute</code></td><td><code>true</code></td><td>The first hops toward the first ping target that is not a placeholder, one second per hop</td></tr>
+      <tr><td><code>TracerouteHops</code></td><td>3</td><td>1 to 10; anything else falls back to 3 with a warning. Three hops show where packets stop; they rarely reach a public target</td></tr>
+      <tr><td><code>DriverInfo</code></td><td><code>true</code></td><td>Driver version, date and maker of every connected physical adapter</td></tr>
+    </table>
+    <p>A flag that is not <code>true</code> or <code>false</code> disables that check and is reported.</p>
+
+    <h3>3.5 · Thresholds</h3>
+    <p>The defaults are generic starting points. What the rows do with them, read off the code:</p>
+    <table>
+      <tr><th>Key</th><th>Default</th><th>Rule</th></tr>
+      <tr><td><code>PacketLossWarningPercent</code>, <code>PacketLossCriticalPercent</code></td><td>5, 20</td><td>Per ping target, in this order: no reply at all → Fail if required, Information otherwise; loss ≥ critical → Fail if required, Warning otherwise; loss ≥ warning → Warning; then the latency rules</td></tr>
+      <tr><td><code>LatencyWarningMs</code>, <code>LatencyCriticalMs</code></td><td>100, 250</td><td>On the average of the replies that came back: ≥ critical → Fail if required, Warning otherwise; ≥ warning → Warning</td></tr>
+      <tr><td><code>TcpRetransmissionWarningPercent</code>, <code>TcpRetransmissionCriticalPercent</code></td><td>2, 5</td><td>Retransmitted ÷ sent segments over the sample, computer-wide, for TCPv4 and TCPv6 separately: rate ≥ critical → Fail; rate ≥ warning → Warning</td></tr>
+      <tr><td><code>TcpRetransmissionCriticalCount</code></td><td>50</td><td>Retransmitted segments in the sample: at or above it, Warning — and Fail when the rate is also at or above the warning percentage</td></tr>
+      <tr><td><code>MinimumTcpSegmentsForRate</code></td><td>50</td><td>Below this many sent segments the rate is not judged: any retransmission is a Warning, none is Information. No traffic at all is Information</td></tr>
+      <tr><td><code>AdapterErrorWarningDelta</code>, <code>AdapterErrorCriticalDelta</code></td><td>1, 10</td><td>Receive plus send errors added during the sample, per adapter: ≥ critical → Fail, ≥ warning → Warning. A virtual adapter is Information whatever its counters, and so is a physical one that carried no traffic and no errors during the sample; a counter that went backwards is a Warning</td></tr>
+      <tr><td><code>AdapterDiscardWarningDelta</code>, <code>AdapterDiscardCriticalDelta</code></td><td>1, 100</td><td>The same for discarded packets</td></tr>
+    </table>
+    <p>Percentages and milliseconds may be decimals; the counts and deltas must be whole numbers. A value that is not a number is replaced by its default and reported. A warning level above its critical level is reported and used as written for loss, latency and the retransmission percentages; for the adapter deltas the critical level is silently raised to the warning level, and a warning level below 1 becomes 1.</p>
+
+    <h3>3.6 · What the report says about the configuration</h3>
+    <p>A report begins with the configuration rows — Configuration File, any Startup Notice, then Configuration Validation and Thresholds — so a mistake is visible where the person cannot miss it; the Standard Configuration row sits further down, with the comparison:</p>
+    <table>
+      <tr><th>Row</th><th>Status</th><th>Meaning</th></tr>
+      <tr><td>Configuration File</td><td><span class="badge pass">Pass</span> — <i>Loaded: &lt;path&gt;</i></td><td>The file was read; the path is the one in use</td></tr>
+      <tr><td>Configuration File</td><td><span class="badge error">Unable to Check</span></td><td>Missing or not valid JSON; the built-in defaults ran. Verdict Test Incomplete</td></tr>
+      <tr><td>Configuration Validation</td><td><span class="badge error">Unable to Check</span></td><td>An invalid value: an IPv4 address, subnet, prefix, gateway or DNS server under <code>Expected</code> that does not parse, a <code>DhcpEnabled</code> that is not <code>true</code>, <code>false</code> or <code>null</code>, a TCP target without a host or with a port outside 1–65535, an HTTP target whose URL is not an absolute <code>http</code> or <code>https</code> address, a DNS entry with a blank host. The count and the offending values are in the row's details. The values are not removed: a TCP target with an invalid host or port, or a blank URL, becomes its own <i>Unable to Check</i> row when required and is skipped when optional; a DNS entry with a blank host is skipped; a malformed URL is still attempted and fails like an unreachable one; an invalid value under <code>Expected</code> never matches anything</td></tr>
+      <tr><td>Configuration Validation</td><td><span class="badge pass">Pass</span> — <i>Configuration value format validation passed.</i></td><td>Nothing to report at all. When only the thresholds row below has something to say, this row is absent</td></tr>
+      <tr><td>Configuration Thresholds</td><td><span class="badge warn">Warning</span></td><td>Present only when a count, a timeout, a threshold or a check flag had the wrong type or was out of range, or a warning level sits above its critical level; the details name each one and say what was used instead</td></tr>
+      <tr><td>Standard Configuration</td><td><span class="badge info">Information</span></td><td>No rule under <code>Expected</code>; the comparison rows appear once one is set</td></tr>
+      <tr><td>Startup Notice</td><td><span class="badge warn">Warning</span></td><td>A run-time condition: the report folder fell back to the temporary folder, the tool is running from inside a compressed-folder view, the window could not open and text mode was used, or an extra TCP target from the run options was ignored</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="s4">
+  <h2><span class="num">4</span> Run options — the IT entry and the command line</h2>
+  <div class="card">
+    <p>Run options change one run and never the file. They come from two places.</p>
+    <p><b>The IT panel.</b> <code>Start-NetworkCheck-IT.cmd</code> opens the window with <b>Run options (IT)</b> at the top and waits: <i>Ready - adjust the options, then select Start Test.</i> The fields are <kbd>Extra ping</kbd>, <kbd>Extra DNS</kbd>, <kbd>Extra TCP (host:port)</kbd>, <kbd>Extra URL</kbd>, <kbd>Ping count</kbd> and <kbd>Sample seconds</kbd>; the boxes <kbd>Wi-Fi RF</kbd>, <kbd>Traceroute</kbd> with <kbd>Traceroute hops</kbd>, <kbd>Routes</kbd>, <kbd>Gateway ARP</kbd>, <kbd>Proxy</kbd> and <kbd>Drivers</kbd> switch the optional checks for this run; <kbd>Expand details in HTML</kbd> is ticked; <kbd>Reset to config</kbd> puts every field back to the file's values. The spinners cover 1–20 pings and 1–120 seconds; a configured value above those limits widens the range so the file's value is what an untouched Start runs with.</p>
+    <p><b>The switches.</b> The same options as parameters of the script, for a console run or a scripted one:</p>
+<pre>powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -ConsoleOnly -PingTarget 10.0.0.1 -TcpTarget fileserver:445 -SampleSeconds 20 -ExpandDetails</pre>
+    <table>
+      <tr><th>Switch</th><th>Effect</th></tr>
+      <tr><td><code>-ConsoleOnly</code></td><td>Text mode; the process exits 0 when a report was written, 1 when none could be</td></tr>
+      <tr><td><code>-Interactive</code></td><td>The window with the IT panel, not started automatically (what the IT launcher passes)</td></tr>
+      <tr><td><code>-ExpandDetails</code></td><td>Every <i>Show Details</i> open in the HTML; also marks the run as an IT-entry run</td></tr>
+      <tr><td><code>-PingTarget</code>, <code>-DnsName</code>, <code>-TcpTarget</code> (host:port)</td><td>Extra targets; several values separated by commas, semicolons or spaces, e.g. <code>-PingTarget 10.0.0.1,10.0.0.2</code></td></tr>
+      <tr><td><code>-HttpUrl</code></td><td>Extra URLs; several separated by spaces only, because commas and semicolons are legal inside a URL</td></tr>
+      <tr><td><code>-PingCount</code>, <code>-SampleSeconds</code>, <code>-TracerouteHops</code></td><td>Override the file's values for this run; hops outside 1–10 fall back to 3</td></tr>
+      <tr><td><code>-NoTraceroute</code>, <code>-NoWifi</code></td><td>Skip those two diagnostics</td></tr>
+      <tr><td><code>-ConfigPath &lt;file&gt;</code></td><td>Load another configuration file (section 3)</td></tr>
+      <tr><td><code>-STA</code> (PowerShell's own switch)</td><td>What the window launchers add; not needed for <code>-ConsoleOnly</code></td></tr>
+    </table>
+    <p><b>What an extra target counts for.</b> Extra targets are optional and belong to no group: an extra ping that gets no reply, and an extra TCP or HTTP target that cannot connect, are Information rows and leave the verdict alone; a degraded ping and an extra DNS name that does not resolve are Warning rows. An extra TCP target that is not <code>host:port</code> is dropped with a Startup Notice warning (<i>Ignored extra TCP target '…': expected host:port.</i>). The rows are titled <i>Extra ping</i>, <i>Extra DNS</i>, <i>Extra TCP</i> and <i>Extra URL</i>.</p>
+    <p><b>Where a run's options are recorded.</b> In the report header's <i>Run profile</i> line — <code>IT entry | extra targets: ping 10.0.0.1, tcp fileserver:445 | ping count 4 | sample 20 s | traceroute 3 hops</code>, with <code>disabled: …</code> for switched-off checks — and in the JSON under <code>RunOptions</code>: <code>EntryPoint</code>, <code>ExpandDetails</code>, <code>ExtraTargets</code> (the values accepted), <code>RawTargets</code> (as typed), <code>PingCount</code>, <code>SampleSeconds</code>, <code>TracerouteHops</code>, <code>ChecksEnabled</code>.</p>
+  </div>
+</section>
+
+<section id="s5">
+  <h2><span class="num">5</span> Deploying</h2>
+  <div class="card">
+    <p><b>Ship the whole folder.</b> Every language launcher looks for <code>NetworkHealthCheck.ps1</code> beside itself and stops when it is missing; the script looks for its configuration beside itself and runs on defaults when it is missing. A language folder — <code>en-US</code> or <code>zh-TW</code> — is complete on its own: launchers, program, configuration, this manual, the user manual and the technical guide. The two root launchers (<code>Start-English.cmd</code>, <code>Start-Traditional-Chinese.cmd</code>) only call into a folder of that exact name, so keep the folder names when you ship them, and leave them out when you ship one language.</p>
+    <p><b>Do not rename the program or the configuration file.</b> The launchers and the script find them by name.</p>
+    <p><b>Two ways it arrives, and what the person sees.</b></p>
+    <ul class="plain">
+      <li><i>A ZIP downloaded with a browser</i> carries the Mark of the Web; the files Windows Explorer extracts from it carry the same mark, and a double-click on a launcher shows <b>Open File - Security Warning</b>, after which the tool runs. Unblocking the ZIP before extracting (right-click → <kbd>Properties</kbd> → <kbd>Unblock</kbd>, or <code>Unblock-File</code> in PowerShell) leaves the extracted files without the mark. Both were measured on two virtual machines (the validation record, <code>VALIDATION.md</code>, <i>Acceptance on a second machine</i>).</li>
+      <li><i>A package that arrives without a browser</i> — pushed by a distribution tool, or copied in, as the campaign's copy from its host was — carried no mark on the machines measured, and no prompt appears.</li>
+    </ul>
+    <p>Whichever way it arrives, the person must extract the whole ZIP: a launcher double-clicked inside Explorer's ZIP view finds nothing beside itself and stops (the user manual, sections 2 and 6).</p>
+    <p><b>Where to put it.</b> Any local folder the user can write to — the Desktop or Documents are what the user manual suggests, and where the acceptance runs were made. The folder must stay writable if the reports are to land beside the program; otherwise set <code>ReportFolderName</code> (section 3.1) or expect the temporary-folder fallback.</p>
+    <p><b>Upgrading.</b> Replace the folder with the new version and carry your configuration file over. The file's version does not matter to the tool: a key the new version added takes its default when your file does not have it. Compare the shipped file with yours after an upgrade and run one check (section 3.6) before the new folder goes out. Keep your edited configuration under version control; the package cannot tell your edits from the shipped file except by their hash (section 6).</p>
+    <p><b>The program file.</b> Configure; do not edit the script. An edited script no longer matches the manifest, and the two language versions are checked against each other by the validator (section 6), so a change in one folder alone fails it. If a change is really needed, keep the original, re-run the validator knowing which checks you expect to fail, and record your own digests. The scripts are not digitally signed (section 8, <i>Signing</i>).</p>
+  </div>
+</section>
+
+<section id="s6">
+  <h2><span class="num">6</span> Verifying the package</h2>
+  <div class="card">
+    <p><b>The download.</b> The release notes on the project's Releases page give the SHA-256 of <code>NetworkHealthCheck-&lt;version&gt;.zip</code>. Compare before extracting:</p>
+<pre>certutil -hashfile NetworkHealthCheck-1.2.4.zip SHA256</pre>
+    <p>or in PowerShell <code>Get-FileHash NetworkHealthCheck-1.2.4.zip</code>. The asset is built from the repository's tracked files only, so it contains no report and no other output of a run.</p>
+    <p><b>The manifest.</b> <code>SHA256SUMS.txt</code> at the package root lists the digest of every shipped file except itself, <code>VALIDATION.md</code> and <code>validation-matrix.html</code> — one line per file, <code>&lt;sha256&gt;  &lt;relative path&gt;</code> with two spaces. Check one file by hand with <code>Get-FileHash &lt;file&gt;</code>, or all of them with the validator.</p>
+    <p><b>The validator.</b> <code>tools\validate_release.py</code> needs Python 3 and nothing else. Run it against the package root:</p>
+<pre>python tools\validate_release.py .</pre>
+    <p>It prints one <code>[PASS]</code> or <code>[FAIL]</code> line per check and ends with <code>Summary: N passed, M failed</code>, exit code 1 when anything failed. What it checks: the required files exist; both configuration files parse; the scripts and configurations are UTF-8 with a byte-order mark and Windows line endings; the six language launchers reference the program; the English and Chinese scripts are the same program apart from their text (the same functions, the same executable skeleton); the English files carry no Chinese text; the version string in both scripts and in every document that names one; the packaged validation record has this version's entry; and every manifest line. It runs no network check and does not need Windows.</p>
+    <p><b>After you have edited the configuration</b> the manifest line for that file fails, in the validator and in a hand check, and nothing else changes as long as the file is still valid JSON in the shipped form (section 3). That one failure is the expected signature of a configured package; a failure on any other line means a file was altered or damaged in transit.</p>
+    <p><b>The record.</b> <code>VALIDATION.md</code> is the validation record of every release — what was run, on which machines, what was found and what was deferred — and <code>validation-matrix.html</code> an earlier release's fault-scenario matrix. The validation chain itself, including the acceptance runner for a machine with nothing but Windows PowerShell, is in the repository's <code>tests</code> folder.</p>
+  </div>
+</section>
+
+<section id="s7">
+  <h2><span class="num">7</span> The reports</h2>
+  <div class="card">
+    <p><b>Where they land and what they are named</b> — section 3.1. <b>What they contain</b> — the user manual, section 5, keeps the inventory: identity and versions, every connected adapter's addresses and hardware addresses, the Wi-Fi network and access point, routes, the gateway's hardware address, the proxy settings, your configured standards and targets, every result with its timings, and the paths of the configuration file and the report folder (which can include the user's profile folder). The JSON alone also carries the technical details of any error the tool met, naming the program's folder.</p>
+    <p><b>Decide the handling rule before rollout</b> — where a report may be sent, how long it is kept, who reads it — and tell the person in the same message that sends them the tool; the user manual says only that the person should handle it as the company's rules say. Reports are ordinary files: retention is whatever you apply to the report folder (or to the share, section 3.1).</p>
+    <p><b>For your tools.</b> The JSON report is schema 2: <code>SchemaVersion</code>, <code>ToolVersion</code>, <code>RunOptions</code> (section 4), <code>Fingerprint</code> (<code>Key</code>, <code>Title</code>, <code>Lines</code> — the <i>What to tell IT</i> section), <code>Overall</code> (<code>Code</code>, <code>Text</code>, <code>Description</code>), <code>Counts</code>, <code>System</code>, <code>StartedAt</code>, <code>FinishedAt</code>, and <code>Results</code>, one object per row with <code>Time</code>, <code>Category</code>, <code>Check</code>, <code>Status</code> (<code>PASS</code>, <code>WARN</code>, <code>FAIL</code>, <code>INFO</code>, <code>ERROR</code>), <code>Message</code>, <code>Details</code>, <code>Diagnostics</code>, <code>Tag</code> and <code>Scope</code> (<code>Main</code> or <code>IT</code>). <code>Tag</code> is the language-neutral name of the check (<code>ping-gateway</code>, <code>dns</code>, <code>connectivity-group</code>, <code>tcp-retransmissions</code>, <code>expected-standard</code>, …); the technical guide (section 4.10) lists them, and the <code>Scope</code> tells you which rows the verdict ignores.</p>
+    <p><b>Reading them.</b> The user manual explains the verdicts, the <i>What to tell IT</i> titles and the badges; the technical guide explains each rule. The repository's <code>sop</code> folder holds a support engineer's field manual and a report template for turning a report into a hand-off.</p>
+  </div>
+</section>
+
+<section id="s8">
+  <h2><span class="num">8</span> Security policy: what blocks it, and what the person sees</h2>
+  <div class="card">
+    <p>The launchers set the execution policy for their own process (<code>-ExecutionPolicy Bypass</code>), which is enough on a machine without policy. Where there is policy, this is what happens — each line measured on the project's virtual machines and recorded in <code>VALIDATION.md</code>, unless marked otherwise:</p>
+    <table class="plainfirst">
+      <tr><th>Mechanism</th><th>What happens</th><th>What reaches IT</th></tr>
+      <tr><td><b>Mark of the Web</b> on a downloaded ZIP</td><td><i>Open File - Security Warning</i> on the launcher; the tool runs after <kbd>Run</kbd></td><td>Nothing — unless the person cancels</td></tr>
+      <tr><td><b>Execution policy set by Group Policy</b> (<code>MachinePolicy</code> / <code>UserPolicy</code>, e.g. <i>AllSigned</i>)</td><td>Overrides the launcher's process-scope Bypass: the script does not start. PowerShell prints <i>…NetworkHealthCheck.ps1 is not digitally signed. You cannot run this script on the current system…</i>, the launcher reports the non-zero exit code and pauses, <code>LauncherError.txt</code> says to read the message above and ask IT to allow the program</td><td><code>LauncherError.txt</code> and the console text. No environment report: the script never ran</td></tr>
+      <tr><td><b>PowerShell restricted to a limited language mode</b> — what an enforced application-control policy (WDAC) does to a script it does not allow, and what <code>__PSLockdownPolicy</code> does to every script</td><td>The script's first lines detect a mode other than <i>FullLanguage</i> and stop before any check: exit code 3, the reason on the console, and <code>NetworkHealthCheck_ENVIRONMENT_&lt;time&gt;.txt</code> beside the program (or in <code>%TEMP%</code>, when that folder cannot be written or is a compressed-folder view) naming the reason, the mode, the tool version, the computer, the user, the program's folder, the PowerShell version, the culture and the operating system, and two lines under <i>What IT can do</i>: allow <code>NetworkHealthCheck.ps1</code> in the application-control policy (WDAC / AppLocker), or run the check on a computer that is not restricted in this way. The launcher explains exit code 3 and points at that file. Measured with <code>__PSLockdownPolicy</code> on both machines; no WDAC-enforced machine has been measured</td><td>The environment report and <code>LauncherError.txt</code></td></tr>
+      <tr><td><b>AppLocker script rules</b></td><td>Not measured to take effect: the one machine that reported an enforcing policy denying the script ran it unrestricted (backlog #31 in <code>VALIDATION.md</code>). Whether an enforced rule refuses the script or runs it in the restricted mode above has not been observed</td><td>Whichever of the two files above the outcome produces</td></tr>
+      <tr><td><b>EDR or antivirus</b> blocking <code>powershell.exe</code> or the script</td><td>Not measured: no machine with such a product was part of the acceptance runs. The launcher reports whatever exit code it gets and writes <code>LauncherError.txt</code></td><td><code>LauncherError.txt</code> and the product's own record</td></tr>
+    </table>
+    <p><b>What to ask the person for</b> is in the user manual's section 6, row by row; the environment report and <code>LauncherError.txt</code> are written for exactly this hand-off. <code>LauncherError.txt</code> sits beside the launcher, or — when that folder cannot be written — in <code>%TEMP%</code> as <code>NetworkHealthCheck_LauncherError.txt</code> with fewer fields.</p>
+    <p><b>Allowing the tool.</b> The two scripts are unsigned, so a policy that allows by publisher has nothing to match; what an IT department has today is the hash: <code>SHA256SUMS.txt</code> gives the digest of each <code>NetworkHealthCheck.ps1</code>, and a WDAC or AppLocker rule can allow that hash. A new version means a new hash. Which Windows builds and editions enforce AppLocker, and what has and has not been observed, changes faster than this package: the repository keeps a page on it, at the version this manual belongs to — <a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.4/docs/application-control.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.4/docs/application-control.md</a> — and its current version on the <code>main</code> branch.</p>
+    <p><b>Signing.</b> An Authenticode signature from your own certificate authority would satisfy an <i>AllSigned</i> policy and let a rule allow by publisher. Signing appends a signature block to the script, so the signed file no longer matches <code>SHA256SUMS.txt</code>; record the signed files' digests yourself.</p>
+  </div>
+</section>
+
+<section id="s9">
+  <h2><span class="num">9</span> The files in the package</h2>
+  <div class="card">
+    <table class="plainfirst">
+      <tr><th>File or folder</th><th>What it is</th></tr>
+      <tr><td><code>Start-English.cmd</code>, <code>Start-Traditional-Chinese.cmd</code></td><td>Root launchers: the user entry of each language</td></tr>
+      <tr><td><code>README_BILINGUAL.md</code></td><td>The package's front page</td></tr>
+      <tr><td><code>SHA256SUMS.txt</code>, <code>tools\validate_release.py</code></td><td>The manifest and the validator (section 6)</td></tr>
+      <tr><td><code>VALIDATION.md</code>, <code>validation-matrix.html</code></td><td>The validation record, and an earlier release's scenario matrix</td></tr>
+      <tr><td><code>docs\</code></td><td>The technical guide in both languages</td></tr>
+      <tr><td><code>en-US\</code>, <code>zh-TW\</code></td><td>One complete package per language:</td></tr>
+      <tr><td><code>…\Start-NetworkCheck.cmd</code>, <code>-IT.cmd</code>, <code>-Console.cmd</code></td><td>The three launchers (section 1)</td></tr>
+      <tr><td><code>…\NetworkHealthCheck.ps1</code></td><td>The program</td></tr>
+      <tr><td><code>…\NetworkHealthCheck.config.json</code></td><td>The configuration (section 3) — the one file you edit</td></tr>
+      <tr><td><code>…\NetworkHealthCheck_User_Manual_*.md</code>, <code>.html</code></td><td>The user manual, for the person who runs the check</td></tr>
+      <tr><td><code>…\NetworkHealthCheck_IT_Deployment_Manual_*.md</code>, <code>.html</code></td><td>This manual</td></tr>
+      <tr><td><code>…\NetworkHealthCheck_Technical_Guide_*.md</code></td><td>The technical guide, both languages again</td></tr>
+      <tr><td><code>…\Reports\</code></td><td>Created at the first run (section 3.1)</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="s10">
+  <h2><span class="num">10</span> Related documents</h2>
+  <div class="card">
+    <ul class="plain">
+      <li><b>User manual</b> — <code>NetworkHealthCheck_User_Manual_en-US.html</code> (or <code>.md</code>): what the person sees, the verdicts and badges, what the report contains, what to do when it does not run.</li>
+      <li><b>Technical guide</b> — <code>NetworkHealthCheck_Technical_Guide_en-US.md</code>: design, every decision rule, the validation approach, known limitations, the version history.</li>
+      <li><b>Validation record</b> — <code>VALIDATION.md</code>: every release's evidence, the acceptance runs on other machines, the backlog.</li>
+      <li><b>The repository</b> — <a href="https://github.com/kevintechin/network-support-toolkit">github.com/kevintechin/network-support-toolkit</a>: releases, the validation chain (<code>tests</code>), the support engineer's field manual and report template (<code>sop</code>), and the application-control page named in section 8.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>NetworkHealthCheck 1.2.4. This manual describes the tool as shipped and the behaviour measured for this release; the rules quoted here are the code's, and the technical guide states them in full.</footer>
+
+</div>
+</body>
+</html>

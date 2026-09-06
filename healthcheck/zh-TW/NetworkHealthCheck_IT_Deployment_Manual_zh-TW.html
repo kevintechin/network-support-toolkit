@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>網路健檢工具 1.2.4 — IT 部署手冊</title>
+<style>
+  :root{
+    --ink:#16233b; --muted:#5b6b85; --line:#d8e0ec; --bg:#f4f7fb; --card:#ffffff;
+    --blue:#1d4ed8; --blue-soft:#e8effd; --green:#0f7b52; --green-soft:#e6f5ee;
+    --red:#b3372e; --red-soft:#faeae8; --amber:#9a6700; --amber-soft:#fcf3e1;
+    --mono:Consolas,"Cascadia Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,-apple-system,"Segoe UI","Microsoft JhengHei","PingFang TC","Noto Sans TC",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);color:var(--ink);line-height:1.6;padding:2.2rem 1.4rem}
+  .page{max-width:1060px;margin:0 auto}
+  code{font-family:var(--mono);background:#eef2f8;border:1px solid var(--line);
+    border-radius:4px;padding:.08rem .35rem;font-size:.86em;white-space:nowrap}
+  pre{font-family:var(--mono);font-size:.86rem;background:#eef2f8;border:1px solid var(--line);
+    border-radius:6px;padding:.6rem .8rem;overflow-x:auto;margin-top:.5rem}
+  pre code{background:none;border:none;padding:0;white-space:pre;font-size:inherit}
+  a{color:var(--blue)}
+  b{font-weight:600}
+
+  header{margin-bottom:1.4rem}
+  header h1{font-size:1.7rem;letter-spacing:-.01em}
+  header h1 .ver{color:var(--muted);font-weight:500}
+  header .tag{color:var(--muted);font-size:1.02rem;margin-top:.2rem}
+  header .meta{color:var(--muted);font-size:.82rem;margin-top:.45rem}
+  .principle{display:flex;gap:.7rem;flex-wrap:wrap;margin:1.1rem 0 .4rem}
+  .principle span{background:var(--blue-soft);color:var(--blue);border:1px solid #c4d5fb;
+    border-radius:999px;padding:.35rem .9rem;font-weight:600;font-size:.9rem}
+
+  nav.toc{font-size:.88rem;color:var(--muted);margin:0 0 1.6rem;display:flex;flex-wrap:wrap;gap:.3rem 1.1rem}
+  nav.toc a{text-decoration:none;color:var(--blue)}
+
+  section{margin-bottom:1.5rem}
+  h2{font-size:1.12rem;margin-bottom:.7rem;display:flex;align-items:baseline;gap:.55rem;flex-wrap:wrap}
+  h2 .num{color:var(--blue);font-weight:700}
+  h3{font-size:.98rem;margin:1rem 0 .45rem}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:1rem 1.15rem;box-shadow:0 1px 2px rgba(22,35,59,.05)}
+  .card p{font-size:.92rem}
+  .card p + p{margin-top:.55rem}
+  .card > h3:first-child{margin-top:0}
+  .card pre + p, .card table + p{margin-top:.7rem}
+
+  ol.steps{font-size:.92rem;margin:.3rem 0 0 1.3rem}
+  ol.steps li{margin-bottom:.5rem}
+  ul.plain{font-size:.92rem;margin:.3rem 0 0 1.2rem}
+  ul.plain li{margin-bottom:.45rem}
+
+  table{width:100%;border-collapse:collapse;font-size:.9rem;margin-top:.5rem}
+  th,td{text-align:left;padding:.5rem .65rem;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:.8rem;letter-spacing:.04em}
+  tr:last-child td{border-bottom:none}
+  td:first-child{font-weight:600}
+  table.plainfirst td:first-child{font-weight:400}
+
+  .flag{background:var(--amber-soft);border:1px solid #eddcb4;border-radius:8px;
+    padding:.6rem .8rem;font-size:.9rem;margin-top:.8rem}
+  .flag b{color:var(--amber)}
+  .note{font-size:.84rem;color:var(--muted);margin-top:.6rem}
+
+  .badge{display:inline-block;border-radius:999px;padding:2px 9px;font-weight:700;white-space:nowrap;font-size:.84em}
+  .badge.pass{background:#c6f6d5;color:#22543d}
+  .badge.warn{background:#feebc8;color:#7b341e}
+  .badge.fail{background:#fed7d7;color:#822727}
+  .badge.info{background:#bee3f8;color:#2a4365}
+  .badge.error{background:#e9d8fd;color:#553c9a}
+  .verdict{display:inline-block;border-left:5px solid;padding:.05rem .5rem;font-weight:700;white-space:nowrap}
+  .verdict.pass{border-color:#14804a}
+  .verdict.warn{border-color:#b7791f}
+  .verdict.fail{border-color:#c53030}
+  .verdict.error{border-color:#805ad5}
+
+  kbd{font-family:inherit;font-weight:600;background:#f2f5fa;border:1px solid var(--line);border-bottom-width:2px;
+    border-radius:5px;padding:.02rem .4rem;font-size:.9em;white-space:nowrap}
+
+  footer{color:var(--muted);font-size:.8rem;border-top:1px solid var(--line);padding-top:.8rem;margin-top:1rem}
+
+  @media (max-width:760px){
+    body{padding:1.2rem .8rem}
+    table{display:block;overflow-x:auto}
+  }
+  @media print{
+    body{background:#fff;padding:0;font-size:11px}
+    .card{box-shadow:none}
+    section{break-inside:avoid}
+    nav.toc{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <h1>網路健檢工具 <span class="ver">1.2.4</span></h1>
+  <div class="tag">IT 部署手冊 — 寫給把工具發出去的 IT 部門</div>
+  <div class="meta">繁體中文套件（<code>zh-TW</code> 資料夾）· <code>en-US</code> 資料夾是英文套件，附英文版手冊與它自己的設定檔 · 執行檢測的人看旁邊的使用手冊；設計與判定規則在技術文件</div>
+  <div class="principle">
+    <span>一個資料夾，不是安裝程式</span>
+    <span>用設定，不要改程式</span>
+    <span>先定好報告的處理規定</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <a href="#s1">1 · 你要部署的是什麼</a>
+  <a href="#s2">2 · 發出去之前</a>
+  <a href="#s3">3 · 設定檔</a>
+  <a href="#s4">4 · 執行選項</a>
+  <a href="#s5">5 · 部署</a>
+  <a href="#s6">6 · 驗證套件</a>
+  <a href="#s7">7 · 報告</a>
+  <a href="#s8">8 · 安全政策</a>
+  <a href="#s9">9 · 檔案</a>
+  <a href="#s10">10 · 相關文件</a>
+</nav>
+
+<section id="s1">
+  <h2><span class="num">1</span> 你要部署的是什麼</h2>
+  <div class="card">
+    <p><b>一個資料夾，不是安裝程式。</b> 網路健檢工具是一支 Windows PowerShell 腳本，加上批次檔啟動器、一個 JSON 設定檔和幾份文件。它不安裝任何服務、驅動程式或封包擷取元件，也不登錄任何東西；它寫出的只有報告（第 3.1 節），以及執行無法開始或無法完成時寫在程式旁邊或使用者暫存資料夾裡的錯誤檔（第 3.6 與第 8 節）。對系統而言它是唯讀的：不改 IP、DNS、路由、防火牆、Proxy 或網卡設定。它的主動行為只有幾次 Ping、一次名稱查詢、幾個 TCP 連線，以及對設定檔裡的目標發出 HTTP/HTTPS GET 請求。</p>
+    <p><b>電腦需要什麼。</b></p>
+    <table class="plainfirst">
+      <tr><th>需求</th><th>說明</th></tr>
+      <tr><td>Windows 10 或 Windows 11（或相容的 Windows Server）</td><td>其他平台，或低於 5 的 PowerShell，會在設定檔那幾列之後得到一列 <span class="badge fail">異常</span>，執行就停在那裡</td></tr>
+      <tr><td>Windows PowerShell 5.1</td><td>Windows 內建。啟動器執行 <code>%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe</code>；該檔案不存在時改找 PATH 上的 <code>pwsh.exe</code>（PowerShell 7），兩者都沒有就停下並顯示「此電腦找不到 PowerShell」</td></tr>
+      <tr><td>含 Windows Forms 的 .NET Framework</td><td>Windows 內建；只有視窗需要。視窗建不起來時，工具會自己改用文字模式跑同樣的檢測，並在一列警告裡說明</td></tr>
+      <tr><td>一般使用者帳號</td><td>不需要系統管理員權限。一般使用者讀不到的東西會變成 <span class="badge error">無法檢查</span> 列，檢測繼續</td></tr>
+      <tr><td>使用者可寫入的資料夾</td><td>報告預設寫在程式旁邊（第 3.1 節）。那個資料夾不可寫時，工具改寫到使用者的暫存資料夾</td></tr>
+    </table>
+    <p><b>三個入口。</b> 每個語言資料夾有三個啟動器；套件最上層的兩個啟動器各自開啟自己語言的使用者入口。</p>
+    <table class="plainfirst">
+      <tr><th>啟動器</th><th>啟動什麼</th><th>給誰用</th></tr>
+      <tr><td><code>Start-NetworkCheck.cmd</code>（最上層：<code>Start-Traditional-Chinese.cmd</code>）</td><td>視窗，自己開始檢測</td><td>遇到問題的人</td></tr>
+      <tr><td><code>Start-NetworkCheck-IT.cmd</code></td><td>上方多一個「<b>執行選項（IT）</b>」面板的視窗；按下開始之前什麼都不跑；HTML 報告預設展開所有詳細資料</td><td>在機器前的 IT</td></tr>
+      <tr><td><code>Start-NetworkCheck-Console.cmd</code></td><td>文字模式（<code>-ConsoleOnly</code>），結束時暫停，報告路徑留在畫面上</td><td>視窗開不起來的電腦，或遠端工作階段</td></tr>
+    </table>
+    <p>每個啟動器都以 <code>-NoProfile -ExecutionPolicy Bypass</code> 和它自己固定的參數執行 PowerShell，不會轉送任何接在 <code>.cmd</code> 後面輸入的東西。要傳參數，看第 4 節。</p>
+    <p><b>出廠設定會連到哪裡。</b> 這台電腦的預設閘道（Ping）、<code>1.1.1.1</code>（Ping、一次連接埠 443 的 TCP 連線、往它的 traceroute 前三跳）、<code>www.microsoft.com</code>（經作業系統解析器的一次名稱查詢，以及經 Windows 設定的 Proxy 的一次 HTTPS 請求，會跟隨轉址）。換掉它們的方法在第 3.3 節。不會上傳任何東西：報告是報告資料夾裡的檔案。</p>
+  </div>
+</section>
+
+<section id="s2">
+  <h2><span class="num">2</span> 發出去之前</h2>
+  <div class="card">
+    <ol class="steps">
+      <li><b>驗證下載的檔案</b>（第 6 節）：先比對 ZIP 的 SHA-256 與發行說明，再比對套件內的清單檔。</li>
+      <li><b>決定測試目標</b>（第 3.3 節）。把公網位址換成使用者實際需要的服務，並決定「能不能連外」是不是這個檢測該要求的事。</li>
+      <li><b>設定公司標準</b>（第 3.2 節），如果你希望報告能說位址、閘道、DNS 伺服器或 DHCP 模式<i>對不對</i>。出廠狀態下，工具只顯示目前設定，並說明尚未定義標準。</li>
+      <li><b>依你自己的基準校正門檻</b>（第 3.5 節）：有線、Wi-Fi、VPN、WAN 和資料中心的線路不會共用同一組數字。</li>
+      <li><b>決定報告放哪裡、怎麼處理</b>（第 3.1 與第 7 節）。報告含電腦與使用者名稱、位址、Wi-Fi 網路、Proxy 與前幾跳的路由器；完整清單由使用手冊第 5 節「報告裡有什麼」維護。工具交到任何人手上之前，先決定處理規定。</li>
+      <li><b>在一台有代表性的電腦上用 <code>Start-NetworkCheck-IT.cmd</code> 跑一次</b>，讀報告最前面幾列（第 5 節），把那份報告留作基準。你支援的每一種連線方式（有線、Wi-Fi、VPN、限制連外）都各跑一次。</li>
+      <li><b>兩個語言資料夾都要設定</b>，如果兩個都要發。<code>zh-TW\NetworkHealthCheck.config.json</code> 和 <code>en-US\NetworkHealthCheck.config.json</code> 是兩個獨立的檔案；出廠時兩者只差預設目標的顯示名稱。</li>
+    </ol>
+  </div>
+</section>
+
+<section id="s3">
+  <h2><span class="num">3</span> 設定檔</h2>
+  <div class="card">
+    <p><code>NetworkHealthCheck.config.json</code> 放在程式旁邊。工具每次啟動都讀它，把它合併到內建預設值之上，而且永遠不會寫回去：執行選項（第 4 節）改的是一次執行，不是檔案。</p>
+    <p><b>怎麼讀的。</b> 沒寫的鍵保留內建預設值；有寫的鍵取代預設值。物件逐鍵合併，所以 <code>Expected</code> 可以只給兩條規則、其餘省略。清單則整個取代：檔案裡的 <code>PingTargets</code> 清單<i>就是</i>那份清單，出廠項目沒有重寫的就不存在了。工具不認識的鍵會被忽略。</p>
+    <p><b>讀不了的時候。</b> 檔案不存在，或不是合法 JSON，都不會讓執行中止：工具改用內建預設值，報告第一列「<b>設定檔</b>」會是 <span class="badge error">無法檢查</span> 並寫出原因（「找不到設定檔：…」或「設定檔格式錯誤，程式已改用內建預設值。」加上解析器的訊息）。光是這一列就會讓整體結果變成 <span class="verdict error">檢測未完整</span>，所以壞掉的設定檔在每份報告裡都看得到。能解析的檔案接著逐值檢查（第 3.6 節）。</p>
+    <p><b>JSON 規則。</b> 文字用雙引號；項目之間有逗號、最後一個項目後面沒有；<code>true</code>、<code>false</code>、<code>null</code> 不加引號；不能寫註解。出廠檔案是含位元組順序標記（BOM）的 UTF-8、Windows 換行，記事本會保留這兩者；工具本身有沒有 BOM、哪一種換行都讀得了，但發行驗證程式（第 6 節）預期的是出廠形式。</p>
+    <p><b>不換掉檔案就測試一份新設定。</b> 腳本接受 <code>-ConfigPath &lt;檔案&gt;</code>，所以候選設定可以先在主控台試跑，再放進資料夾：</p>
+<pre>powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -ConsoleOnly -ConfigPath C:\Temp\candidate.config.json</pre>
+    <p>報告的「設定檔」列會寫出載入的是哪個檔案，「電腦與執行資訊」一節也會再列一次。</p>
+
+    <h3>3.1 · 識別與報告資料夾</h3>
+    <table>
+      <tr><th>鍵</th><th>預設</th><th>作用</th></tr>
+      <tr><td><code>OrganizationName</code></td><td><code>""</code></td><td>印在 HTML 報告的標頭；空值印出「未指定單位」。文字與 JSON 報告不含這個值</td></tr>
+      <tr><td><code>ReportFolderName</code></td><td><code>"Reports"</code></td><td>相對名稱建立在程式旁邊（<code>zh-TW\Reports</code>）；有根的路徑（磁碟機代號或 UNC 路徑）照用。資料夾不存在會建立。無法寫入時，報告改寫到 <code>%TEMP%\NetworkHealthCheck\Reports</code>，報告裡多一列「<b>啟動提示</b>」警告說明這件事，光是這一列就會讓整體結果變成「需要注意」</td></tr>
+    </table>
+    <p>每次執行寫出三個檔案：<code>NetworkHealthCheck_&lt;yyyyMMdd&gt;_&lt;HHmmss&gt;_&lt;電腦名稱&gt;.html</code>、<code>.txt</code>、<code>.json</code>，含 BOM 的 UTF-8。同一時間只跑一份工具時檔名不會重複；工具不刪任何東西，所以資料夾每跑一次多三個檔案，直到有人清理。</p>
+    <div class="flag"><b>指到共用資料夾的有根 <code>ReportFolderName</code></b>，是唯一會讓報告在沒有人送出的情況下離開這台電腦的設定：每個使用者的每份報告都直接落在那裡，報告裡的「報告目錄」一行會告訴使用者，但不會問他。要用就有意識地用，把第 7 節的處理規定先定好，並確認每個使用者都寫得進去：寫不進去的使用者會得到暫存資料夾的備援。</div>
+
+    <h3>3.2 · 公司標準（<code>Expected</code>）</h3>
+    <p>出廠時每條規則都是空的，報告會在一列「資訊」裡說明：「設定檔尚未填入公司標準，因此只能顯示目前設定，不能判定 IP 是否符合公司規範。」填入描述你環境的規則，其餘留空。只要設了一條規則，比對就會執行。</p>
+<pre>"Expected": {
+  "AllowedIPv4Addresses": [],
+  "AllowedIPv4Cidrs": ["192.168.10.0/24"],
+  "AllowedPrefixLengths": [24],
+  "AllowedDefaultGateways": ["192.168.10.1"],
+  "RequiredDnsServers": ["192.168.10.5"],
+  "DhcpEnabled": true
+}</pre>
+    <table>
+      <tr><th>規則</th><th>通過條件</th><th>不通過時的列</th></tr>
+      <tr><td><code>AllowedIPv4Addresses</code>、<code>AllowedIPv4Cidrs</code>（算同一條規則）</td><td>主要網卡的任一 IPv4 位址等於清單中的位址，或落在清單中的網段內</td><td>「<b>IPv4 位址/網段</b>」<span class="badge fail">異常</span></td></tr>
+      <tr><td><code>AllowedPrefixLengths</code></td><td>主要網卡目前的任一前綴長度在清單中</td><td>「<b>子網路前綴</b>」<span class="badge fail">異常</span></td></tr>
+      <tr><td><code>AllowedDefaultGateways</code></td><td>主要網卡目前的任一閘道在清單中</td><td>「<b>預設閘道</b>」<span class="badge fail">異常</span></td></tr>
+      <tr><td><code>RequiredDnsServers</code></td><td>清單中的<i>每一個</i>伺服器都出現在主要網卡的 DNS 伺服器裡（IPv6 位址也接受）</td><td>「<b>DNS 伺服器</b>」<span class="badge fail">異常</span>，列出缺少的</td></tr>
+      <tr><td><code>DhcpEnabled</code>（<code>true</code>／<code>false</code>／<code>null</code>）</td><td>每張 DHCP 狀態已知的主要網卡都符合該值；<code>null</code> 跳過這條規則</td><td>「<b>DHCP 模式</b>」<span class="badge fail">異常</span>；沒有任何網卡回報 DHCP 狀態時為 <span class="badge error">無法檢查</span></td></tr>
+    </table>
+    <p><i>主要網卡</i>指已連線、有 IPv4 位址又有預設閘道的網卡；沒有任何一張有閘道時，則是每一張已連線、有 IPv4 位址的網卡。所有主要網卡的值會先合併再套規則，所以在有 VPN 或第二條連線的電腦上，一張網卡可以滿足另一張違反的規則；技術文件第 4.3 節討論這個限制。設了規則卻完全沒有可用網卡時，比對只有一列異常。</p>
+
+    <h3>3.3 · 測試目標（<code>Tests</code>）</h3>
+    <p>四份清單加一份群組名稱清單。每個目標可以給顯示用的 <code>Name</code>（那一列的標題）和一個 <code>Required</code> 旗標；TCP 與 HTTP 目標還可以有 <code>Group</code>。</p>
+<pre>"Tests": {
+  "PingTargets": [
+    { "Name": "預設閘道", "Address": "AUTO_GATEWAY", "Required": true },
+    { "Name": "檔案伺服器", "Address": "10.0.0.20", "Required": false }
+  ],
+  "DnsNames": [
+    { "Name": "DNS 名稱解析", "Host": "intranet.company.local", "Required": true }
+  ],
+  "TcpTargets": [
+    { "Name": "ERP 系統", "Host": "erp.company.local", "Port": 443, "Required": true, "Group": "Company" }
+  ],
+  "HttpTargets": [
+    { "Name": "公司入口網站", "Url": "https://portal.company.local/", "Required": false, "Group": "Company" }
+  ],
+  "RequiredConnectivityGroups": ["Company"]
+}</pre>
+    <table>
+      <tr><th>清單</th><th>欄位</th><th>省略 <code>Required</code> 時</th><th>說明</th></tr>
+      <tr><td><code>PingTargets</code></td><td><code>Name</code>、<code>Address</code>、<code>Required</code></td><td><code>false</code></td><td><code>AUTO_GATEWAY</code> 代表主要網卡的 IPv4 預設閘道，<code>AUTO_DNS</code> 代表它們的 DNS 伺服器，解析出的每個位址各一列。佔位符解析不出任何位址時，必要目標列為異常，選用目標列為需注意</td></tr>
+      <tr><td><code>DnsNames</code></td><td><code>Name</code>、<code>Host</code>、<code>Required</code></td><td><b><code>true</code></b></td><td>清單裡直接寫一個字串也接受，視為必要。查詢走作業系統的解析器，不會逐一查詢每台設定的伺服器</td></tr>
+      <tr><td><code>TcpTargets</code></td><td><code>Name</code>、<code>Host</code>、<code>Port</code>、<code>Required</code>、<code>Group</code></td><td><code>false</code></td><td>對該連接埠做一次 TCP 連線，建立後立刻關閉；工具不在上面送任何資料</td></tr>
+      <tr><td><code>HttpTargets</code></td><td><code>Name</code>、<code>Url</code>、<code>Required</code>、<code>Group</code></td><td><code>false</code></td><td>經系統 Proxy 的一次 GET，提供 TLS 1.2，跟隨轉址；4xx 或 5xx 的回應仍算連得到，並保留狀態碼。請用沒有副作用的 URL：目標的記錄會看到這個請求</td></tr>
+      <tr><td><code>RequiredConnectivityGroups</code></td><td>名稱</td><td>—</td><td>整體結果所依據的群組</td></tr>
+    </table>
+    <p><b>目標失敗對整體結果的影響。</b> 規則和執行選項（第 4 節）用的是同一套，讀報告的人需要知道：</p>
+    <table class="plainfirst">
+      <tr><th>目標</th><th>必要</th><th>選用</th></tr>
+      <tr><td>Ping 完全沒有回應</td><td><span class="badge fail">異常</span></td><td><span class="badge info">資訊</span>（ICMP 可能只是被擋）</td></tr>
+      <tr><td>Ping 有回應，但遺失或延遲超過門檻</td><td>達嚴重門檻為 <span class="badge fail">異常</span>，達警告門檻為 <span class="badge warn">需注意</span></td><td><span class="badge warn">需注意</span></td></tr>
+      <tr><td>解析不出來的 DNS 名稱</td><td><span class="badge fail">異常</span></td><td><span class="badge warn">需注意</span></td></tr>
+      <tr><td>連不上的 TCP 或 HTTP 目標</td><td><span class="badge fail">異常</span></td><td><span class="badge info">資訊</span></td></tr>
+    </table>
+    <p>「資訊」列永遠不影響整體結果，所以一個選用的 TCP 或 HTTP 目標可以在一份寫著 <span class="verdict pass">整體正常</span>、上方還有「全部通過」的報告裡失敗；使用手冊要求使用者去讀那幾列。群組是讓選用目標一起計入的方法：群組那一列在<b>至少一個</b>成員成功時通過；成員全部失敗時，列在 <code>RequiredConnectivityGroups</code> 的群組為異常，其他群組為需注意。一個必要群組完全沒有成員（名稱有列，但沒有目標帶這個名稱）時，會是一列「無法檢查」（「此群組沒有可執行的測試項目。」），光是這一列就會讓整體結果變成「檢測未完整」。</p>
+    <p><b>逾時與次數</b>（整數；小數、文字或零以下的值會在「設定值門檻」列裡被指出並取代）：</p>
+    <table>
+      <tr><th>鍵</th><th>預設</th><th>下限</th><th>說明</th></tr>
+      <tr><td><code>PingCount</code></td><td>4</td><td>1</td><td>每個 Ping 目標的回應請求次數。四次探測配出廠的 20 % 嚴重遺失門檻，掉一次就是 25 %、算嚴重；覺得太敏感就提高次數或門檻</td></tr>
+      <tr><td><code>PingTimeoutMs</code></td><td>1200</td><td>250</td><td>每次回應請求</td></tr>
+      <tr><td><code>DnsTimeoutMs</code></td><td>4000</td><td>500</td><td>每個名稱</td></tr>
+      <tr><td><code>TcpTimeoutMs</code></td><td>4000</td><td>500</td><td>每個連線</td></tr>
+      <tr><td><code>HttpTimeoutMs</code></td><td>6000</td><td>500</td><td>每個請求，連線與讀取皆同</td></tr>
+      <tr><td><code>RetransmissionSampleSeconds</code></td><td>8</td><td>1</td><td>TCP 計數器在開始時取樣一次，過了這麼多秒再取樣一次，所以這是執行時間的下限；各項測試在這段時間內進行，目標不回應時，它們的逾時會再疊上去</td></tr>
+    </table>
+    <div class="flag"><b>不允許連外的環境。</b> 移除公網的 Ping、TCP、HTTP 目標，把 <code>Internet</code> 群組換成你的內部服務，或者把 <code>Internet</code> 從 <code>RequiredConnectivityGroups</code> 移除（否則群組列會因為沒有成員而變成「無法檢查」），並把 <code>Checks.Traceroute</code> 設為 <code>false</code>：traceroute 會探測往第一個不是佔位符的 Ping 目標，一個都沒有時，仍然會探測往 <code>1.1.1.1</code>。</div>
+
+    <h3>3.4 · 可選檢查（<code>Checks</code>）</h3>
+    <p>IT 診斷資料（報告最下方收合區裡給 IT 看的資訊列，永遠不計入整體結果）每一項都可以關掉，在這裡關，或在 IT 面板裡只關一次。</p>
+    <table>
+      <tr><th>鍵</th><th>預設</th><th>收集什麼</th></tr>
+      <tr><td><code>WifiRf</code></td><td><code>true</code></td><td>無線介面的 SSID、BSSID、頻段、頻道、速率與訊號，從 <code>netsh wlan show interfaces</code> 解析</td></tr>
+      <tr><td><code>RouteTable</code></td><td><code>true</code></td><td>IPv4 預設路由，依 Windows 使用的順序</td></tr>
+      <tr><td><code>GatewayNeighbor</code></td><td><code>true</code></td><td>鄰居（ARP）表裡閘道的硬體位址</td></tr>
+      <tr><td><code>ProxySettings</code></td><td><code>true</code></td><td>使用者的 Proxy 設定、WinHTTP Proxy，以及 Windows 對第一個 HTTP 目標（沒有時是 <code>https://www.microsoft.com/</code>）會用哪個 Proxy：只問解析器，不發請求</td></tr>
+      <tr><td><code>Traceroute</code></td><td><code>true</code></td><td>往第一個不是佔位符的 Ping 目標的前幾跳，每跳一秒</td></tr>
+      <tr><td><code>TracerouteHops</code></td><td>3</td><td>1 到 10；其他值退回 3 並附警告。三跳看得出封包停在哪裡，通常到不了公網目標</td></tr>
+      <tr><td><code>DriverInfo</code></td><td><code>true</code></td><td>每張已連線實體網卡的驅動程式版本、日期與廠商</td></tr>
+    </table>
+    <p>不是 <code>true</code> 或 <code>false</code> 的旗標會停用該檢查，並被指出。</p>
+
+    <h3>3.5 · 門檻值</h3>
+    <p>預設值是通用的起始點。各列拿它們怎麼判定，照程式碼寫出來：</p>
+    <table>
+      <tr><th>鍵</th><th>預設</th><th>規則</th></tr>
+      <tr><td><code>PacketLossWarningPercent</code>、<code>PacketLossCriticalPercent</code></td><td>5、20</td><td>每個 Ping 目標，依這個順序：完全沒有回應 → 必要為異常、選用為資訊；遺失 ≥ 嚴重 → 必要為異常、選用為需注意；遺失 ≥ 警告 → 需注意；接著才是延遲規則</td></tr>
+      <tr><td><code>LatencyWarningMs</code>、<code>LatencyCriticalMs</code></td><td>100、250</td><td>以有回應的探測平均值判定：≥ 嚴重 → 必要為異常、選用為需注意；≥ 警告 → 需注意</td></tr>
+      <tr><td><code>TcpRetransmissionWarningPercent</code>、<code>TcpRetransmissionCriticalPercent</code></td><td>2、5</td><td>取樣期間重傳 ÷ 傳送的 segment 數，整台電腦、TCPv4 與 TCPv6 分開算：比例 ≥ 嚴重 → 異常；≥ 警告 → 需注意</td></tr>
+      <tr><td><code>TcpRetransmissionCriticalCount</code></td><td>50</td><td>取樣期間的重傳 segment 數：達到就是需注意；若比例同時達到警告百分比，則為異常</td></tr>
+      <tr><td><code>MinimumTcpSegmentsForRate</code></td><td>50</td><td>傳送的 segment 少於這個數時不判比例：有任何重傳就是需注意，沒有就是資訊。完全沒有流量也是資訊</td></tr>
+      <tr><td><code>AdapterErrorWarningDelta</code>、<code>AdapterErrorCriticalDelta</code></td><td>1、10</td><td>取樣期間每張網卡新增的接收加傳送錯誤數：≥ 嚴重 → 異常，≥ 警告 → 需注意。虛擬網卡不論計數一律資訊，取樣期間沒有流量也沒有錯誤的實體網卡也是資訊；計數器倒退是需注意</td></tr>
+      <tr><td><code>AdapterDiscardWarningDelta</code>、<code>AdapterDiscardCriticalDelta</code></td><td>1、100</td><td>丟棄封包的同一套規則</td></tr>
+    </table>
+    <p>百分比和毫秒可以是小數；次數與增量必須是整數。不是數字的值會被換成預設值並指出。警告值高於嚴重值時，封包遺失、延遲與重傳百分比會被指出並照寫的值使用；網卡增量則悄悄把嚴重值提高到警告值，低於 1 的警告值變成 1。</p>
+
+    <h3>3.6 · 報告怎麼描述設定檔</h3>
+    <p>報告一開始就是設定檔的幾列（設定檔、任何啟動提示，接著設定值驗證與設定值門檻），所以錯誤會出現在使用者不可能錯過的地方；「標準設定」那一列則在較後面比對的位置：</p>
+    <table>
+      <tr><th>列</th><th>狀態</th><th>意思</th></tr>
+      <tr><td>設定檔</td><td><span class="badge pass">正常</span>：「已載入：&lt;路徑&gt;」</td><td>檔案讀到了；路徑就是使用中的那一個</td></tr>
+      <tr><td>設定檔</td><td><span class="badge error">無法檢查</span></td><td>檔案不存在或不是合法 JSON；用內建預設值跑了。整體結果為檢測未完整</td></tr>
+      <tr><td>設定值驗證</td><td><span class="badge error">無法檢查</span></td><td>有無效值：<code>Expected</code> 底下解析不了的 IPv4 位址、網段、前綴、閘道或 DNS 伺服器，不是 <code>true</code>、<code>false</code>、<code>null</code> 的 <code>DhcpEnabled</code>，沒有主機或連接埠不在 1–65535 的 TCP 目標，URL 不是絕對 <code>http</code> 或 <code>https</code> 位址的 HTTP 目標，主機空白的 DNS 項目。數量與有問題的值寫在該列的詳細資料裡。值不會被移除：主機或連接埠無效的 TCP 目標、URL 空白的 HTTP 目標，必要時變成它自己的「無法檢查」列，選用時被跳過；主機空白的 DNS 項目被跳過；格式錯誤但不空白的 URL 仍會嘗試，並像連不上的目標一樣失敗；<code>Expected</code> 底下的無效值永遠比對不到任何東西</td></tr>
+      <tr><td>設定值驗證</td><td><span class="badge pass">正常</span>：「設定值格式檢查通過。」</td><td>完全沒有東西要報。只有下面那列門檻有話要說時，這一列不會出現</td></tr>
+      <tr><td>設定值門檻</td><td><span class="badge warn">需注意</span></td><td>只在某個次數、逾時、門檻或檢查旗標型別錯誤、超出範圍，或警告值高於嚴重值時出現；詳細資料逐一點名並說明改用了什麼</td></tr>
+      <tr><td>標準設定</td><td><span class="badge info">資訊</span></td><td><code>Expected</code> 底下沒有規則；設了規則後改出現比對列</td></tr>
+      <tr><td>啟動提示</td><td><span class="badge warn">需注意</span></td><td>執行時的狀況：報告資料夾退到暫存資料夾、工具在壓縮檔檢視裡執行、視窗開不起來改用文字模式，或執行選項裡的額外 TCP 目標被忽略</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="s4">
+  <h2><span class="num">4</span> 執行選項：IT 入口與命令列</h2>
+  <div class="card">
+    <p>執行選項只改一次執行，永遠不改檔案。來源有兩個。</p>
+    <p><b>IT 面板。</b> <code>Start-NetworkCheck-IT.cmd</code> 開啟的視窗上方有「<b>執行選項（IT）</b>」並停下來等：「就緒，調整選項後按「開始檢測」」。欄位有 <kbd>額外 Ping</kbd>、<kbd>額外 DNS</kbd>、<kbd>額外 TCP（host:port）</kbd>、<kbd>額外 URL</kbd>、<kbd>Ping 次數</kbd>、<kbd>取樣秒數</kbd>；核取方塊 <kbd>Wi-Fi 無線</kbd>、<kbd>Traceroute</kbd> 與 <kbd>Traceroute 跳數</kbd>、<kbd>路由</kbd>、<kbd>閘道 ARP</kbd>、<kbd>Proxy</kbd>、<kbd>驅動程式</kbd> 為這次執行切換可選檢查；<kbd>HTML 預設展開細節</kbd> 預設勾選；<kbd>還原設定檔</kbd> 把每個欄位放回設定檔的值。旋轉鈕涵蓋 1–20 次 Ping 與 1–120 秒；設定檔的值超過這個範圍時範圍會跟著放寬，所以不動面板直接按開始，跑的就是設定檔的值。</p>
+    <p><b>參數。</b> 同樣的選項作為腳本參數，給主控台執行或腳本化執行用：</p>
+<pre>powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -ConsoleOnly -PingTarget 10.0.0.1 -TcpTarget fileserver:445 -SampleSeconds 20 -ExpandDetails</pre>
+    <table>
+      <tr><th>參數</th><th>作用</th></tr>
+      <tr><td><code>-ConsoleOnly</code></td><td>文字模式；有寫出報告時程序以 0 結束，一份都寫不出來時以 1 結束</td></tr>
+      <tr><td><code>-Interactive</code></td><td>帶 IT 面板的視窗，不自動開始（IT 啟動器傳的就是它）</td></tr>
+      <tr><td><code>-ExpandDetails</code></td><td>HTML 裡每個「顯示詳細資料」預設展開；同時把這次執行標記為 IT 入口</td></tr>
+      <tr><td><code>-PingTarget</code>、<code>-DnsName</code>、<code>-TcpTarget</code>（host:port）</td><td>額外目標；多個值用逗號、分號或空格分隔，例如 <code>-PingTarget 10.0.0.1,10.0.0.2</code></td></tr>
+      <tr><td><code>-HttpUrl</code></td><td>額外 URL；多個只能用空格分隔，因為逗號和分號在 URL 裡是合法字元</td></tr>
+      <tr><td><code>-PingCount</code>、<code>-SampleSeconds</code>、<code>-TracerouteHops</code></td><td>這次執行覆蓋設定檔的值；跳數不在 1–10 內退回 3</td></tr>
+      <tr><td><code>-NoTraceroute</code>、<code>-NoWifi</code></td><td>略過這兩項診斷</td></tr>
+      <tr><td><code>-ConfigPath &lt;檔案&gt;</code></td><td>載入另一個設定檔（第 3 節）</td></tr>
+      <tr><td><code>-STA</code>（PowerShell 自己的參數）</td><td>視窗啟動器會加的；<code>-ConsoleOnly</code> 不需要</td></tr>
+    </table>
+    <p><b>額外目標算什麼。</b> 額外目標都是選用的，也不屬於任何群組：沒有回應的額外 Ping，以及連不上的額外 TCP 或 HTTP 目標，是「資訊」列，不影響整體結果；品質不佳的 Ping 和解析不出來的額外 DNS 名稱是「需注意」列。格式不是 <code>host:port</code> 的額外 TCP 目標會被丟掉，並留下一列「啟動提示」警告（「已忽略額外 TCP 目標「…」：格式應為 host:port。」）。這些列的標題是「額外 Ping」、「額外 DNS」、「額外 TCP」、「額外 URL」。</p>
+    <p><b>這次執行的選項記在哪裡。</b> 報告標頭的「執行設定」一行：<code>IT 入口 | 額外目標：ping 10.0.0.1, tcp fileserver:445 | Ping 次數 4 | 取樣 20 秒 | traceroute 3 跳</code>，關掉的檢查以「已停用：…」列出；以及 JSON 的 <code>RunOptions</code>：<code>EntryPoint</code>、<code>ExpandDetails</code>、<code>ExtraTargets</code>（接受的值）、<code>RawTargets</code>（輸入的原文）、<code>PingCount</code>、<code>SampleSeconds</code>、<code>TracerouteHops</code>、<code>ChecksEnabled</code>。</p>
+  </div>
+</section>
+
+<section id="s5">
+  <h2><span class="num">5</span> 部署</h2>
+  <div class="card">
+    <p><b>整個資料夾一起發。</b> 每個語言啟動器都在自己旁邊找 <code>NetworkHealthCheck.ps1</code>，找不到就停；腳本在自己旁邊找設定檔，找不到就用預設值跑。一個語言資料夾（<code>zh-TW</code> 或 <code>en-US</code>）本身是完整的：啟動器、程式、設定檔、本手冊、使用手冊與技術文件。最上層的兩個啟動器（<code>Start-Traditional-Chinese.cmd</code>、<code>Start-English.cmd</code>）只會呼叫那個名稱的資料夾，所以要發它們就保留資料夾名稱，只發一種語言時就別放它們。</p>
+    <p><b>不要改程式或設定檔的檔名。</b> 啟動器和腳本靠名稱找它們。</p>
+    <p><b>兩種送達方式，以及使用者會看到什麼。</b></p>
+    <ul class="plain">
+      <li><i>用瀏覽器下載的 ZIP</i> 帶有「網路標記」（Mark of the Web）；Windows 檔案總管解壓縮出來的檔案帶著同一個標記，對啟動器按兩下會出現「<b>開啟檔案 - 安全性警告</b>」，按執行後工具照常運作。解壓縮前先解除封鎖 ZIP（右鍵 → <kbd>內容</kbd> → <kbd>解除封鎖</kbd>，或 PowerShell 的 <code>Unblock-File</code>），解出來的檔案就沒有標記。兩者都在兩台虛擬機上量測過（驗證記錄 <code>VALIDATION.md</code>，「Acceptance on a second machine」）。</li>
+      <li><i>不經瀏覽器送達的套件</i>：派送工具推的，或直接複製進去的（驗證活動從主機複製進虛擬機的那份就是），在量測過的機器上沒有標記，不會出現提示。</li>
+    </ul>
+    <p>不管怎麼送達，使用者都必須把整個 ZIP 解壓縮：在檔案總管的 ZIP 檢視裡對啟動器按兩下，它在旁邊找不到東西就停下（使用手冊第 2 與第 6 節）。</p>
+    <p><b>放在哪裡。</b> 任何使用者可寫入的本機資料夾；使用手冊建議桌面或文件，驗收執行也是在那裡做的。報告要落在程式旁邊，資料夾就得一直可寫；否則設定 <code>ReportFolderName</code>（第 3.1 節），或接受暫存資料夾的備援。</p>
+    <p><b>升級。</b> 用新版本換掉整個資料夾，把你的設定檔帶過去。檔案是哪一版對工具無所謂：新版本新增的鍵，你的檔案沒有時就取預設值。升級後比對出廠檔案與你的檔案，並在新資料夾發出去之前跑一次檢測（第 3.6 節）。改過的設定檔請納入版本控制；套件分不出你的修改和出廠檔案，只能靠雜湊值（第 6 節）。</p>
+    <p><b>程式檔。</b> 用設定，不要改腳本。改過的腳本不再符合清單檔，而且驗證程式（第 6 節）會把兩個語言版本互相比對，只改一個資料夾就會過不了。真的需要改，就保留原檔、心裡有數哪些檢查會失敗地重跑驗證程式，並自己記下雜湊值。腳本沒有數位簽章（第 8 節「簽章」）。</p>
+  </div>
+</section>
+
+<section id="s6">
+  <h2><span class="num">6</span> 驗證套件</h2>
+  <div class="card">
+    <p><b>下載檔。</b> 專案 Releases 頁面的發行說明給出 <code>NetworkHealthCheck-&lt;版本&gt;.zip</code> 的 SHA-256。解壓縮前先比對：</p>
+<pre>certutil -hashfile NetworkHealthCheck-1.2.4.zip SHA256</pre>
+    <p>或在 PowerShell 用 <code>Get-FileHash NetworkHealthCheck-1.2.4.zip</code>。發行檔只由 repo 裡受版本控制的檔案打包，所以裡面沒有任何報告或執行輸出。</p>
+    <p><b>清單檔。</b> 套件最上層的 <code>SHA256SUMS.txt</code> 列出每個出廠檔案的摘要，除了它自己、<code>VALIDATION.md</code> 和 <code>validation-matrix.html</code>：每個檔案一行，<code>&lt;sha256&gt;  &lt;相對路徑&gt;</code>，中間兩個空格。單一檔案可以用 <code>Get-FileHash &lt;檔案&gt;</code> 手動比對，全部則交給驗證程式。</p>
+    <p><b>驗證程式。</b> <code>tools\validate_release.py</code> 只需要 Python 3。對套件最上層執行：</p>
+<pre>python tools\validate_release.py .</pre>
+    <p>每項檢查印一行 <code>[PASS]</code> 或 <code>[FAIL]</code>，最後是 <code>Summary: N passed, M failed</code>，有任何失敗時結束代碼為 1。它檢查：必要檔案存在；兩個設定檔都能解析；腳本與設定檔是含 BOM 的 UTF-8 與 Windows 換行；六個語言啟動器都指向程式；英文與中文腳本除了文字以外是同一支程式（相同的函式、相同的可執行骨架）；英文檔案不含中文；兩支腳本和每份帶版本號的文件裡的版本字串；套件內的驗證記錄有這個版本的項目；以及清單檔的每一行。它不做網路檢測，也不需要 Windows。</p>
+    <p><b>改過設定檔之後</b>，該檔案在清單檔裡那一行會失敗，驗證程式和手動比對都一樣；只要檔案仍是出廠形式的合法 JSON（第 3 節），其他都不變。這一個失敗是「設定過的套件」的正常特徵；其他任何一行失敗，表示有檔案被改動或在傳輸中損壞。</p>
+    <p><b>記錄。</b> <code>VALIDATION.md</code> 是每一版的驗證記錄：跑了什麼、在哪些機器上、發現什麼、延後了什麼；<code>validation-matrix.html</code> 是較早版本的故障情境矩陣。驗證鏈本身，包括在只有 Windows PowerShell 的機器上用的驗收執行器，在 repo 的 <code>tests</code> 資料夾。</p>
+  </div>
+</section>
+
+<section id="s7">
+  <h2><span class="num">7</span> 報告</h2>
+  <div class="card">
+    <p><b>落在哪裡、叫什麼名字</b>：第 3.1 節。<b>裡面有什麼</b>：使用手冊第 5 節維護完整清單：身分與版本、每張已連線網卡的位址與硬體位址、Wi-Fi 網路與基地台、路由、閘道的硬體位址、Proxy 設定、你設定的標準與目標、每項結果與時間，以及設定檔和報告資料夾的路徑（可能含使用者的個人資料夾）。JSON 還多了工具遇到的錯誤的技術細節，其中會寫出程式所在的資料夾。</p>
+    <p><b>發出去之前先定處理規定</b>：報告可以送到哪裡、留多久、誰能看，並在把工具交給使用者的同一則訊息裡說明；使用手冊只說請依公司對這類資訊的規定處理。報告是一般檔案：保留期限就是你對報告資料夾（或共用資料夾，第 3.1 節）套用的規定。</p>
+    <p><b>給你的工具用。</b> JSON 報告是 schema 2：<code>SchemaVersion</code>、<code>ToolVersion</code>、<code>RunOptions</code>（第 4 節）、<code>Fingerprint</code>（<code>Key</code>、<code>Title</code>、<code>Lines</code>，即「要告訴 IT 的話」）、<code>Overall</code>（<code>Code</code>、<code>Text</code>、<code>Description</code>）、<code>Counts</code>、<code>System</code>、<code>StartedAt</code>、<code>FinishedAt</code>，以及 <code>Results</code>：每一列一個物件，含 <code>Time</code>、<code>Category</code>、<code>Check</code>、<code>Status</code>（<code>PASS</code>、<code>WARN</code>、<code>FAIL</code>、<code>INFO</code>、<code>ERROR</code>）、<code>Message</code>、<code>Details</code>、<code>Diagnostics</code>、<code>Tag</code> 與 <code>Scope</code>（<code>Main</code> 或 <code>IT</code>）。<code>Tag</code> 是與語言無關的檢查名稱（<code>ping-gateway</code>、<code>dns</code>、<code>connectivity-group</code>、<code>tcp-retransmissions</code>、<code>expected-standard</code>……）；技術文件第 4.10 節有清單，<code>Scope</code> 則告訴你整體結果忽略了哪些列。</p>
+    <p><b>讀報告。</b> 使用手冊解釋整體結果、「要告訴 IT 的話」的標題與各種標籤；技術文件解釋每一條規則。repo 的 <code>sop</code> 資料夾有支援工程師的現場手冊和把報告整理成交接文件的範本。</p>
+  </div>
+</section>
+
+<section id="s8">
+  <h2><span class="num">8</span> 安全政策：什麼會擋住它，使用者會看到什麼</h2>
+  <div class="card">
+    <p>啟動器只對自己的程序設定執行原則（<code>-ExecutionPolicy Bypass</code>），在沒有政策的電腦上這樣就夠了。有政策時會發生的事如下：除非另有標註，每一列都在本專案的虛擬機上量測過，並記錄在 <code>VALIDATION.md</code>。</p>
+    <table class="plainfirst">
+      <tr><th>機制</th><th>發生什麼</th><th>IT 會拿到什麼</th></tr>
+      <tr><td>下載的 ZIP 帶有<b>網路標記</b></td><td>啟動器出現「開啟檔案 - 安全性警告」；按 <kbd>執行</kbd> 後工具照常運作</td><td>沒有東西，除非使用者取消</td></tr>
+      <tr><td><b>群組原則設定的執行原則</b>（<code>MachinePolicy</code>／<code>UserPolicy</code>，例如 <i>AllSigned</i>）</td><td>蓋過啟動器的程序範圍 Bypass：腳本不會啟動。PowerShell 印出自己的訊息（英文 Windows 上是「…NetworkHealthCheck.ps1 is not digitally signed. You cannot run this script on the current system…」，中文 Windows 則是它的中文版本），啟動器回報非零的結束代碼並暫停，<code>LauncherError.txt</code> 建議閱讀上方的訊息並請 IT 允許程式</td><td><code>LauncherError.txt</code> 和主控台的文字。沒有環境報告：腳本根本沒跑</td></tr>
+      <tr><td><b>PowerShell 被限制在受限語言模式</b>：強制執行的應用程式控制政策（WDAC）對不允許的腳本做的事，以及 <code>__PSLockdownPolicy</code> 對每支腳本做的事</td><td>腳本最前面幾行偵測到不是 <i>FullLanguage</i> 的模式，在任何檢測之前停下：結束代碼 3、原因印在主控台，並在程式旁邊（該資料夾不可寫或是壓縮檔檢視時，改在 <code>%TEMP%</code>）寫出 <code>NetworkHealthCheck_ENVIRONMENT_&lt;時間&gt;.txt</code>，載明原因、語言模式、工具版本、電腦名稱、使用者、腳本資料夾、PowerShell 版本、地區設定與作業系統，以及「IT 可以怎麼做」下的兩行：在應用程式控制政策（WDAC / AppLocker）中放行 <code>NetworkHealthCheck.ps1</code>，或改在沒有這項限制的電腦上執行檢測。啟動器會解釋結束代碼 3 並指向這個檔案。在兩台機器上以 <code>__PSLockdownPolicy</code> 量測過；沒有量測過強制執行 WDAC 的機器</td><td>環境報告和 <code>LauncherError.txt</code></td></tr>
+      <tr><td><b>AppLocker 指令碼規則</b></td><td>沒有量測到它生效：唯一一台回報政策在強制執行、且判定拒絕這支腳本的機器，還是不受限制地跑完了它（<code>VALIDATION.md</code> 的待辦 #31）。強制執行的規則會拒絕腳本，還是讓它在上面那種受限模式裡跑，都還沒有觀察到</td><td>看結果產生上面兩個檔案中的哪一個</td></tr>
+      <tr><td><b>EDR 或防毒</b>擋住 <code>powershell.exe</code> 或腳本</td><td>沒有量測：驗收執行沒有包含裝了這類產品的機器。啟動器回報它拿到的結束代碼並寫出 <code>LauncherError.txt</code></td><td><code>LauncherError.txt</code> 和該產品自己的記錄</td></tr>
+    </table>
+    <p><b>要向使用者要什麼</b>，使用手冊第 6 節逐列寫了；環境報告和 <code>LauncherError.txt</code> 就是為這個交接而寫的。<code>LauncherError.txt</code> 在啟動器旁邊，那個資料夾無法寫入時改寫在 <code>%TEMP%</code> 的 <code>NetworkHealthCheck_LauncherError.txt</code>，欄位較少。</p>
+    <p><b>放行工具。</b> 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：<code>SHA256SUMS.txt</code> 給出每支 <code>NetworkHealthCheck.ps1</code> 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.4/docs/application-control.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.4/docs/application-control.md</a>（英文），最新版本在 <code>main</code> 分支。</p>
+    <p><b>簽章。</b> 用你自己的憑證授權單位做 Authenticode 簽章，可以滿足 <i>AllSigned</i> 原則，也讓規則能依發行者放行。簽章會在腳本後面附加一段簽章區塊，所以簽過的檔案不再符合 <code>SHA256SUMS.txt</code>；請自己記下簽過檔案的摘要。</p>
+  </div>
+</section>
+
+<section id="s9">
+  <h2><span class="num">9</span> 套件裡的檔案</h2>
+  <div class="card">
+    <table class="plainfirst">
+      <tr><th>檔案或資料夾</th><th>是什麼</th></tr>
+      <tr><td><code>Start-Traditional-Chinese.cmd</code>、<code>Start-English.cmd</code></td><td>最上層啟動器：各語言的使用者入口</td></tr>
+      <tr><td><code>README_BILINGUAL.md</code></td><td>套件的首頁</td></tr>
+      <tr><td><code>SHA256SUMS.txt</code>、<code>tools\validate_release.py</code></td><td>清單檔與驗證程式（第 6 節）</td></tr>
+      <tr><td><code>VALIDATION.md</code>、<code>validation-matrix.html</code></td><td>驗證記錄，以及較早版本的情境矩陣</td></tr>
+      <tr><td><code>docs\</code></td><td>技術文件，中英文各一份</td></tr>
+      <tr><td><code>zh-TW\</code>、<code>en-US\</code></td><td>每種語言一個完整套件：</td></tr>
+      <tr><td><code>…\Start-NetworkCheck.cmd</code>、<code>-IT.cmd</code>、<code>-Console.cmd</code></td><td>三個啟動器（第 1 節）</td></tr>
+      <tr><td><code>…\NetworkHealthCheck.ps1</code></td><td>程式</td></tr>
+      <tr><td><code>…\NetworkHealthCheck.config.json</code></td><td>設定檔（第 3 節），你唯一要編輯的檔案</td></tr>
+      <tr><td><code>…\NetworkHealthCheck_User_Manual_*.md</code>、<code>.html</code></td><td>使用手冊，給執行檢測的人</td></tr>
+      <tr><td><code>…\NetworkHealthCheck_IT_Deployment_Manual_*.md</code>、<code>.html</code></td><td>本手冊</td></tr>
+      <tr><td><code>…\NetworkHealthCheck_Technical_Guide_*.md</code></td><td>技術文件，中英文再各一份</td></tr>
+      <tr><td><code>…\Reports\</code></td><td>第一次執行時建立（第 3.1 節）</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="s10">
+  <h2><span class="num">10</span> 相關文件</h2>
+  <div class="card">
+    <ul class="plain">
+      <li><b>使用手冊</b>：<code>NetworkHealthCheck_User_Manual_zh-TW.html</code>（或 <code>.md</code>）：使用者看到什麼、整體結果與標籤、報告裡有什麼、跑不起來時怎麼辦。</li>
+      <li><b>技術文件</b>：<code>NetworkHealthCheck_Technical_Guide_zh-TW.md</code>：設計、每一條判定規則、驗證方式、已知限制、版本歷程。</li>
+      <li><b>驗證記錄</b>：<code>VALIDATION.md</code>：每一版的證據、在其他機器上的驗收執行、待辦清單。</li>
+      <li><b>Repo</b>：<a href="https://github.com/kevintechin/network-support-toolkit">github.com/kevintechin/network-support-toolkit</a>：發行版本、驗證鏈（<code>tests</code>）、支援工程師現場手冊與報告範本（<code>sop</code>），以及第 8 節提到的應用程式控制頁面。</li>
+    </ul>
+  </div>
+</section>
+
+<footer>NetworkHealthCheck 1.2.4。本手冊描述的是出廠狀態的工具與本版本量測到的行為；這裡引用的規則都是程式碼的規則，技術文件有完整的陳述。</footer>
+
+</div>
+</body>
+</html>
