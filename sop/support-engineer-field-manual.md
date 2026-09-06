@@ -133,8 +133,16 @@ One fingerprint, two failing rows, three different first moves. **Read which row
 | The `adapters` row failed, and the machine is **wireless** | The `adapters` row failed, and the machine is **wired** | The `gateway-config` row failed |
 |---|---|---|
 | A radio that is off, or an association that failed, leaves an interface that is down or unaddressed — which the collector omits, so this looks exactly like a machine with no NIC | No working adapter, and no lease: the **No IP** / DHCP lane | An address with **no default gateway at all** — a client-side configuration fault, which a static address can produce with DHCP nowhere in the picture |
-| **Station 2 first**, before anything else: SSID visible, associated *and* authenticated, RSSI and SNR at the AP | **1 → 3 → 5** | **Station 1**: the adapter's own gateway setting, and whether the address is static or came from DHCP |
+| **Station 2 first**, before anything else: SSID visible, associated *and* authenticated, RSSI and SNR at the AP | **1 → 3 → 5** | **Depends on the address** — the three branches below |
 | The `wifi` row is the client's own view and weaker evidence than the AP's client table | Port link state and PVID; the DHCP scope's utilization | — |
+
+**When `gateway-config` failed, the address names the lane.** Read the *per-adapter* rows, not only the aggregate `Usable Network Adapters` one — that aggregate passes whenever a physical adapter is connected, and the APIPA detection lives on the individual adapter's row:
+
+| What the adapter rows show | What it means | Go to |
+|---|---|---|
+| **169.254.x.x**, and the row says DHCP did not provide an address | DHCP did not answer — the SOP's own first fingerprint, and nothing to do with client configuration | **1 → 3 → 5**: port VLAN, uplink, relay, scope |
+| A real address **from DHCP**, but no gateway | The scope handed out no router option, or it was removed | **5** for the scope's options, with **1** to confirm what the client received |
+| A **static** address and no gateway | Client-side configuration, DHCP nowhere in the picture | **1** |
 
 **What `gateway-config` does and does not judge.** It fails only when **no** IPv4 gateway is configured on any adapter. A gateway that is present but **wrong** passes it, and no fingerprint names that case:
 
