@@ -169,7 +169,7 @@ What the user sees, what it means, what you do.
 
 | What comes back | Meaning | Your move |
 |---|---|---|
-| `LauncherError.txt` | The launcher stopped before or after the program. Since 1.2.3 it carries **`Suggested action:`** matched to the reason, and the same line is on screen | Read the suggested action first; it is reason-specific, not boilerplate. The file is written beside the script, or — when that folder cannot be written, which is exactly what a read-only share or a protected folder produces — as `%TEMP%\NetworkHealthCheck_LauncherError.txt`. The launcher names the path it used; ask for that rather than a folder |
+| `LauncherError.txt` | The launcher stopped before or after the program. Since 1.2.3 it carries **`Suggested action:`** matched to the reason, and the same line is on screen | Read the suggested action first; it is reason-specific, not boilerplate. The file is written beside the script, or — when that folder cannot be written, which is exactly what a read-only share or a protected folder produces — as `%TEMP%\NetworkHealthCheck_LauncherError.txt`. The launcher checks the first write and **not** the second, so it prints that `%TEMP%` path whether or not the file arrived: ask for the file, not just the path, and if it is not there ask for what the window said |
 | "…ended with **exit code 3**" plus `NetworkHealthCheck_ENVIRONMENT_<time>.txt` | Application control (WDAC/AppLocker) restricted PowerShell to a limited language mode; **no check ran** | Ask for the environment report — it names the machine, the mode and what IT can do. This is an IT conversation, not a network one. It is also a finding: the machine cannot run this class of script at all |
 | "The program file NetworkHealthCheck.ps1 is missing" | Only one file was extracted — usually a double-click inside the ZIP preview window | Have them extract the whole folder and run it again |
 | A startup warning row in an otherwise normal report | **Read the message — the row has four sources.** The tool ran from inside a compressed-folder view; the report directory was not writable, so reports went to the fallback; the graphical interface could not start and console mode was used; or an extra TCP target was ignored as malformed | Only the compressed-folder message calls for a re-run from a proper folder. The report-directory one tells you where the reports actually are; the GUI one is about that machine, not the network; the target one means a run option was dropped, so check what was actually measured |
@@ -189,7 +189,7 @@ The SOP's package asks for eight things. The report covers three of them and par
 | Topology sketch of the affected path | **No** — draw it |
 | Blast radius, timeline, what changed | **No** — your notes |
 | What you excluded, with the evidence | **Partly** — the passing rows are the exclusions; say in words what they exclude |
-| Raw outputs (ipconfig / ping / tracert) | **Yes** — the HTML and the JSON, with Method and Manual-check lines per row |
+| Raw outputs (ipconfig / ping / tracert) | **Partly** — the reports carry *measured values*, not command output: selected fields and synthesized summaries, with Method and Manual-check lines naming the command that would reproduce each. Where the escalation asks for raw output, run those commands and attach what they print |
 | Device logs covering the failure window | **No** — switch / AP / firewall |
 | Config exports of the devices in the path | **No** |
 | Reproduction steps and the workaround | **No** |
@@ -197,7 +197,7 @@ The SOP's package asks for eight things. The report covers three of them and par
 
 Attach whichever of the three formats the run actually wrote — the **HTML** where it exists (readable by anyone) and the **JSON** (machine-readable, schema 2, carries the run options and the fingerprint). A run that wrote only TXT and JSON is a supported outcome, not a failed run. Name in the ticket, in this order: the machine, the time of the run, the verdict, the fingerprint, and one sentence saying what the run excluded. *(Hand-off and delivery report templates are planned for this folder; until they exist, those five facts in that order are the wording.)*
 
-**Personal data.** The reports carry the computer name, the user name, adapter MAC addresses and the Wi-Fi network name — the tool says so in its own summary. That is normally fine inside a support ticket; it matters when the ticket leaves the organization.
+**Personal data.** The package's own privacy section (`README_*.txt`, "Security and privacy") is the list to go by, and it is longer than the four fields the report's summary names: computer name, user name, **adapter / MAC / IP / gateway / DNS data**, the Wi-Fi network name **and the access-point BSSID**, **the test targets**, and **exception details**. Normally fine inside a support ticket; apply the organization's handling or redaction policy before one leaves it.
 
 ---
 
