@@ -538,25 +538,48 @@ Assert-True '30. exit code 1' ($r30.ExitCode -eq 1) ('exit code ' + $r30.ExitCod
 
 # -------------------- 31. the edition decides how the policy scenarios are done --------------------
 Write-Output ''
-Write-Output '31. the summary names the edition; on a crafted Pro state M9 reaches the gate with the Pro note, on a crafted Home state it is skipped before anyone is asked, and M8 names the registry lines as the way for this machine, recorded in its facts and in RECOVER.txt - whatever the edition of the host running the self-test (Codex round 2 on PR #14)'
+Write-Output '31. the summary names the edition; on a crafted Home state and on a crafted Windows 10 build below 2004 M9 is skipped before anyone is asked while on a crafted Pro state at a supported build it reaches the gate - KB 5024351 ended the edition requirement above that floor - and M8 names the registry lines as the way for this machine, recorded in its facts and in RECOVER.txt - whatever the edition of the host running the self-test (Codex round 2 on PR #14; the Pro reading corrected in Codex round 1 on PR #16)'
 $r31 = Invoke-Campaign 'edition' @('-Zip', $zip, '-Scenarios', 'M9') "M9=skip`r`n"
 $summary31 = Get-Content -LiteralPath (Join-Path $r31.State 'campaign_summary.md') -Raw -Encoding UTF8
 Assert-True '31. the summary header names the edition and the consoles' ($summary31 -match '(?m)^- Edition: .+ \(EditionID \w+, .*build \d+\.\d+\); gpedit\.msc: (yes|no); secpol\.msc: (yes|no)\r?$') (($summary31 -split "`n" | Where-Object { $_ -like '- Edition:*' }) -join ' / ')
 $stateFile31 = Join-Path $r31.State 'campaign.json'
-function Set-CraftedEdition([string]$Path, [bool]$HomeEdition, [string]$Id, [string]$Caption, [bool]$Consoles) {   # not $Home: that is PowerShell's own read-only variable
+function Set-CraftedEdition([string]$Path, [bool]$HomeEdition, [string]$Id, [string]$Caption, [bool]$Consoles, [string]$Build = '22621.1') {   # not $Home: that is PowerShell's own read-only variable
+    # The build is crafted too, because M9's prerequisite reads it: below Windows 10 2004 (19041) a Group-Policy
+    # deployment still needs Enterprise, Education or Server, and the assertions must not depend on the host's own build.
     $c = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
-    $c.Edition.IsHome = $HomeEdition; $c.Edition.EditionId = $Id; $c.Edition.Caption = $Caption; $c.Edition.HasGpedit = $Consoles; $c.Edition.HasSecpol = $Consoles
+    $c.Edition.IsHome = $HomeEdition; $c.Edition.EditionId = $Id; $c.Edition.Caption = $Caption; $c.Edition.HasGpedit = $Consoles; $c.Edition.HasSecpol = $Consoles; $c.Edition.Build = $Build
     [IO.File]::WriteAllText($Path, ($c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
 }
 Set-CraftedEdition $stateFile31 $false 'Professional' 'Microsoft Windows 11 Pro' $true
+# On a supported Pro build the scenario reaches the gate, so this invocation must consume exactly one gate answer and
+# the M9 gate count must grow by one; the crafted Home and pre-2004 states below are the opposite, where the count may
+# not move at all. Counted around each invocation rather than over the whole log, because the first one ran on whatever
+# edition the host running the self-test happens to be - and on a host whose own state answered nothing there is no
+# answers.log to read, which is why the helper returns 0 for a missing file rather than throwing.
+function Get-M9GateCount([string]$StatePath) {
+    $log = Join-Path $StatePath 'answers.log'
+    if (-not (Test-Path -LiteralPath $log)) { return 0 }
+    return @(Get-Content -LiteralPath $log | Where-Object { $_ -match ' M9/gate ' }).Count
+}
+$gatesBefore31 = Get-M9GateCount $r31.State
 $r31a = Invoke-Campaign 'edition' @('-Resume', '-Redo', 'M9', '-Scenarios', 'M9') "M9=skip`r`n"
 $s31a = Read-State $r31.State
-$gates31 = @(Get-Content -LiteralPath (Join-Path $r31.State 'answers.log') | Where-Object { $_ -match ' M9/gate ' }).Count
-Assert-True '31. on Pro, M9 reaches the gate with the note that Pro does not enforce' ($s31a.Scenarios.M9.Result -eq 'SKIPPED' -and $s31a.Scenarios.M9.Detail -eq 'skipped by the user' -and (($r31a.Output -join ' ') -match 'prerequisite met - Microsoft Windows 11 Pro: Pro holds AppLocker rules but does not enforce them') -and $gates31 -ge 1) ($s31a.Scenarios.M9.Result + ' / ' + $s31a.Scenarios.M9.Detail + ' / gates ' + $gates31)
+$gates31 = Get-M9GateCount $r31.State
+Assert-True '31. on Pro, M9 reaches the gate: since Windows 10 2004 with KB 5024351 the edition does not decide enforcement' ($s31a.Scenarios.M9.Result -eq 'SKIPPED' -and $s31a.Scenarios.M9.Detail -eq 'skipped by the user' -and (($r31a.Output -join ' ') -match 'prerequisite met - Microsoft Windows 11 Pro \(EditionID Professional\)') -and $gates31 -eq ($gatesBefore31 + 1)) ($s31a.Scenarios.M9.Result + ' / ' + $s31a.Scenarios.M9.Detail + ' / gates ' + $gatesBefore31 + ' -> ' + $gates31)
 Set-CraftedEdition $stateFile31 $true 'Core' 'Microsoft Windows 11 Home' $false
 $r31b = Invoke-Campaign 'edition' @('-Resume', '-Redo', 'M9', '-Scenarios', 'M9') "M9=done`r`n"
 $s31b = Read-State $r31.State
-Assert-True '31. on Home, M9 is skipped before anyone is asked, with the edition named' ($s31b.Scenarios.M9.Result -eq 'SKIPPED' -and $s31b.Scenarios.M9.Detail -like 'prerequisite not met: AppLocker is not available on this edition (Microsoft Windows 11 Home, EditionID Core)*' -and @(Get-Content -LiteralPath (Join-Path $r31.State 'answers.log') | Where-Object { $_ -match ' M9/gate ' }).Count -eq $gates31) ($s31b.Scenarios.M9.Result + ' / ' + $s31b.Scenarios.M9.Detail)
+Assert-True '31. on Home, M9 is skipped before anyone is asked, with the edition named' ($s31b.Scenarios.M9.Result -eq 'SKIPPED' -and $s31b.Scenarios.M9.Detail -like 'prerequisite not met: AppLocker is not available on this edition (Microsoft Windows 11 Home, EditionID Core)*' -and (Get-M9GateCount $r31.State) -eq $gates31) ($s31b.Scenarios.M9.Result + ' / ' + $s31b.Scenarios.M9.Detail)
+Set-CraftedEdition $stateFile31 $false 'Professional' 'Microsoft Windows 10 Pro' $true '18363.1234'
+$r31d = Invoke-Campaign 'edition' @('-Resume', '-Redo', 'M9', '-Scenarios', 'M9') "M9=done`r`n"
+$s31d = Read-State $r31.State
+Assert-True '31. on a Windows 10 build below 2004, M9 is skipped before anyone is asked: there the edition still decides' ($s31d.Scenarios.M9.Result -eq 'SKIPPED' -and $s31d.Scenarios.M9.Detail -like 'prerequisite not met: AppLocker policies deployed through Group Policy are supported on Enterprise, Education and Server editions below Windows 10 version 2004 (Microsoft Windows 10 Pro, EditionID Professional, build 18363.1234)*' -and (Get-M9GateCount $r31.State) -eq $gates31) ($s31d.Scenarios.M9.Result + ' / ' + $s31d.Scenarios.M9.Detail)
+Set-CraftedEdition $stateFile31 $true 'Core' 'Microsoft Windows 11 Home' $false
+# M9's service facts are crafted rather than measured, so that the way-back lines below do not depend on the
+# Application Identity service of whatever host runs the self-test; every invocation rewrites RECOVER.txt from the state.
+$crafted31 = Get-Content -LiteralPath $stateFile31 -Raw -Encoding UTF8 | ConvertFrom-Json
+$crafted31.Scenarios.M9.Facts = [pscustomobject]@{ AppIDSvcStartType = 'Manual'; AppIDSvcStatus = 'Stopped' }
+[IO.File]::WriteAllText($stateFile31, ($crafted31 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
 $r31c = Invoke-Campaign 'edition' @('-Resume', '-Scenarios', 'M8') "M8=skip`r`n"
 $out31c = $r31c.Output -join "`n"
 Assert-True '31. on Home, M8 names the registry lines as the way for this machine' (($out31c -match 'This machine: Microsoft Windows 11 Home \(EditionID Core\) - no gpedit\.msc: take the registry lines') -and ($out31c -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_SZ /d AllSigned /f')) (($r31c.Output | Where-Object { $_ -match 'This machine|reg add' }) -join ' / ')
@@ -564,6 +587,14 @@ $s31c = Read-State $r31.State
 Assert-True '31. M8 recorded how the policy is applied here' ([string]$s31c.Scenarios.M8.Facts.PolicyWay -eq 'registry' -and [string]$s31c.Scenarios.M8.Facts.Edition -eq 'Microsoft Windows 11 Home / Core') ('facts: ' + ($s31c.Scenarios.M8.Facts | ConvertTo-Json -Compress))
 $recover31 = $(if (Test-Path -LiteralPath (Join-Path $r31.State 'RECOVER.txt')) { Get-Content -LiteralPath (Join-Path $r31.State 'RECOVER.txt') -Raw } else { '' })
 Assert-True '31. RECOVER.txt carries the way back without gpedit as well' ($recover31 -match 'reg delete "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /f') ('RECOVER.txt length ' + $recover31.Length)
+# M9's way back: the recorded startup type as a command that runs as written. A note after the command on the same
+# line is not a comment to sc.exe or reg.exe, it is more arguments, and this file exists to be copied from (Codex
+# round 1 on PR #16). The registry line is there because sc config is refused once the Script rules are gone.
+$recoverLines31 = @(Get-Content -LiteralPath (Join-Path $r31.State 'RECOVER.txt'))
+$scLine31 = @($recoverLines31 | Where-Object { $_ -match '^\s*sc config AppIDSvc start= demand\s*$' })
+$stopLine31 = @($recoverLines31 | Where-Object { $_ -match '^\s*net stop AppIDSvc\s*$' })
+$regLine31 = @($recoverLines31 | Where-Object { $_ -match '^\s*reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\AppIDSvc" /v Start /t REG_DWORD /d 3 /f\s*$' })
+Assert-True '31. RECOVER.txt gives M9 its recorded service commands, one per line and runnable as written' ($scLine31.Count -eq 1 -and $stopLine31.Count -eq 1 -and $regLine31.Count -eq 1 -and ($recover31 -match 'Access is denied')) (($recoverLines31 | Where-Object { $_ -match 'AppIDSvc' }) -join ' | ')
 
 # -------------------- 32. the standard-user session gets a file to run --------------------
 Write-Output ''
