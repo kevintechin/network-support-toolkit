@@ -42,7 +42,11 @@ Three rules for filling it in:
 
 ## 2 · Symptom, in the reporter's words `[both]`
 
-> *Quote them. Their words are evidence about what they can and cannot see; your paraphrase is not.*
+| | |
+|---|---|
+| **They said** | *quote them* |
+
+> *Their words are evidence about what they can and cannot see; your paraphrase is not.*
 
 **Front door** — the four isolation questions, answered before anything was touched:
 
@@ -81,6 +85,8 @@ Three rules for filling it in:
 
 | What | Where read | Value |
 |---|---|---|
+| | | |
+| | | |
 
 ## 4 · What is excluded, and by what evidence `[hand-off]`
 
@@ -109,6 +115,8 @@ Three rules for filling it in:
 
 | # | Change (one at a time) | Predicted | Observed | Reverted? |
 |---|---|---|---|---|
+| 1 | | | | |
+| 2 | | | | |
 
 ## 7 · Impact and workaround `[both]`
 
