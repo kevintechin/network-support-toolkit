@@ -136,7 +136,7 @@ Grouped by the SOP's three families of state. **Main** rows shape the verdict; *
 
 | Row | Scope | Testifies to | Limit |
 |---|---|---|---|
-| `adapters`, `adapter` | Main | The **connected and addressed** adapters — status Up *and* holding an IPv4 or IPv6 address — physical vs virtual, with their addresses | **Not an inventory of the hardware.** A disabled, down or unaddressed NIC never reaches the report (the CIM fallback reads IP-enabled configurations only), so "the report shows one adapter" does not mean the machine has one. Virtual adapters are classified by their flags first, description second; a VM's NIC can be described like a physical one |
+| `adapters`, `adapter` | Main | The **connected and addressed** adapters — status Up *and* holding an IPv4 or IPv6 address — physical vs virtual, with their addresses | **Not an inventory of the hardware.** A disabled, down or unaddressed NIC never reaches the report, so "the report shows one adapter" does not mean the machine has one. And on the **CIM fallback path** — taken when `Get-NetIPConfiguration` is unavailable — the rows say `Up` because the fallback hard-codes that status over IP-enabled configurations: a disconnected adapter still holding a static address appears there as connected. The `data-source` row says which path produced the rows; read it before clearing the local link on this evidence. Virtual adapters are classified by their flags first, description second; a VM's NIC can be described like a physical one |
 | `gateway-config`, `dns-config` | Main | What the client is *configured* with, and where it came from (DHCP vs static) | Config, not state — the SOP's own warning applies |
 | `routes` | IT | The IPv4 default route as the machine sees it | Since 1.2.3 a machine with no default route reads `INFO — No IPv4 default route exists.` rather than an error |
 | `gateway-neighbor` | IT | The gateway's MAC **as the neighbour cache holds it**, with the entry's state | A cache read, not a probe: `Get-NetNeighbor` / `arp -a` report an entry that may be stale, so presence alone proves nothing about the link *now*. A `Reachable` entry is Rule 3's second witness for a failed gateway ping; a stale one is history — corroborate it with the TCP or HTTP rows before convicting or clearing the link |
@@ -182,7 +182,7 @@ The launcher exits `1` on every failure path and names the program's own exit co
 
 ## 7 · Into the escalation package
 
-The SOP's package asks for eight things. The report covers three of them and part of a fourth — know which, so the rest is not forgotten.
+The SOP's package asks for eight things. **The report fully covers none of them.** It contributes to two — the raw-output item and the exclusions — and the other six are yours to bring. Know which, so the rest is not forgotten.
 
 | SOP package item | Covered by the report? |
 |---|---|
@@ -197,7 +197,7 @@ The SOP's package asks for eight things. The report covers three of them and par
 
 Attach whichever of the three formats the run actually wrote — the **HTML** where it exists (readable by anyone) and the **JSON** (machine-readable, schema 2, carries the run options and the fingerprint). A run that wrote only TXT and JSON is a supported outcome, not a failed run. Name in the ticket, in this order: the machine, the time of the run, the verdict, the fingerprint, and one sentence saying what the run excluded. *(Hand-off and delivery report templates are planned for this folder; until they exist, those five facts in that order are the wording.)*
 
-**Personal data.** The package's own privacy section (`README_*.txt`, "Security and privacy") is the list to go by, and it is longer than the four fields the report's summary names: computer name, user name, **adapter / MAC / IP / gateway / DNS data**, the Wi-Fi network name **and the access-point BSSID**, **the test targets**, and **exception details**. Normally fine inside a support ticket; apply the organization's handling or redaction policy before one leaves it.
+**Personal data.** The package's own privacy section (`README_*.txt`, "Security and privacy") is the list to go by, and it is longer than the four fields the report's summary names: computer name, user name, **adapter / MAC / IP / gateway / DNS data**, the Wi-Fi network name **and the access-point BSSID**, **the test targets**, and **exception details**. The package's instruction is unconditional — handle them according to company policy — so apply that policy **before a report is stored or shared at all**, and let the policy, not this manual, decide whether an internal ticket is treated differently from an external one.
 
 ---
 
@@ -206,7 +206,7 @@ Attach whichever of the three formats the run actually wrote — the **HTML** wh
 - **"Healthy" is a scope, not a verdict on the network.** It means the endpoint's view was fine during that run.
 - **Intermittent faults need a run during the fault.** One clean run proves nothing about a problem that comes and goes; two runs — one clean, one during — are worth more than either alone.
 - **The quality rows measure the machine's own traffic.** A big download, a backup, or a busy remote session during the sample will move the retransmission ratio. Ask what the machine was doing.
-- **A machine with no wireless adapter still produces a `wifi` row** — an INFO row saying no connected Wi-Fi interface was found (wired, radio off, or no adapter), with the interface count beneath it. Even a machine without `netsh.exe` gets a row saying that. The *absence* of any `wifi` row means one thing only: the optional `WifiRf` check is switched off in the config. Never read a disabled diagnostic as evidence about the hardware.
+- **A machine with no wireless adapter still produces a `wifi` row** — an INFO row saying no connected Wi-Fi interface was found (wired, radio off, or no adapter), with the interface count beneath it. Even a machine without `netsh.exe` gets a row saying that. In a run that reached the IT diagnostics at all, the *absence* of any `wifi` row means one thing: the optional `WifiRf` check is switched off in the config. A report that stopped before them — an unsupported Windows version, or PowerShell below 5, each of which writes a normal report and returns early — carries no `wifi` row either, so read the environment rows before concluding anything. Never read a disabled or unreached diagnostic as evidence about the hardware.
 - **Thresholds are generic until someone sets them.** A WARN against defaults on a high-latency WAN link is a statement about the defaults.
 - **A report is about one machine at one moment.** Check the computer name and the timestamp before you reason from it — reports get forwarded, renamed and re-sent.
 - **Do not let the tool replace the front door.** The four isolation questions cost nothing and cut more search space than any single endpoint reading.
