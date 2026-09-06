@@ -10,7 +10,9 @@ Companion to the [Network Troubleshooting SOP](network-troubleshooting-sop.md) a
 
 ## How to use it
 
-Copy everything below the second rule. Each section carries a marker:
+**Copy sections 1 to 9** — everything between the rule below and the line that says the template ends. The filled example after it is an illustration and must never travel into a ticket: it carries a real lab machine's name and measurements that are not yours.
+
+Each section carries a marker:
 
 - **`[both]`** — fill it in whichever report you are writing
 - **`[hand-off]`** — for an escalation to L3; delete it for a delivery report
@@ -48,6 +50,13 @@ Three rules for filling it in:
 | **What changed** | config, firmware, new device, cabling, power — in the last 24–72 h |
 | **Failure fingerprint** | no IP (169.254.x.x) · IP but gateway unreachable · gateway OK but internet dead · IP works, names fail |
 | **Constant or intermittent** | *intermittent points at RF, congestion, duplex, retransmissions* |
+
+**Timeline** — *the SOP asks for it beside the blast radius, and "first observed" is not one. Outages, recoveries, recurrences, and what you did, in the order they happened.*
+
+| Time | Event |
+|---|---|
+| | |
+| | |
 
 ## 3 · What was measured `[both]`
 
@@ -102,7 +111,15 @@ Three rules for filling it in:
 | Business impact / severity | |
 | Workaround in place | *and whether the reporter knows about it* |
 
-## 8 · The ask `[both]`
+## 8 · Closure, and the ask `[both]`
+
+**Closure** — *only when the case is resolved. The SOP's second rule: close the loop end to end, then confirm with the user and write it down. A delivery report without this is a claim, not a result.*
+
+| | |
+|---|---|
+| End-to-end retest | valid IP → gateway → external IP → a name → **the application the user actually cares about** |
+| That application | works / does not |
+| User confirmed service is restored | *who, and when* |
 
 **Hand-off** — name the rule that was invoked, because it says what kind of help is needed:
 
@@ -132,6 +149,8 @@ Three rules for filling it in:
 
 ---
 
+*End of the copyable template. What follows is an example, not part of it — do not paste it into a ticket.*
+
 ## A filled example — the shape, not the wording
 
 *An illustration, not a transcript. The measurements come from the acceptance campaign's `A3` scenario — a lab machine deliberately moved to a host-only network, which is a real "an address, no gateway" case, run on both campaign machines; the wording around them is mine. Abbreviated to the sections a delivery report keeps.*
@@ -144,6 +163,6 @@ Three rules for filling it in:
 
 **5 · Isolated to** — The segment the machine is attached to: it has an address, but no default route exists, so nothing beyond that segment is reachable. The link itself is up and the adapter is healthy; nothing above the gateway was tested, because nothing could be reached to test it.
 
-**8 · Delivery** — This machine has an address but no way out of its own segment: the network it is attached to hands out addresses without a router. Move it back to the office segment, or add a gateway to that segment's DHCP scope.
+**8 · Delivery** — This machine has an address but no way out of its own segment: no default route exists, so nothing beyond that segment can be reached. *What this run does not settle:* whether the address was leased or configured by hand. The measured shape — an address, no gateway — is identical either way, and the report's own DHCP mode field is what separates them (field manual, §4.1). It decides the owner: leased, and the scope is handing out addresses without a router option; static, and the client's configuration is missing its gateway. Read that field before telling anyone which to fix; moving the machine back to the office segment resolves it either way.
 
 **9 · Attachments** — HTML and JSON of the run. No device logs: the segment has no switch to read.
