@@ -152,6 +152,7 @@ One fingerprint, two failing rows, three different first moves. **Read which row
 |---|---|---|
 | **169.254.x.x**, with the adapter's details showing **DHCP enabled** | DHCP did not answer — the SOP's own first fingerprint, and nothing to do with client configuration | **1 → 3 → 5**: port VLAN, uplink, relay, scope |
 | **169.254.x.x**, but the details say **DHCP disabled / static** | Someone configured a link-local address by hand. The tool's row says this "usually means DHCP did not provide an address" — it reads the address alone and does not check the mode, so read the mode yourself | **1** — client configuration |
+| **169.254.x.x**, and the details say **DHCP: Unknown** | The tool could not read the mode at all — `Get-NetIPInterface` was unavailable or answered neither way, and the CIM path can carry the same gap. `Unknown` is the field's default, not a measurement, and the APIPA message does not settle it either | **Ask before you walk**: have the user read the `DHCP Enabled` line of `ipconfig /all` for that adapter, then take one of the two rows above. Choosing a lane on an unknown mode is a coin toss between a DHCP outage and a client misconfiguration |
 | A real address **from DHCP**, but no gateway | The scope handed out no router option, or it was removed | **5** for the scope's options, with **1** to confirm what the client received |
 | A **static** address and no gateway | Client-side configuration, DHCP nowhere in the picture | **1** |
 
