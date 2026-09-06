@@ -68,9 +68,9 @@ Three rules for filling it in:
 
 **NetworkHealthCheck runs**
 
-| # | When | Entry point | Verdict | Fingerprint | Note |
+| # | When | Entry point / mode | Verdict | Fingerprint | Note |
 |---|---|---|---|---|---|
-| 1 | | user / IT / console | Overall Healthy · Attention Required · Test Incomplete · Problem Detected | | |
+| 1 | | *user or IT* — *GUI or console* | Overall Healthy · Attention Required · Test Incomplete · Problem Detected | | |
 
 *Targets added for this case, and what they returned:*
 
@@ -190,7 +190,7 @@ Three rules for filling it in:
 
 **3 · What was measured** — One console run, verdict **Problem Detected**, fingerprint `local`. The shape recorded on both machines: `gateway-config` FAIL (no IPv4 gateway on any adapter); `ping-gateway` FAIL, because `AUTO_GATEWAY` resolved to nothing; DNS timed out; and the IT-scope `gateway-neighbor` row `INFO — No IPv4 default gateway to look up.` On the 1.2.3 run the `routes` row read `INFO — No IPv4 default route exists.` — the fact rather than an error, which is what backlog #27 changed.
 
-**5 · Isolated to** — The segment the machine is attached to: it has an address, but no default route exists, so nothing beyond that segment is reachable. Nothing above the gateway was tested, because nothing could be reached to test it. *Not excluded:* the adapter itself — its row says **connected and addressed**, which is not the same as verified healthy. Nothing here tests the NIC, the driver or the physical path, and on the CIM fallback path even a disconnected adapter holding a static address reports as `Up` (field manual, §5).
+**5 · Isolated to** — The segment the machine is attached to. It holds an address and has no IPv4 default gateway, and **every configured destination beyond the segment failed in this run** — the gateway ping, DNS, and the external targets. *Not excluded:* the adapter itself — its row says **connected and addressed**, which is not the same as verified healthy; nothing here tests the NIC, the driver or the physical path, and on the CIM fallback path even a disconnected adapter holding a static address reports as `Up` (field manual, §5). *Nor is the whole of upstream excluded:* a more specific route, or IPv6, would not show in the IPv4 default-route rows, and this run did not look for either.
 
 **7 · Impact and workaround** — This machine only, and it is a lab VM: nothing outside the campaign was affected, and no workaround was needed.
 
