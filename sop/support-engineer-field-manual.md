@@ -73,7 +73,7 @@ zh-TW equivalents, if that is the user's language:
 |---|---|---|
 | A user running it for you | `Start-NetworkCheck.cmd` | Starts and runs everything by itself |
 | You (or IT) at the machine | `Start-NetworkCheck-IT.cmd` | Opens a run-options panel — extra ping/TCP targets, sample length, optional checks — and **nothing runs until Start is clicked**; the HTML opens with the IT diagnostics expanded |
-| No GUI, or the window will not open | `Start-NetworkCheck-Console.cmd` | Same checks in text mode; the same options work as switches |
+| No GUI, or the window will not open | `Start-NetworkCheck-Console.cmd` | Same checks in text mode. **The launcher forwards no arguments** — it always runs the script with `-ConsoleOnly` alone, so options given to the `.cmd` are silently ignored. To set targets or sample length in console mode, run the script directly, the form the package README shows: `powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -ConsoleOnly -PingTarget 10.0.0.1 -SampleSeconds 20` |
 
 **What to ask for.** The run writes three files into a `Reports\` folder beside the script, named `NetworkHealthCheck_<yyyyMMdd>_<HHmmss>_<COMPUTER>`:
 
@@ -100,7 +100,7 @@ Four moves, in this order. Resist reading the rows first.
 
 2. **"What to tell IT"** — the summary block under the verdict. It names the *fingerprint*: the tool's own reading of which lane the fault is in. This is the line that decides your next station (§4).
 
-3. **The failed rows only.** Each row carries a **Method** line (how it was measured) and a **Manual check** line (the command that reproduces it by hand). If you are going to disagree with a row, reproduce it with that command first.
+3. **Every highlighted row — FAIL, ERROR and WARN.** An `Attention Required` report has no failed rows at all; its evidence is entirely in the warnings, and reading only failures would skip the thing that produced the verdict. Most rows carry a **Method** line (how it was measured) and a **Manual check** line (the command that reproduces it by hand) — if you are going to disagree with a row, run that command first. Not every row has one: the connectivity group is derived from its members, and some IT rows only state what they read.
 
 4. **The IT diagnostics**, collapsed by default: Wi-Fi radio, routes, gateway ARP, proxy, traceroute, drivers. **These never change the verdict** — the tool computes the verdict from the user-scope rows alone. They are evidence, not judgement, and that is deliberate: an IT-only observation should never turn a user's report red.
 
@@ -110,19 +110,19 @@ Four moves, in this order. Resist reading the rows first.
 
 ## 4 · The join — from fingerprint to station
 
-The fingerprint is the tool's answer to the SOP's third front-door question, computed from the rows rather than guessed. Nine values:
+The fingerprint is the tool's answer to the SOP's third front-door question, computed from the rows rather than guessed. Nine values, chosen by an **ordered chain — the first rule that matches wins**, which is why a fingerprint tells you as much by what it rules out as by what it names. Read the rule, not just the title: two of them cover more than one situation.
 
-| Fingerprint | Report says | SOP lane | Go to | Ask for next |
+| Fingerprint · title | Chosen when | SOP lane | Go to | Ask for next |
 |---|---|---|---|---|
-| `local` | Local link problem | **No IP** — DHCP path | **1 → 3 → 5** | Port link state and PVID; the DHCP scope's utilization. The report says whether the address came from DHCP or is static, but **not which server answered** — for the rogue-DHCP question you still need `ipconfig /all`'s `DHCP Server` line from the user |
-| `gateway-unreachable` | Gateway does not answer | **IP, gateway unreachable** — local L1/L2 | **2** (wireless) or **3** (wired) | Port error-counter delta, two samples; MAC learned on the expected port and VLAN; for Wi-Fi, the AP client table — the report's own RSSI is the client's view, weaker evidence |
-| `gateway-up-internet-dead` | Gateway answers, internet does not | **Gateway OK, internet dead** | **5 → 6 → 8** | Default route present at the gateway; NAT translation and policy hit counters; WAN status. The report's traceroute row lists the first hops with their times and shows silent ones as `*` — read the last hop that answered; it names the boundary |
-| `dns` | Name resolution fails | **IP works, names fail** | **7** | Which servers the client actually points at (the report's DNS rows say), then the failure type — timeout vs SERVFAIL vs NXDOMAIN |
-| `quality` | Connected, but quality is poor | **Intermittent** — front door Q4 | **2 → 3** | Counter deltas at the port; RF numbers from the AP; a second run **while the problem is happening** |
-| `mixed` | A required check failed | More than one lane is lit | Read the failed rows | The rows disagree with each other — reproduce the two most severe with their Manual-check lines before choosing a station |
-| `attention` | Warnings to review | No lane is lit | Judgement | Whether the warned thresholds match this site's baseline; the defaults are generic starting values |
-| `incomplete` | Some checks could not run | No lane is lit | §6, then judgement | What blocked the measurement — the details name it; a restricted or locked-down machine is itself a finding |
-| `healthy` | Everything passed | None | Application or server side, or intermittent | A run **during** the failure; if the user reports a problem and this comes back clean, the endpoint's view is not where the fault is |
+| `local` · Local link problem | The `adapters` row failed **or** the `gateway-config` row failed | **Two different faults.** No working adapter → the **No IP** / DHCP lane. An address with a missing or wrong default gateway → a **client-side configuration** fault, which a static address can produce with DHCP nowhere in the picture | **1 → 3 → 5** when there is no adapter or no lease; **1** first when the adapter is up and only the gateway is missing | Which of the two rows failed — read that before choosing the lane. No lease: port link state and PVID, the DHCP scope's utilization. Gateway missing on a working adapter: the adapter's own gateway setting and whether the address is static. The report says whether the address came from DHCP or is static, but **not which server answered** — for the rogue-DHCP question you still need `ipconfig /all`'s `DHCP Server` line from the user |
+| `gateway-unreachable` · Gateway does not answer | A `ping-gateway` row failed and none passed | **IP, gateway unreachable** — local L1/L2 | **2** (wireless) or **3** (wired) | Port error-counter delta, two samples; MAC learned on the expected port and VLAN; for Wi-Fi, the AP client table — the report's own RSSI is the client's view, weaker evidence |
+| `gateway-up-internet-dead` · Gateway answers, internet does not | A gateway ping passed, a `connectivity-group` failed and none passed | **Gateway OK, internet dead** | **5 → 6 → 8** | Default route present at the gateway; NAT translation and policy hit counters; WAN status. The report's traceroute row lists the first hops with their times and shows silent ones as `*` — read the last hop that answered; it names the boundary |
+| `dns` · Name resolution fails | A `dns` row failed or warned, none passed, **and something else worked** (a connectivity group or a TCP row passed) | **IP works, names fail** | **7** | Which servers the client actually points at (the report's DNS rows say), then the failure type — timeout vs SERVFAIL vs NXDOMAIN |
+| `quality` · Connected, but quality is poor | A quality row (`ping-target`, `ping-gateway`, `tcp-retransmissions`, `adapter-errors`) warned or failed **and nothing else did** | **Intermittent** — front door Q4 | **2 → 3** | Counter deltas at the port; RF numbers from the AP; a second run **while the problem is happening** |
+| `mixed` · A required check failed | Overall FAIL that none of the rules above matched — **one unclassified required failure is enough**, and a single `expected-standard` row lands here | The lane is not named for you | Read the failed rows | Reproduce each failed row with its Manual-check line; there may be only one. If it is `expected-standard`, check the config's expectations against this site before treating it as a fault |
+| `attention` · Warnings to review | Overall WARN that the quality rule did not match | No lane is lit | Judgement | Whether the warned thresholds match this site's baseline; the defaults are generic starting values |
+| `incomplete` · Some checks could not run | Overall ERROR — something could not be measured | No lane is lit | §6, then judgement | What blocked the measurement — the details name it; a restricted or locked-down machine is itself a finding |
+| `healthy` · Everything passed | Nothing above matched and every required check passed | None | Application or server side, or intermittent | A run **during** the failure; if the user reports a problem and this comes back clean, the endpoint's view is not where the fault is |
 
 **A healthy report does not clear the network.** It clears *this endpoint's view, at that moment*. Say that in the ticket rather than "the tool says it's fine".
 
@@ -195,7 +195,7 @@ The SOP's package asks for eight things. The report covers three of them and par
 | Reproduction steps and the workaround | **No** |
 | Business impact and severity | **No** |
 
-Attach the **HTML** (readable by anyone) and the **JSON** (machine-readable, schema 2, carries the run options and the fingerprint). Name in the ticket: the machine, the time of the run, the verdict, the fingerprint, and one sentence saying what the run excluded. Use the report templates beside this manual for the wording.
+Attach the **HTML** (readable by anyone) and the **JSON** (machine-readable, schema 2, carries the run options and the fingerprint). Name in the ticket, in this order: the machine, the time of the run, the verdict, the fingerprint, and one sentence saying what the run excluded. *(Hand-off and delivery report templates are planned for this folder; until they exist, those five facts in that order are the wording.)*
 
 **Personal data.** The reports carry the computer name, the user name, adapter MAC addresses and the Wi-Fi network name — the tool says so in its own summary. That is normally fine inside a support ticket; it matters when the ticket leaves the organization.
 
@@ -206,7 +206,7 @@ Attach the **HTML** (readable by anyone) and the **JSON** (machine-readable, sch
 - **"Healthy" is a scope, not a verdict on the network.** It means the endpoint's view was fine during that run.
 - **Intermittent faults need a run during the fault.** One clean run proves nothing about a problem that comes and goes; two runs — one clean, one during — are worth more than either alone.
 - **The quality rows measure the machine's own traffic.** A big download, a backup, or a busy remote session during the sample will move the retransmission ratio. Ask what the machine was doing.
-- **No wireless adapter means no `wifi` rows at all.** Their absence is not a fault; it is a VM, a desktop, or a disabled radio.
+- **A machine with no wireless adapter still produces a `wifi` row** — an INFO row saying no connected Wi-Fi interface was found (wired, radio off, or no adapter), with the interface count beneath it. What the *absence* of any `wifi` row means is different: the optional `WifiRf` check is switched off in the config, or `netsh.exe` was not found. Never read a disabled diagnostic as evidence about the hardware.
 - **Thresholds are generic until someone sets them.** A WARN against defaults on a high-latency WAN link is a statement about the defaults.
 - **A report is about one machine at one moment.** Check the computer name and the timestamp before you reason from it — reports get forwarded, renamed and re-sent.
 - **Do not let the tool replace the front door.** The four isolation questions cost nothing and cut more search space than any single endpoint reading.
@@ -216,5 +216,5 @@ Attach the **HTML** (readable by anyone) and the **JSON** (machine-readable, sch
 ## Related documents
 
 - [Network Troubleshooting SOP](network-troubleshooting-sop.md) — the map this manual walks
-- Report templates (this folder) — the hand-off and the delivery wording
+- Report templates — planned for this folder, not yet written; §7 carries the wording until they are
 - The package's own `README_*.txt` and technical guide — what the tool does and how it decides
