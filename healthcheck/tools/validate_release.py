@@ -49,7 +49,9 @@ def strip_ps(text):
 required=[
  'zh-TW/NetworkHealthCheck.ps1','zh-TW/NetworkHealthCheck.config.json','zh-TW/Start-NetworkCheck.cmd','zh-TW/Start-NetworkCheck-IT.cmd',
  'en-US/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.config.json','en-US/Start-NetworkCheck.cmd','en-US/Start-NetworkCheck-IT.cmd',
- 'docs/NetworkHealthCheck_Technical_Guide_zh-TW.md','docs/NetworkHealthCheck_Technical_Guide_en-US.md'
+ 'docs/NetworkHealthCheck_Technical_Guide_zh-TW.md','docs/NetworkHealthCheck_Technical_Guide_en-US.md',
+ 'en-US/NetworkHealthCheck_User_Manual_en-US.md','en-US/NetworkHealthCheck_User_Manual_en-US.html',
+ 'zh-TW/NetworkHealthCheck_User_Manual_zh-TW.md','zh-TW/NetworkHealthCheck_User_Manual_zh-TW.html'
 ]
 for rel in required: ok('required file '+rel,(ROOT/rel).is_file())
 for rel in ['zh-TW/NetworkHealthCheck.config.json','en-US/NetworkHealthCheck.config.json']:
@@ -64,10 +66,23 @@ ok('PowerShell executable skeleton equality',strip_ps(zh)==strip_ps(en))
 zh_funcs=re.findall(r'^function\s+([A-Za-z0-9_-]+)',zh,re.M); en_funcs=re.findall(r'^function\s+([A-Za-z0-9_-]+)',en,re.M)
 ok('function set equality',zh_funcs==en_funcs,f'zh={len(zh_funcs)}, en={len(en_funcs)}'); ok(f'function count {FUNCTION_COUNT}',len(zh_funcs)==FUNCTION_COUNT,str(len(zh_funcs)))
 cjk=lambda s:any('\u4e00'<=c<='\u9fff' for c in s)
-for rel in ['en-US/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.config.json','en-US/README_en-US.txt']:
-    ok('English file has no CJK '+rel,not cjk(read_text(ROOT/rel)))
+for rel in ['en-US/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.config.json','en-US/README_en-US.txt',
+            'en-US/NetworkHealthCheck_User_Manual_en-US.md','en-US/NetworkHealthCheck_User_Manual_en-US.html']:
+    ok('English file has no CJK '+rel,(ROOT/rel).is_file() and not cjk(read_text(ROOT/rel)))
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     ok('version '+TOOL_VERSION+' '+rel,'$script:ToolVersion = "'+TOOL_VERSION+'"' in read_text(ROOT/rel))
+# Every document that names the version names this one: in its first two lines (the title of a markdown file, the
+# "Version:" line of a text file) or in its <title> (HTML). Until 1.2.4 only the two scripts were checked, and a bump
+# had to find the nine documents by hand.
+versioned=['README_BILINGUAL.md','en-US/README_en-US.txt','zh-TW/README_zh-TW.txt',
+ 'en-US/NetworkHealthCheck_User_Manual_en-US.md','zh-TW/NetworkHealthCheck_User_Manual_zh-TW.md']
+versioned+=[d+'/NetworkHealthCheck_Technical_Guide_'+l+'.md' for d in ('docs','en-US','zh-TW') for l in ('en-US','zh-TW')]
+for rel in versioned:
+    head='\n'.join(read_text(ROOT/rel).splitlines()[:2]) if (ROOT/rel).is_file() else ''
+    ok('document version '+TOOL_VERSION+' '+rel,TOOL_VERSION in head,head.replace('\n',' | ')[:100])
+for rel in ['en-US/NetworkHealthCheck_User_Manual_en-US.html','zh-TW/NetworkHealthCheck_User_Manual_zh-TW.html']:
+    m=re.search(r'<title>([^<]*)</title>',read_text(ROOT/rel)) if (ROOT/rel).is_file() else None
+    ok('document version '+TOOL_VERSION+' '+rel,bool(m) and TOOL_VERSION in m.group(1),m.group(1) if m else 'no <title>')
 # The two PowerShell guards that used to live here - arithmetic at the top level of a New-Object argument list, and a
 # bound parameter overwritten where the write reaches the script scope, the two v1.2.0 GUI regressions - run on the
 # PowerShell AST in the repository's test chain since 2026-09-04 (tests/ast_guards.ps1 with tests/selftest_guards.ps1,

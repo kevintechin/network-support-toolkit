@@ -36,7 +36,7 @@ See [healthcheck/docs](healthcheck/docs/) for the technical guide (design, valid
 
 **IT staff** — double-click **`Start-NetworkCheck-IT.cmd`** in the same folder: the tool opens with a run-options panel (extra targets, sample length, optional checks) and the HTML report opens with the IT diagnostics expanded. The same options work as switches in console mode, e.g. `-ConsoleOnly -PingTarget 10.0.0.1 -TcpTarget fileserver:445 -SampleSeconds 20 -ExpandDetails`.
 
-> If Windows flags the downloaded ZIP: right-click the ZIP → Properties → **Unblock**, then extract. Corporate policies (AppLocker / WDAC) may still block PowerShell — see `en-US/README_en-US.txt` inside the package for details.
+> If Windows flags the downloaded ZIP: right-click the ZIP → Properties → **Unblock**, then extract. Corporate policies (AppLocker / WDAC) may still block PowerShell — the user manual inside the package (`en-US/NetworkHealthCheck_User_Manual_en-US.html`, section 6) says what the person at the machine sees and what to send, and `en-US/README_en-US.txt` holds the notes for IT.
 
 ## Design principles
 

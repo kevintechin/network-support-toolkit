@@ -55,7 +55,7 @@ Every result goes to `campaign.json` the moment it is known — written to a tem
 | Step | Script | Pass | Reference (1.2.1) |
 |---|---|---|---|
 | `parse` | `parse_check.ps1`, both languages | the Windows PowerShell 5.1 parser reports 0 errors | 0 × 2 |
-| `validator` | `healthcheck/tools/validate_release.py` | exit 0 and `Summary: N passed, 0 failed` | 62 / 62 |
+| `validator` | `healthcheck/tools/validate_release.py` | exit 0 and `Summary: N passed, 0 failed` | 85 / 85 |
 | `guards` | `selftest_guards.ps1` over `ast_guards.ps1` | the v1.2.0 files (git `f7c45a9`) are flagged at line 77 / 70 and the six constructor lines, the current files parse and are clean, the corpus is classified as recorded, and a file that does not parse still yields its finding | ALL SELF-TESTS OK; 152 / 33 / 57 cases |
 | `unit` | `unit_tests.ps1`, both languages | exit 0 and 0 failed | 178 × 2 |
 | `report` | `report_stage_tests.ps1`, both languages | exit 0 and 0 failed | 103 × 2 |

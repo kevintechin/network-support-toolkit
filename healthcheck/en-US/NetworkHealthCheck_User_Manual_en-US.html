@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Network Health Check 1.2.4 — User Manual</title>
+<style>
+  :root{
+    --ink:#16233b; --muted:#5b6b85; --line:#d8e0ec; --bg:#f4f7fb; --card:#ffffff;
+    --blue:#1d4ed8; --blue-soft:#e8effd; --green:#0f7b52; --green-soft:#e6f5ee;
+    --red:#b3372e; --red-soft:#faeae8; --amber:#9a6700; --amber-soft:#fcf3e1;
+    --mono:Consolas,"Cascadia Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);color:var(--ink);line-height:1.55;padding:2.2rem 1.4rem}
+  .page{max-width:1060px;margin:0 auto}
+  code{font-family:var(--mono);background:#eef2f8;border:1px solid var(--line);
+    border-radius:4px;padding:.08rem .35rem;font-size:.86em;white-space:nowrap}
+  pre{font-family:var(--mono);font-size:.86rem;background:#eef2f8;border:1px solid var(--line);
+    border-radius:6px;padding:.6rem .8rem;overflow-x:auto;margin-top:.5rem}
+  a{color:var(--blue)}
+  b{font-weight:600}
+
+  header{margin-bottom:1.4rem}
+  header h1{font-size:1.7rem;letter-spacing:-.01em}
+  header h1 .ver{color:var(--muted);font-weight:500}
+  header .tag{color:var(--muted);font-size:1.02rem;margin-top:.2rem}
+  header .meta{color:var(--muted);font-size:.82rem;margin-top:.45rem}
+  .principle{display:flex;gap:.7rem;flex-wrap:wrap;margin:1.1rem 0 .4rem}
+  .principle span{background:var(--blue-soft);color:var(--blue);border:1px solid #c4d5fb;
+    border-radius:999px;padding:.35rem .9rem;font-weight:600;font-size:.9rem}
+
+  nav.toc{font-size:.88rem;color:var(--muted);margin:0 0 1.6rem;display:flex;flex-wrap:wrap;gap:.3rem 1.1rem}
+  nav.toc a{text-decoration:none;color:var(--blue)}
+
+  section{margin-bottom:1.5rem}
+  h2{font-size:1.12rem;margin-bottom:.7rem;display:flex;align-items:baseline;gap:.55rem;flex-wrap:wrap}
+  h2 .num{color:var(--blue);font-weight:700}
+  h3{font-size:.98rem;margin:1rem 0 .45rem}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:1rem 1.15rem;box-shadow:0 1px 2px rgba(22,35,59,.05)}
+  .card p{font-size:.92rem}
+  .card p + p{margin-top:.55rem}
+  .card > h3:first-child{margin-top:0}
+
+  ol.steps{font-size:.92rem;margin:.3rem 0 0 1.3rem}
+  ol.steps li{margin-bottom:.5rem}
+  ul.plain{font-size:.92rem;margin:.3rem 0 0 1.2rem}
+  ul.plain li{margin-bottom:.45rem}
+
+  table{width:100%;border-collapse:collapse;font-size:.9rem;margin-top:.5rem}
+  th,td{text-align:left;padding:.5rem .65rem;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+  tr:last-child td{border-bottom:none}
+  td:first-child{font-weight:600}
+  table.plainfirst td:first-child{font-weight:400}
+
+  .flag{background:var(--amber-soft);border:1px solid #eddcb4;border-radius:8px;
+    padding:.6rem .8rem;font-size:.9rem;margin-top:.8rem}
+  .flag b{color:var(--amber)}
+  .note{font-size:.84rem;color:var(--muted);margin-top:.6rem}
+
+  .badge{display:inline-block;border-radius:999px;padding:2px 9px;font-weight:700;white-space:nowrap;font-size:.84em}
+  .badge.pass{background:#c6f6d5;color:#22543d}
+  .badge.warn{background:#feebc8;color:#7b341e}
+  .badge.fail{background:#fed7d7;color:#822727}
+  .badge.info{background:#bee3f8;color:#2a4365}
+  .badge.error{background:#e9d8fd;color:#553c9a}
+  .verdict{display:inline-block;border-left:5px solid;padding:.05rem .5rem;font-weight:700;white-space:nowrap}
+  .verdict.pass{border-color:#14804a}
+  .verdict.warn{border-color:#b7791f}
+  .verdict.fail{border-color:#c53030}
+  .verdict.error{border-color:#805ad5}
+
+  kbd{font-family:inherit;font-weight:600;background:#f2f5fa;border:1px solid var(--line);border-bottom-width:2px;
+    border-radius:5px;padding:.02rem .4rem;font-size:.9em;white-space:nowrap}
+
+  footer{color:var(--muted);font-size:.8rem;border-top:1px solid var(--line);padding-top:.8rem;margin-top:1rem}
+
+  @media (max-width:760px){
+    body{padding:1.2rem .8rem}
+    table{display:block;overflow-x:auto}
+  }
+  @media print{
+    body{background:#fff;padding:0;font-size:11px}
+    .card{box-shadow:none}
+    section{break-inside:avoid}
+    nav.toc{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <h1>Network Health Check <span class="ver">1.2.4</span></h1>
+  <div class="tag">User Manual — for the person who runs the check</div>
+  <div class="meta">English package (the <code>en-US</code> folder) · the <code>zh-TW</code> folder holds the Traditional Chinese package with its own copy of this manual · IT staff: the configuration notes are in <code>README_en-US.txt</code>, the design and decision rules in the technical guide</div>
+  <div class="principle">
+    <span>It changes nothing</span>
+    <span>It sends nothing</span>
+    <span>Run it while the problem is happening</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <a href="#s1">1 · What the tool is</a>
+  <a href="#s2">2 · Before you start</a>
+  <a href="#s3">3 · Running the check</a>
+  <a href="#s4">4 · Reading the result</a>
+  <a href="#s5">5 · Sending the report</a>
+  <a href="#s6">6 · If something does not work</a>
+  <a href="#s7">7 · The IT entry</a>
+  <a href="#s8">8 · The files</a>
+  <a href="#s9">9 · Questions</a>
+</nav>
+
+<section id="s1">
+  <h2><span class="num">1</span> What the tool is</h2>
+  <div class="card">
+    <p>Network Health Check looks at the network from this computer's point of view and writes down what it finds: which network adapters are connected, what addresses they have, whether the router (the <i>default gateway</i>) answers, whether names can be looked up, whether a few known services can be reached, and whether the connection is losing packets or retransmitting data. The result is a report with a one-line verdict and a short section called <b>What to tell IT</b>.</p>
+    <p><b>It changes nothing.</b> The tool reads network information and runs connection tests — a few pings, a name lookup, a TCP connection and one HTTPS request. It does not modify your IP address, DNS, routes, firewall, proxy or adapter settings, and it installs nothing. Administrator rights are normally not required.</p>
+    <p><b>It sends nothing.</b> The report stays on this computer until you send it yourself.</p>
+    <p><b>How long it takes.</b> About ten seconds on a working network. When things do not answer it takes longer — up to a minute or so — because every test waits for its time limit before giving up.</p>
+  </div>
+</section>
+
+<section id="s2">
+  <h2><span class="num">2</span> Before you start</h2>
+  <div class="card">
+    <ol class="steps">
+      <li><b>Save the ZIP</b> IT sent you (or the one you downloaded from the link they gave) to your computer. Do not open it straight from the browser's download bar.</li>
+      <li><b>Unblock it, if you can.</b> Right-click the ZIP → <kbd>Properties</kbd> → tick <kbd>Unblock</kbd> at the bottom → <kbd>OK</kbd>. Windows marks files downloaded from the internet and asks a security question before running them; unblocking the ZIP before extracting removes that question. If there is no Unblock box, there is nothing to unblock — carry on.</li>
+      <li><b>Extract the whole ZIP.</b> Right-click it → <kbd>Extract All…</kbd> → <kbd>Extract</kbd>. Windows proposes a folder named after the ZIP; that is fine. Any local folder works — the Desktop or Documents, for example.</li>
+      <li><b>Keep the folder together.</b> The launcher needs the program and its configuration file beside it. Move or copy the whole folder, never a single file.</li>
+    </ol>
+    <div class="flag"><b>Do not run it from inside the ZIP window.</b> Double-clicking the ZIP shows its contents as if it were a folder, but it is not one: Windows extracts only the file you double-click into a temporary place. The launcher then finds nothing beside it and stops with <i>"The program file NetworkHealthCheck.ps1 is missing"</i>. Extract first.</div>
+  </div>
+</section>
+
+<section id="s3">
+  <h2><span class="num">3</span> Running the check</h2>
+  <div class="card">
+    <ol class="steps">
+      <li>Open the extracted folder and double-click <b><code>Start-English.cmd</code></b>. (Opening the <code>en-US</code> folder and double-clicking <code>Start-NetworkCheck.cmd</code> does the same thing.)</li>
+      <li>If Windows shows <b>Open File - Security Warning</b>, choose <kbd>Run</kbd>. That is the download mark from section 2; the tool is the same either way.</li>
+      <li>A black text window opens first and stays in the background until the check finishes. Leave it alone.</li>
+      <li>The window <b>Network Health Check Tool 1.2.4</b> opens and <b>starts by itself</b> within a second. You will see:
+        <table>
+          <tr><th>On screen</th><th>What it means</th></tr>
+          <tr><td>Result: Test in progress</td><td>The check is running</td></tr>
+          <tr><td>The progress bar and the line above it</td><td>The step currently running — for a few seconds near the end it reads <i>Sampling TCP retransmissions, approximately N second(s) remaining</i></td></tr>
+          <tr><td>The log</td><td>One line per step and per finding, in the order they happen</td></tr>
+          <tr><td>The buttons</td><td><kbd>Start Test</kbd> is greyed out while the check runs; <kbd>Open Report</kbd>, <kbd>Open Report Folder</kbd> and <kbd>Open JSON</kbd> switch on when it is done; <kbd>Close</kbd> does nothing until then</td></tr>
+        </table>
+      </li>
+      <li><b>Wait for it to finish.</b> The line above the progress bar reads <b>Test Complete</b>, the Result line shows the verdict in colour, and the last log line names the report: <i>Report generated: …</i>. The same path appears under the buttons as <i>Report: …</i>, and <kbd>Start Test</kbd> now reads <kbd>Run Again</kbd>.</li>
+      <li>Click <kbd>Open Report</kbd>. The report opens in your web browser. It is a file on this computer, not a web page on the internet.</li>
+    </ol>
+    <p style="margin-top:.9rem"><b>Run it while the problem is happening.</b> The tool measures one moment on one computer. If the trouble comes and goes, a run made while everything works proves little; a run made during the trouble is the evidence IT needs. Keep using the network the way you normally do while it runs — for a few seconds it measures the computer's own traffic, and a computer doing nothing gives it nothing to measure.</p>
+    <p><b>Running it again.</b> <kbd>Run Again</kbd> starts a new check in the same window. Every run writes a new set of report files with its own time in the name; earlier reports are not overwritten. Two reports — one from a good moment and one from a bad one — are worth more to IT than either alone.</p>
+  </div>
+</section>
+
+<section id="s4">
+  <h2><span class="num">4</span> Reading the result</h2>
+  <div class="card">
+    <h3>The verdict</h3>
+    <p>The Result line in the window and the coloured box at the top of the report show one of four verdicts:</p>
+    <table class="plainfirst">
+      <tr><th>Verdict</th><th>The tool's description</th><th>What it means for you</th></tr>
+      <tr><td><span class="verdict pass">Overall Healthy</span></td><td>All required checks that could be executed passed.</td><td>Everything the check can see is fine at this moment. If your problem continues, it is probably somewhere the check does not reach — the application, a server — or it comes and goes: run again while it is happening.</td></tr>
+      <tr><td><span class="verdict warn">Attention Required</span></td><td>No required check failed, but warnings or quality issues were detected.</td><td>You are connected, but something is off — packet loss, high latency, retransmissions, adapter errors, or another warning. Send the report.</td></tr>
+      <tr><td><span class="verdict fail">Problem Detected</span></td><td>At least one required check failed.</td><td>Something the check requires is broken. The report says which check and what it saw. Send the report.</td></tr>
+      <tr><td><span class="verdict error">Test Incomplete</span></td><td>Some checks could not be completed because of permissions, system components, or execution errors.</td><td>The tool could not measure something on this computer. That is not proof of a network fault, and it is not something you did wrong. Send the report as it is.</td></tr>
+    </table>
+
+    <h3>What to tell IT</h3>
+    <p>Under the verdict, the report has a section called <b>What to tell IT</b>: a title and two to four lines. <b>Read this first</b> — it is the tool's own reading of where the fault is, written for you, and its last line always reminds you which file to send and what it contains.</p>
+    <table>
+      <tr><th>Title</th><th>What it says</th></tr>
+      <tr><td>Everything passed</td><td>All checks passed during this run. If the problem persists, it is likely on the application or server side, or it comes and goes; run the tool again while it is happening.</td></tr>
+      <tr><td>Local link problem</td><td>No working network adapter or no default gateway was found. The fault is on this computer or its link: cable, Wi-Fi association, adapter disabled, or DHCP not answering. Try another device on the same network to see whether only this computer is affected.</td></tr>
+      <tr><td>Gateway does not answer</td><td>The default gateway is configured but does not answer pings. The fault is between this computer and the router: link, Wi-Fi, switch, or the router itself. Check the link light or Wi-Fi signal and whether other devices reach the router.</td></tr>
+      <tr><td>Gateway answers, internet does not</td><td>The router answers, but connections beyond it fail. The fault is at or beyond the router: WAN link, ISP, or an upstream firewall. Check the router's WAN status and whether other devices lose the internet too.</td></tr>
+      <tr><td>Name resolution fails</td><td>Direct connections by IP address work, but host names do not resolve. The fault is DNS: the configured DNS servers, a filtering service, or the name itself. Compare the DNS servers in this report with the expected company settings.</td></tr>
+      <tr><td>Connected, but quality is poor</td><td>Connectivity works, but packet loss, latency, retransmissions, or adapter errors were above the thresholds. Typical causes: weak Wi-Fi, a congested link, or a faulty cable or port. Run the tool again while the problem is occurring and compare the numbers.</td></tr>
+      <tr><td>A required check failed</td><td>At least one required check failed; see the failed rows. Send the report to IT as it is.</td></tr>
+      <tr><td>Some checks could not run</td><td>No failure was found, but some steps could not be completed on this computer. Send the report as it is; the reasons are recorded in the details.</td></tr>
+      <tr><td>Warnings to review</td><td>No required check failed, but some checks raised warnings; see the highlighted rows. Send the report as it is.</td></tr>
+    </table>
+    <p class="note">The first three problem titles name things you can check yourself before calling — a cable, the Wi-Fi signal, whether another device on the same network has the same trouble. The rest is for IT.</p>
+
+    <h3>The rest of the report</h3>
+    <ul class="plain">
+      <li><b>Computer and Run Information</b> — the computer name, the user, the operating system, the tool version, and where the configuration file and the reports are.</li>
+      <li><b>Test Results</b> — one row per check: the time, a category, the check's name, a result badge and a description. <b>Show Details</b> under a description opens the measurements behind it (the individual ping replies, the adapter's addresses, the command IT could run by hand to repeat the check). <b>Expand all</b> / <b>Collapse all</b> at the top of the table open and close every one at once. The badges:
+        <table class="plainfirst">
+          <tr><th>Badge</th><th>Meaning</th></tr>
+          <tr><td><span class="badge pass">Pass</span></td><td>The check ran and the result met its rule</td></tr>
+          <tr><td><span class="badge warn">Warning</span></td><td>The check ran; the result did not fail its rule, but it is worth attention — loss or latency over a threshold, a warning-level counter, a notice about the run itself</td></tr>
+          <tr><td><span class="badge fail">Fail</span></td><td>The check ran, but the result did not meet its rule</td></tr>
+          <tr><td><span class="badge error">Unable to Check</span></td><td>The step could not be completed — permissions, a missing system component, company policy or an execution error. It does not necessarily mean the network is faulty</td></tr>
+          <tr><td><span class="badge info">Information</span></td><td>A fact recorded with no verdict attached — the computer's name, a virtual adapter, an optional test target that did not answer, a note that IT has not defined a company standard in the configuration file</td></tr>
+        </table>
+      </li>
+      <li><b>IT diagnostics</b> — collapsed at the bottom: Wi-Fi radio details, routes, the gateway's hardware address, proxy settings, the first hops of a traceroute, adapter drivers. These rows are for IT and never change the verdict. You can leave them closed.</li>
+      <li>The six counters under the verdict (<b>Pass</b>, <b>Warning</b>, <b>Fail</b>, <b>Unable to Check</b>, <b>Information</b>, <b>Total</b>) count the rows of the Test Results table.</li>
+    </ul>
+    <p style="margin-top:.7rem">The <b>TXT</b> and <b>JSON</b> files written beside the HTML carry the same findings: the text file for reading where no browser is available, the JSON file for IT's tools. <kbd>Open JSON</kbd> in the window opens it in Notepad.</p>
+  </div>
+</section>
+
+<section id="s5">
+  <h2><span class="num">5</span> Sending the report to IT</h2>
+  <div class="card">
+    <p><b>Which file.</b> The one <kbd>Open Report</kbd> opens — usually the <code>.html</code> file. If IT asks for the JSON as well, <kbd>Open JSON</kbd> shows it and <kbd>Open Report Folder</kbd> takes you to all three files. If the HTML could not be written (rare — the window says so), Open Report opens the text or JSON file instead, and that is the report too: send that.</p>
+    <p><b>Where the files are.</b> Click <kbd>Open Report Folder</kbd>. By default the reports go into a <code>Reports</code> folder next to the program — <code>en-US\Reports</code> — and each run writes three files named:</p>
+<pre>NetworkHealthCheck_&lt;date&gt;_&lt;time&gt;_&lt;COMPUTERNAME&gt;.html
+NetworkHealthCheck_&lt;date&gt;_&lt;time&gt;_&lt;COMPUTERNAME&gt;.txt
+NetworkHealthCheck_&lt;date&gt;_&lt;time&gt;_&lt;COMPUTERNAME&gt;.json</pre>
+    <p>IT may have configured a different folder. And if the usual folder cannot be written to, the tool saves the reports under the Windows temporary folder (<code>%TEMP%\NetworkHealthCheck\Reports</code>) and says so in the window and in the report. The path under the buttons is always the one that was actually used.</p>
+    <p><b>Send it as it is.</b> Do not edit the report. Attach the file to your ticket or e-mail, or copy it to wherever IT asked. Old reports are ordinary files; you can delete them when you no longer need them.</p>
+    <div class="flag"><b>What the report contains.</b> The computer name, your user name, the network adapters with their MAC and IP addresses, gateways and DNS servers, the Wi-Fi network name (SSID) and the access point's hardware address (BSSID), the addresses the tests contacted, and the text of any error the tool met. Handle the file the way your company's rules say to handle that kind of information. The tool never uploads it anywhere.</div>
+  </div>
+</section>
+
+<section id="s6">
+  <h2><span class="num">6</span> If something does not work</h2>
+  <div class="card">
+    <table class="plainfirst">
+      <tr><th>What you see</th><th>What it means</th><th>What to do</th></tr>
+      <tr><td><b>Open File - Security Warning</b> when you double-click the launcher</td><td>The file carries Windows' mark for downloads from the internet</td><td>Choose <kbd>Run</kbd>. To avoid the question, unblock the ZIP before extracting (section 2)</td></tr>
+      <tr><td>The black window says <b>ERROR: The program file NetworkHealthCheck.ps1 is missing</b> and names an error report <code>LauncherError.txt</code></td><td>Only one file was extracted — usually a double-click inside the ZIP window — or a single file was copied on its own</td><td>Extract the whole ZIP into a folder and run the launcher from there</td></tr>
+      <tr><td>The black window says <b>ERROR: PowerShell was not found on this computer</b></td><td>The program needs Windows PowerShell, which is part of Windows</td><td>Ask IT to look at this computer, or run the check on another one</td></tr>
+      <tr><td>The black window says the program <b>ended with exit code 3</b>, and a file <b><code>NetworkHealthCheck_ENVIRONMENT_&lt;time&gt;.txt</code></b> appeared next to the program (or in the Windows temporary folder)</td><td>A company security policy restricts what PowerShell may do on this computer. The tool stopped before running any check and wrote that file for IT. Nothing was read or changed</td><td>There is nothing to fix on your side. Send the environment file to IT with your request — it names the computer, the restriction and what IT can do</td></tr>
+      <tr><td>The black window says the program <b>ended with exit code</b> <i>something else</i> and that PowerShell or company security policy may have blocked it</td><td>Windows PowerShell refused to run the program and printed its reason above the error</td><td>Read the lines above the error and send them to IT together with <code>LauncherError.txt</code>. If they say the file is <i>not digitally signed</i> or <i>blocked by a policy</i>, IT has to allow the program</td></tr>
+      <tr><td>The black window names an <b>error report</b> (<code>LauncherError.txt</code>)</td><td>The launcher wrote what happened, with a <b>Suggested action</b> line that fits the reason</td><td>Follow the suggested action, and send the file with your request. It is next to the launcher, or — when that folder cannot be written — in the Windows temporary folder as <code>NetworkHealthCheck_LauncherError.txt</code>; the window prints the path</td></tr>
+      <tr><td>No window appears; the check runs as text in the black window instead, and the black window closes when it is done</td><td>The graphical interface could not start on this computer, and the tool switched to text mode by itself. The same checks ran, the reports were written to the usual folder, and the report has a warning row saying so</td><td>Open the <code>Reports</code> folder (section 5) and send the newest report as usual. To keep the text on screen, run <code>Start-NetworkCheck-Console.cmd</code> in the <code>en-US</code> folder instead: it runs the same checks in text mode and pauses at the end, with the report paths printed above</td></tr>
+      <tr><td>The report has a <b>Startup Notice</b> warning row: <i>"This copy is running from inside a compressed folder…"</i></td><td>You ran the tool from the ZIP window. The reports went to a temporary place that disappears when the window closes</td><td>Extract the whole ZIP (section 2) and run it again</td></tr>
+      <tr><td>A <b>Startup Notice</b> warning row: <i>"The original report directory is not writable. Reports will be saved to: …"</i></td><td>The usual <code>Reports</code> folder could not be written to, so the reports went to the folder the row names</td><td>Nothing to fix. <kbd>Open Report Folder</kbd> opens the right place</td></tr>
+      <tr><td>A message box <b>Report generation failed</b>, naming an emergency error report <code>NetworkHealthCheck_FATAL_&lt;time&gt;.txt</code></td><td>The check ran but no report file could be written</td><td>Send the FATAL file to IT; it holds everything the check found before the failure</td></tr>
+      <tr><td>A message box saying <b>N of 3 report formats could not be written</b></td><td>Some report files could not be saved; the one that was is named in the message</td><td>Send that one. <kbd>Open Report</kbd> opens it</td></tr>
+      <tr><td>A message box <b>The test could not be completed</b> naming an error report</td><td>The tool met an error it could not recover from and wrote what it knows</td><td>Send the file it names</td></tr>
+      <tr><td>The verdict is <b>Test Incomplete</b></td><td>Something could not be measured on this computer</td><td>Send the report as it is; the reasons are in the rows marked <i>Unable to Check</i></td></tr>
+      <tr><td>The black window flashes and closes; nothing else happens</td><td>PowerShell was stopped before the tool could say anything — usually a company policy</td><td>Tell IT what you saw. A photo of the window, if you can catch it, helps</td></tr>
+    </table>
+    <p class="note">A Startup Notice row is a warning, so on its own it turns the verdict to <b>Attention Required</b> — the network may still be fine. Read the row.</p>
+  </div>
+</section>
+
+<section id="s7">
+  <h2><span class="num">7</span> When IT asks you to use the IT entry</h2>
+  <div class="card">
+    <p><code>Start-NetworkCheck-IT.cmd</code> in the <code>en-US</code> folder opens the same tool with a <b>Run options (IT)</b> panel at the top, and it does <b>not</b> start by itself — the line above the progress bar reads <i>Ready - adjust the options, then select Start Test</i>. IT may ask you to type an address into <b>Extra ping</b>, a host and port into <b>Extra TCP (host:port)</b>, a name into <b>Extra DNS</b> or a web address into <b>Extra URL</b>, perhaps to change <b>Ping count</b> or <b>Sample seconds</b>, and then to click <kbd>Start Test</kbd>. When you open the report afterwards, every detail is already expanded. Whatever is typed there applies to that run only; it never changes the configuration file. <kbd>Reset to config</kbd> puts the panel back to the configured values.</p>
+  </div>
+</section>
+
+<section id="s8">
+  <h2><span class="num">8</span> The files in the package</h2>
+  <div class="card">
+    <table class="plainfirst">
+      <tr><th>File or folder</th><th>What it is</th></tr>
+      <tr><td><code>Start-English.cmd</code>, <code>Start-Traditional-Chinese.cmd</code></td><td>The launchers at the top of the package: each opens the check in its language</td></tr>
+      <tr><td><code>en-US\</code>, <code>zh-TW\</code></td><td>The English and the Traditional Chinese package — the same tool twice, each with its own launchers, configuration, manual and guides</td></tr>
+      <tr><td><code>en-US\Start-NetworkCheck.cmd</code></td><td>The launcher you use</td></tr>
+      <tr><td><code>en-US\Start-NetworkCheck-IT.cmd</code></td><td>The IT entry (section 7)</td></tr>
+      <tr><td><code>en-US\Start-NetworkCheck-Console.cmd</code></td><td>Text mode, for a computer where the window cannot open</td></tr>
+      <tr><td><code>en-US\NetworkHealthCheck.ps1</code></td><td>The program. Do not edit it</td></tr>
+      <tr><td><code>en-US\NetworkHealthCheck.config.json</code></td><td>The settings — company standards, test targets, thresholds. IT edits it; you do not</td></tr>
+      <tr><td><code>en-US\NetworkHealthCheck_User_Manual_en-US.md</code>, <code>.html</code></td><td>This manual, as text and as a web page</td></tr>
+      <tr><td><code>en-US\README_en-US.txt</code></td><td>Configuration notes for IT</td></tr>
+      <tr><td><code>en-US\NetworkHealthCheck_Technical_Guide_*.md</code>, <code>docs\</code></td><td>The technical guide, in both languages: design, decision rules, limitations</td></tr>
+      <tr><td><code>en-US\Reports\</code></td><td>Created when the tool first starts; holds the reports</td></tr>
+      <tr><td><code>README_BILINGUAL.md</code></td><td>The package's front page, in both languages</td></tr>
+      <tr><td><code>SHA256SUMS.txt</code>, <code>tools\</code></td><td>Integrity checks for IT</td></tr>
+      <tr><td><code>VALIDATION.md</code>, <code>validation-matrix.html</code></td><td>The validation record of this release, for IT</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="s9">
+  <h2><span class="num">9</span> Questions people ask</h2>
+  <div class="card">
+    <p><b>Does it change anything on my computer?</b> No. It reads network information and runs connection tests. It does not touch IP, DNS, routes, firewall, proxy or adapter settings, and it installs nothing.</p>
+    <p><b>Do I need to be an administrator?</b> Normally not. If the tool cannot read something without more rights, the row says <i>Unable to Check</i> and the check continues.</p>
+    <p><b>Is the report sent anywhere?</b> No. It is written to a folder on this computer and goes nowhere until you send it.</p>
+    <p><b>Which addresses does it contact?</b> With the settings as shipped: your own default gateway, the public address <code>1.1.1.1</code> (a ping, a connection to port 443, and the first three hops toward it for the traceroute) and <code>https://www.microsoft.com/</code> (one page request through the system proxy), plus the name lookup for <code>www.microsoft.com</code>. IT may have replaced these with the company's own services — the report's rows name what was actually contacted.</p>
+    <p><b>A row says "Unable to Check" for the TCP retransmissions.</b> The counters could not be read — a permission, a policy or a broken performance counter. It does not mean there were retransmissions; the report says so itself. Send it as it is.</p>
+    <p><b>A row says there was not enough TCP traffic during the sample.</b> The computer was quiet while the tool measured. That row is information, not a fault. If the problem is slowness, run the tool again while you are using the network — during the video call, the download or the thing that is slow.</p>
+    <p><b>I use a VPN.</b> The report shows both the physical adapter and the VPN adapter; the VPN one is normally marked <i>Virtual</i> and listed as information. Tell IT whether the VPN was connected when you ran the check.</p>
+    <p><b>It says Overall Healthy, but my problem is still there.</b> The check saw one moment on this computer. Run it again while the problem is happening, note the time, and tell IT what you were doing at that moment — the application, the server, whether other people had the same trouble.</p>
+    <p><b>Can I run it on another computer?</b> Yes, on any Windows 10 or Windows 11 computer. Copy the whole folder. Every report names the computer it was made on.</p>
+    <p><b>Can I use the Chinese package instead?</b> Yes — <code>Start-Traditional-Chinese.cmd</code>, or the <code>zh-TW</code> folder. It is the same tool with the interface and the report in Traditional Chinese. IT can read a report in either language.</p>
+    <p><b>Can I delete old reports?</b> Yes. They are ordinary files in the <code>Reports</code> folder.</p>
+  </div>
+</section>
+
+<footer>NetworkHealthCheck 1.2.4. This manual describes the tool as shipped; what your IT department changed in the configuration file — targets, thresholds, the report folder — shows up in the report's rows and in its Computer and Run Information section.</footer>
+
+</div>
+</body>
+</html>

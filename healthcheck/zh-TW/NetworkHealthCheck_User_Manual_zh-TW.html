@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>網路健檢工具 1.2.4 — 使用手冊</title>
+<style>
+  :root{
+    --ink:#16233b; --muted:#5b6b85; --line:#d8e0ec; --bg:#f4f7fb; --card:#ffffff;
+    --blue:#1d4ed8; --blue-soft:#e8effd; --green:#0f7b52; --green-soft:#e6f5ee;
+    --red:#b3372e; --red-soft:#faeae8; --amber:#9a6700; --amber-soft:#fcf3e1;
+    --mono:Consolas,"Cascadia Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,-apple-system,"Segoe UI","Microsoft JhengHei UI","Microsoft JhengHei","PingFang TC","Noto Sans TC",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);color:var(--ink);line-height:1.65;padding:2.2rem 1.4rem}
+  .page{max-width:1060px;margin:0 auto}
+  code{font-family:var(--mono);background:#eef2f8;border:1px solid var(--line);
+    border-radius:4px;padding:.08rem .35rem;font-size:.86em;white-space:nowrap}
+  pre{font-family:var(--mono);font-size:.86rem;background:#eef2f8;border:1px solid var(--line);
+    border-radius:6px;padding:.6rem .8rem;overflow-x:auto;margin-top:.5rem}
+  a{color:var(--blue)}
+  b{font-weight:600}
+
+  header{margin-bottom:1.4rem}
+  header h1{font-size:1.7rem;letter-spacing:-.01em}
+  header h1 .ver{color:var(--muted);font-weight:500}
+  header .tag{color:var(--muted);font-size:1.02rem;margin-top:.2rem}
+  header .meta{color:var(--muted);font-size:.82rem;margin-top:.45rem}
+  .principle{display:flex;gap:.7rem;flex-wrap:wrap;margin:1.1rem 0 .4rem}
+  .principle span{background:var(--blue-soft);color:var(--blue);border:1px solid #c4d5fb;
+    border-radius:999px;padding:.35rem .9rem;font-weight:600;font-size:.9rem}
+
+  nav.toc{font-size:.88rem;color:var(--muted);margin:0 0 1.6rem;display:flex;flex-wrap:wrap;gap:.3rem 1.1rem}
+  nav.toc a{text-decoration:none;color:var(--blue)}
+
+  section{margin-bottom:1.5rem}
+  h2{font-size:1.12rem;margin-bottom:.7rem;display:flex;align-items:baseline;gap:.55rem;flex-wrap:wrap}
+  h2 .num{color:var(--blue);font-weight:700}
+  h3{font-size:.98rem;margin:1rem 0 .45rem}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:1rem 1.15rem;box-shadow:0 1px 2px rgba(22,35,59,.05)}
+  .card p{font-size:.92rem}
+  .card p + p{margin-top:.55rem}
+  .card > h3:first-child{margin-top:0}
+
+  ol.steps{font-size:.92rem;margin:.3rem 0 0 1.3rem}
+  ol.steps li{margin-bottom:.5rem}
+  ul.plain{font-size:.92rem;margin:.3rem 0 0 1.2rem}
+  ul.plain li{margin-bottom:.45rem}
+
+  table{width:100%;border-collapse:collapse;font-size:.9rem;margin-top:.5rem}
+  th,td{text-align:left;padding:.5rem .65rem;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:.8rem;letter-spacing:.04em}
+  tr:last-child td{border-bottom:none}
+  td:first-child{font-weight:600}
+  table.plainfirst td:first-child{font-weight:400}
+
+  .flag{background:var(--amber-soft);border:1px solid #eddcb4;border-radius:8px;
+    padding:.6rem .8rem;font-size:.9rem;margin-top:.8rem}
+  .flag b{color:var(--amber)}
+  .note{font-size:.84rem;color:var(--muted);margin-top:.6rem}
+
+  .badge{display:inline-block;border-radius:999px;padding:2px 9px;font-weight:700;white-space:nowrap;font-size:.84em}
+  .badge.pass{background:#c6f6d5;color:#22543d}
+  .badge.warn{background:#feebc8;color:#7b341e}
+  .badge.fail{background:#fed7d7;color:#822727}
+  .badge.info{background:#bee3f8;color:#2a4365}
+  .badge.error{background:#e9d8fd;color:#553c9a}
+  .verdict{display:inline-block;border-left:5px solid;padding:.05rem .5rem;font-weight:700;white-space:nowrap}
+  .verdict.pass{border-color:#14804a}
+  .verdict.warn{border-color:#b7791f}
+  .verdict.fail{border-color:#c53030}
+  .verdict.error{border-color:#805ad5}
+
+  kbd{font-family:inherit;font-weight:600;background:#f2f5fa;border:1px solid var(--line);border-bottom-width:2px;
+    border-radius:5px;padding:.02rem .4rem;font-size:.9em;white-space:nowrap}
+
+  footer{color:var(--muted);font-size:.8rem;border-top:1px solid var(--line);padding-top:.8rem;margin-top:1rem}
+
+  @media (max-width:760px){
+    body{padding:1.2rem .8rem}
+    table{display:block;overflow-x:auto}
+  }
+  @media print{
+    body{background:#fff;padding:0;font-size:11px}
+    .card{box-shadow:none}
+    section{break-inside:avoid}
+    nav.toc{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <h1>網路健檢工具 <span class="ver">1.2.4</span></h1>
+  <div class="tag">使用手冊 — 寫給執行檢測的人</div>
+  <div class="meta">繁體中文套件（<code>zh-TW</code> 資料夾）· <code>en-US</code> 資料夾是英文套件，附英文版手冊 · IT 人員：設定說明在 <code>README_zh-TW.txt</code>，設計與判定規則在技術文件</div>
+  <div class="principle">
+    <span>不改任何設定</span>
+    <span>不傳送任何東西</span>
+    <span>在問題發生時跑</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <a href="#s1">1 · 這個工具是什麼</a>
+  <a href="#s2">2 · 開始之前</a>
+  <a href="#s3">3 · 執行檢測</a>
+  <a href="#s4">4 · 看懂結果</a>
+  <a href="#s5">5 · 把報告交給 IT</a>
+  <a href="#s6">6 · 有東西不對時</a>
+  <a href="#s7">7 · IT 入口</a>
+  <a href="#s8">8 · 套件裡的檔案</a>
+  <a href="#s9">9 · 常見的問題</a>
+</nav>
+
+<section id="s1">
+  <h2><span class="num">1</span> 這個工具是什麼</h2>
+  <div class="card">
+    <p>網路健檢工具站在這台電腦的角度看網路，把看到的記下來：哪些網卡已連線、它們的位址是什麼、路由器（<i>預設閘道</i>）有沒有回應、名稱查得到查不到、幾個已知的服務連不連得上、連線有沒有掉封包或重傳資料。結果是一份報告，最上面是一行整體結果，再來是一段「<b>要告訴 IT 的話</b>」。</p>
+    <p><b>它不改任何設定。</b> 工具只讀取網路資訊並執行連線測試：幾次 Ping、一次名稱查詢、一次 TCP 連線、一次 HTTPS 請求。它不會修改 IP、DNS、路由、防火牆、Proxy 或網卡設定，也不安裝任何東西。一般情況下不需要系統管理員權限。</p>
+    <p><b>它不傳送任何東西。</b> 報告留在這台電腦上，除非你自己把它送出去。</p>
+    <p><b>要多久。</b> 網路正常時大約十秒。有東西不回應時會久一些，最多一分鐘上下，因為每項測試都會等到時限才放棄。</p>
+  </div>
+</section>
+
+<section id="s2">
+  <h2><span class="num">2</span> 開始之前</h2>
+  <div class="card">
+    <ol class="steps">
+      <li><b>把 ZIP 存到電腦上。</b> IT 給你的檔案，或是從他們給的連結下載的檔案，先存檔。不要直接從瀏覽器的下載列開啟。</li>
+      <li><b>可以的話先解除封鎖。</b> 在 ZIP 上按右鍵 → <kbd>內容</kbd> → 勾選最下方的 <kbd>解除封鎖</kbd> → <kbd>確定</kbd>。Windows 會標記從網際網路下載的檔案，執行前先問一次安全性問題；解壓縮前先解除封鎖，就不會再問。沒有這個核取方塊，表示沒有東西需要解除，直接往下做。</li>
+      <li><b>整包解壓縮。</b> 在 ZIP 上按右鍵 → <kbd>解壓縮全部…</kbd> → <kbd>解壓縮</kbd>（不同 Windows 版本的字樣略有不同）。Windows 會建議一個和 ZIP 同名的資料夾，用它就可以。放在本機任何位置都行，例如桌面或文件。</li>
+      <li><b>資料夾要整包保留。</b> 啟動器需要程式和設定檔在旁邊。要搬或複製就搬整個資料夾，不要只拿單一檔案。</li>
+    </ol>
+    <div class="flag"><b>不要在 ZIP 視窗裡直接執行。</b> 對 ZIP 按兩下會把內容顯示得像資料夾，但它不是資料夾：Windows 只會把你按的那一個檔案解到暫存位置。啟動器在旁邊找不到程式，就會停下來說「找不到程式檔 NetworkHealthCheck.ps1」。先解壓縮。</div>
+  </div>
+</section>
+
+<section id="s3">
+  <h2><span class="num">3</span> 執行檢測</h2>
+  <div class="card">
+    <ol class="steps">
+      <li>打開解壓縮出來的資料夾，按兩下 <b><code>Start-Traditional-Chinese.cmd</code></b>。（進入 <code>zh-TW</code> 資料夾按兩下 <code>Start-NetworkCheck.cmd</code> 也是同一件事。）</li>
+      <li>若 Windows 顯示 <b>開啟檔案 - 安全性警告</b>，選 <kbd>執行</kbd>。那是第 2 節說的下載標記，工具本身沒有差別。</li>
+      <li>先出現一個黑色文字視窗，檢測結束前它會一直留在背景。不用理它。</li>
+      <li>接著 <b>網路健檢工具 1.2.4</b> 視窗打開，一秒內<b>自己開始</b>。你會看到：
+        <table>
+          <tr><th>畫面上</th><th>意思</th></tr>
+          <tr><td>結果：檢測進行中</td><td>正在檢測</td></tr>
+          <tr><td>進度列和它上方那一行</td><td>目前進行的步驟，接近結束時會有幾秒顯示 <i>TCP 重傳取樣中，尚餘約 N 秒</i></td></tr>
+          <tr><td>記錄區</td><td>每個步驟、每個發現各一行，依發生順序排列</td></tr>
+          <tr><td>按鈕</td><td>檢測中 <kbd>開始檢測</kbd> 是灰的；<kbd>開啟報告</kbd>、<kbd>開啟報告資料夾</kbd>、<kbd>開啟 JSON</kbd> 要等做完才會亮起；在那之前 <kbd>關閉</kbd> 沒有作用</td></tr>
+        </table>
+      </li>
+      <li><b>等它做完。</b> 進度列上方那一行變成 <b>檢測完成</b>，結果那一行用顏色顯示整體結果，記錄區最後一行寫出報告位置：<i>報告已產生：…</i>。按鈕下方也會顯示同一個路徑：<i>報告：…</i>，<kbd>開始檢測</kbd> 則變成 <kbd>重新檢測</kbd>。</li>
+      <li>按 <kbd>開啟報告</kbd>。報告會在瀏覽器裡打開。它是這台電腦上的檔案，不是網際網路上的網頁。</li>
+    </ol>
+    <p style="margin-top:.9rem"><b>在問題發生的時候跑。</b> 工具量的是一台電腦的一個瞬間。問題如果時好時壞，一切正常時跑的那一次證明不了什麼，問題發生時跑的那一次才是 IT 需要的證據。跑的時候照平常的方式繼續使用網路：有幾秒鐘它在量這台電腦自己的流量，什麼都不做的電腦就沒有東西可量。</p>
+    <p><b>再跑一次。</b> <kbd>重新檢測</kbd> 會在同一個視窗裡開始新的一輪。每一輪都寫出一組新的報告檔，檔名帶自己的時間，先前的報告不會被覆蓋。一份好的時候、一份壞的時候，兩份報告對 IT 的價值高於任何一份單獨的。</p>
+  </div>
+</section>
+
+<section id="s4">
+  <h2><span class="num">4</span> 看懂結果</h2>
+  <div class="card">
+    <h3>整體結果</h3>
+    <p>視窗裡的結果那一行，以及報告最上方的彩色方塊，會顯示四種整體結果之一：</p>
+    <table class="plainfirst">
+      <tr><th>整體結果</th><th>工具的說明</th><th>對你的意思</th></tr>
+      <tr><td><span class="verdict pass">整體正常</span></td><td>本次可執行的必要檢查均通過。</td><td>這一刻檢測看得到的東西都正常。問題如果還在，多半在檢測碰不到的地方，例如應用程式或伺服器，或者它時好時壞：問題發生時再跑一次。</td></tr>
+      <tr><td><span class="verdict warn">需要注意</span></td><td>沒有必要項目失敗，但有警告或品質異常。</td><td>有連上線，但有些地方不對勁：封包遺失、延遲偏高、重傳、網卡錯誤，或其他警告。把報告送出。</td></tr>
+      <tr><td><span class="verdict fail">偵測到異常</span></td><td>至少一項必要檢查未通過。</td><td>檢測要求的某個項目壞了。報告會寫出是哪一項、看到了什麼。把報告送出。</td></tr>
+      <tr><td><span class="verdict error">檢測未完整</span></td><td>部分檢查因權限、系統元件或執行錯誤而無法完成。</td><td>工具在這台電腦上有東西量不到。這不是網路故障的證明，也不是你做錯了什麼。把報告原樣送出。</td></tr>
+    </table>
+
+    <h3>要告訴 IT 的話</h3>
+    <p>整體結果下面有一段「<b>要告訴 IT 的話</b>」：一個標題加兩到四行。<b>先讀這一段</b>，它是工具自己對問題在哪裡的判讀，是寫給你看的；最後一行永遠會提醒你該送哪個檔、裡面有什麼。</p>
+    <table>
+      <tr><th>標題</th><th>內容</th></tr>
+      <tr><td>全部通過</td><td>本次執行的所有檢查都通過。若問題仍然存在，可能在應用程式或伺服器端，或是時好時壞；問題發生時再跑一次。</td></tr>
+      <tr><td>本機連線問題</td><td>找不到可用的網卡或預設閘道。問題在這台電腦或它的連線：網路線、Wi-Fi 連線、網卡停用或 DHCP 沒有回應。用同一個網路上的另一台裝置測試，確認是否只有這台電腦有問題。</td></tr>
+      <tr><td>閘道沒有回應</td><td>已設定預設閘道，但閘道不回應 Ping。問題在這台電腦和路由器之間：連線、Wi-Fi、交換器或路由器本身。確認連線燈號或 Wi-Fi 訊號，以及其他裝置能否連到路由器。</td></tr>
+      <tr><td>閘道正常，網際網路不通</td><td>路由器有回應，但往外的連線失敗。問題在路由器或更外層：WAN 連線、ISP 或上游防火牆。查看路由器的 WAN 狀態，以及其他裝置是否同樣無法上網。</td></tr>
+      <tr><td>名稱解析失敗</td><td>用 IP 直接連線正常，但主機名稱無法解析。問題在 DNS：設定的 DNS 伺服器、過濾服務或名稱本身。把報告中的 DNS 伺服器和公司預期設定比對。</td></tr>
+      <tr><td>連線正常但品質不佳</td><td>連線可用，但封包遺失、延遲、重傳或網卡錯誤超過門檻。常見原因：Wi-Fi 訊號弱、線路壅塞、網路線或連接埠故障。問題發生時再跑一次並比較數字。</td></tr>
+      <tr><td>有必要檢查未通過</td><td>至少一項必要檢查未通過，請看下方失敗的項目。把報告原樣交給 IT。</td></tr>
+      <tr><td>部分檢查無法執行</td><td>沒有發現故障，但部分步驟在這台電腦上無法完成。把報告原樣交給 IT，原因記錄在詳細資料中。</td></tr>
+      <tr><td>有需要注意的警告</td><td>沒有必要檢查失敗，但有檢查提出警告，請看標示的項目。把報告原樣交給 IT。</td></tr>
+    </table>
+    <p class="note">前三種問題標題點名的是你自己就能先看的事：網路線、Wi-Fi 訊號、同一個網路上的另一台裝置是不是也一樣。其餘的交給 IT。</p>
+
+    <h3>報告的其他部分</h3>
+    <ul class="plain">
+      <li><b>電腦與執行資訊</b>：電腦名稱、使用者、作業系統、工具版本，以及設定檔和報告存放的位置。</li>
+      <li><b>檢測結果</b>：每項檢查一列：時間、分類、檢查項目、結果標籤、說明。說明下方的 <b>顯示詳細資料</b> 會展開背後的量測值（每一次 Ping 的回覆、網卡的位址、IT 可以自己重做一次的指令）。表格上方的 <b>全部展開</b>／<b>全部收合</b> 一次打開或關上所有項目。標籤的意思：
+        <table class="plainfirst">
+          <tr><th>標籤</th><th>意思</th></tr>
+          <tr><td><span class="badge pass">正常</span></td><td>檢查有執行，結果符合規則</td></tr>
+          <tr><td><span class="badge warn">需注意</span></td><td>檢查有執行，結果沒有違反規則，但值得留意：遺失或延遲超過門檻、計數器達到警告值、關於這次執行本身的提示</td></tr>
+          <tr><td><span class="badge fail">異常</span></td><td>檢查有執行，但結果不符合規則</td></tr>
+          <tr><td><span class="badge error">無法檢查</span></td><td>這個步驟沒有完成：權限、缺少系統元件、公司政策或執行錯誤。不等同於網路本身一定異常</td></tr>
+          <tr><td><span class="badge info">資訊</span></td><td>只是記錄、沒有判定的事實：電腦名稱、虛擬網卡、沒有回應的選用測試目標、IT 尚未在設定檔填入公司標準的提示</td></tr>
+        </table>
+      </li>
+      <li><b>IT 診斷資料</b>：收合在最下面：Wi-Fi 無線細節、路由、閘道的硬體位址、Proxy 設定、traceroute 的前幾跳、網卡驅動程式。這些列是給 IT 看的，永遠不影響整體結果。不打開也沒關係。</li>
+      <li>整體結果下方的六個數字（<b>正常</b>、<b>需注意</b>、<b>異常</b>、<b>無法檢查</b>、<b>資訊</b>、<b>合計</b>）是檢測結果表格的列數統計。</li>
+    </ul>
+    <p style="margin-top:.7rem">和 HTML 一起寫出的 <b>TXT</b> 與 <b>JSON</b> 檔記的是同樣的發現：文字檔給沒有瀏覽器的場合讀，JSON 檔給 IT 的工具用。視窗裡的 <kbd>開啟 JSON</kbd> 會用記事本打開它。</p>
+  </div>
+</section>
+
+<section id="s5">
+  <h2><span class="num">5</span> 把報告交給 IT</h2>
+  <div class="card">
+    <p><b>送哪個檔。</b> <kbd>開啟報告</kbd> 打開的那一個，通常是 <code>.html</code>。IT 若也要 JSON，<kbd>開啟 JSON</kbd> 會顯示它，<kbd>開啟報告資料夾</kbd> 則直接帶你到三個檔案所在的位置。如果 HTML 寫不出來（很少見，視窗會說），開啟報告會改開文字檔或 JSON 檔，那也是報告：送那一個。</p>
+    <p><b>檔案在哪裡。</b> 按 <kbd>開啟報告資料夾</kbd>。預設報告放在程式旁邊的 <code>Reports</code> 資料夾，也就是 <code>zh-TW\Reports</code>，每一輪寫出三個檔案：</p>
+<pre>NetworkHealthCheck_&lt;日期&gt;_&lt;時間&gt;_&lt;電腦名稱&gt;.html
+NetworkHealthCheck_&lt;日期&gt;_&lt;時間&gt;_&lt;電腦名稱&gt;.txt
+NetworkHealthCheck_&lt;日期&gt;_&lt;時間&gt;_&lt;電腦名稱&gt;.json</pre>
+    <p>IT 可能設定了別的資料夾。若原本的資料夾無法寫入，工具會改存到 Windows 暫存資料夾底下（<code>%TEMP%\NetworkHealthCheck\Reports</code>），並在視窗和報告裡說明。按鈕下方顯示的路徑永遠是實際使用的那一個。</p>
+    <p><b>原樣送出。</b> 不要編輯報告。把檔案附在工單或電子郵件裡，或複製到 IT 指定的地方。舊報告是一般檔案，不需要時可以刪除。</p>
+    <div class="flag"><b>報告裡有什麼。</b> 電腦名稱、你的使用者名稱、各網卡連同 MAC 與 IP 位址、閘道與 DNS 伺服器、Wi-Fi 網路名稱（SSID）與基地台的硬體位址（BSSID）、測試連過的位址，以及工具遇到的錯誤內容。請依公司對這類資訊的規定處理這個檔案。工具本身絕不會把它上傳到任何地方。</div>
+  </div>
+</section>
+
+<section id="s6">
+  <h2><span class="num">6</span> 有東西不對時</h2>
+  <div class="card">
+    <table class="plainfirst">
+      <tr><th>你看到的</th><th>意思</th><th>怎麼做</th></tr>
+      <tr><td>按兩下啟動器時出現 <b>開啟檔案 - 安全性警告</b></td><td>檔案帶著 Windows 對網際網路下載檔的標記</td><td>選 <kbd>執行</kbd>。不想再被問，就在解壓縮前先解除封鎖 ZIP（第 2 節）</td></tr>
+      <tr><td>黑色視窗顯示 <b>錯誤：找不到程式檔 NetworkHealthCheck.ps1</b>，並列出錯誤報告 <code>LauncherError.txt</code></td><td>只有一個檔案被解出來，通常是在 ZIP 視窗裡按了兩下，或者只複製了單一檔案</td><td>把整個 ZIP 解壓縮到資料夾，從那裡執行啟動器</td></tr>
+      <tr><td>黑色視窗顯示 <b>錯誤：此電腦找不到 PowerShell</b></td><td>程式需要 Windows PowerShell，它是 Windows 的一部分</td><td>請 IT 檢查這台電腦，或改在另一台電腦執行檢測</td></tr>
+      <tr><td>黑色視窗說檢測程式<b>結束代碼為 3</b>，程式旁邊（或 Windows 暫存資料夾）多了一個 <b><code>NetworkHealthCheck_ENVIRONMENT_&lt;時間&gt;.txt</code></b></td><td>公司的安全政策限制了 PowerShell 在這台電腦上能做的事。工具在任何檢測開始前就停下，把這個檔案寫給 IT。沒有讀取也沒有變更任何東西</td><td>你這邊沒有什麼要修的。把這個環境檔連同你的請求交給 IT：裡面寫了電腦、限制內容和 IT 可以怎麼做</td></tr>
+      <tr><td>黑色視窗說檢測程式<b>結束代碼為</b>其他數字，PowerShell 或公司安全政策可能阻擋執行</td><td>Windows PowerShell 拒絕執行程式，並在錯誤上方印出了原因</td><td>把錯誤上方那幾行連同 <code>LauncherError.txt</code> 一起交給 IT。若寫著檔案<i>未經數位簽署</i>或<i>被原則封鎖</i>，需要 IT 放行程式</td></tr>
+      <tr><td>黑色視窗列出一個<b>錯誤報告</b>（<code>LauncherError.txt</code>）</td><td>啟動器把發生的事寫下來了，附一行依原因而定的 <b>建議</b></td><td>照建議做，並把檔案連同請求送出。檔案在啟動器旁邊；那個資料夾無法寫入時，會改寫在 Windows 暫存資料夾裡的 <code>NetworkHealthCheck_LauncherError.txt</code>，視窗會印出路徑</td></tr>
+      <tr><td>沒有視窗出現，檢測改在黑色視窗裡以文字進行，做完黑色視窗就關掉</td><td>圖形介面在這台電腦上無法啟動，工具自己切換成文字模式。同樣的檢測都跑了，報告寫到平常的資料夾，報告裡有一列警告說明這件事</td><td>打開 <code>Reports</code> 資料夾（第 5 節），照常送出最新的報告。想讓文字留在畫面上，改用 <code>zh-TW</code> 資料夾裡的 <code>Start-NetworkCheck-Console.cmd</code>：它以文字模式跑同樣的檢測，結束時會暫停，報告路徑就印在上方</td></tr>
+      <tr><td>報告裡有一列 <b>啟動提示</b> 警告：<i>「目前是從壓縮檔內執行…」</i></td><td>你是在 ZIP 視窗裡執行工具的。報告寫到了視窗關閉就消失的暫存位置</td><td>整包解壓縮（第 2 節）再跑一次</td></tr>
+      <tr><td>一列 <b>啟動提示</b> 警告：<i>「原始報告目錄無法寫入，已改存到：…」</i></td><td>平常的 <code>Reports</code> 資料夾寫不進去，報告改存到那一列寫的資料夾</td><td>不用修什麼。<kbd>開啟報告資料夾</kbd> 會開到正確的位置</td></tr>
+      <tr><td>訊息方塊 <b>報告產生失敗</b>，列出緊急錯誤報告 <code>NetworkHealthCheck_FATAL_&lt;時間&gt;.txt</code></td><td>檢測跑了，但一個報告檔都寫不出來</td><td>把 FATAL 檔交給 IT，裡面有失敗前檢測找到的一切</td></tr>
+      <tr><td>訊息方塊說 <b>3 種報告格式中有 N 種無法寫入</b></td><td>部分報告檔存不了，存成功的那一個寫在訊息裡</td><td>送那一個。<kbd>開啟報告</kbd> 打開的就是它</td></tr>
+      <tr><td>訊息方塊 <b>檢測無法完成</b>，列出一個錯誤報告</td><td>工具遇到無法恢復的錯誤，把它知道的寫下來了</td><td>送它列出的那個檔案</td></tr>
+      <tr><td>整體結果是 <b>檢測未完整</b></td><td>這台電腦上有東西量不到</td><td>把報告原樣送出，原因在標示<i>無法檢查</i>的那幾列</td></tr>
+      <tr><td>黑色視窗一閃就關掉，什麼都沒發生</td><td>PowerShell 在工具能開口之前就被擋下了，通常是公司政策</td><td>告訴 IT 你看到什麼。來得及的話拍一張視窗的照片，會有幫助</td></tr>
+    </table>
+    <p class="note">啟動提示那一列是警告，所以光是它就會讓整體結果變成 <b>需要注意</b>，網路本身可能還是好的。讀那一列的內容。</p>
+  </div>
+</section>
+
+<section id="s7">
+  <h2><span class="num">7</span> IT 請你用 IT 入口的時候</h2>
+  <div class="card">
+    <p><code>zh-TW</code> 資料夾裡的 <code>Start-NetworkCheck-IT.cmd</code> 開的是同一支工具，上方多了一個 <b>執行選項（IT）</b> 面板，而且<b>不會</b>自己開始：進度列上方那一行寫著 <i>就緒，調整選項後按「開始檢測」</i>。IT 可能請你在 <b>額外 Ping</b> 填一個位址、在 <b>額外 TCP（host:port）</b> 填主機和連接埠、在 <b>額外 DNS</b> 填名稱、在 <b>額外 URL</b> 填網址，或改一下 <b>Ping 次數</b>、<b>取樣秒數</b>，然後按 <kbd>開始檢測</kbd>。之後打開報告時，每個項目的詳細資料都已經展開。這裡填的東西只對那一次執行有效，永遠不會改到設定檔。<kbd>還原設定檔</kbd> 會把面板放回設定檔的值。</p>
+  </div>
+</section>
+
+<section id="s8">
+  <h2><span class="num">8</span> 套件裡的檔案</h2>
+  <div class="card">
+    <table class="plainfirst">
+      <tr><th>檔案或資料夾</th><th>是什麼</th></tr>
+      <tr><td><code>Start-English.cmd</code>、<code>Start-Traditional-Chinese.cmd</code></td><td>套件最上層的啟動器：各自以自己的語言開啟檢測</td></tr>
+      <tr><td><code>en-US\</code>、<code>zh-TW\</code></td><td>英文套件與繁體中文套件：同一支工具兩份，各有自己的啟動器、設定、手冊與文件</td></tr>
+      <tr><td><code>zh-TW\Start-NetworkCheck.cmd</code></td><td>你用的啟動器</td></tr>
+      <tr><td><code>zh-TW\Start-NetworkCheck-IT.cmd</code></td><td>IT 入口（第 7 節）</td></tr>
+      <tr><td><code>zh-TW\Start-NetworkCheck-Console.cmd</code></td><td>文字模式，給視窗開不起來的電腦用</td></tr>
+      <tr><td><code>zh-TW\NetworkHealthCheck.ps1</code></td><td>程式本體。不要編輯</td></tr>
+      <tr><td><code>zh-TW\NetworkHealthCheck.config.json</code></td><td>設定：公司標準、測試目標、門檻。由 IT 編輯，你不用動</td></tr>
+      <tr><td><code>zh-TW\NetworkHealthCheck_User_Manual_zh-TW.md</code>、<code>.html</code></td><td>本手冊，文字版與網頁版</td></tr>
+      <tr><td><code>zh-TW\README_zh-TW.txt</code></td><td>給 IT 的設定說明</td></tr>
+      <tr><td><code>zh-TW\NetworkHealthCheck_Technical_Guide_*.md</code>、<code>docs\</code></td><td>技術文件，中英文各一份：設計、判定規則、限制</td></tr>
+      <tr><td><code>zh-TW\Reports\</code></td><td>工具第一次啟動時建立，存放報告</td></tr>
+      <tr><td><code>README_BILINGUAL.md</code></td><td>套件的雙語首頁</td></tr>
+      <tr><td><code>SHA256SUMS.txt</code>、<code>tools\</code></td><td>給 IT 的完整性檢查</td></tr>
+      <tr><td><code>VALIDATION.md</code>、<code>validation-matrix.html</code></td><td>這個版本的驗證記錄，給 IT</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="s9">
+  <h2><span class="num">9</span> 常見的問題</h2>
+  <div class="card">
+    <p><b>它會改我電腦上的東西嗎？</b> 不會。它讀取網路資訊並執行連線測試，不碰 IP、DNS、路由、防火牆、Proxy 或網卡設定，也不安裝任何東西。</p>
+    <p><b>需要系統管理員嗎？</b> 一般不需要。工具若因為權限不足而讀不到某樣東西，那一列會標示<i>無法檢查</i>，檢測繼續進行。</p>
+    <p><b>報告會被送到哪裡嗎？</b> 不會。它寫在這台電腦的資料夾裡，除非你送出，否則哪裡都不去。</p>
+    <p><b>它會連到哪些位址？</b> 以出廠設定來說：你自己的預設閘道、公網位址 <code>1.1.1.1</code>（一次 Ping、一次連接埠 443 的連線，以及 traceroute 往它的前三跳）、<code>https://www.microsoft.com/</code>（經系統 Proxy 的一次網頁請求），加上 <code>www.microsoft.com</code> 的名稱查詢。IT 可能已換成公司自己的服務，報告的各列會寫出實際連過的目標。</p>
+    <p><b>TCP 重傳那一列寫「無法檢查」。</b> 計數器讀不到：權限、政策，或效能計數器壞了。這不代表有重傳，報告自己也這麼說。原樣送出。</p>
+    <p><b>有一列說取樣期間沒有足夠的 TCP 流量。</b> 工具量測時電腦很安靜。那一列是資訊，不是故障。問題若是慢，請在使用網路的時候再跑一次：視訊會議中、下載中，或那個會卡的東西正在跑的時候。</p>
+    <p><b>我用 VPN。</b> 報告會同時列出實體網卡和 VPN 網卡；VPN 那張通常標示為<i>虛擬</i>，列為資訊。告訴 IT 你跑檢測時 VPN 有沒有連著。</p>
+    <p><b>它說整體正常，但我的問題還在。</b> 檢測看到的是這台電腦的一個瞬間。問題發生時再跑一次，記下時間，告訴 IT 你當時在做什麼：哪個應用程式、哪台伺服器、其他人有沒有一樣的狀況。</p>
+    <p><b>可以在別台電腦上跑嗎？</b> 可以，任何 Windows 10 或 Windows 11 的電腦都行。複製整個資料夾。每份報告都會寫出它是在哪台電腦上做的。</p>
+    <p><b>可以改用英文版嗎？</b> 可以：<code>Start-English.cmd</code>，或 <code>en-US</code> 資料夾。同一支工具，介面和報告是英文。IT 兩種語言的報告都看得懂。</p>
+    <p><b>舊報告可以刪嗎？</b> 可以。它們是 <code>Reports</code> 資料夾裡的一般檔案。</p>
+  </div>
+</section>
+
+<footer>NetworkHealthCheck 1.2.4。本手冊描述的是出廠狀態的工具；IT 在設定檔改過的東西（目標、門檻、報告資料夾）會反映在報告的各列和「電腦與執行資訊」一節。</footer>
+
+</div>
+</body>
+</html>

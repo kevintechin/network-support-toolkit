@@ -259,7 +259,7 @@ if (-not $script:PackageRoot) { Add-NotRun 'package' 'everything after the extra
 # -------------------- The package --------------------
 Invoke-Case 'package' 'layout and version' {
     $missing = @()
-    foreach ($rel in @('en-US\NetworkHealthCheck.ps1', 'en-US\NetworkHealthCheck.config.json', 'en-US\Start-NetworkCheck.cmd', 'en-US\Start-NetworkCheck-IT.cmd', 'en-US\Start-NetworkCheck-Console.cmd', 'zh-TW\NetworkHealthCheck.ps1', 'zh-TW\NetworkHealthCheck.config.json', 'zh-TW\Start-NetworkCheck.cmd', 'zh-TW\Start-NetworkCheck-IT.cmd', 'zh-TW\Start-NetworkCheck-Console.cmd', 'Start-English.cmd', 'Start-Traditional-Chinese.cmd', 'README_BILINGUAL.md', 'SHA256SUMS.txt')) {
+    foreach ($rel in @('en-US\NetworkHealthCheck.ps1', 'en-US\NetworkHealthCheck.config.json', 'en-US\Start-NetworkCheck.cmd', 'en-US\Start-NetworkCheck-IT.cmd', 'en-US\Start-NetworkCheck-Console.cmd', 'zh-TW\NetworkHealthCheck.ps1', 'zh-TW\NetworkHealthCheck.config.json', 'zh-TW\Start-NetworkCheck.cmd', 'zh-TW\Start-NetworkCheck-IT.cmd', 'zh-TW\Start-NetworkCheck-Console.cmd', 'Start-English.cmd', 'Start-Traditional-Chinese.cmd', 'README_BILINGUAL.md', 'SHA256SUMS.txt', 'en-US\NetworkHealthCheck_User_Manual_en-US.md', 'en-US\NetworkHealthCheck_User_Manual_en-US.html', 'zh-TW\NetworkHealthCheck_User_Manual_zh-TW.md', 'zh-TW\NetworkHealthCheck_User_Manual_zh-TW.html')) {
         if (-not (Test-Path -LiteralPath (Join-Path $script:PackageRoot $rel))) { $missing += $rel }
     }
     if ($missing.Count) { return @{ Passed = $false; Detail = ('missing: ' + ($missing -join ', ')) } }
