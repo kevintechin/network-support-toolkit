@@ -183,7 +183,13 @@
 <section class="ho">
   <h2><span class="num">6</span> What was tried <span class="mark ho">hand-off</span></h2>
   <div class="card">
-    <p class="hint">Fix one, test one. Predict the outcome before the retest and record the prediction — a prediction that missed is evidence about the model you were working from.</p>
+    <p><b>How to reproduce the failure</b></p>
+    <p class="hint" style="margin-top:.25rem">The steps someone else can follow, or "not reproducible on demand" with what is known about when it appears. Without this, L3 starts by trying to make it happen.</p>
+    <table class="grid" style="margin-top:.4rem">
+      <tr><td class="lbl">Steps</td><td></td></tr>
+      <tr><td class="lbl">Reproduces</td><td class="hint">every time · sometimes — when? · not on demand</td></tr>
+    </table>
+    <p class="hint" style="margin-top:.9rem">Then: fix one, test one. Predict the outcome before the retest and record the prediction — a prediction that missed is evidence about the model you were working from.</p>
     <table class="grid" style="margin-top:.5rem">
       <tr><th>#</th><th>Change (one at a time)</th><th>Predicted</th><th>Observed</th><th>Reverted?</th></tr>
       <tr><td class="lbl">1</td><td></td><td></td><td></td><td></td></tr>
@@ -226,6 +232,9 @@
       <tr><th></th><th>Attached</th><th>Note</th></tr>
       <tr><td>Health check report — HTML</td><td>☐</td><td>whichever formats the run wrote; the HTML is the readable one</td></tr>
       <tr><td>Health check report — JSON</td><td>☐</td><td>schema 2: run options, fingerprint, every result</td></tr>
+      <tr><td>Health check report — TXT</td><td>☐</td><td><i>the readable fallback when the HTML was one of the formats that failed</i></td></tr>
+      <tr><td>Raw command output — <code>ipconfig /all</code>, <code>ping</code>, <code>tracert</code></td><td>☐</td><td><b>not in the report</b>: it carries measured values, not command output. Run the rows' Manual-check lines where the escalation asks for raw output</td></tr>
+      <tr><td>Switch and AP status pages for the path</td><td>☐</td><td><b>not in the report</b> — the tool never reads a device</td></tr>
       <tr><td>Environment report / <code>LauncherError.txt</code></td><td>☐</td><td><i>only where the tool could not run — best effort, so it may not exist</i></td></tr>
       <tr><td>Topology sketch of the affected path</td><td>☐</td><td>hand-drawn is fine; <b>the tool never draws one</b></td></tr>
       <tr><td>Device logs covering the failure window</td><td>☐</td><td>switch / AP / firewall — <b>not in the report</b></td></tr>

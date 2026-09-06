@@ -82,7 +82,14 @@ Three rules for filling it in:
 
 ## 6 · What was tried `[hand-off]`
 
-*Fix one, test one. Predict the outcome before the retest, and record the prediction — a prediction that missed is evidence about the model you were working from.*
+**How to reproduce the failure** — *the steps someone else can follow, or "not reproducible on demand" with what is known about when it appears. Without this, L3 starts by trying to make it happen.*
+
+| | |
+|---|---|
+| Steps | |
+| Reproduces | every time · sometimes — *when?* · not on demand |
+
+*Then: fix one, test one. Predict the outcome before the retest, and record the prediction — a prediction that missed is evidence about the model you were working from.*
 
 | # | Change (one at a time) | Predicted | Observed | Reverted? |
 |---|---|---|---|---|
@@ -114,6 +121,9 @@ Three rules for filling it in:
 |---|---|---|
 | Health check report — HTML | ☐ | whichever formats the run wrote; the HTML is the readable one |
 | Health check report — JSON | ☐ | schema 2: run options, fingerprint, every result |
+| Health check report — TXT | ☐ | *the readable fallback when the HTML was one of the formats that failed* |
+| Raw command output — `ipconfig /all`, `ping`, `tracert` | ☐ | **not in the report**: it carries measured values, not command output. Run the rows' Manual-check lines where the escalation asks for raw output |
+| Switch and AP status pages for the path | ☐ | **not in the report** — the tool never reads a device |
 | Environment report / `LauncherError.txt` | ☐ | *only where the tool could not run — best effort, so it may not exist* |
 | Topology sketch of the affected path | ☐ | hand-drawn is fine; **the tool never draws one** |
 | Device logs covering the failure window | ☐ | switch / AP / firewall — **not in the report** |
