@@ -60,7 +60,7 @@ The Result line in the window and the coloured box at the top of the report show
 
 | Verdict | The tool's description | What it means for you |
 |---|---|---|
-| **Overall Healthy** | All required checks that could be executed passed. | Every required check that could run passed at this moment. Optional targets do not count, so an optional or added target that did not answer sits in an Information row — read those rows too. If your problem continues, it is probably somewhere the check does not reach — the application, a server — or it comes and goes: run again while it is happening. |
+| **Overall Healthy** | All required checks that could be executed passed. | Every required check that could run passed at this moment. Optional targets do not count: an optional or added ping, TCP or HTTP target that did not answer sits in an Information row — read those rows too — while an optional DNS name that does not resolve is a Warning and turns the verdict to Attention Required. If your problem continues, it is probably somewhere the check does not reach — the application, a server — or it comes and goes: run again while it is happening. |
 | **Attention Required** | No required check failed, but warnings or quality issues were detected. | You are connected, but something is off — packet loss, high latency, retransmissions, adapter errors, or another warning. Send the report. |
 | **Problem Detected** | At least one required check failed. | Something the check requires is broken. The report says which check and what it saw. Send the report. |
 | **Test Incomplete** | Some checks could not be completed because of permissions, system components, or execution errors. | The tool could not measure something on this computer. That is not proof of a network fault, and it is not something you did wrong. Send the report as it is. |
@@ -81,7 +81,7 @@ Under the verdict, the report has a section called **What to tell IT**: a title 
 | **Some checks could not run** | No failure was found, but some steps could not be completed on this computer. Send the report as it is; the reasons are recorded in the details. |
 | **Warnings to review** | No required check failed, but some checks raised warnings; see the highlighted rows. Send the report as it is. |
 
-The first three problem titles name things you can check yourself before calling — a cable, the Wi-Fi signal, whether another device on the same network has the same trouble. The rest is for IT. And the tool prints *Everything passed* whenever every required check passed: an optional or added target that did not answer is still in the table as an Information row, so read those rows before you conclude that nothing failed.
+The first three problem titles name things you can check yourself before calling — a cable, the Wi-Fi signal, whether another device on the same network has the same trouble. The rest is for IT. And the tool prints *Everything passed* whenever every required check passed: an optional or added ping, TCP or HTTP target that did not answer is still in the table as an Information row (an optional DNS name that does not resolve is a Warning instead), so read those rows before you conclude that nothing failed.
 
 ### The rest of the report
 
@@ -94,7 +94,7 @@ The first three problem titles name things you can check yourself before calling
   | **Warning** | The check ran; the result did not fail its rule, but it is worth attention — loss or latency over a threshold, a warning-level counter, a notice about the run itself |
   | **Fail** | The check ran, but the result did not meet its rule |
   | **Unable to Check** | The step could not be completed — permissions, a missing system component, company policy or an execution error. It does not necessarily mean the network is faulty |
-  | **Information** | A fact recorded with no verdict attached — the computer's name, a virtual adapter, an optional test target that did not answer, a note that IT has not defined a company standard in the configuration file |
+  | **Information** | A fact recorded with no verdict attached — the computer's name, a virtual adapter, an optional ping, TCP or HTTP target that did not answer, a note that IT has not defined a company standard in the configuration file |
 
 - **IT diagnostics** — collapsed at the bottom: Wi-Fi radio details, routes, the gateway's hardware address, proxy settings, the first hops of a traceroute, adapter drivers. These rows are for IT and never change the verdict. You can leave them closed.
 - The six counters under the verdict (**Pass**, **Warning**, **Fail**, **Unable to Check**, **Information**, **Total**) count the rows of the Test Results table.
