@@ -89,9 +89,10 @@ for the organization's Wi-Fi, VPN, WAN, data-center, and application baselines.
 - Default tests contact 1.1.1.1:443 and www.microsoft.com and ping 1.1.1.1; the
   traceroute probes the first hops toward 1.1.1.1. Replace these with approved targets
   before broad deployment.
-- Reports contain the computer name, user name, adapter/MAC/IP/gateway/DNS data, the
-  Wi-Fi network name (SSID) and access-point BSSID, test targets, and exception details.
-  The user manual tells the person to handle them according to company policy; decide
-  what that policy is before the tool is handed out.
+- Reports carry personal and infrastructure data - from the computer and user names through
+  adapter/MAC/IP/gateway/DNS data, the Wi-Fi SSID and BSSID, the proxy settings and the
+  first-hop routers to the configuration and report paths; the user manual (section 5,
+  "What the report contains") keeps the list. It tells the person to handle the report
+  according to company policy; decide what that policy is before the tool is handed out.
 - The program file can be edited, but prefer the JSON configuration. Back up and
   re-validate (SHA256SUMS.txt, tools/validate_release.py) before changing the script.

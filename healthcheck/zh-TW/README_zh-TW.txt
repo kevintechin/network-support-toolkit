@@ -108,6 +108,7 @@ Thresholds 可調整：
   NetworkHealthCheck_ENVIRONMENT_<時間>.txt，內容是 IT 需要知道的事。
 - 預設會連線到 1.1.1.1:443、www.microsoft.com，Ping 1.1.1.1，traceroute 探測往 1.1.1.1 的前幾跳。大量部署前請改成
   公司核准的目標。
-- 報告包含電腦名稱、目前登入使用者、網卡、MAC、IP、閘道、DNS、Wi-Fi 網路名稱（SSID）與基地台 BSSID、測試目標與錯誤資訊。
-  使用手冊要求使用者依公司規定處理報告；發放工具前請先決定那個規定是什麼。
+- 報告含個人與基礎設施資料：從電腦名稱、使用者名稱、網卡／MAC／IP／閘道／DNS、Wi-Fi SSID 與 BSSID、Proxy 設定、前幾跳路由器，
+  到設定檔與報告資料夾的路徑；完整清單由使用手冊第 5 節「報告裡有什麼」維護。手冊要求使用者依公司規定處理報告；
+  發放工具前請先決定那個規定是什麼。
 - 主程式可以修改，但建議只修改 JSON 設定檔。修改前請先備份，修改後重新驗證（SHA256SUMS.txt、tools/validate_release.py）。

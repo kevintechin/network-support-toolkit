@@ -76,13 +76,15 @@ for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
 # quotes and its footer, and a bump that touches the first line alone must fail here (PR #20 round 2). The technical
 # guides carry the version history, so for them the first line must name this version, the bold version of the
 # purpose paragraph ("It applies to version **x**", the only bold version label in a guide) must be this one (round 3),
-# and no line may name a newer one. A version label is three dotted numbers with the tool's major version that are not part of a longer dotted run
-# (an IP address, a CIDR, a Windows build); a full stop after the label is ordinary punctuation and does not hide it.
-# Until 1.2.4 only the two scripts were checked, and a bump had to find the nine documents by hand.
-VERSION_LABEL=re.compile(r'(?<!\d)(?<!\d\.)(\d+)\.\d+\.\d+(?!\.?\d)')
+# and no line may name a newer one. A version label is three dotted numbers, each below 1000, that are not part of a
+# longer dotted run: an IP address, a CIDR, a Windows build (10.0.26200) or a PowerShell version (5.1.26100) is not one,
+# a full stop after the label is ordinary punctuation and does not hide it, and a label of an earlier major version is
+# still a label - a manual that kept a 1.x label after the tool moved to 2.x fails here (round 5). Until 1.2.4 only the
+# two scripts were checked, and a bump had to find the nine documents by hand.
+VERSION_LABEL=re.compile(r'(?<!\d)(?<!\d\.)(\d+)\.(\d+)\.(\d+)(?!\.?\d)')
 def version_labels(text):
-    major=TOOL_VERSION.split('.')[0]
-    return sorted({m.group(0) for m in VERSION_LABEL.finditer(text) if m.group(1)==major},key=lambda v:tuple(int(x) for x in v.split('.')))
+    labels={m.group(0) for m in VERSION_LABEL.finditer(text) if all(int(m.group(i))<1000 for i in (1,2,3))}
+    return sorted(labels,key=lambda v:tuple(int(x) for x in v.split('.')))
 for rel in ['README_BILINGUAL.md','en-US/README_en-US.txt','zh-TW/README_zh-TW.txt',
  'en-US/NetworkHealthCheck_User_Manual_en-US.md','en-US/NetworkHealthCheck_User_Manual_en-US.html',
  'zh-TW/NetworkHealthCheck_User_Manual_zh-TW.md','zh-TW/NetworkHealthCheck_User_Manual_zh-TW.html']:
