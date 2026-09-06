@@ -17,6 +17,8 @@ Each section carries a marker:
 - **`[both]`** — fill it in whichever report you are writing
 - **`[hand-off]`** — for an escalation to L3; delete it for a delivery report
 
+A marker can also sit on a **block inside** a section: §8 is `[both]` because its closure block belongs in every report, while the request to L3 inside it is `[hand-off]` and goes with the rest.
+
 **A delivery report is this document with the `[hand-off]` sections removed** — the same facts in the same order, about a page. There is deliberately no second structure for it: the person reading the delivery report today may be the one reading the hand-off tomorrow, and two shapes for one case is how details go missing between them.
 
 Three rules for filling it in:
@@ -70,6 +72,11 @@ Three rules for filling it in:
 
 > A target you add is **optional**: one that gets no reply at all, or that cannot connect over TCP or HTTP, is an `INFO` row and **does not move the verdict**. Record what it returned here even when the report came back healthy — see the field manual, §3.
 
+| Target | Probe | What the row said | Row status |
+|---|---|---|---|
+| | ping · TCP · HTTP · DNS | | PASS · INFO · WARN · FAIL |
+| | | | |
+
 **Other measurements** — switch, AP, firewall, or anything read by hand:
 
 | What | Where read | Value |
@@ -121,7 +128,7 @@ Three rules for filling it in:
 | That application | works / does not |
 | User confirmed service is restored | *who, and when* |
 
-**Hand-off** — name the rule that was invoked, because it says what kind of help is needed:
+**Hand-off** `[hand-off]` — name the rule that was invoked, because it says what kind of help is needed. *Delete this block along with the other hand-off sections: a customer-facing report should not carry your request to L3.*
 
 - [ ] **Timebox** expired without isolation
 - [ ] Needs **access or authority** I do not have — *say which*
@@ -162,6 +169,8 @@ Three rules for filling it in:
 **3 · What was measured** — One console run, verdict **Problem Detected**, fingerprint `local`. The shape recorded on both machines: `gateway-config` FAIL (no IPv4 gateway on any adapter); `ping-gateway` FAIL, because `AUTO_GATEWAY` resolved to nothing; DNS timed out; no gateway rows at all. On the 1.2.3 run the `routes` row read `INFO — No IPv4 default route exists.` — the fact rather than an error, which is what backlog #27 changed.
 
 **5 · Isolated to** — The segment the machine is attached to: it has an address, but no default route exists, so nothing beyond that segment is reachable. The link itself is up and the adapter is healthy; nothing above the gateway was tested, because nothing could be reached to test it.
+
+**8 · Closure** — *written as it would be for a real case; the campaign reverted this scenario rather than resolving it with a user, so these three lines are the one invented part of the example.* Adapter moved back to the office segment; end-to-end retest: address, gateway, `1.1.1.1`, a name, and the intranet page all reached. The application the user cares about works. Confirmed by the reporter at 09:12.
 
 **8 · Delivery** — This machine has an address but no way out of its own segment: no default route exists, so nothing beyond that segment can be reached. *What this run does not settle:* whether the address was leased or configured by hand. The measured shape — an address, no gateway — is identical either way, and the report's own DHCP mode field is what separates them (field manual, §4.1). It decides the owner: leased, and the scope is handing out addresses without a router option; static, and the client's configuration is missing its gateway. Read that field before telling anyone which to fix; moving the machine back to the office segment resolves it either way.
 

@@ -102,7 +102,7 @@
 <section>
   <div class="card">
     <p><b>Copy sections 1 to 9</b> — everything down to the line that says the template ends. The filled example after it is an illustration and must never travel into a ticket: it carries a real lab machine's name and measurements that are not yours.</p>
-    <p>Each section is marked <span class="mark both">both</span> — fill it in whichever report you are writing — or <span class="mark ho">hand-off</span>, which you delete for a delivery report.</p>
+    <p>Each section is marked <span class="mark both">both</span> — fill it in whichever report you are writing — or <span class="mark ho">hand-off</span>, which you delete for a delivery report. A marker can also sit on a <b>block inside</b> a section: §8 is <span class="mark both">both</span> because its closure block belongs in every report, while the request to L3 inside it is <span class="mark ho">hand-off</span> and goes with the rest.</p>
     <p><b>A delivery report is this document with the hand-off sections removed</b> — the same facts in the same order, about a page. There is deliberately no second structure for it: the person reading the delivery report today may be the one reading the hand-off tomorrow, and two shapes for one case is how details go missing between them.</p>
     <ul class="rules" style="margin-top:.7rem">
       <li><b>Write what you measured, not what you concluded from it.</b> The conclusion has a section of its own, and a reader who cannot separate the two cannot check either.</li>
@@ -159,6 +159,11 @@
     </table>
     <p style="margin-top:.8rem"><b>Targets added for this case, and what they returned</b></p>
     <div class="flag">A target you add is <b>optional</b>: one that gets no reply at all, or that cannot connect over TCP or HTTP, is an <code>INFO</code> row and <b>does not move the verdict</b>. Record what it returned here even when the report came back healthy — see the field manual, §3.</div>
+    <table class="grid" style="margin-top:.5rem">
+      <tr><th>Target</th><th>Probe</th><th>What the row said</th><th>Row status</th></tr>
+      <tr><td></td><td class="hint">ping · TCP · HTTP · DNS</td><td></td><td class="hint">PASS · INFO · WARN · FAIL</td></tr>
+      <tr><td></td><td></td><td></td><td></td></tr>
+    </table>
     <p style="margin-top:.8rem"><b>Other measurements</b> — switch, AP, firewall, or anything read by hand:</p>
     <table class="grid" style="margin-top:.4rem">
       <tr><th>What</th><th>Where read</th><th>Value</th></tr>
@@ -228,7 +233,7 @@
       <tr><td class="lbl">That application</td><td class="hint">works / does not</td></tr>
       <tr><td class="lbl">User confirmed service is restored</td><td class="hint">who, and when</td></tr>
     </table>
-    <p style="margin-top:.9rem"><b>Hand-off</b> — name the rule that was invoked, because it says what kind of help is needed:</p>
+    <p style="margin-top:.9rem"><b>Hand-off</b> <span class="mark ho">hand-off</span> — name the rule that was invoked, because it says what kind of help is needed. <span class="hint">Delete this block along with the other hand-off sections: a customer-facing report should not carry your request to L3.</span></p>
     <ul class="ask" style="margin-top:.4rem">
       <li>☐ <b>Timebox</b> expired without isolation</li>
       <li>☐ Needs <b>access or authority</b> I do not have — <span class="hint">say which</span></li>
@@ -269,6 +274,7 @@
     <p><b class="s">2 · Symptom</b> — "Nothing loads, but the network icon looks normal." Blast radius: this machine only. Changed: the adapter was moved to a host-only segment. Fingerprint lane: <b>IP, but gateway unreachable</b>. Constant.</p>
     <p><b class="s">3 · What was measured</b> — One console run, verdict <b>Problem Detected</b>, fingerprint <code>local</code>. The shape recorded on both machines: <code>gateway-config</code> FAIL (no IPv4 gateway on any adapter); <code>ping-gateway</code> FAIL, because <code>AUTO_GATEWAY</code> resolved to nothing; DNS timed out; no gateway rows at all. On the 1.2.3 run the <code>routes</code> row read <code>INFO — No IPv4 default route exists.</code> — the fact rather than an error, which is what backlog #27 changed.</p>
     <p><b class="s">5 · Isolated to</b> — The segment the machine is attached to: it has an address, but no default route exists, so nothing beyond that segment is reachable. The link itself is up and the adapter is healthy; nothing above the gateway was tested, because nothing could be reached to test it.</p>
+    <p><b class="s">8 · Closure</b> — <i>written as it would be for a real case; the campaign reverted this scenario rather than resolving it with a user, so these three lines are the one invented part of the example.</i> Adapter moved back to the office segment; end-to-end retest: address, gateway, <code>1.1.1.1</code>, a name, and the intranet page all reached. The application the user cares about works. Confirmed by the reporter at 09:12.</p>
     <p><b class="s">8 · Delivery</b> — This machine has an address but no way out of its own segment: no default route exists, so nothing beyond that segment can be reached. <i>What this run does not settle:</i> whether the address was leased or configured by hand. The measured shape — an address, no gateway — is identical either way, and the report's own DHCP mode field is what separates them (field manual, §4.1). It decides the owner: leased, and the scope is handing out addresses without a router option; static, and the client's configuration is missing its gateway. Read that field before telling anyone which to fix; moving the machine back to the office segment resolves it either way.</p>
     <p><b class="s">9 · Attachments</b> — HTML and JSON of the run. No device logs: the segment has no switch to read.</p>
   </div>
