@@ -12,7 +12,7 @@ Network Health Check looks at the network from this computer's point of view and
 
 **It changes nothing.** The tool reads network information and runs connection tests — a few pings, a name lookup, a TCP connection and one HTTPS request. It does not modify your IP address, DNS, routes, firewall, proxy or adapter settings, and it installs nothing. Administrator rights are normally not required.
 
-**It uploads nothing.** The tests reach the addresses listed in section 9 and nothing else; the report stays on this computer until you send it yourself.
+**It uploads nothing.** The report stays on this computer until you send it yourself. What the tests do send is traffic to the test targets — section 9 names the shipped ones — through this computer's own DNS servers, proxy and route.
 
 **How long it takes.** About ten seconds on a working network. When things do not answer it takes longer — up to a minute or so — because every test waits for its time limit before giving up.
 
@@ -181,7 +181,7 @@ A Startup Notice row is a warning, so on its own it turns the verdict to **Atten
 
 **Is the report sent anywhere?** No. It is written to a folder on this computer and goes nowhere until you send it.
 
-**Which addresses does it contact?** With the settings as shipped: your own default gateway, the public address `1.1.1.1` (a ping, a connection to port 443, and the first three hops toward it for the traceroute) and `https://www.microsoft.com/` (one page request through the system proxy), plus the name lookup for `www.microsoft.com`. IT may have replaced these with the company's own services — the report's rows name what was actually contacted.
+**Which addresses does it contact?** With the settings as shipped: your own default gateway, the public address `1.1.1.1` (a ping, a connection to port 443, and the first three hops toward it for the traceroute) and `https://www.microsoft.com/` (one page request through the proxy Windows is set to use, following any redirect it is given), plus the name lookup for `www.microsoft.com` through this computer's DNS servers. IT may have replaced these with the company's own services — the report's rows name what was actually contacted.
 
 **A row says "Unable to Check" for the TCP retransmissions.** The counters could not be read — a permission, a policy or a broken performance counter. It does not mean there were retransmissions; the report says so itself. Send it as it is.
 

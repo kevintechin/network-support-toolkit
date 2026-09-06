@@ -71,18 +71,28 @@ for rel in ['en-US/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.config.json
     ok('English file has no CJK '+rel,(ROOT/rel).is_file() and not cjk(read_text(ROOT/rel)))
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     ok('version '+TOOL_VERSION+' '+rel,'$script:ToolVersion = "'+TOOL_VERSION+'"' in read_text(ROOT/rel))
-# Every document that names the version names this one: in its first two lines (the title of a markdown file, the
-# "Version:" line of a text file) or in its <title> (HTML). Until 1.2.4 only the two scripts were checked, and a bump
-# had to find the nine documents by hand.
-versioned=['README_BILINGUAL.md','en-US/README_en-US.txt','zh-TW/README_zh-TW.txt',
- 'en-US/NetworkHealthCheck_User_Manual_en-US.md','zh-TW/NetworkHealthCheck_User_Manual_zh-TW.md']
-versioned+=[d+'/NetworkHealthCheck_Technical_Guide_'+l+'.md' for d in ('docs','en-US','zh-TW') for l in ('en-US','zh-TW')]
-for rel in versioned:
-    head='\n'.join(read_text(ROOT/rel).splitlines()[:2]) if (ROOT/rel).is_file() else ''
-    ok('document version '+TOOL_VERSION+' '+rel,TOOL_VERSION in head,head.replace('\n',' | ')[:100])
-for rel in ['en-US/NetworkHealthCheck_User_Manual_en-US.html','zh-TW/NetworkHealthCheck_User_Manual_zh-TW.html']:
-    m=re.search(r'<title>([^<]*)</title>',read_text(ROOT/rel)) if (ROOT/rel).is_file() else None
-    ok('document version '+TOOL_VERSION+' '+rel,bool(m) and TOOL_VERSION in m.group(1),m.group(1) if m else 'no <title>')
+# Every document that names the version names this one. The front page, both READMEs and both manuals (markdown and
+# HTML) may name no other tool version at all - a manual carries it in its title, its heading, the window name it
+# quotes and its footer, and a bump that touches the first line alone must fail here (PR #20 round 2). The technical
+# guides carry the version history, so for them the first line must name this version and no line may name a newer
+# one. A version label is three dotted numbers with the tool's major version that are not part of a longer dotted run
+# (an IP address, a CIDR, a Windows build); a full stop after the label is ordinary punctuation and does not hide it.
+# Until 1.2.4 only the two scripts were checked, and a bump had to find the nine documents by hand.
+VERSION_LABEL=re.compile(r'(?<!\d)(?<!\d\.)(\d+)\.\d+\.\d+(?!\.?\d)')
+def version_labels(text):
+    major=TOOL_VERSION.split('.')[0]
+    return sorted({m.group(0) for m in VERSION_LABEL.finditer(text) if m.group(1)==major},key=lambda v:tuple(int(x) for x in v.split('.')))
+for rel in ['README_BILINGUAL.md','en-US/README_en-US.txt','zh-TW/README_zh-TW.txt',
+ 'en-US/NetworkHealthCheck_User_Manual_en-US.md','en-US/NetworkHealthCheck_User_Manual_en-US.html',
+ 'zh-TW/NetworkHealthCheck_User_Manual_zh-TW.md','zh-TW/NetworkHealthCheck_User_Manual_zh-TW.html']:
+    found=version_labels(read_text(ROOT/rel)) if (ROOT/rel).is_file() else []
+    ok('every version label is '+TOOL_VERSION+' '+rel,found==[TOOL_VERSION],', '.join(found) or 'none')
+for rel in [d+'/NetworkHealthCheck_Technical_Guide_'+l+'.md' for d in ('docs','en-US','zh-TW') for l in ('en-US','zh-TW')]:
+    text=read_text(ROOT/rel) if (ROOT/rel).is_file() else ''
+    first=text.split('\n',1)[0]
+    ok('first line names '+TOOL_VERSION+' '+rel,TOOL_VERSION in first,first[:100])
+    found=version_labels(text)
+    ok('no version label newer than '+TOOL_VERSION+' '+rel,bool(found) and found[-1]==TOOL_VERSION,', '.join(found[-3:]) or 'none')
 # The two PowerShell guards that used to live here - arithmetic at the top level of a New-Object argument list, and a
 # bound parameter overwritten where the write reaches the script scope, the two v1.2.0 GUI regressions - run on the
 # PowerShell AST in the repository's test chain since 2026-09-04 (tests/ast_guards.ps1 with tests/selftest_guards.ps1,
