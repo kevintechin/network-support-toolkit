@@ -19,7 +19,7 @@
 | `Start-NetworkCheck-IT.cmd` | IT 入口（1.2）：執行選項面板、不自動開始、HTML 預設展開 IT 診斷資料；同樣的參數可用於文字模式。 |
 | `NetworkHealthCheck.ps1` | 主要檢測、判定、錯誤處理與報告程式碼。 |
 | `NetworkHealthCheck.config.json` | 公司 IP 標準、測試目標、逾時與門檻。 |
-| `NetworkHealthCheck_User_Manual_*.md`、`.html` | 終端使用者手冊（1.2.4）：開始之前、執行檢測、看懂結果、交給 IT、無法執行時怎麼辦。Markdown 與內容相同的單頁 HTML。 |
+| `NetworkHealthCheck_User_Manual_*.md`、`.html` | 終端使用者手冊（1.2.4 起）：開始之前、執行檢測、看懂結果、交給 IT、無法執行時怎麼辦。Markdown 與內容相同的單頁 HTML。 |
 | `README_*.txt` | 給 IT 的設定說明：執行選項、公司標準、服務測試、門檻、部署注意事項。 |
 | `NetworkHealthCheck_Technical_Guide_*.md` | 本文件的中英文版本。 |
 | `SHA256SUMS.txt` | 發行檔案的 SHA-256。 |

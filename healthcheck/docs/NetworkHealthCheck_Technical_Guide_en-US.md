@@ -19,7 +19,7 @@ The tool is read-only with respect to system configuration. It does not change I
 | `Start-NetworkCheck-IT.cmd` | IT entry (1.2): run-options panel, no auto-run, HTML opens with the IT diagnostics expanded. Same switches work in console mode. |
 | `NetworkHealthCheck.ps1` | Main diagnostics, decision logic, error handling, and report generation. |
 | `NetworkHealthCheck.config.json` | Company IP standards, targets, timeouts, and thresholds. |
-| `NetworkHealthCheck_User_Manual_*.md`, `.html` | The end-user manual (1.2.4): before you start, running the check, reading the result, sending the report, what to do when it does not run. Markdown and a single HTML page with the same content. |
+| `NetworkHealthCheck_User_Manual_*.md`, `.html` | The end-user manual, since 1.2.4: before you start, running the check, reading the result, sending the report, what to do when it does not run. Markdown and a single HTML page with the same content. |
 | `README_*.txt` | Configuration notes for IT: run options, company standards, service tests, thresholds, deployment notes. |
 | `NetworkHealthCheck_Technical_Guide_*.md` | English and Traditional Chinese versions of this document. |
 | `SHA256SUMS.txt` | SHA-256 values for release files. |
