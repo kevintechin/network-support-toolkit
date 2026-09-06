@@ -168,11 +168,12 @@ Three rules for filling it in:
 | Health check report — TXT | ☐ | *the readable fallback when the HTML was one of the formats that failed* |
 | Raw command output — `ipconfig /all`, `ping`, `tracert` | ☐ | **not in the report**: it carries measured values, not command output. Run the rows' Manual-check lines where the escalation asks for raw output |
 | Switch and AP status pages for the path | ☐ | **not in the report** — the tool never reads a device |
-| Environment report / `LauncherError.txt` | ☐ | *only where the tool could not run — best effort, so it may not exist* |
+| Environment report / `LauncherError.txt` | ☐ | *where the tool never started — best effort, so it may not exist* |
+| `NetworkHealthCheck_FATAL_<time>.txt` | ☐ | *where the run collapsed before it could write a report — the only evidence that attempt left, and best effort too* |
 | Topology sketch of the affected path | ☐ | hand-drawn is fine; **the tool never draws one** |
 | Device logs covering the failure window | ☐ | switch / AP / firewall — **not in the report** |
 | Config exports of the devices in the path | ☐ | **not in the report** |
-| Screenshots the user took | ☐ | |
+| Screenshots, or a photo of the window | ☐ | *where nothing was written at all, the photo of the black window is the evidence — field manual §6* |
 
 ---
 
