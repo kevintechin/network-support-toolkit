@@ -1,8 +1,8 @@
-﻿# NetworkHealthCheck Portable 1.2.3: Features, Design, Validation, and Limitations
+﻿# NetworkHealthCheck Portable 1.2.4: Features, Design, Validation, and Limitations
 
 ## 1. Purpose
 
-This document describes the features, architecture, decision rules, error handling, validation approach, known limitations, and source-comment strategy of the portable `NetworkHealthCheck` tool. It applies to version **1.2.3** and to both the Traditional Chinese and English packages. The executable logic is the same; user-visible text, default test names, and comment language are localized separately.
+This document describes the features, architecture, decision rules, error handling, validation approach, known limitations, and source-comment strategy of the portable `NetworkHealthCheck` tool. It applies to version **1.2.4** and to both the Traditional Chinese and English packages. The executable logic is the same; user-visible text, default test names, and comment language are localized separately.
 
 ## 2. Product scope
 
