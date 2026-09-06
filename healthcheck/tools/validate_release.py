@@ -106,6 +106,11 @@ record=read_text(ROOT/'VALIDATION.md') if (ROOT/'VALIDATION.md').is_file() else 
 releases=sorted({v for v in re.findall(r'^## v(\d+\.\d+\.\d+)\b',record,re.M)},key=lambda v:tuple(int(x) for x in v.split('.')))
 ok('validation record has an entry for '+TOOL_VERSION,TOOL_VERSION in releases,', '.join(releases[-3:]) or 'no release heading')
 ok('validation record has no entry newer than '+TOOL_VERSION,bool(releases) and releases[-1]==TOOL_VERSION,', '.join(releases[-3:]) or 'none')
+# The entry's own "**Version.**" paragraph - the record's house style for what carries the version - must name this
+# version too, so that an entry copied from the previous release and left with its version paragraph fails (round 11).
+m=re.search(r'^## v'+re.escape(TOOL_VERSION)+r'\b[^\n]*\n(.*?)(?=^## |\Z)',record,re.M|re.S)
+para=re.search(r'^\*\*Version\.\*\*[^\n]*',m.group(1),re.M) if m else None
+ok('validation record entry for '+TOOL_VERSION+' has a Version paragraph naming it',bool(para) and TOOL_VERSION in para.group(0),(para.group(0)[:80] if para else 'no Version paragraph'))
 # The two PowerShell guards that used to live here - arithmetic at the top level of a New-Object argument list, and a
 # bound parameter overwritten where the write reaches the script scope, the two v1.2.0 GUI regressions - run on the
 # PowerShell AST in the repository's test chain since 2026-09-04 (tests/ast_guards.ps1 with tests/selftest_guards.ps1,
