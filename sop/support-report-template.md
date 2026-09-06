@@ -200,4 +200,6 @@ Three rules for filling it in:
 
 **8 · Delivery** — The machine had an address but no IPv4 default gateway — no default next hop was configured — and every destination the run could try beyond its own segment failed: DNS and the external targets. Moving the adapter back to the office segment restored it. *What the run did not settle:* whether that address had been leased or configured by hand. The measured shape — an address, no gateway — is identical either way, and the report's own DHCP mode field is what separates them (field manual, §4.1). It matters if the same thing happens on that segment again: leased, and the scope is handing out addresses without a router option; static, and the client's configuration was missing its gateway.
 
-**9 · Attachments** — HTML and JSON of the run. No device logs: the segment has no switch to read.
+**8 · What to do next** — Nothing for you: the machine works again. Tell us if it comes back on that segment, and we will settle which of the two cases it is.
+
+**9 · Attachments** — HTML and JSON of the run. *The `[hand-off]` rows — topology, device logs, configuration exports, device status pages — are internal evidence and do not appear in a delivery report, so they are not listed here.*
