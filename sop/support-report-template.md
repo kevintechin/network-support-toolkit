@@ -167,14 +167,16 @@ Three rules for filling it in:
 | Health check report — JSON | ☐ | schema 2: run options, fingerprint, every result |
 | Health check report — TXT | ☐ | *the readable fallback when the HTML was one of the formats that failed* |
 | Raw command output — `ipconfig /all`, `ping`, `tracert` | ☐ | **not in the report**: it carries measured values, not command output. Run the rows' Manual-check lines where the escalation asks for raw output |
-| Switch and AP status pages for the path | ☐ | **not in the report** — the tool never reads a device |
-| `NetworkHealthCheck_ENVIRONMENT_<time>.txt` | ☐ | *written by the script's own guard before it exits 3: the machine, the language mode, what IT can do. Beside the script, or in `%TEMP%`* |
-| `LauncherError.txt`, or `%TEMP%\NetworkHealthCheck_LauncherError.txt` | ☐ | *written by the launcher for its own stop or any nonzero exit, with the reason and the suggested action. **The fallback has a different name**, so a read-only share or protected folder leaves it in `%TEMP%` under the longer one — and the launcher prints the path it used. **A restricted-mode run started through a launcher produces both this and the environment report**; attach each. A direct `powershell -File …` run writes the environment report and exits 3 with no launcher involved, so there is no launcher file to look for* |
+| Switch and AP status pages for the path `[hand-off]` | ☐ | **not in the report** — the tool never reads a device |
+| `NetworkHealthCheck_ENVIRONMENT_<time>.txt` | ☐ | *written by the script's own guard before it exits 3: the machine, the language mode, what IT can do. Beside the script, or in `%TEMP%` — **best effort**: if both refuse the write, no file exists* |
+| `LauncherError.txt`, or `%TEMP%\NetworkHealthCheck_LauncherError.txt` | ☐ | *written by the launcher for its own stop or any nonzero exit, with the reason and the suggested action. **The fallback has a different name**, so a read-only share or protected folder leaves it in `%TEMP%` under the longer one — and the launcher prints the path it used. **A restricted-mode run started through a launcher produces both this and the environment report**; attach each. A direct `powershell -File …` run writes the environment report and exits 3 with no launcher involved, so there is no launcher file to look for. **Best effort too**: the fallback write is not verified* |
 | `NetworkHealthCheck_FATAL_<time>.txt` | ☐ | *where the run collapsed before it could write a report — the only evidence that attempt left, and best effort too* |
-| Topology sketch of the affected path | ☐ | hand-drawn is fine; **the tool never draws one** |
-| Device logs covering the failure window | ☐ | switch / AP / firewall — **not in the report** |
-| Config exports of the devices in the path | ☐ | **not in the report** |
+| Topology sketch of the affected path `[hand-off]` | ☐ | hand-drawn is fine; **the tool never draws one** |
+| Device logs covering the failure window `[hand-off]` | ☐ | switch / AP / firewall — **not in the report** |
+| Config exports of the devices in the path `[hand-off]` | ☐ | **not in the report** |
 | Screenshots, or a photo of the window | ☐ | *where nothing was written at all, the photo of the black window is the evidence — field manual §6* |
+
+*The four rows marked `[hand-off]` are internal infrastructure evidence: the SOP asks for them so that L3 can start at your frontier. **Leave them out of a delivery report**, which goes to the person who asked. And where the environment report, the launcher error or the fatal file does not exist — each is best effort — capture the text the window showed instead, and say in §9 that you did.*
 
 ---
 
