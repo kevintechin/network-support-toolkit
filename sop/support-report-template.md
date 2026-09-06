@@ -98,9 +98,12 @@ Three rules for filling it in:
 
 ## 5 · Where the fault is isolated to `[both]`
 
-**Station / domain:**
+| | |
+|---|---|
+| **Station / domain** | |
+| **What the evidence points at, and what it does not** | |
 
-*Two or three sentences: what the evidence points at, and what it does not. If the isolation is partial, say which way it is partial — "somewhere between the access port and the gateway" is a useful sentence; "network issue" is not.*
+*Two or three sentences in that second field. If the isolation is partial, say which way it is partial — "somewhere between the access port and the gateway" is a useful sentence; "network issue" is not.*
 
 ## 6 · What was tried `[hand-off]`
 
@@ -143,9 +146,16 @@ Three rules for filling it in:
 - [ ] **Severity** policy — site-down or many users
 - [ ] **My layers are excluded** — the remaining suspects are in your domain
 
-*What I need from you, specifically:*
+| | |
+|---|---|
+| **What I need from you, specifically** | |
 
-**Delivery** — the conclusion in the reader's language, and the one thing they should do next.
+**Delivery** `[both]` — the conclusion in the reader's language, and the one thing they should do next.
+
+| | |
+|---|---|
+| **Conclusion** | |
+| **What to do next** | |
 
 ## 9 · Attachments `[both]`
 
