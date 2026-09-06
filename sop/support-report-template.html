@@ -264,7 +264,8 @@
       <tr><td>Health check report — TXT</td><td>☐</td><td><i>the readable fallback when the HTML was one of the formats that failed</i></td></tr>
       <tr><td>Raw command output — <code>ipconfig /all</code>, <code>ping</code>, <code>tracert</code></td><td>☐</td><td><b>not in the report</b>: it carries measured values, not command output. Run the rows' Manual-check lines where the escalation asks for raw output</td></tr>
       <tr><td>Switch and AP status pages for the path</td><td>☐</td><td><b>not in the report</b> — the tool never reads a device</td></tr>
-      <tr><td>Environment report / <code>LauncherError.txt</code></td><td>☐</td><td><i>where the tool never started — best effort, so it may not exist</i></td></tr>
+      <tr><td><code>NetworkHealthCheck_ENVIRONMENT_&lt;time&gt;.txt</code></td><td>☐</td><td><i>written by the script's own guard before it exits 3: the machine, the language mode, what IT can do. Beside the script, or in <code>%TEMP%</code></i></td></tr>
+      <tr><td><code>LauncherError.txt</code></td><td>☐</td><td><i>written by the launcher for its own stop or any nonzero exit, with the reason and the suggested action. <b>A restricted-mode run produces both this and the environment report</b> — attach each</i></td></tr>
       <tr><td><code>NetworkHealthCheck_FATAL_&lt;time&gt;.txt</code></td><td>☐</td><td><i>where the run collapsed before it could write a report — the only evidence that attempt left, and best effort too</i></td></tr>
       <tr><td>Topology sketch of the affected path</td><td>☐</td><td>hand-drawn is fine; <b>the tool never draws one</b></td></tr>
       <tr><td>Device logs covering the failure window</td><td>☐</td><td>switch / AP / firewall — <b>not in the report</b></td></tr>

@@ -168,7 +168,8 @@ Three rules for filling it in:
 | Health check report — TXT | ☐ | *the readable fallback when the HTML was one of the formats that failed* |
 | Raw command output — `ipconfig /all`, `ping`, `tracert` | ☐ | **not in the report**: it carries measured values, not command output. Run the rows' Manual-check lines where the escalation asks for raw output |
 | Switch and AP status pages for the path | ☐ | **not in the report** — the tool never reads a device |
-| Environment report / `LauncherError.txt` | ☐ | *where the tool never started — best effort, so it may not exist* |
+| `NetworkHealthCheck_ENVIRONMENT_<time>.txt` | ☐ | *written by the script's own guard before it exits 3: the machine, the language mode, what IT can do. Beside the script, or in `%TEMP%`* |
+| `LauncherError.txt` | ☐ | *written by the launcher for its own stop or any nonzero exit, with the reason and the suggested action. **A restricted-mode run produces both this and the environment report** — attach each* |
 | `NetworkHealthCheck_FATAL_<time>.txt` | ☐ | *where the run collapsed before it could write a report — the only evidence that attempt left, and best effort too* |
 | Topology sketch of the affected path | ☐ | hand-drawn is fine; **the tool never draws one** |
 | Device logs covering the failure window | ☐ | switch / AP / firewall — **not in the report** |
