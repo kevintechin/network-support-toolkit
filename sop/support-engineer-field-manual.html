@@ -34,6 +34,12 @@
   h2{font-size:1.12rem;margin-bottom:.7rem;display:flex;align-items:baseline;gap:.55rem}
   h2 .k{color:var(--muted);font-weight:500;font-size:.85rem}
   h2 .num{color:var(--blue);font-weight:700}
+  h3{font-size:1rem;margin:1.4rem 0 .55rem;color:var(--ink)}
+  h3 .k{color:var(--muted);font-weight:500;font-size:.85rem;margin-left:.4rem}
+  .three td:first-child{border-left:3px solid var(--amber)}
+  .three td:nth-child(2){border-left:3px solid var(--red)}
+  .three td:nth-child(3){border-left:3px solid var(--blue)}
+  .three th{font-size:.78rem}
   .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
     padding:1rem 1.15rem;box-shadow:0 1px 2px rgba(22,35,59,.05)}
   .card p{font-size:.92rem}
@@ -231,7 +237,7 @@
     <p class="lead">The fingerprint is the tool's answer to the front door's third question, computed from the rows rather than guessed. The nine rules are an <b>ordered chain — the first match wins</b>, so a fingerprint tells you as much by what it rules out as by what it names. Read the rule, not just the title: two of them cover more than one situation.</p>
     <table class="join">
       <tr><th>Fingerprint · title</th><th>Chosen when</th><th>SOP lane</th><th>Go to</th><th>Ask for next</th></tr>
-      <tr><td class="l1"><span class="fp">local</span>Local link problem</td><td>The <code>adapters</code> row failed <b>or</b> the <code>gateway-config</code> row failed. <code>gateway-config</code> fails only when <b>no</b> IPv4 gateway is configured on any adapter. One that is present but <b>wrong</b> passes this row, and no fingerprint names that case: nothing answers → <code>gateway-unreachable</code>; it answers but nothing beyond works → <code>gateway-up-internet-dead</code>; it answers and everything else works → <code>mixed</code> <b>if</b> the site configured <code>AllowedDefaultGateways</code>, because the <code>expected-standard</code> row for <b>Default Gateway</b> then fails; without that setting there is <b>no gateway-specific diagnosis at all</b> — the chain falls through to its default, <code>healthy</code> / "Everything passed", unless something unrelated selects another key. That row is the only place the tool judges the gateway's <i>value</i></td><td class="l1"><b>Two different faults, and one hides a third.</b> No working adapter → the No IP / DHCP lane. An address with <b>no default gateway at all</b> → a client-side configuration fault, which a static address can produce with DHCP nowhere in the picture. But on a wireless machine "no working adapter" is also what a radio that is off or a failed association looks like — the interface is down or unaddressed, so the collector omits it and the <code>adapters</code> row fails — and that fault is <b>station 2</b></td><td class="st">2 <span style="font-weight:400">(wireless, first)</span><br>1 → 3 → 5 <span style="font-weight:400">(no lease)</span><br>1 <span style="font-weight:400">(gateway only)</span></td><td>Which of the two rows failed — read that before choosing the lane. No lease: port link state and PVID, DHCP scope utilization. No gateway on a working adapter: the adapter's own gateway setting, and whether the address is static. The report says whether the address came from DHCP or is static, but <b>not which server answered</b> — for the rogue-DHCP question you still need <code>ipconfig /all</code>'s <code>DHCP Server</code> line</td></tr>
+      <tr><td class="l1"><span class="fp">local</span>Local link problem</td><td>The <code>adapters</code> row failed <b>or</b> the <code>gateway-config</code> row failed</td><td class="l1"><b>Three faults wear this name</b></td><td class="st">2, or 1 → 3 → 5, or 1</td><td>Which of the two rows failed decides — see <i>Reading <code>local</code></i> below</td></tr>
       <tr><td class="l2"><span class="fp">gateway-unreachable</span>Gateway does not answer</td><td>A <code>ping-gateway</code> row failed and none passed — decided <b>before</b> the TCP, HTTP and group rows are considered, so a gateway that forwards traffic but drops ICMP to its own address lands here with the rest of the network working</td><td class="l2">IP, gateway unreachable — local L1/L2, <i>once the ping is corroborated</i>. SOP Rule 3 in its purest form: a failed ping is a suspect, not a conviction</td><td class="st">2 or 3 <span style="font-weight:400">(after the check)</span></td><td>Read the <code>tcp</code>, <code>http</code>, <code>connectivity-group</code> and <code>gateway-neighbor</code> rows first. If they passed <b>and at least one was off-subnet by a route through the gateway in the row you are reading</b> — targets are configured independently, so an on-subnet host, a VPN or a proxy can succeed without touching it, and on a multihomed machine <code>AUTO_GATEWAY</code> makes <b>one row per gateway</b> while the fingerprint asks only that none passed, so a witness routed through gateway A says nothing about failed gateway B (work through the others on their own terms) — the path works and that gateway is merely silent to ICMP: stay at station 1 and look at the config instead of walking to the switch. If they failed too: port error-counter delta, two samples; MAC learned on the expected port and VLAN; for Wi-Fi the AP client table</td></tr>
       <tr><td class="l3"><span class="fp">gateway-up-internet-dead</span>Gateway answers, internet does not</td><td>A gateway ping passed, a <code>connectivity-group</code> failed and none passed. <b>The rule does not read the group's name</b> — a site that replaced the Internet group with an internal one (the package README tells IT how) lands here for a failed internal service — and it pairs <b>any</b> passing gateway row with <b>any</b> failed group without checking they share a route: on a multihomed machine gateway A can answer while the failed group leaves through the unavailable gateway B</td><td class="l3">Gateway OK, internet dead — <i>only when the failed group is the Internet one, and the gateway that answered is the one its members route through.</i> Read which group failed, what its members target, and which gateway carries that traffic</td><td class="st">5 → 6 → 8 <span style="font-weight:400">(Internet group, matching route)</span><br>1 → 3 <span style="font-weight:400">(another gateway carries it)</span></td><td>Default route at the gateway; NAT translation and policy hit counters; WAN status. The traceroute row traces the <b>first configured ping target, not the group member that failed</b>, and only three hops by default — so unless those are the same destination it says nothing about this failure. Ask for an uncapped <code>tracert -d &lt;the address that failed&gt;</code>; the row's Manual-check line carries both the wrong target and the cap</td></tr>
       <tr><td class="l4"><span class="fp">dns</span>Name resolution fails</td><td>A <code>dns</code> row failed or warned, none passed, <b>and something else worked</b> (a connectivity group or a TCP row passed) — but that success may itself have used a host name, so the rule does not prove the differential its title claims</td><td class="l4">IP works, names fail — <i>only once you have confirmed it</i></td><td class="st">7 <span style="font-weight:400">(after the check)</span></td><td>Compare the targets: find a success that needed <b>no</b> lookup (an IP-addressed ping or TCP row). Then which servers the client actually points at (the DNS rows say), and the failure type — timeout vs SERVFAIL vs NXDOMAIN</td></tr>
@@ -242,6 +248,35 @@
       <tr><td class="l0"><span class="fp">healthy</span>Everything passed</td><td>Nothing above matched and every required check passed</td><td class="l0">None</td><td class="st">Elsewhere</td><td>A run <b>during</b> the failure. If the user reports a problem and this comes back clean, the endpoint's view is not where the fault is</td></tr>
     </table>
     <div class="flag"><b>A healthy report does not clear the network.</b> It clears this endpoint's view, at that moment. Say that in the ticket rather than "the tool says it's fine".</div>
+  </div>
+
+  <h3>Reading <code>local</code> <span class="k">three faults under one name</span></h3>
+  <div class="card">
+    <p class="lead">One fingerprint, two failing rows, three different first moves. <b>Read which row failed before you choose a station.</b></p>
+    <table class="three">
+      <tr>
+        <th><code>adapters</code> failed · <b>wireless</b> machine</th>
+        <th><code>adapters</code> failed · <b>wired</b> machine</th>
+        <th><code>gateway-config</code> failed</th>
+      </tr>
+      <tr>
+        <td>A radio that is off, or an association that failed, leaves an interface down or unaddressed — which the collector omits, so it looks exactly like a machine with no NIC</td>
+        <td>No working adapter and no lease: the <b>No IP</b> / DHCP lane</td>
+        <td>An address with <b>no default gateway at all</b> — a client-side configuration fault, which a static address can produce with DHCP nowhere in the picture</td>
+      </tr>
+      <tr>
+        <td><b>Station 2 first</b>, before anything else: SSID visible, associated <i>and</i> authenticated, RSSI and SNR at the AP</td>
+        <td><b>1 → 3 → 5</b></td>
+        <td><b>Station 1</b>: the adapter's own gateway setting, and whether the address is static or came from DHCP</td>
+      </tr>
+      <tr>
+        <td>The <code>wifi</code> row is the client's own view — weaker evidence than the AP's client table</td>
+        <td>Port link state and PVID; the DHCP scope's utilization</td>
+        <td>—</td>
+      </tr>
+    </table>
+    <p style="margin-top:.8rem"><b>What <code>gateway-config</code> does and does not judge.</b> It fails only when <b>no</b> IPv4 gateway is configured on any adapter. A gateway that is present but <b>wrong</b> passes it, and no fingerprint names that case: nothing answers → <code>gateway-unreachable</code>; it answers but nothing beyond it works → <code>gateway-up-internet-dead</code>; it answers and everything else works → <code>mixed</code> <b>if</b> the site configured <code>AllowedDefaultGateways</code>, because the <code>expected-standard</code> row for <b>Default Gateway</b> then fails — without that setting there is <b>no gateway-specific diagnosis at all</b>, and the chain falls through to its default, <code>healthy</code> / "Everything passed", unless something unrelated selects another key. That <code>expected-standard</code> row is the only place the tool judges a gateway's <i>value</i>.</p>
+    <div class="flag"><b>The one thing the report cannot tell you on this lane.</b> It says whether the address came from DHCP or is static, but <b>not which server answered</b> — so for the rogue-DHCP question (SOP station 1) you still need <code>ipconfig /all</code>'s <code>DHCP Server</code> line from the user.</div>
   </div>
 </section>
 
