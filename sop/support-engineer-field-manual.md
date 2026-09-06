@@ -235,7 +235,7 @@ The SOP's package asks for eight things. **The report fully covers none of them.
 | Reproduction steps and the workaround | **No** |
 | Business impact and severity | **No** |
 
-Attach whichever of the three formats the run actually wrote — the **HTML** where it exists (readable by anyone) and the **JSON** (machine-readable, schema 2, carries the run options and the fingerprint). A run that wrote only TXT and JSON is a supported outcome, not a failed run. Name in the ticket, in this order: the machine, the time of the run, the verdict, the fingerprint, and one sentence saying what the run excluded. *(Hand-off and delivery report templates are planned for this folder; until they exist, those five facts in that order are the wording.)*
+Attach whichever of the three formats the run actually wrote — the **HTML** where it exists (readable by anyone) and the **JSON** (machine-readable, schema 2, carries the run options and the fingerprint). A run that wrote only TXT and JSON is a supported outcome, not a failed run. Name in the ticket, in this order: the machine, the time of the run, the verdict, the fingerprint, and one sentence saying what the run excluded. The [support report template](support-report-template.md) beside this manual carries those five facts and the rest of the package in one skeleton — the hand-off and the delivery report are the same document with two fill patterns.
 
 **Personal data.** The package's own privacy section (`README_*.txt`, "Security and privacy") is the list to go by, and it is longer than the four fields the report's summary names: computer name, user name, **adapter / MAC / IP / gateway / DNS data**, the Wi-Fi network name **and the access-point BSSID**, **the test targets**, and **exception details**. The package's instruction is unconditional — handle them according to company policy — so apply that policy **before a report is stored or shared at all**, and let the policy, not this manual, decide whether an internal ticket is treated differently from an external one.
 
@@ -256,5 +256,5 @@ Attach whichever of the three formats the run actually wrote — the **HTML** wh
 ## Related documents
 
 - [Network Troubleshooting SOP](network-troubleshooting-sop.md) — the map this manual walks
-- Report templates — planned for this folder, not yet written; §7 carries the wording until they are
+- [Support report template](support-report-template.md) — one skeleton, two fill patterns: the hand-off to L3 and the delivery report
 - The package's own `README_*.txt` and technical guide — what the tool does and how it decides

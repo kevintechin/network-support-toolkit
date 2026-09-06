@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Support Report Template — Kevin Lin</title>
+<style>
+  :root{
+    --ink:#16233b; --muted:#5b6b85; --line:#d8e0ec; --bg:#f4f7fb; --card:#ffffff;
+    --blue:#1d4ed8; --blue-soft:#e8effd; --green:#0f7b52; --green-soft:#e6f5ee;
+    --red:#b3372e; --red-soft:#faeae8; --amber:#9a6700; --amber-soft:#fcf3e1;
+    --mono:Consolas,"Cascadia Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);color:var(--ink);line-height:1.5;padding:2.2rem 1.4rem}
+  .page{max-width:1060px;margin:0 auto}
+  code{font-family:var(--mono);background:#eef2f8;border:1px solid var(--line);
+    border-radius:4px;padding:.08rem .35rem;font-size:.86em;white-space:nowrap}
+  a{color:var(--blue)}
+
+  header{margin-bottom:1.6rem}
+  header h1{font-size:1.7rem;letter-spacing:-.01em}
+  header .tag{color:var(--muted);font-size:1.02rem;margin-top:.2rem}
+  header .meta{color:var(--muted);font-size:.82rem;margin-top:.45rem}
+
+  .principle{display:flex;gap:.7rem;flex-wrap:wrap;margin:1.1rem 0 1.8rem}
+  .principle span{background:var(--blue-soft);color:var(--blue);border:1px solid #c4d5fb;
+    border-radius:999px;padding:.35rem .9rem;font-weight:600;font-size:.9rem}
+
+  section{margin-bottom:1.5rem}
+  h2{font-size:1.12rem;margin-bottom:.7rem;display:flex;align-items:baseline;gap:.55rem;flex-wrap:wrap}
+  h2 .num{color:var(--blue);font-weight:700}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:1rem 1.15rem;box-shadow:0 1px 2px rgba(22,35,59,.05)}
+  .card p{font-size:.92rem}
+  .card p + p{margin-top:.55rem}
+
+  .mark{font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;font-weight:700;
+    border-radius:4px;padding:.1rem .4rem;border:1px solid;white-space:nowrap}
+  .mark.both{color:var(--muted);border-color:var(--line);background:#f2f5fa}
+  .mark.ho{color:var(--blue);border-color:#c4d5fb;background:var(--blue-soft)}
+  section.ho > .card{border-left:3px solid var(--blue)}
+
+  table{width:100%;border-collapse:collapse;font-size:.9rem}
+  th,td{text-align:left;padding:.5rem .65rem;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+  tr:last-child td{border-bottom:none}
+  table.fill td:first-child{width:30%;font-weight:600}
+  table.fill td:last-child{background:#fbfcfe}
+  table.grid td{background:#fbfcfe;height:2.2rem}
+  table.grid td.lbl{background:transparent;font-weight:600;width:26%}
+  .hint{color:var(--muted);font-style:italic}
+
+  blockquote{border-left:3px solid var(--line);padding:.35rem .8rem;color:var(--muted);
+    font-size:.92rem;background:#fbfcfe;border-radius:0 6px 6px 0}
+
+  ul.rules{list-style:none;font-size:.9rem}
+  ul.rules li{margin-bottom:.5rem;padding-left:1.2rem;position:relative}
+  ul.rules li::before{content:"▸";position:absolute;left:.2rem;color:var(--blue)}
+  ul.ask{list-style:none;font-size:.9rem}
+  ul.ask li{margin-bottom:.35rem}
+
+  .note{font-size:.82rem;color:var(--muted);margin-top:.6rem}
+  .flag{background:var(--amber-soft);border:1px solid #eddcb4;border-radius:8px;
+    padding:.6rem .8rem;font-size:.88rem;margin-top:.7rem}
+  .flag b{color:var(--amber)}
+
+  .example{background:var(--green-soft);border:1px solid #c6e6d7;border-radius:10px;padding:1rem 1.15rem}
+  .example h3{font-size:1rem;margin-bottom:.5rem}
+  .example p{font-size:.9rem}
+  .example p + p{margin-top:.5rem}
+  .example b.s{color:var(--green)}
+
+  footer{color:var(--muted);font-size:.8rem;border-top:1px solid var(--line);padding-top:.8rem;margin-top:1rem}
+
+  @media (max-width:760px){
+    table.fill td:first-child, table.grid td.lbl{width:auto}
+  }
+  @media print{
+    body{background:#fff;padding:0;font-size:11px}
+    .card,.example{box-shadow:none}
+    section{break-inside:avoid}
+    table.grid td{height:1.8rem}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <h1>Support Report Template</h1>
+  <div class="tag">One skeleton, two fill patterns — the hand-off that goes to L3, and the delivery that goes to whoever asked</div>
+  <div class="meta">v1.0 · Kevin (Te-Chin) Lin · September 2026 · companion to the <a href="network-troubleshooting-sop.html">Network Troubleshooting SOP</a> and the <a href="support-engineer-field-manual.html">Support Engineer's Field Manual</a></div>
+  <div class="principle">
+    <span>Measured, not concluded</span>
+    <span>Every exclusion carries its evidence</span>
+    <span>Empty beats guessed</span>
+  </div>
+</header>
+
+<section>
+  <div class="card">
+    <p><b>Copy sections 1 to 9</b> — everything down to the line that says the template ends. The filled example after it is an illustration and must never travel into a ticket: it carries a real lab machine's name and measurements that are not yours.</p>
+    <p>Each section is marked <span class="mark both">both</span> — fill it in whichever report you are writing — or <span class="mark ho">hand-off</span>, which you delete for a delivery report. A marker can also sit on a <b>block inside</b> a section: §8 is <span class="mark both">both</span> because its closure block belongs in every report, while the request to L3 inside it is <span class="mark ho">hand-off</span> and goes with the rest.</p>
+    <p><b>A delivery report is this document with the hand-off sections removed</b> — the same facts in the same order, about a page. There is deliberately no second structure for it: the person reading the delivery report today may be the one reading the hand-off tomorrow, and two shapes for one case is how details go missing between them.</p>
+    <ul class="rules" style="margin-top:.7rem">
+      <li><b>Write what you measured, not what you concluded from it.</b> The conclusion has a section of its own, and a reader who cannot separate the two cannot check either.</li>
+      <li><b>Every exclusion carries its evidence beside it.</b> "The cable is fine" is not an exclusion. "Port error counters clean across two samples 60 s apart, while the link carried traffic" is.</li>
+      <li><b>Leave a field empty rather than guessing.</b> An empty field is information — it says nobody has looked yet. A filled-in guess reads exactly like a measurement to whoever picks the case up next.</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">1</span> Identity <span class="mark both">both</span></h2>
+  <div class="card">
+    <table class="grid">
+      <tr><td class="lbl">Ticket / case</td><td></td></tr>
+      <tr><td class="lbl">Reporter, and which track</td><td class="hint">name — IT professional / general user (SOP Station 0)</td></tr>
+      <tr><td class="lbl">Site / location</td><td></td></tr>
+      <tr><td class="lbl">Machine</td><td class="hint">the computer name as the report header shows it</td></tr>
+      <tr><td class="lbl">First observed / reported at</td><td></td></tr>
+      <tr><td class="lbl">Written by / at</td><td></td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">2</span> Symptom, in the reporter's words <span class="mark both">both</span></h2>
+  <div class="card">
+    <table class="grid"><tr><td class="lbl">They said</td><td class="hint">quote them</td></tr></table>
+    <blockquote style="margin-top:.6rem">Their words are evidence about what they can and cannot see; your paraphrase is not.</blockquote>
+    <p style="margin-top:.7rem"><b>Front door</b> — the four isolation questions, answered before anything was touched:</p>
+    <table class="grid">
+      <tr><td class="lbl">Blast radius</td><td class="hint">one user · one VLAN / SSID / location · everyone — wired, wireless, or both</td></tr>
+      <tr><td class="lbl">What changed</td><td class="hint">config, firmware, new device, cabling, power — in the last 24–72 h</td></tr>
+      <tr><td class="lbl">Failure fingerprint</td><td class="hint">no IP (169.254.x.x) · IP but gateway unreachable · gateway OK but internet dead · IP works, names fail · <b>IP, no gateway configured</b> — the last is the case the SOP's four lanes do not name; the tool reports it as <code>local</code>, and it is a client-configuration branch rather than L1/L2 (field manual §4.1)</td></tr>
+      <tr><td class="lbl">Constant or intermittent</td><td class="hint">intermittent points at RF, congestion, duplex, retransmissions</td></tr>
+    </table>
+    <p style="margin-top:.9rem"><b>Timeline</b></p>
+    <p class="hint" style="margin-top:.25rem">The SOP asks for it beside the blast radius, and "first observed" is not one. Outages, recoveries, recurrences, and what you did, in the order they happened.</p>
+    <table class="grid" style="margin-top:.4rem">
+      <tr><th>Time</th><th>Event</th></tr>
+      <tr><td></td><td></td></tr>
+      <tr><td></td><td></td></tr>
+      <tr><td></td><td></td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">3</span> What was measured <span class="mark both">both</span></h2>
+  <div class="card">
+    <p><b>NetworkHealthCheck runs</b></p>
+    <table class="grid" style="margin-top:.4rem">
+      <tr><th>#</th><th>When</th><th>Entry point / mode</th><th>Verdict</th><th>Fingerprint</th><th>Note</th></tr>
+      <tr><td class="lbl">1</td><td></td><td class="hint">user or IT — GUI or console</td><td class="hint">Healthy · Attention · Incomplete · Problem</td><td></td><td></td></tr>
+      <tr><td class="lbl">2</td><td></td><td></td><td></td><td></td><td></td></tr>
+    </table>
+    <p style="margin-top:.8rem"><b>Targets added for this case, and what they returned</b></p>
+    <div class="flag">A target you add is <b>optional</b>, and what it does to the verdict depends on <b>how</b> it fails: a <b>ping</b> with no reply at all, and a <b>TCP or HTTP</b> target that cannot connect, are <code>INFO</code> rows and leave the verdict alone; a degraded reply, and a <b>DNS name that will not resolve</b>, are <code>WARN</code> and move it to <i>Attention Required</i>. Record what every added target returned here <b>even when the report came back healthy</b> — see the field manual, §3.</div>
+    <table class="grid" style="margin-top:.5rem">
+      <tr><th>Target</th><th>Probe</th><th>What the row said</th><th>Row status</th></tr>
+      <tr><td></td><td class="hint">ping · TCP · HTTP · DNS</td><td></td><td class="hint">PASS · INFO · WARN · FAIL</td></tr>
+      <tr><td></td><td></td><td></td><td></td></tr>
+    </table>
+    <p style="margin-top:.8rem"><b>Other measurements</b> — switch, AP, firewall, or anything read by hand:</p>
+    <table class="grid" style="margin-top:.4rem">
+      <tr><th>What</th><th>Where read</th><th>Value</th></tr>
+      <tr><td></td><td></td><td></td></tr>
+      <tr><td></td><td></td><td></td></tr>
+    </table>
+  </div>
+</section>
+
+<section class="ho">
+  <h2><span class="num">4</span> What is excluded, and by what evidence <span class="mark ho">hand-off</span></h2>
+  <div class="card">
+    <p class="hint">This is the section that lets L3 start at your frontier instead of from zero. One line per exclusion; no line without its evidence.</p>
+    <table class="grid" style="margin-top:.5rem">
+      <tr><th>Excluded</th><th>Evidence that excludes it</th></tr>
+      <tr><td></td><td></td></tr>
+      <tr><td></td><td></td></tr>
+      <tr><td></td><td></td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">5</span> Where the fault is isolated to <span class="mark both">both</span></h2>
+  <div class="card">
+    <table class="grid">
+      <tr><td class="lbl">Station / domain</td><td></td></tr>
+      <tr><td class="lbl">What the evidence points at, and what it does not</td><td></td></tr>
+    </table>
+    <p class="hint" style="margin-top:.6rem">Two or three sentences in that second field. If the isolation is partial, say which way it is partial — "somewhere between the access port and the gateway" is a useful sentence; "network issue" is not.</p>
+  </div>
+</section>
+
+<section class="ho">
+  <h2><span class="num">6</span> What was tried <span class="mark ho">hand-off</span></h2>
+  <div class="card">
+    <p><b>How to reproduce the failure</b></p>
+    <p class="hint" style="margin-top:.25rem">The steps someone else can follow, or "not reproducible on demand" with what is known about when it appears. Without this, L3 starts by trying to make it happen.</p>
+    <table class="grid" style="margin-top:.4rem">
+      <tr><td class="lbl">Steps</td><td></td></tr>
+      <tr><td class="lbl">Reproduces</td><td class="hint">every time · sometimes — when? · not on demand</td></tr>
+    </table>
+    <p class="hint" style="margin-top:.9rem">Then: fix one, test one. Predict the outcome before the retest and record the prediction — a prediction that missed is evidence about the model you were working from.</p>
+    <table class="grid" style="margin-top:.5rem">
+      <tr><th>#</th><th>Change (one at a time)</th><th>Predicted</th><th>Observed</th><th>Reverted?</th></tr>
+      <tr><td class="lbl">1</td><td></td><td></td><td></td><td></td></tr>
+      <tr><td class="lbl">2</td><td></td><td></td><td></td><td></td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">7</span> Impact and workaround <span class="mark both">both</span></h2>
+  <div class="card">
+    <table class="grid">
+      <tr><td class="lbl">Who is affected, and how badly</td><td></td></tr>
+      <tr><td class="lbl">Business impact / severity</td><td></td></tr>
+      <tr><td class="lbl">Workaround in place</td><td class="hint">and whether the reporter knows about it</td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">8</span> Closure, and the ask <span class="mark both">both</span></h2>
+  <div class="card">
+    <p><b>Closure</b></p>
+    <p class="hint" style="margin-top:.25rem">Only when the case is resolved. The SOP's second rule: close the loop end to end, then confirm with the user and write it down. A delivery report without this is a claim, not a result.</p>
+    <table class="grid" style="margin-top:.4rem">
+      <tr><td class="lbl">End-to-end retest</td><td class="hint">valid IP → gateway → external IP → a name → <b>the application the user actually cares about</b></td></tr>
+      <tr><td class="lbl">That application</td><td class="hint">works / does not</td></tr>
+      <tr><td class="lbl">User confirmed service is restored</td><td class="hint">who, and when</td></tr>
+    </table>
+    <p style="margin-top:.9rem"><b>Hand-off</b> <span class="mark ho">hand-off</span> — name the rule that was invoked, because it says what kind of help is needed. <span class="hint">Delete this block along with the other hand-off sections: a customer-facing report should not carry your request to L3.</span></p>
+    <ul class="ask" style="margin-top:.4rem">
+      <li>☐ <b>Timebox</b> expired without isolation</li>
+      <li>☐ Needs <b>access or authority</b> I do not have — <span class="hint">say which</span></li>
+      <li>☐ <b>Severity</b> policy — site-down or many users</li>
+      <li>☐ <b>My layers are excluded</b> — the remaining suspects are in your domain</li>
+    </ul>
+    <table class="grid" style="margin-top:.6rem"><tr><td class="lbl">What I need from you, specifically</td><td></td></tr></table>
+    <p style="margin-top:.8rem"><b>Delivery</b> <span class="mark both">both</span> — the conclusion in the reader's language, and the one thing they should do next.</p>
+    <table class="grid" style="margin-top:.4rem">
+      <tr><td class="lbl">Conclusion</td><td></td></tr>
+      <tr><td class="lbl">What to do next</td><td></td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">9</span> Attachments <span class="mark both">both</span></h2>
+  <div class="card">
+    <div class="flag" style="margin-top:0;margin-bottom:.8rem"><b>Before you attach anything.</b> The reports carry the computer name, the user name, adapter / MAC / IP / gateway / DNS data, the Wi-Fi network name and the access-point BSSID, the test targets and exception details. The package's own instruction is unconditional — handle them according to company policy — so apply that policy <b>before this report is stored or sent</b>, on the delivery path as much as the hand-off (field manual, §7).</div>
+    <table>
+      <tr><th></th><th>Attached</th><th>Note</th></tr>
+      <tr><td>Health check report — HTML</td><td>☐</td><td>whichever formats the run wrote; the HTML is the readable one</td></tr>
+      <tr><td>Health check report — JSON</td><td>☐</td><td>schema 2: run options, fingerprint, every result</td></tr>
+      <tr><td>Health check report — TXT</td><td>☐</td><td><i>the readable fallback when the HTML was one of the formats that failed</i></td></tr>
+      <tr><td>Raw command output — <code>ipconfig /all</code>, <code>ping</code>, <code>tracert</code></td><td>☐</td><td><b>not in the report</b>: it carries measured values, not command output. Run the rows' Manual-check lines where the escalation asks for raw output</td></tr>
+      <tr><td>Switch and AP status pages for the path <span class="mark ho">hand-off</span></td><td>☐</td><td><b>not in the report</b> — the tool never reads a device</td></tr>
+      <tr><td><code>NetworkHealthCheck_ENVIRONMENT_&lt;time&gt;.txt</code></td><td>☐</td><td><i>written by the script's own guard before it exits 3: the machine, the language mode, what IT can do. Beside the script, or in <code>%TEMP%</code> — <b>best effort</b>: if both refuse the write, no file exists</i></td></tr>
+      <tr><td><code>LauncherError.txt</code>, or <code>%TEMP%\NetworkHealthCheck_LauncherError.txt</code></td><td>☐</td><td><i>written by the launcher for its own stop or any nonzero exit, with the reason and the suggested action. <b>The fallback has a different name</b>, so a read-only share or protected folder leaves it in <code>%TEMP%</code> under the longer one — and the launcher prints the path it used. <b>A restricted-mode run started through a launcher produces both this and the environment report</b>; attach each. A direct <code>powershell -File …</code> run writes the environment report and exits 3 with no launcher involved, so there is no launcher file to look for. <b>Best effort too</b>: the fallback write is not verified</i></td></tr>
+      <tr><td><code>NetworkHealthCheck_FATAL_&lt;time&gt;.txt</code></td><td>☐</td><td><i>where the run collapsed before it could write a report — the only evidence that attempt left, and best effort too</i></td></tr>
+      <tr><td>Topology sketch of the affected path <span class="mark ho">hand-off</span></td><td>☐</td><td>hand-drawn is fine; <b>the tool never draws one</b></td></tr>
+      <tr><td>Device logs covering the failure window <span class="mark ho">hand-off</span></td><td>☐</td><td>switch / AP / firewall — <b>not in the report</b></td></tr>
+      <tr><td>Config exports of the devices in the path <span class="mark ho">hand-off</span></td><td>☐</td><td><b>not in the report</b></td></tr>
+      <tr><td>Screenshots, or a photo of the window</td><td>☐</td><td><i>where nothing was written at all, the photo of the black window is the evidence — field manual §6</i></td></tr>
+    </table>
+    <p class="hint" style="margin-top:.7rem">The four rows marked <span class="mark ho">hand-off</span> are internal infrastructure evidence: the SOP asks for them so that L3 can start at your frontier. <b>Leave them out of a delivery report</b>, which goes to the person who asked. And where the environment report, the launcher error or the fatal file does not exist — each is best effort — capture the text the window showed instead, and say here that you did.</p>
+  </div>
+</section>
+
+<section>
+  <div style="border-top:2px dashed var(--line);margin:.4rem 0 1.1rem;padding-top:.7rem;color:var(--muted);font-size:.85rem;font-style:italic">End of the copyable template. What follows is an example, not part of it — do not paste it into a ticket.</div>
+  <h2>A filled example <span class="k" style="color:var(--muted);font-weight:500;font-size:.85rem">the shape, not the wording</span></h2>
+  <div class="example">
+    <p class="hint">An illustration, not a transcript. The measurements come from the acceptance campaign's <code>A3</code> scenario — a lab machine deliberately moved to a host-only network, which is a real "an address, no gateway" case, run on both campaign machines; the wording around them is mine. Abbreviated to the sections a delivery report keeps.</p>
+    <p><b class="s">1 · Identity</b> — Machine <code>DESKTOP-CO7QIMR</code> (Windows 10 Pro 22H2, 19045.3803), lab, run by the engineer at the machine.</p>
+    <p><b class="s">2 · Symptom</b> — "Nothing loads, but the network icon looks normal." Blast radius: this machine only. Changed: the adapter was moved to a host-only segment. Fingerprint lane: <b>IP, but gateway unreachable</b> — <i>the guess before the run; the report then showed no gateway is configured at all, which is the client-configuration branch rather than L1/L2.</i> Constant.</p>
+    <p><b class="s">3 · What was measured</b> — One run at <b>08:14 on 2026-09-06</b> — <b>user entry point, console mode</b> — verdict <b>Problem Detected</b>, fingerprint <code>local</code>. The shape recorded on both machines: <code>gateway-config</code> FAIL (no IPv4 gateway on any adapter); <code>ping-gateway</code> FAIL, because <code>AUTO_GATEWAY</code> resolved to nothing; DNS timed out; and the IT-scope <code>gateway-neighbor</code> row <code>INFO — No IPv4 default gateway to look up.</code> On the 1.2.3 run the <code>routes</code> row read <code>INFO — No IPv4 default route exists.</code> — the fact rather than an error, which is what backlog #27 changed.</p>
+    <p><b class="s">5 · Isolated to</b> — The segment the machine is attached to: it holds an address and has no IPv4 default gateway, and <b>every destination the run could attempt beyond the segment failed</b> — DNS and the external targets. The gateway was never probed at all: <code>AUTO_GATEWAY</code> resolved to nothing, so the <code>ping-gateway</code> row is FAIL for <i>no testable target</i>, not for a ping that went unanswered — a missing configuration, not a measured unreachability. <i>Not excluded:</i> the adapter itself — its row says <b>connected and addressed</b>, which is not the same as verified healthy; nothing here tests the NIC, the driver or the physical path, and on the CIM fallback path even a disconnected adapter holding a static address reports as <code>Up</code> (field manual, §5). <i>Nor is the whole of upstream excluded:</i> a more specific route, or IPv6, would not show in the IPv4 default-route rows, and this run did not look for either.</p>
+    <p><b class="s">7 · Impact and workaround</b> — This machine only, and it is a lab VM: nothing outside the campaign was affected, and no workaround was needed.</p>
+    <p><b class="s">8 · Closure</b> — <i>written as it would be for a real case; the campaign reverted this scenario rather than resolving it with a user, so these three lines — and the clock time in §3 — are the invented parts of the example.</i> Adapter moved back to the office segment; end-to-end retest: address, gateway, <code>1.1.1.1</code>, a name, and the intranet page all reached. The application the user cares about works. Confirmed by the reporter at 09:12.</p>
+    <p><b class="s">8 · Delivery</b> — The machine had an address but no IPv4 default gateway — no default next hop was configured — and every destination the run could try beyond its own segment failed: DNS and the external targets. Moving the adapter back to the office segment restored it. <i>What the run did not settle:</i> whether that address had been leased or configured by hand. The measured shape — an address, no gateway — is identical either way, and the report's own DHCP mode field is what separates them (field manual, §4.1). It matters if the same thing happens on that segment again: leased, and the scope is handing out addresses without a router option; static, and the client's configuration was missing its gateway.</p>
+    <p><b class="s">8 · What to do next</b> — Nothing for you: the machine works again. Tell us if it comes back on that segment, and we will settle which of the two cases it is.</p>
+    <p><b class="s">9 · Attachments</b> — HTML and JSON of the run. <i>The <span class="mark ho">hand-off</span> rows — topology, device logs, configuration exports, device status pages — are internal evidence and do not appear in a delivery report, so they are not listed here.</i></p>
+  </div>
+</section>
+
+<footer>Support Report Template · v1.0 · Kevin (Te-Chin) Lin · September 2026 · companion to the <a href="network-troubleshooting-sop.html">Network Troubleshooting SOP</a> and the <a href="support-engineer-field-manual.html">Support Engineer's Field Manual</a></footer>
+
+</div>
+</body>
+</html>
