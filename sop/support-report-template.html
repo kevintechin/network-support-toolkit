@@ -158,7 +158,7 @@
       <tr><td class="lbl">2</td><td></td><td></td><td></td><td></td><td></td></tr>
     </table>
     <p style="margin-top:.8rem"><b>Targets added for this case, and what they returned</b></p>
-    <div class="flag">A target you add is <b>optional</b>: one that gets no reply at all, or that cannot connect over TCP or HTTP, is an <code>INFO</code> row and <b>does not move the verdict</b>. Record what it returned here even when the report came back healthy — see the field manual, §3.</div>
+    <div class="flag">A target you add is <b>optional</b>, and what it does to the verdict depends on <b>how</b> it fails: a <b>ping</b> with no reply at all, and a <b>TCP or HTTP</b> target that cannot connect, are <code>INFO</code> rows and leave the verdict alone; a degraded reply, and a <b>DNS name that will not resolve</b>, are <code>WARN</code> and move it to <i>Attention Required</i>. Record what every added target returned here <b>even when the report came back healthy</b> — see the field manual, §3.</div>
     <table class="grid" style="margin-top:.5rem">
       <tr><th>Target</th><th>Probe</th><th>What the row said</th><th>Row status</th></tr>
       <tr><td></td><td class="hint">ping · TCP · HTTP · DNS</td><td></td><td class="hint">PASS · INFO · WARN · FAIL</td></tr>
@@ -249,6 +249,7 @@
 <section>
   <h2><span class="num">9</span> Attachments <span class="mark both">both</span></h2>
   <div class="card">
+    <div class="flag" style="margin-top:0;margin-bottom:.8rem"><b>Before you attach anything.</b> The reports carry the computer name, the user name, adapter / MAC / IP / gateway / DNS data, the Wi-Fi network name and the access-point BSSID, the test targets and exception details. The package's own instruction is unconditional — handle them according to company policy — so apply that policy <b>before this report is stored or sent</b>, on the delivery path as much as the hand-off (field manual, §7).</div>
     <table>
       <tr><th></th><th>Attached</th><th>Note</th></tr>
       <tr><td>Health check report — HTML</td><td>☐</td><td>whichever formats the run wrote; the HTML is the readable one</td></tr>
@@ -275,7 +276,7 @@
     <p><b class="s">3 · What was measured</b> — One console run, verdict <b>Problem Detected</b>, fingerprint <code>local</code>. The shape recorded on both machines: <code>gateway-config</code> FAIL (no IPv4 gateway on any adapter); <code>ping-gateway</code> FAIL, because <code>AUTO_GATEWAY</code> resolved to nothing; DNS timed out; no gateway rows at all. On the 1.2.3 run the <code>routes</code> row read <code>INFO — No IPv4 default route exists.</code> — the fact rather than an error, which is what backlog #27 changed.</p>
     <p><b class="s">5 · Isolated to</b> — The segment the machine is attached to: it has an address, but no default route exists, so nothing beyond that segment is reachable. The link itself is up and the adapter is healthy; nothing above the gateway was tested, because nothing could be reached to test it.</p>
     <p><b class="s">8 · Closure</b> — <i>written as it would be for a real case; the campaign reverted this scenario rather than resolving it with a user, so these three lines are the one invented part of the example.</i> Adapter moved back to the office segment; end-to-end retest: address, gateway, <code>1.1.1.1</code>, a name, and the intranet page all reached. The application the user cares about works. Confirmed by the reporter at 09:12.</p>
-    <p><b class="s">8 · Delivery</b> — This machine has an address but no way out of its own segment: no default route exists, so nothing beyond that segment can be reached. <i>What this run does not settle:</i> whether the address was leased or configured by hand. The measured shape — an address, no gateway — is identical either way, and the report's own DHCP mode field is what separates them (field manual, §4.1). It decides the owner: leased, and the scope is handing out addresses without a router option; static, and the client's configuration is missing its gateway. Read that field before telling anyone which to fix; moving the machine back to the office segment resolves it either way.</p>
+    <p><b class="s">8 · Delivery</b> — The machine had an address but no way out of its own segment: no default route existed, so nothing beyond that segment could be reached. Moving the adapter back to the office segment restored it. <i>What the run did not settle:</i> whether that address had been leased or configured by hand. The measured shape — an address, no gateway — is identical either way, and the report's own DHCP mode field is what separates them (field manual, §4.1). It matters if the same thing happens on that segment again: leased, and the scope is handing out addresses without a router option; static, and the client's configuration was missing its gateway.</p>
     <p><b class="s">9 · Attachments</b> — HTML and JSON of the run. No device logs: the segment has no switch to read.</p>
   </div>
 </section>

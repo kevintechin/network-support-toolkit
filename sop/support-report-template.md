@@ -70,7 +70,7 @@ Three rules for filling it in:
 
 *Targets added for this case, and what they returned:*
 
-> A target you add is **optional**: one that gets no reply at all, or that cannot connect over TCP or HTTP, is an `INFO` row and **does not move the verdict**. Record what it returned here even when the report came back healthy — see the field manual, §3.
+> A target you add is **optional**, and what it does to the verdict depends on **how** it fails: a **ping** that gets no reply at all, and a **TCP or HTTP** target that cannot connect, are `INFO` rows and leave the verdict alone; a degraded reply, and a **DNS name that will not resolve**, are `WARN` and move it to `Attention Required`. Record what every added target returned here **even when the report came back healthy** — see the field manual, §3.
 
 | Target | Probe | What the row said | Row status |
 |---|---|---|---|
@@ -141,6 +141,8 @@ Three rules for filling it in:
 
 ## 9 · Attachments `[both]`
 
+> **Before you attach anything.** The reports carry the computer name, the user name, adapter / MAC / IP / gateway / DNS data, the Wi-Fi network name and the access-point BSSID, the test targets and exception details. The package's own instruction is unconditional — handle them according to company policy — so apply that policy **before this report is stored or sent**, on the delivery path as much as the hand-off (field manual, §7).
+
 | | Attached | Note |
 |---|---|---|
 | Health check report — HTML | ☐ | whichever formats the run wrote; the HTML is the readable one |
@@ -172,6 +174,6 @@ Three rules for filling it in:
 
 **8 · Closure** — *written as it would be for a real case; the campaign reverted this scenario rather than resolving it with a user, so these three lines are the one invented part of the example.* Adapter moved back to the office segment; end-to-end retest: address, gateway, `1.1.1.1`, a name, and the intranet page all reached. The application the user cares about works. Confirmed by the reporter at 09:12.
 
-**8 · Delivery** — This machine has an address but no way out of its own segment: no default route exists, so nothing beyond that segment can be reached. *What this run does not settle:* whether the address was leased or configured by hand. The measured shape — an address, no gateway — is identical either way, and the report's own DHCP mode field is what separates them (field manual, §4.1). It decides the owner: leased, and the scope is handing out addresses without a router option; static, and the client's configuration is missing its gateway. Read that field before telling anyone which to fix; moving the machine back to the office segment resolves it either way.
+**8 · Delivery** — The machine had an address but no way out of its own segment: no default route existed, so nothing beyond that segment could be reached. Moving the adapter back to the office segment restored it. *What the run did not settle:* whether that address had been leased or configured by hand. The measured shape — an address, no gateway — is identical either way, and the report's own DHCP mode field is what separates them (field manual, §4.1). It matters if the same thing happens on that segment again: leased, and the scope is handing out addresses without a router option; static, and the client's configuration was missing its gateway.
 
 **9 · Attachments** — HTML and JSON of the run. No device logs: the segment has no switch to read.
