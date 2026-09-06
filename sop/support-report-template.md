@@ -54,7 +54,7 @@ Three rules for filling it in:
 |---|---|
 | **Blast radius** | one user · one VLAN / SSID / location · everyone — wired, wireless, or both |
 | **What changed** | config, firmware, new device, cabling, power — in the last 24–72 h |
-| **Failure fingerprint** | no IP (169.254.x.x) · IP but gateway unreachable · gateway OK but internet dead · IP works, names fail |
+| **Failure fingerprint** | no IP (169.254.x.x) · IP but gateway unreachable · gateway OK but internet dead · IP works, names fail · **IP, no gateway configured** — *the last is the case the SOP's four lanes do not name; the tool reports it as `local`, and it is a client-configuration branch rather than L1/L2 (field manual §4.1)* |
 | **Constant or intermittent** | *intermittent points at RF, congestion, duplex, retransmissions* |
 
 **Timeline** — *the SOP asks for it beside the blast radius, and "first observed" is not one. Outages, recoveries, recurrences, and what you did, in the order they happened.*
@@ -169,7 +169,7 @@ Three rules for filling it in:
 | Raw command output — `ipconfig /all`, `ping`, `tracert` | ☐ | **not in the report**: it carries measured values, not command output. Run the rows' Manual-check lines where the escalation asks for raw output |
 | Switch and AP status pages for the path | ☐ | **not in the report** — the tool never reads a device |
 | `NetworkHealthCheck_ENVIRONMENT_<time>.txt` | ☐ | *written by the script's own guard before it exits 3: the machine, the language mode, what IT can do. Beside the script, or in `%TEMP%`* |
-| `LauncherError.txt`, or `%TEMP%\NetworkHealthCheck_LauncherError.txt` | ☐ | *written by the launcher for its own stop or any nonzero exit, with the reason and the suggested action. **The fallback has a different name**, so a read-only share or protected folder leaves it in `%TEMP%` under the longer one — and the launcher prints the path it used. **A restricted-mode run produces both this and the environment report**; attach each* |
+| `LauncherError.txt`, or `%TEMP%\NetworkHealthCheck_LauncherError.txt` | ☐ | *written by the launcher for its own stop or any nonzero exit, with the reason and the suggested action. **The fallback has a different name**, so a read-only share or protected folder leaves it in `%TEMP%` under the longer one — and the launcher prints the path it used. **A restricted-mode run started through a launcher produces both this and the environment report**; attach each. A direct `powershell -File …` run writes the environment report and exits 3 with no launcher involved, so there is no launcher file to look for* |
 | `NetworkHealthCheck_FATAL_<time>.txt` | ☐ | *where the run collapsed before it could write a report — the only evidence that attempt left, and best effort too* |
 | Topology sketch of the affected path | ☐ | hand-drawn is fine; **the tool never draws one** |
 | Device logs covering the failure window | ☐ | switch / AP / firewall — **not in the report** |
@@ -186,7 +186,7 @@ Three rules for filling it in:
 
 **1 · Identity** — Machine `DESKTOP-CO7QIMR` (Windows 10 Pro 22H2, 19045.3803), lab, run by the engineer at the machine.
 
-**2 · Symptom** — "Nothing loads, but the network icon looks normal." Blast radius: this machine only. Changed: the adapter was moved to a host-only segment. Fingerprint lane: **IP, but gateway unreachable**. Constant.
+**2 · Symptom** — "Nothing loads, but the network icon looks normal." Blast radius: this machine only. Changed: the adapter was moved to a host-only segment. Fingerprint lane: **IP, but gateway unreachable** — *the guess before the run; the report then showed no gateway is configured at all, which is the client-configuration branch rather than L1/L2.* Constant.
 
 **3 · What was measured** — One run at **08:14 on 2026-09-06** — **user entry point, console mode** — verdict **Problem Detected**, fingerprint `local`. The shape recorded on both machines: `gateway-config` FAIL (no IPv4 gateway on any adapter); `ping-gateway` FAIL, because `AUTO_GATEWAY` resolved to nothing; DNS timed out; and the IT-scope `gateway-neighbor` row `INFO — No IPv4 default gateway to look up.` On the 1.2.3 run the `routes` row read `INFO — No IPv4 default route exists.` — the fact rather than an error, which is what backlog #27 changed.
 
@@ -196,6 +196,6 @@ Three rules for filling it in:
 
 **8 · Closure** — *written as it would be for a real case; the campaign reverted this scenario rather than resolving it with a user, so these three lines — and the clock time in §3 — are the invented parts of the example.* Adapter moved back to the office segment; end-to-end retest: address, gateway, `1.1.1.1`, a name, and the intranet page all reached. The application the user cares about works. Confirmed by the reporter at 09:12.
 
-**8 · Delivery** — The machine had an address but no IPv4 default gateway — no router address to send anything to — and every destination the run could try beyond its own segment failed: DNS and the external targets. Moving the adapter back to the office segment restored it. *What the run did not settle:* whether that address had been leased or configured by hand. The measured shape — an address, no gateway — is identical either way, and the report's own DHCP mode field is what separates them (field manual, §4.1). It matters if the same thing happens on that segment again: leased, and the scope is handing out addresses without a router option; static, and the client's configuration was missing its gateway.
+**8 · Delivery** — The machine had an address but no IPv4 default gateway — no default next hop was configured — and every destination the run could try beyond its own segment failed: DNS and the external targets. Moving the adapter back to the office segment restored it. *What the run did not settle:* whether that address had been leased or configured by hand. The measured shape — an address, no gateway — is identical either way, and the report's own DHCP mode field is what separates them (field manual, §4.1). It matters if the same thing happens on that segment again: leased, and the scope is handing out addresses without a router option; static, and the client's configuration was missing its gateway.
 
 **9 · Attachments** — HTML and JSON of the run. No device logs: the segment has no switch to read.
