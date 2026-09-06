@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Support Report Template — Kevin Lin</title>
+<style>
+  :root{
+    --ink:#16233b; --muted:#5b6b85; --line:#d8e0ec; --bg:#f4f7fb; --card:#ffffff;
+    --blue:#1d4ed8; --blue-soft:#e8effd; --green:#0f7b52; --green-soft:#e6f5ee;
+    --red:#b3372e; --red-soft:#faeae8; --amber:#9a6700; --amber-soft:#fcf3e1;
+    --mono:Consolas,"Cascadia Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);color:var(--ink);line-height:1.5;padding:2.2rem 1.4rem}
+  .page{max-width:1060px;margin:0 auto}
+  code{font-family:var(--mono);background:#eef2f8;border:1px solid var(--line);
+    border-radius:4px;padding:.08rem .35rem;font-size:.86em;white-space:nowrap}
+  a{color:var(--blue)}
+
+  header{margin-bottom:1.6rem}
+  header h1{font-size:1.7rem;letter-spacing:-.01em}
+  header .tag{color:var(--muted);font-size:1.02rem;margin-top:.2rem}
+  header .meta{color:var(--muted);font-size:.82rem;margin-top:.45rem}
+
+  .principle{display:flex;gap:.7rem;flex-wrap:wrap;margin:1.1rem 0 1.8rem}
+  .principle span{background:var(--blue-soft);color:var(--blue);border:1px solid #c4d5fb;
+    border-radius:999px;padding:.35rem .9rem;font-weight:600;font-size:.9rem}
+
+  section{margin-bottom:1.5rem}
+  h2{font-size:1.12rem;margin-bottom:.7rem;display:flex;align-items:baseline;gap:.55rem;flex-wrap:wrap}
+  h2 .num{color:var(--blue);font-weight:700}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:1rem 1.15rem;box-shadow:0 1px 2px rgba(22,35,59,.05)}
+  .card p{font-size:.92rem}
+  .card p + p{margin-top:.55rem}
+
+  .mark{font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;font-weight:700;
+    border-radius:4px;padding:.1rem .4rem;border:1px solid;white-space:nowrap}
+  .mark.both{color:var(--muted);border-color:var(--line);background:#f2f5fa}
+  .mark.ho{color:var(--blue);border-color:#c4d5fb;background:var(--blue-soft)}
+  section.ho > .card{border-left:3px solid var(--blue)}
+
+  table{width:100%;border-collapse:collapse;font-size:.9rem}
+  th,td{text-align:left;padding:.5rem .65rem;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+  tr:last-child td{border-bottom:none}
+  table.fill td:first-child{width:30%;font-weight:600}
+  table.fill td:last-child{background:#fbfcfe}
+  table.grid td{background:#fbfcfe;height:2.2rem}
+  table.grid td.lbl{background:transparent;font-weight:600;width:26%}
+  .hint{color:var(--muted);font-style:italic}
+
+  blockquote{border-left:3px solid var(--line);padding:.35rem .8rem;color:var(--muted);
+    font-size:.92rem;background:#fbfcfe;border-radius:0 6px 6px 0}
+
+  ul.rules{list-style:none;font-size:.9rem}
+  ul.rules li{margin-bottom:.5rem;padding-left:1.2rem;position:relative}
+  ul.rules li::before{content:"▸";position:absolute;left:.2rem;color:var(--blue)}
+  ul.ask{list-style:none;font-size:.9rem}
+  ul.ask li{margin-bottom:.35rem}
+
+  .note{font-size:.82rem;color:var(--muted);margin-top:.6rem}
+  .flag{background:var(--amber-soft);border:1px solid #eddcb4;border-radius:8px;
+    padding:.6rem .8rem;font-size:.88rem;margin-top:.7rem}
+  .flag b{color:var(--amber)}
+
+  .example{background:var(--green-soft);border:1px solid #c6e6d7;border-radius:10px;padding:1rem 1.15rem}
+  .example h3{font-size:1rem;margin-bottom:.5rem}
+  .example p{font-size:.9rem}
+  .example p + p{margin-top:.5rem}
+  .example b.s{color:var(--green)}
+
+  footer{color:var(--muted);font-size:.8rem;border-top:1px solid var(--line);padding-top:.8rem;margin-top:1rem}
+
+  @media (max-width:760px){
+    table.fill td:first-child, table.grid td.lbl{width:auto}
+  }
+  @media print{
+    body{background:#fff;padding:0;font-size:11px}
+    .card,.example{box-shadow:none}
+    section{break-inside:avoid}
+    table.grid td{height:1.8rem}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <h1>Support Report Template</h1>
+  <div class="tag">One skeleton, two fill patterns — the hand-off that goes to L3, and the delivery that goes to whoever asked</div>
+  <div class="meta">v1.0 · Kevin (Te-Chin) Lin · September 2026 · companion to the <a href="network-troubleshooting-sop.html">Network Troubleshooting SOP</a> and the <a href="support-engineer-field-manual.html">Support Engineer's Field Manual</a></div>
+  <div class="principle">
+    <span>Measured, not concluded</span>
+    <span>Every exclusion carries its evidence</span>
+    <span>Empty beats guessed</span>
+  </div>
+</header>
+
+<section>
+  <div class="card">
+    <p>Copy everything below. Each section is marked <span class="mark both">both</span> — fill it in whichever report you are writing — or <span class="mark ho">hand-off</span>, which you delete for a delivery report.</p>
+    <p><b>A delivery report is this document with the hand-off sections removed</b> — the same facts in the same order, about a page. There is deliberately no second structure for it: the person reading the delivery report today may be the one reading the hand-off tomorrow, and two shapes for one case is how details go missing between them.</p>
+    <ul class="rules" style="margin-top:.7rem">
+      <li><b>Write what you measured, not what you concluded from it.</b> The conclusion has a section of its own, and a reader who cannot separate the two cannot check either.</li>
+      <li><b>Every exclusion carries its evidence beside it.</b> "The cable is fine" is not an exclusion. "Port error counters clean across two samples 60 s apart, while the link carried traffic" is.</li>
+      <li><b>Leave a field empty rather than guessing.</b> An empty field is information — it says nobody has looked yet. A filled-in guess reads exactly like a measurement to whoever picks the case up next.</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">1</span> Identity <span class="mark both">both</span></h2>
+  <div class="card">
+    <table class="grid">
+      <tr><td class="lbl">Ticket / case</td><td></td></tr>
+      <tr><td class="lbl">Reporter, and which track</td><td class="hint">name — IT professional / general user (SOP Station 0)</td></tr>
+      <tr><td class="lbl">Site / location</td><td></td></tr>
+      <tr><td class="lbl">Machine</td><td class="hint">the computer name as the report header shows it</td></tr>
+      <tr><td class="lbl">First observed / reported at</td><td></td></tr>
+      <tr><td class="lbl">Written by / at</td><td></td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">2</span> Symptom, in the reporter's words <span class="mark both">both</span></h2>
+  <div class="card">
+    <blockquote>Quote them. Their words are evidence about what they can and cannot see; your paraphrase is not.</blockquote>
+    <p style="margin-top:.7rem"><b>Front door</b> — the four isolation questions, answered before anything was touched:</p>
+    <table class="grid">
+      <tr><td class="lbl">Blast radius</td><td class="hint">one user · one VLAN / SSID / location · everyone — wired, wireless, or both</td></tr>
+      <tr><td class="lbl">What changed</td><td class="hint">config, firmware, new device, cabling, power — in the last 24–72 h</td></tr>
+      <tr><td class="lbl">Failure fingerprint</td><td class="hint">no IP (169.254.x.x) · IP but gateway unreachable · gateway OK but internet dead · IP works, names fail</td></tr>
+      <tr><td class="lbl">Constant or intermittent</td><td class="hint">intermittent points at RF, congestion, duplex, retransmissions</td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">3</span> What was measured <span class="mark both">both</span></h2>
+  <div class="card">
+    <p><b>NetworkHealthCheck runs</b></p>
+    <table class="grid" style="margin-top:.4rem">
+      <tr><th>#</th><th>When</th><th>Entry point</th><th>Verdict</th><th>Fingerprint</th><th>Note</th></tr>
+      <tr><td class="lbl">1</td><td></td><td class="hint">user / IT / console</td><td class="hint">Healthy · Attention · Incomplete · Problem</td><td></td><td></td></tr>
+      <tr><td class="lbl">2</td><td></td><td></td><td></td><td></td><td></td></tr>
+    </table>
+    <p style="margin-top:.8rem"><b>Targets added for this case, and what they returned</b></p>
+    <div class="flag">A target you add is <b>optional</b>: one that gets no reply at all, or that cannot connect over TCP or HTTP, is an <code>INFO</code> row and <b>does not move the verdict</b>. Record what it returned here even when the report came back healthy — see the field manual, §3.</div>
+    <p style="margin-top:.8rem"><b>Other measurements</b> — switch, AP, firewall, or anything read by hand:</p>
+    <table class="grid" style="margin-top:.4rem">
+      <tr><th>What</th><th>Where read</th><th>Value</th></tr>
+      <tr><td></td><td></td><td></td></tr>
+      <tr><td></td><td></td><td></td></tr>
+    </table>
+  </div>
+</section>
+
+<section class="ho">
+  <h2><span class="num">4</span> What is excluded, and by what evidence <span class="mark ho">hand-off</span></h2>
+  <div class="card">
+    <p class="hint">This is the section that lets L3 start at your frontier instead of from zero. One line per exclusion; no line without its evidence.</p>
+    <table class="grid" style="margin-top:.5rem">
+      <tr><th>Excluded</th><th>Evidence that excludes it</th></tr>
+      <tr><td></td><td></td></tr>
+      <tr><td></td><td></td></tr>
+      <tr><td></td><td></td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">5</span> Where the fault is isolated to <span class="mark both">both</span></h2>
+  <div class="card">
+    <table class="grid"><tr><td class="lbl">Station / domain</td><td></td></tr></table>
+    <p class="hint" style="margin-top:.6rem">Two or three sentences: what the evidence points at, and what it does not. If the isolation is partial, say which way it is partial — "somewhere between the access port and the gateway" is a useful sentence; "network issue" is not.</p>
+  </div>
+</section>
+
+<section class="ho">
+  <h2><span class="num">6</span> What was tried <span class="mark ho">hand-off</span></h2>
+  <div class="card">
+    <p class="hint">Fix one, test one. Predict the outcome before the retest and record the prediction — a prediction that missed is evidence about the model you were working from.</p>
+    <table class="grid" style="margin-top:.5rem">
+      <tr><th>#</th><th>Change (one at a time)</th><th>Predicted</th><th>Observed</th><th>Reverted?</th></tr>
+      <tr><td class="lbl">1</td><td></td><td></td><td></td><td></td></tr>
+      <tr><td class="lbl">2</td><td></td><td></td><td></td><td></td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">7</span> Impact and workaround <span class="mark both">both</span></h2>
+  <div class="card">
+    <table class="grid">
+      <tr><td class="lbl">Who is affected, and how badly</td><td></td></tr>
+      <tr><td class="lbl">Business impact / severity</td><td></td></tr>
+      <tr><td class="lbl">Workaround in place</td><td class="hint">and whether the reporter knows about it</td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">8</span> The ask <span class="mark both">both</span></h2>
+  <div class="card">
+    <p><b>Hand-off</b> — name the rule that was invoked, because it says what kind of help is needed:</p>
+    <ul class="ask" style="margin-top:.4rem">
+      <li>☐ <b>Timebox</b> expired without isolation</li>
+      <li>☐ Needs <b>access or authority</b> I do not have — <span class="hint">say which</span></li>
+      <li>☐ <b>Severity</b> policy — site-down or many users</li>
+      <li>☐ <b>My layers are excluded</b> — the remaining suspects are in your domain</li>
+    </ul>
+    <table class="grid" style="margin-top:.6rem"><tr><td class="lbl">What I need from you, specifically</td><td></td></tr></table>
+    <p style="margin-top:.8rem"><b>Delivery</b> — the conclusion in the reader's language, and the one thing they should do next.</p>
+    <table class="grid" style="margin-top:.4rem"><tr><td></td></tr></table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">9</span> Attachments <span class="mark both">both</span></h2>
+  <div class="card">
+    <table>
+      <tr><th></th><th>Attached</th><th>Note</th></tr>
+      <tr><td>Health check report — HTML</td><td>☐</td><td>whichever formats the run wrote; the HTML is the readable one</td></tr>
+      <tr><td>Health check report — JSON</td><td>☐</td><td>schema 2: run options, fingerprint, every result</td></tr>
+      <tr><td>Environment report / <code>LauncherError.txt</code></td><td>☐</td><td><i>only where the tool could not run — best effort, so it may not exist</i></td></tr>
+      <tr><td>Topology sketch of the affected path</td><td>☐</td><td>hand-drawn is fine; <b>the tool never draws one</b></td></tr>
+      <tr><td>Device logs covering the failure window</td><td>☐</td><td>switch / AP / firewall — <b>not in the report</b></td></tr>
+      <tr><td>Config exports of the devices in the path</td><td>☐</td><td><b>not in the report</b></td></tr>
+      <tr><td>Screenshots the user took</td><td>☐</td><td></td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>A filled example <span class="k" style="color:var(--muted);font-weight:500;font-size:.85rem">the shape, not the wording</span></h2>
+  <div class="example">
+    <p class="hint">An illustration, not a transcript. The measurements come from the acceptance campaign's <code>A3</code> scenario — a lab machine deliberately moved to a host-only network, which is a real "an address, no gateway" case, run on both campaign machines; the wording around them is mine. Abbreviated to the sections a delivery report keeps.</p>
+    <p><b class="s">1 · Identity</b> — Machine <code>DESKTOP-CO7QIMR</code> (Windows 10 Pro 22H2, 19045.3803), lab, run by the engineer at the console.</p>
+    <p><b class="s">2 · Symptom</b> — "Nothing loads, but the network icon looks normal." Blast radius: this machine only. Changed: the adapter was moved to a host-only segment. Fingerprint lane: <b>IP, but gateway unreachable</b>. Constant.</p>
+    <p><b class="s">3 · What was measured</b> — One console run, verdict <b>Problem Detected</b>, fingerprint <code>local</code>. The shape recorded on both machines: <code>gateway-config</code> FAIL (no IPv4 gateway on any adapter); <code>ping-gateway</code> FAIL, because <code>AUTO_GATEWAY</code> resolved to nothing; DNS timed out; no gateway rows at all. On the 1.2.3 run the <code>routes</code> row read <code>INFO — No IPv4 default route exists.</code> — the fact rather than an error, which is what backlog #27 changed.</p>
+    <p><b class="s">5 · Isolated to</b> — The segment the machine is attached to: it has an address, but no default route exists, so nothing beyond that segment is reachable. The link itself is up and the adapter is healthy; nothing above the gateway was tested, because nothing could be reached to test it.</p>
+    <p><b class="s">8 · Delivery</b> — This machine has an address but no way out of its own segment: the network it is attached to hands out addresses without a router. Move it back to the office segment, or add a gateway to that segment's DHCP scope.</p>
+    <p><b class="s">9 · Attachments</b> — HTML and JSON of the run. No device logs: the segment has no switch to read.</p>
+  </div>
+</section>
+
+<footer>Support Report Template · v1.0 · Kevin (Te-Chin) Lin · September 2026 · companion to the <a href="network-troubleshooting-sop.html">Network Troubleshooting SOP</a> and the <a href="support-engineer-field-manual.html">Support Engineer's Field Manual</a></footer>
+
+</div>
+</body>
+</html>
