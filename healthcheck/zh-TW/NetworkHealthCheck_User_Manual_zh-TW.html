@@ -159,7 +159,7 @@
       <li>按 <kbd>開啟報告</kbd>。報告會在瀏覽器裡打開。它是這台電腦上的檔案，不是網際網路上的網頁。</li>
     </ol>
     <p style="margin-top:.9rem"><b>在問題發生的時候跑。</b> 工具量的是一台電腦的一個瞬間。問題如果時好時壞，一切正常時跑的那一次證明不了什麼，問題發生時跑的那一次才是 IT 需要的證據。跑的時候照平常的方式繼續使用網路：有幾秒鐘它在量這台電腦自己的流量，什麼都不做的電腦就沒有東西可量。</p>
-    <p><b>再跑一次。</b> <kbd>重新檢測</kbd> 會在同一個視窗裡開始新的一輪。每一輪都寫出一組新的報告檔，檔名帶自己的時間，先前的報告不會被覆蓋。一份好的時候、一份壞的時候，兩份報告對 IT 的價值高於任何一份單獨的。</p>
+    <p><b>再跑一次。</b> <kbd>重新檢測</kbd> 會在同一個視窗裡開始新的一輪。每一輪都寫出一組新的報告檔，檔名帶自己的時間，所以先前的報告不會被覆蓋，前提是一次只跑一份工具：兩份工具共用報告資料夾又在同一秒內結束，檔名會相同。一份好的時候、一份壞的時候，兩份報告對 IT 的價值高於任何一份單獨的。</p>
   </div>
 </section>
 
@@ -276,7 +276,8 @@ NetworkHealthCheck_&lt;日期&gt;_&lt;時間&gt;_&lt;電腦名稱&gt;.json</pre>
       <tr><td><code>zh-TW\Reports\</code></td><td>工具第一次啟動時建立，存放報告</td></tr>
       <tr><td><code>README_BILINGUAL.md</code></td><td>套件的雙語首頁</td></tr>
       <tr><td><code>SHA256SUMS.txt</code>、<code>tools\</code></td><td>給 IT 的完整性檢查</td></tr>
-      <tr><td><code>VALIDATION.md</code>、<code>validation-matrix.html</code></td><td>這個版本的驗證記錄，給 IT</td></tr>
+      <tr><td><code>VALIDATION.md</code></td><td>逐版累積的驗證記錄，給 IT</td></tr>
+      <tr><td><code>validation-matrix.html</code></td><td>較早版本的故障情境矩陣，標題寫明是哪一版，留作記錄</td></tr>
     </table>
   </div>
 </section>

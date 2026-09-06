@@ -159,7 +159,7 @@
       <li>Click <kbd>Open Report</kbd>. The report opens in your web browser. It is a file on this computer, not a web page on the internet.</li>
     </ol>
     <p style="margin-top:.9rem"><b>Run it while the problem is happening.</b> The tool measures one moment on one computer. If the trouble comes and goes, a run made while everything works proves little; a run made during the trouble is the evidence IT needs. Keep using the network the way you normally do while it runs — for a few seconds it measures the computer's own traffic, and a computer doing nothing gives it nothing to measure.</p>
-    <p><b>Running it again.</b> <kbd>Run Again</kbd> starts a new check in the same window. Every run writes a new set of report files with its own time in the name; earlier reports are not overwritten. Two reports — one from a good moment and one from a bad one — are worth more to IT than either alone.</p>
+    <p><b>Running it again.</b> <kbd>Run Again</kbd> starts a new check in the same window. Every run writes a new set of report files with its own time in the name, so earlier reports are not overwritten — as long as only one copy of the tool runs at a time: two copies sharing a report folder and finishing within the same second would name their files alike. Two reports — one from a good moment and one from a bad one — are worth more to IT than either alone.</p>
   </div>
 </section>
 
@@ -276,7 +276,8 @@ NetworkHealthCheck_&lt;date&gt;_&lt;time&gt;_&lt;COMPUTERNAME&gt;.json</pre>
       <tr><td><code>en-US\Reports\</code></td><td>Created when the tool first starts; holds the reports</td></tr>
       <tr><td><code>README_BILINGUAL.md</code></td><td>The package's front page, in both languages</td></tr>
       <tr><td><code>SHA256SUMS.txt</code>, <code>tools\</code></td><td>Integrity checks for IT</td></tr>
-      <tr><td><code>VALIDATION.md</code>, <code>validation-matrix.html</code></td><td>The validation record of this release, for IT</td></tr>
+      <tr><td><code>VALIDATION.md</code></td><td>The validation record, kept release by release, for IT</td></tr>
+      <tr><td><code>validation-matrix.html</code></td><td>An earlier release's fault-scenario matrix — its heading names the release — kept for the record</td></tr>
     </table>
   </div>
 </section>

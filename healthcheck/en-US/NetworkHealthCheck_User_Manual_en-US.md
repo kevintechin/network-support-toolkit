@@ -48,7 +48,7 @@ Network Health Check looks at the network from this computer's point of view and
 
 **Run it while the problem is happening.** The tool measures one moment on one computer. If the trouble comes and goes, a run made while everything works proves little; a run made during the trouble is the evidence IT needs. Keep using the network the way you normally do while it runs — for a few seconds it measures the computer's own traffic, and a computer doing nothing gives it nothing to measure.
 
-**Running it again.** **Run Again** starts a new check in the same window. Every run writes a new set of report files with its own time in the name; earlier reports are not overwritten. Two reports — one from a good moment and one from a bad one — are worth more to IT than either alone.
+**Running it again.** **Run Again** starts a new check in the same window. Every run writes a new set of report files with its own time in the name, so earlier reports are not overwritten — as long as only one copy of the tool runs at a time: two copies sharing a report folder and finishing within the same second would name their files alike. Two reports — one from a good moment and one from a bad one — are worth more to IT than either alone.
 
 ---
 
@@ -170,7 +170,8 @@ A Startup Notice row is a warning, so on its own it turns the verdict to **Atten
 | `en-US\Reports\` | Created when the tool first starts; holds the reports |
 | `README_BILINGUAL.md` | The package's front page, in both languages |
 | `SHA256SUMS.txt`, `tools\` | Integrity checks for IT |
-| `VALIDATION.md`, `validation-matrix.html` | The validation record of this release, for IT |
+| `VALIDATION.md` | The validation record, kept release by release, for IT |
+| `validation-matrix.html` | An earlier release's fault-scenario matrix — its heading names the release — kept for the record |
 
 ---
 
