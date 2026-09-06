@@ -98,6 +98,14 @@ for rel in [d+'/NetworkHealthCheck_Technical_Guide_'+l+'.md' for d in ('docs','e
     ok('the applies-to statement names '+TOOL_VERSION+' '+rel,bool(bold) and all(v==TOOL_VERSION for v in bold),', '.join(bold) or 'none')
     found=version_labels(text)
     ok('no version label newer than '+TOOL_VERSION+' '+rel,bool(found) and found[-1]==TOOL_VERSION,', '.join(found[-3:]) or 'none')
+# The packaged validation record - outside the manifest by design, because it is the last file a release touches - must
+# have an entry for this version and none for a newer one, so that a bump that leaves the record behind, or a record
+# written ahead of the tool, fails here (round 6). The release entry is not always the top one (campaign and review
+# entries sit above releases), so the heading may be anywhere in the file.
+record=read_text(ROOT/'VALIDATION.md') if (ROOT/'VALIDATION.md').is_file() else ''
+releases=sorted({v for v in re.findall(r'^## v(\d+\.\d+\.\d+)\b',record,re.M)},key=lambda v:tuple(int(x) for x in v.split('.')))
+ok('validation record has an entry for '+TOOL_VERSION,TOOL_VERSION in releases,', '.join(releases[-3:]) or 'no release heading')
+ok('validation record has no entry newer than '+TOOL_VERSION,bool(releases) and releases[-1]==TOOL_VERSION,', '.join(releases[-3:]) or 'none')
 # The two PowerShell guards that used to live here - arithmetic at the top level of a New-Object argument list, and a
 # bound parameter overwritten where the write reaches the script scope, the two v1.2.0 GUI regressions - run on the
 # PowerShell AST in the repository's test chain since 2026-09-04 (tests/ast_guards.ps1 with tests/selftest_guards.ps1,
