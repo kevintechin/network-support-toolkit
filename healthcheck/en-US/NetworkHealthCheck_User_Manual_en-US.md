@@ -12,7 +12,7 @@ Network Health Check looks at the network from this computer's point of view and
 
 **It changes nothing.** The tool reads network information and runs connection tests — a few pings, a name lookup, a TCP connection and one HTTPS request. It does not modify your IP address, DNS, routes, firewall, proxy or adapter settings, and it installs nothing. Administrator rights are normally not required.
 
-**It uploads nothing.** The report stays on this computer until you send it yourself. What the tests do send is traffic to the test targets — section 9 names the shipped ones — through this computer's own DNS servers, proxy and route.
+**It uploads nothing.** With the settings as shipped, the report is written to a folder on this computer and goes nowhere until you send it yourself; IT may have pointed the report folder elsewhere, and the report's *Computer and Run Information* section shows where it went. What the tests do send is traffic to the test targets — section 9 names the shipped ones — through this computer's own DNS servers, proxy and route.
 
 **How long it takes.** About ten seconds on a working network. When things do not answer it takes longer — up to a minute or so — because every test waits for its time limit before giving up.
 
@@ -119,7 +119,7 @@ IT may have configured a different folder. And if the usual folder cannot be wri
 
 **Send it as it is.** Do not edit the report. Attach the file to your ticket or e-mail, or copy it to wherever IT asked. Old reports are ordinary files; you can delete them when you no longer need them.
 
-**What the report contains.** The computer name, your user name, the network adapters with their MAC and IP addresses, gateways and DNS servers, the Wi-Fi network name (SSID) and the access point's hardware address (BSSID), the addresses the tests contacted, and the text of any error the tool met. Handle the file the way your company's rules say to handle that kind of information. The tool never uploads it anywhere.
+**What the report contains.** The computer name, your user name, the network adapters with their MAC and IP addresses, gateways and DNS servers, the Wi-Fi network name (SSID) and the access point's hardware address (BSSID), the addresses the tests were aimed at, and the text of any error the tool met. Handle the file the way your company's rules say to handle that kind of information. The tool never uploads it anywhere; it only writes it to the report folder, which is on this computer unless IT chose a folder elsewhere.
 
 ---
 
@@ -180,9 +180,9 @@ A Startup Notice row is a warning, so on its own it turns the verdict to **Atten
 
 **Do I need to be an administrator?** Normally not. If the tool cannot read something without more rights, the row says *Unable to Check* and the check continues.
 
-**Is the report sent anywhere?** No. It is written to a folder on this computer and goes nowhere until you send it.
+**Is the report sent anywhere?** Not by the tool. With the settings as shipped it is written to a folder on this computer and goes nowhere until you send it; if IT pointed the report folder at a network location, that is where it is written, and the report says so under *Computer and Run Information*.
 
-**Which addresses does it contact?** With the settings as shipped: your own default gateway, the public address `1.1.1.1` (a ping, a connection to port 443, and the first three hops toward it for the traceroute) and `https://www.microsoft.com/` (one page request through the proxy Windows is set to use, following any redirect it is given), plus the name lookup for `www.microsoft.com` through this computer's DNS servers. IT may have replaced these with the company's own services — the report's rows name what was actually contacted.
+**Which addresses does it contact?** With the settings as shipped: your own default gateway, the public address `1.1.1.1` (a ping, a connection to port 443, and the first three hops toward it for the traceroute) and `https://www.microsoft.com/` (one page request through the proxy Windows is set to use, following any redirect it is given), plus the name lookup for `www.microsoft.com` through this computer's DNS servers. IT may have replaced these with the company's own services — the report's rows name the targets that were configured and, for a page request, the address it finally landed on.
 
 **A row says "Unable to Check" for the TCP retransmissions.** The counters could not be read — a permission, a policy or a broken performance counter. It does not mean there were retransmissions; the report says so itself. Send it as it is.
 
