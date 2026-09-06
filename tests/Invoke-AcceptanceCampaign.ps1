@@ -860,7 +860,9 @@ function Get-Plan {
            # through, because the edition rule this scenario's title still names is history - "as of KB 5024351,
            # Windows 10 versions 2004 and newer and all Windows 11 versions no longer require a specific edition of
            # Windows to enforce AppLocker policies" (Microsoft, "Requirements to use AppLocker"). Only on a build older
-           # than 2004 is a Group-Policy-deployed policy limited to Enterprise and Server.
+           # than 2004 does the edition still decide, and the branch below says which editions this code admits there -
+           # the wording of that sentence in the documentation and the wording of the branch differ, deliberately.
+           # The scenario's title no longer names an edition at all.
            # The Windows 10 Pro VM of campaign win10-zhTW (22H2, build 19045.3803, 2026-09-06) nevertheless did not
            # enforce: Script rules Enabled, two rules, AppIDSvc running, Test-AppLockerPolicy answering DeniedByDefault
            # for the account, and the launcher ran the script and wrote a report. That is one machine disagreeing with

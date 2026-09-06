@@ -551,10 +551,11 @@ function Set-CraftedEdition([string]$Path, [bool]$HomeEdition, [string]$Id, [str
     [IO.File]::WriteAllText($Path, ($c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
 }
 Set-CraftedEdition $stateFile31 $false 'Professional' 'Microsoft Windows 11 Pro' $true
-# The answers file offers a gate answer that must go unused: on Pro the scenario is dropped before the gate, so the
-# count of M9 gates in answers.log may not grow. Counted around this invocation rather than over the whole log,
-# because the first one ran on whatever edition the host running the self-test happens to be - and on a host that is
-# itself Home or Pro nothing was ever answered, so there is no answers.log at all to read.
+# On a supported Pro build the scenario reaches the gate, so this invocation must consume exactly one gate answer and
+# the M9 gate count must grow by one; the crafted Home and pre-2004 states below are the opposite, where the count may
+# not move at all. Counted around each invocation rather than over the whole log, because the first one ran on whatever
+# edition the host running the self-test happens to be - and on a host whose own state answered nothing there is no
+# answers.log to read, which is why the helper returns 0 for a missing file rather than throwing.
 function Get-M9GateCount([string]$StatePath) {
     $log = Join-Path $StatePath 'answers.log'
     if (-not (Test-Path -LiteralPath $log)) { return 0 }
