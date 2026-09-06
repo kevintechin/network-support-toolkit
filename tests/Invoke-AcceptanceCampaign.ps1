@@ -514,11 +514,18 @@ function Write-RecoveryNotes {
     $m9 = $State.Scenarios['M9']
     $svcType = 'the startup type recorded in campaign.json under Scenarios.M9.Facts once M9 has started'
     $svcStop = 'net stop AppIDSvc if it was stopped'
+    # sc config is refused once the Script rules are gone: measured on a Windows 10 Pro VM (campaign win10-zhTW,
+    # 2026-09-06), "sc config AppIDSvc start= demand" answered "Access is denied" although the same command had been
+    # accepted while the rules were in force, and net stop still worked. The service's own registry value is what is
+    # left, so the way back names it too rather than leaving the machine on a startup type it did not have.
+    $svcReg = 'reg add "HKLM\SYSTEM\CurrentControlSet\Services\AppIDSvc" /v Start /t REG_DWORD /d <2 = Automatic, 3 = Manual, 4 = Disabled> /f'
     if ($null -ne $m9 -and $null -ne $m9.Facts -and $m9.Facts.AppIDSvcStartType -and [string]$m9.Facts.AppIDSvcStartType -ne 'n/a') {
         $map = @{ Automatic = 'auto'; Manual = 'demand'; Disabled = 'disabled' }
+        $mapNumber = @{ Automatic = '2'; Manual = '3'; Disabled = '4' }
         $t = [string]$m9.Facts.AppIDSvcStartType
         $svcType = $(if ($map.ContainsKey($t)) { $map[$t] } else { $t.ToLowerInvariant() }) + '   (it was ' + $t + ', ' + [string]$m9.Facts.AppIDSvcStatus + ')'
         $svcStop = $(if ([string]$m9.Facts.AppIDSvcStatus -eq 'Stopped') { 'net stop AppIDSvc   (it was stopped)' } else { 'leave it running (it was running)' })
+        if ($mapNumber.ContainsKey($t)) { $svcReg = 'reg add "HKLM\SYSTEM\CurrentControlSet\Services\AppIDSvc" /v Start /t REG_DWORD /d ' + $mapNumber[$t] + ' /f   (' + $mapNumber[$t] + ' = ' + $t + ')' }
     }
     $lines = @(
         ('NetworkHealthCheck acceptance campaign "' + $Campaign + '" - how to put the machine back WITHOUT PowerShell'),
@@ -541,6 +548,9 @@ function Write-RecoveryNotes {
         '    secpol.msc > Application Control Policies > AppLocker > Configure rule enforcement > Script rules: Not configured;',
         '    delete the Script rules; then   gpupdate /force. The Application Identity service back as it was:',
         ('    sc config AppIDSvc start= ' + $svcType),
+        '    if that answers "Access is denied" - Windows 10 Pro protects the service configuration once the rules are',
+        '    gone, although the same command was accepted while they were in force - set the value the service reads:',
+        ('    ' + $svcReg),
         ('    ' + $svcStop),
         '',
         'Then run the campaign again, so that the revert is recorded:',
@@ -835,12 +845,19 @@ function Get-Plan {
         @{ Id = 'M9'; Title = 'AppLocker script rules enforced (Enterprise / Education)'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('secpol.msc > Application Control Policies > AppLocker > Script Rules > right-click > Create Default Rules, then DELETE the default rule that allows BUILTIN\Administrators all scripts - your account is an administrator, and with that rule in place it is exempt and the test measures nothing; AppLocker > Configure rule enforcement > Script rules: Configured, Enforce rules. Then in an ELEVATED command prompt:   sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force   - then answer done. The driver checks that the rules really restrict this account before it runs anything.',
                            'secpol.msc > 應用程式控制原則 > AppLocker > 指令碼規則 > 右鍵 > 建立預設規則，然後「刪除」允許 BUILTIN\Administrators 執行所有指令碼的那條預設規則——你的帳號是管理員，留著它就被豁免、什麼都量不到；AppLocker > 設定規則強制執行 > 指令碼規則：已設定、強制執行規則。再在「以系統管理員身分執行」的命令提示字元執行：sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force，然後輸入 done。driver 執行前會確認規則真的限制了這個帳號。') + $recoverLines
-           # Checked before the person is asked to act: Home has no AppLocker at all, and Pro holds rules without enforcing
-           # them - there the precondition decides with Test-AppLockerPolicy (PR #14, after the first campaign on Windows 11 Home).
+           # Checked before the person is asked to act, because on the two editions a person is likely to own, this
+           # scenario cannot succeed and asking for the work is the defect. Home has no AppLocker at all. Pro holds the
+           # rules and Test-AppLockerPolicy computes a decision for them, but nothing enforces that decision at run time:
+           # enforcement is an Enterprise / Education feature. Measured on a Windows 10 Pro VM (campaign win10-zhTW,
+           # 2026-09-06): with Script rules Enabled, two rules, AppIDSvc running and the script DeniedByDefault for the
+           # account, the launcher ran it and a report was written - a FAIL that says nothing about the tool, at the cost
+           # of a dozen console steps and the same again to put the machine back. Until then the Pro branch let the
+           # scenario through and decided with Test-AppLockerPolicy (PR #14); the campaign on Pro proved that wrong.
            Prerequisite = { $e = $State.Edition
                if ($e.IsHome) { return @{ Ok = $false; Detail = ('AppLocker is not available on this edition (' + $e.Caption + ', EditionID ' + $e.EditionId + ') - the scenario needs Enterprise or Education') } }
+               if ([string]$e.EditionId -like 'Professional*') { return @{ Ok = $false; Detail = ('AppLocker rules can be configured on this edition but nothing enforces them at run time (' + $e.Caption + ', EditionID ' + $e.EditionId + ') - the scenario needs Enterprise or Education') } }
                if (-not $e.HasSecpol) { return @{ Ok = $false; Detail = ('secpol.msc is not present on this machine (' + $e.Caption + ', EditionID ' + $e.EditionId + ')') } }
-               @{ Ok = $true; Detail = $(if ([string]$e.EditionId -like 'Professional*') { $e.Caption + ': Pro holds AppLocker rules but does not enforce them - the precondition decides with Test-AppLockerPolicy' } else { $e.Caption + ' (EditionID ' + $e.EditionId + ')' }) } }
+               @{ Ok = $true; Detail = ($e.Caption + ' (EditionID ' + $e.EditionId + ')') } }
            Prepare = { param($Ctx)
                # The copy the launcher will run, made now so that the precondition can ask AppLocker about the very path
                # that is executed (PR #11 round 7); and the service's state, which the instruction changes and must go back.
@@ -879,8 +896,11 @@ function Get-Plan {
                $shown = @($r.Output | Where-Object { $_.Trim() -ne '' } | Select-Object -First 4) -join ' / '
                @{ Passed = $passed; Detail = ('{0}; launcher exit {1}; environment report(s): {2}; reports: {3}; what the user sees: {4}' -f $what, $r.ExitCode, $r.EnvironmentReports.Count, $r.Reports.Count, $shown); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError.txt', 'en-US\NetworkHealthCheck_ENVIRONMENT_*.txt') }
            }
-           Cleanup = @{ Instruction = @('AppLocker > Configure rule enforcement > Script rules: Not configured; delete the Script rules; gpupdate /force. Then put the Application Identity service back as it was before this scenario (the campaign recorded its startup type and state and checks them; RECOVER.txt in the state folder names the exact values): in an ELEVATED command prompt   sc config AppIDSvc start= <auto|demand|disabled>   (demand = Manual)   and   net stop AppIDSvc   if it was stopped. Then answer done.',
-                                        'AppLocker > 設定規則強制執行 > 指令碼規則：尚未設定；刪除指令碼規則；gpupdate /force。然後把 Application Identity 服務改回這個情境之前的狀態（campaign 有記錄啟動類型與狀態並會檢查；state 資料夾的 RECOVER.txt 寫有確切的值）：在「以系統管理員身分執行」的命令提示字元執行 sc config AppIDSvc start= <auto|demand|disabled>（demand = 手動），若原本是停止的再執行 net stop AppIDSvc。完成後輸入 done。')
+           # The commands are not spelled with a placeholder here: RECOVER.txt holds them with this machine's recorded
+           # values filled in, and a person typing the placeholder itself is what happened on the Windows 10 Pro VM
+           # (2026-09-06). It also carries the registry line for the case where sc config is refused.
+           Cleanup = @{ Instruction = @('AppLocker > Configure rule enforcement > Script rules: Not configured; delete the Script rules; gpupdate /force. Then put the Application Identity service back as it was before this scenario: the campaign recorded its startup type and state and checks them, and RECOVER.txt in the state folder holds the two commands with this machine''s values already filled in - copy them from there into an ELEVATED command prompt rather than typing them. If sc config answers "Access is denied", RECOVER.txt also names the registry value to set instead. Then answer done.',
+                                        'AppLocker > 設定規則強制執行 > 指令碼規則：尚未設定；刪除指令碼規則；gpupdate /force。然後把 Application Identity 服務改回這個情境之前的狀態：campaign 有記錄啟動類型與狀態並會檢查，state 資料夾的 RECOVER.txt 已經把兩行指令連同這台機器的值填好，請從那裡複製到「以系統管理員身分執行」的命令提示字元，不要自己打。若 sc config 回「存取被拒」，RECOVER.txt 也寫了改用哪個登錄檔值。完成後輸入 done。')
                         Verify = { param($Ctx)
                             # The precondition proved the policy readable; a policy that cannot be read now does not certify the revert (PR #11 round 3).
                             try {
