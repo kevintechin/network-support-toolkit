@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Support Engineer's Field Manual — Kevin Lin</title>
+<style>
+  :root{
+    --ink:#16233b; --muted:#5b6b85; --line:#d8e0ec; --bg:#f4f7fb; --card:#ffffff;
+    --blue:#1d4ed8; --blue-soft:#e8effd; --green:#0f7b52; --green-soft:#e6f5ee;
+    --red:#b3372e; --red-soft:#faeae8; --amber:#9a6700; --amber-soft:#fcf3e1;
+    --mono:Consolas,"Cascadia Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg);color:var(--ink);line-height:1.5;padding:2.2rem 1.4rem}
+  .page{max-width:1060px;margin:0 auto}
+  code{font-family:var(--mono);background:#eef2f8;border:1px solid var(--line);
+    border-radius:4px;padding:.08rem .35rem;font-size:.86em;white-space:nowrap}
+  a{color:var(--blue)}
+  code.cmdline{display:block;white-space:pre-wrap;word-break:break-word;margin-top:.35rem;
+    padding:.35rem .5rem;font-size:.8em;line-height:1.45}
+
+  header{margin-bottom:1.6rem}
+  header h1{font-size:1.7rem;letter-spacing:-.01em}
+  header .tag{color:var(--muted);font-size:1.02rem;margin-top:.2rem}
+  header .meta{color:var(--muted);font-size:.82rem;margin-top:.45rem}
+
+  .principle{display:flex;gap:.7rem;flex-wrap:wrap;margin:1.1rem 0 1.8rem}
+  .principle span{background:var(--blue-soft);color:var(--blue);border:1px solid #c4d5fb;
+    border-radius:999px;padding:.35rem .9rem;font-weight:600;font-size:.9rem}
+
+  section{margin-bottom:1.9rem}
+  h2{font-size:1.12rem;margin-bottom:.7rem;display:flex;align-items:baseline;gap:.55rem}
+  h2 .k{color:var(--muted);font-weight:500;font-size:.85rem}
+  h2 .num{color:var(--blue);font-weight:700}
+  h3{font-size:1rem;margin:1.4rem 0 .55rem;color:var(--ink)}
+  h3 .k{color:var(--muted);font-weight:500;font-size:.85rem;margin-left:.4rem}
+  .three td:first-child{border-left:3px solid var(--amber)}
+  .three td:nth-child(2){border-left:3px solid var(--red)}
+  .three td:nth-child(3){border-left:3px solid var(--blue)}
+  .three th{font-size:.78rem}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:1rem 1.15rem;box-shadow:0 1px 2px rgba(22,35,59,.05)}
+  .card p{font-size:.92rem}
+  .card p + p{margin-top:.55rem}
+
+  table{width:100%;border-collapse:collapse;font-size:.9rem}
+  th,td{text-align:left;padding:.5rem .65rem;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+  tr:last-child td{border-bottom:none}
+
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:.7rem}
+  .pane{border-radius:10px;padding:.8rem .95rem;border:1px solid var(--line)}
+  .pane > b{display:block;font-size:.78rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.45rem}
+  .pane ul{list-style:none;font-size:.88rem}
+  .pane li{margin-bottom:.4rem;padding-left:1.1rem;position:relative}
+  .pane li::before{content:"▸";position:absolute;left:.15rem}
+  .yes{background:var(--green-soft);border-color:#c6e6d7} .yes b{color:var(--green)} .yes li::before{color:var(--green)}
+  .no{background:var(--red-soft);border-color:#f0cdc8} .no b{color:var(--red)} .no li::before{color:var(--red)}
+
+  .scripts{display:grid;grid-template-columns:1fr 1fr;gap:.7rem;margin-top:.8rem}
+  .scripts .s{border:1px dashed var(--line);border-radius:8px;padding:.6rem .75rem;font-size:.88rem}
+  .scripts .s > b{display:block;font-size:.76rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.3rem}
+  .scripts .en b{color:var(--blue)} .scripts .zh b{color:var(--green)}
+  .scripts ol{margin-left:1.05rem}
+  .scripts li{margin-bottom:.25rem}
+
+  .moves{display:grid;grid-template-columns:repeat(4,1fr);gap:.6rem;margin-bottom:.8rem}
+  .move{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7rem .8rem}
+  .move .n{display:inline-block;width:1.35rem;height:1.35rem;border-radius:50%;background:var(--blue);
+    color:#fff;text-align:center;line-height:1.35rem;font-size:.8rem;margin-right:.4rem}
+  .move b{font-size:.92rem}
+  .move p{font-size:.83rem;color:var(--muted);margin-top:.35rem}
+
+  .v-pass{color:var(--green);font-weight:600} .v-warn{color:var(--amber);font-weight:600}
+  .v-err{color:var(--muted);font-weight:600} .v-fail{color:var(--red);font-weight:600}
+
+  .join td:first-child{font-size:.85rem}
+  .join .fp{font-family:var(--mono);font-size:.82rem;font-weight:700;display:block;margin-bottom:.15rem}
+  .join .l1{color:var(--red)} .join .l2{color:var(--amber)}
+  .join .l3{color:var(--blue)} .join .l4{color:var(--green)} .join .l0{color:var(--muted)}
+  .join .st{font-weight:700;white-space:nowrap}
+
+  .scope{display:inline-block;font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;
+    border-radius:4px;padding:.05rem .3rem;border:1px solid}
+  .scope.main{color:var(--blue);border-color:#c4d5fb;background:var(--blue-soft)}
+  .scope.it{color:var(--muted);border-color:var(--line);background:#f2f5fa}
+  .rows td:first-child{font-family:var(--mono);font-size:.82rem}
+  .rows td:nth-child(2){white-space:nowrap}
+
+  .lead{font-size:.86rem;color:var(--muted);margin:.15rem 0 .6rem}
+  .note{font-size:.82rem;color:var(--muted);margin-top:.6rem}
+  .flag{background:var(--amber-soft);border:1px solid #eddcb4;border-radius:8px;
+    padding:.6rem .8rem;font-size:.88rem;margin-top:.7rem}
+  .flag b{color:var(--amber)}
+
+  ul.traps{list-style:none;font-size:.9rem}
+  ul.traps li{margin-bottom:.5rem;padding-left:1.2rem;position:relative;break-inside:avoid}
+  ul.traps li::before{content:"▸";position:absolute;left:.2rem;color:var(--red)}
+
+  .cover td:last-child{white-space:nowrap;font-weight:600}
+  .cover .y{color:var(--green)} .cover .n{color:var(--red)} .cover .p{color:var(--amber)}
+
+  footer{color:var(--muted);font-size:.8rem;border-top:1px solid var(--line);padding-top:.8rem;margin-top:.5rem}
+
+  @media (max-width:860px){
+    .moves{grid-template-columns:1fr 1fr}
+  }
+  @media (max-width:760px){
+    .two,.scripts{grid-template-columns:1fr}
+    .moves{grid-template-columns:1fr}
+  }
+  @media print{
+    body{background:#fff;padding:0;font-size:11px}
+    .card,.move,.pane{box-shadow:none}
+    section{break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <h1>Support Engineer's Field Manual</h1>
+  <div class="tag">Running the SOP with NetworkHealthCheck — from the first call to the hand-off</div>
+  <div class="meta">v1.0 · Kevin (Te-Chin) Lin · September 2026 · companion to the <a href="network-troubleshooting-sop.html">Network Troubleshooting SOP v1.1</a> · written against NetworkHealthCheck 1.2.3</div>
+  <div class="principle">
+    <span>One endpoint, one moment</span>
+    <span>The fingerprint names the station</span>
+    <span>Healthy is a scope, not a verdict</span>
+  </div>
+</header>
+
+<section>
+  <div class="card">
+    <p>The SOP is the map. NetworkHealthCheck is one instrument, and an unusual one: you can put it in the hands of a person you cannot see, on a machine you cannot touch, and get back evidence you can attach to a ticket. This manual is how that instrument is used inside the map — when it earns its place, how to get it run by whoever answered the phone, how to read what comes back in about a minute, which station the reading sends you to, and what travels with the hand-off.</p>
+    <p>It is not the tool's user manual and not its technical guide; both ship inside the package and describe the tool. This describes the work.</p>
+    <p><b>One sentence to keep throughout:</b> the tool measures <i>one Windows endpoint's view of the network at one moment</i>. That is station 1 of the SOP, plus a probe up the ladder. It never reads a switch, an AP, or the firewall.</p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">1</span> When the tool earns its place <span class="k">and when it does not</span></h2>
+  <div class="two">
+    <div class="pane yes"><b>Send it when</b>
+      <ul>
+        <li>The report is about <b>one user or one machine</b> and you need station 1's state without standing there.</li>
+        <li>The reporter <b>cannot run commands</b> — one double-click replaces a dictated <code>ipconfig</code>.</li>
+        <li>You will need <b>evidence in the ticket</b>: the reports drop straight into the escalation package, timestamped and machine-identified.</li>
+        <li>You want the ladder <b>corroborated</b> — ICMP, TCP and HTTP in one run is Rule 3's second witness, built in.</li>
+      </ul>
+    </div>
+    <div class="pane no"><b>Do not send it when</b>
+      <ul>
+        <li>The blast radius is already <b>many users, a VLAN, or the site</b> — go to stations 4–8 and read the devices you can reach.</li>
+        <li>You <b>have access to the path</b>: a switch's MAC table and port counters beat an endpoint's opinion of them.</li>
+        <li><b>Nobody can run it at all</b> — no interactive session of any kind, or no one who can download and extract a file. A headless host or a remote shell is <i>not</i> an exclusion: the console launcher runs there, and the GUI falls back to console by itself.</li>
+        <li>The fault is <b>already isolated</b> — the tool cuts the search space, it does not decorate a conclusion.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="note">Cost: about two minutes of the user's time, plus 40–120 seconds of run time depending on the options.</div>
+</section>
+
+<section>
+  <h2><span class="num">2</span> Station 0 in practice <span class="k">getting it run by whoever answered</span></h2>
+  <div class="card">
+    <table>
+      <tr><th></th><th>IT professional</th><th>General user</th></tr>
+      <tr><td><b>What you send</b></td><td>The Releases link and the switch line</td><td>The ZIP, or the link with the three steps</td></tr>
+      <tr><td><b>Which launcher</b></td><td><code>Start-NetworkCheck-IT.cmd</code></td><td><code>Start-NetworkCheck.cmd</code></td></tr>
+      <tr><td><b>What you ask back</b></td><td>"Send me whatever the run wrote — the JSON and the HTML when they are there"</td><td>"Send me the file <b>Open Report</b> opens"</td></tr>
+      <tr><td><b>Pace</b></td><td>One message</td><td>One step, confirm, next step</td></tr>
+    </table>
+    <div class="scripts">
+      <div class="s en"><b>General-user script — wait after each step</b>
+        <ol>
+          <li>"Download the ZIP. <b>Right-click it → Properties → Unblock</b>, then extract the whole folder to your Desktop."</li>
+          <li>"Open the folder, open <code>en-US</code> (or <code>zh-TW</code>), double-click <code>Start-NetworkCheck.cmd</code>."</li>
+          <li>"It runs by itself. When it finishes click <b>Open Report</b> and send me the file it opens — usually a web page; if a plain text file opens instead, that is the report too."</li>
+        </ol>
+      </div>
+      <div class="s zh"><b>zh-TW · 照唸</b>
+        <ol>
+          <li>「把 ZIP 下載下來，<b>在檔案上按右鍵 → 內容 → 解除封鎖</b>，再整包解壓縮到桌面。」</li>
+          <li>「打開資料夾，進入 <code>zh-TW</code>，雙擊 <code>Start-NetworkCheck.cmd</code>。」</li>
+          <li>「視窗會自己跑完，按<b>開啟報告</b>，把它打開的那個檔案傳給我。通常是網頁；如果打開的是純文字檔，那也是報告，一樣傳給我。」</li>
+        </ol>
+      </div>
+    </div>
+    <div class="flag"><b>Three things to say before they click.</b> <b>It changes nothing</b> — no install, no admin rights; it reads network information and runs connection tests, and does not modify IP, DNS, routes, firewall or adapter settings. <b>Windows may warn</b> about a file from the internet — Unblock the ZIP before extracting and the warning does not appear. <b>Extract first</b> — running it from inside the ZIP preview window puts the reports in a temporary folder Windows later deletes.</div>
+  </div>
+
+  <div class="card" style="margin-top:.7rem">
+    <div class="lead">Which launcher, when</div>
+    <table>
+      <tr><th>Situation</th><th>Launcher</th><th>Behaviour</th></tr>
+      <tr><td>A user running it for you</td><td><code>Start-NetworkCheck.cmd</code></td><td>Starts and runs everything by itself</td></tr>
+      <tr><td>You or IT at the machine</td><td><code>Start-NetworkCheck-IT.cmd</code></td><td>Run-options panel — extra ping/TCP targets, sample length, optional checks; <b>nothing runs until Start is clicked</b>, and the HTML opens with IT diagnostics expanded</td></tr>
+      <tr><td>No GUI, or the window will not open</td><td><code>Start-NetworkCheck-Console.cmd</code></td><td>Same checks in text mode. <b>The launcher forwards no arguments</b> — it always runs the script with <code>-ConsoleOnly</code> alone, so options given to the <code>.cmd</code> are silently ignored. For targets or sample length in console mode, run the script directly, the form the package README shows: <code class="cmdline">powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -ConsoleOnly -PingTarget 10.0.0.1 -SampleSeconds 20</code></td></tr>
+    </table>
+    <div class="lead" style="margin-top:.9rem">What to ask for — three files named <code>NetworkHealthCheck_&lt;yyyyMMdd&gt;_&lt;HHmmss&gt;_&lt;COMPUTER&gt;</code>. <b>By default</b> they land in a <code>Reports\</code> folder beside the script, but the config file can name another (an absolute path is taken as given), and an unwritable folder falls back to <code>%TEMP%\NetworkHealthCheck\Reports</code> — so have the user click <b>Open Folder</b> in the window, or read the path the run prints, instead of hunting. A run can also finish having written only <b>some</b> of the three: if at least one format was saved the run counts as successful, a warning names the ones that failed, and <b>Open Report</b> opens the first that exists — so ask for whatever was written, not for a format by name.</div>
+    <table>
+      <tr><th>File</th><th>Ask for it when</th></tr>
+      <tr><td><code>.html</code></td><td>Whenever it was written — the readable one, and what <b>Open Report</b> opens</td></tr>
+      <tr><td><code>.json</code></td><td>Whenever it was written and the case may escalate, or to compare two runs (schema 2: run options, fingerprint, every result)</td></tr>
+      <tr><td><code>.txt</code></td><td>When the user can only paste text into a chat window — and as the fallback when the HTML is one of the formats that failed</td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">3</span> Reading the report in 60 seconds <span class="k">resist reading the rows first</span></h2>
+  <div class="moves">
+    <div class="move"><b><span class="n">1</span>The verdict</b><p>At the top. Four values, below.</p></div>
+    <div class="move"><b><span class="n">2</span>"What to tell IT"</b><p>The summary block names the <b>fingerprint</b> — the tool's own reading of the lane. This decides your next station.</p></div>
+    <div class="move"><b><span class="n">3</span>Every highlighted row</b><p>FAIL, ERROR <b>and WARN</b> — an <i>Attention Required</i> report has no failed rows at all. Most rows carry a <b>Method</b> and a <b>Manual check</b> line; reproduce a row before disagreeing with it. Not all do — the connectivity group is derived from its members.</p></div>
+    <div class="move"><b><span class="n">4</span>IT diagnostics</b><p>Collapsed by default: Wi-Fi radio, routes, gateway ARP, proxy, traceroute, drivers.</p></div>
+  </div>
+  <div class="card">
+    <table>
+      <tr><th>Verdict</th><th>Code</th><th>Meaning</th></tr>
+      <tr><td class="v-pass">Overall Healthy</td><td>PASS</td><td>Every required check that could run, passed</td></tr>
+      <tr><td class="v-warn">Attention Required</td><td>WARN</td><td>Nothing required failed; warnings or quality issues were raised</td></tr>
+      <tr><td class="v-err">Test Incomplete</td><td>ERROR</td><td>Something could not be measured — permissions, missing components, an execution error</td></tr>
+      <tr><td class="v-fail">Problem Detected</td><td>FAIL</td><td>At least one required check failed</td></tr>
+    </table>
+    <div class="flag"><b>IT diagnostics never change the verdict.</b> It is computed from the user-scope rows alone — deliberately: an IT-only observation should never turn a user's report red. They are evidence, not judgement.</div>
+    <div class="flag"><b>If you asked for a target, read its row whatever the verdict says.</b> Everything added through the IT panel or the switches is <i>optional</i>, and what it does to the verdict depends on <b>how</b> it fails: no ping reply at all, or no TCP / HTTP connection → <code>INFO</code>, verdict <b>unmoved</b>, so the run can still be <i>Overall Healthy</i>; a reply that is <b>degraded</b>, or a <b>DNS name that will not resolve</b> → <code>WARN</code>, verdict <b>moved</b> to <i>Attention Required</i>. So the service you were asked about can be completely unreachable in a healthy-looking report — in an <code>INFO</code> row the four moves above would skip — while an added DNS name that fails turns the whole report amber. Measured on a real run: three added targets, all unreachable, all <code>INFO</code>, verdict <i>Attention Required</i> for an unrelated 50 % loss on a configured target.</div>
+    <div class="note"><b>Exit codes</b> hold for <b>console runs only</b> (<code>-ConsoleOnly</code>, what the console launcher starts): there <code>0</code> means the run finished and wrote its reports — whatever the verdict — and anything else means <b>no normal report</b> — usually not no evidence: exit 3 <b>attempts</b> <code>NetworkHealthCheck_ENVIRONMENT_*.txt</code> (the script's folder first, then <code>%TEMP%</code>) and a run that could not write a single format <b>attempts</b> <code>NetworkHealthCheck_FATAL_*.txt</code>. Both are best effort and can come back with nothing — likeliest when the output folder is precisely what is broken — so <b>collect the path only if the process printed one</b>; otherwise the text on screen is all there is (section 6). <b>A GUI run always exits 0</b>: the entry point sets it after the window closes, so an IT window closed before Start was clicked, and a run whose report writing failed, exit 0 too. Never read a GUI exit code as evidence; look for the report.</div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">4</span> The join <span class="k">from fingerprint to station</span></h2>
+  <div class="card">
+    <p class="lead">The fingerprint is the tool's answer to the front door's third question, computed from the rows rather than guessed. The nine rules are an <b>ordered chain — the first match wins</b>, so a fingerprint tells you as much by what it rules out as by what it names. Read the rule, not just the title: two of them cover more than one situation.</p>
+    <table class="join">
+      <tr><th>Fingerprint · title</th><th>Chosen when</th><th>SOP lane</th><th>Go to</th><th>Ask for next</th></tr>
+      <tr><td class="l1"><span class="fp">local</span>Local link problem</td><td>The <code>adapters</code> row failed <b>or</b> the <code>gateway-config</code> row failed</td><td class="l1"><b>Three faults wear this name</b></td><td class="st">2, or 1 → 3 → 5, or 1</td><td>Which of the two rows failed decides — see <i>Reading <code>local</code></i> below</td></tr>
+      <tr><td class="l2"><span class="fp">gateway-unreachable</span>Gateway does not answer</td><td>A <code>ping-gateway</code> row failed and none passed — decided <b>before</b> the TCP, HTTP and group rows are considered, so a gateway that forwards traffic but drops ICMP to its own address lands here with the rest of the network working</td><td class="l2">IP, gateway unreachable — local L1/L2, <i>once the ping is corroborated</i>. SOP Rule 3 in its purest form: a failed ping is a suspect, not a conviction</td><td class="st">2 or 3 <span style="font-weight:400">(after the check)</span></td><td>Read the <code>tcp</code>, <code>http</code>, <code>connectivity-group</code> and <code>gateway-neighbor</code> rows first. If they passed <b>and at least one was off-subnet by a route through the gateway in the row you are reading</b> — targets are configured independently, so an on-subnet host, a VPN or a proxy can succeed without touching it, and on a multihomed machine <code>AUTO_GATEWAY</code> makes <b>one row per gateway</b> while the fingerprint asks only that none passed, so a witness routed through gateway A says nothing about failed gateway B (work through the others on their own terms) — the path works and that gateway is merely silent to ICMP: stay at station 1 and look at the config instead of walking to the switch. If they failed too: port error-counter delta, two samples; MAC learned on the expected port and VLAN; for Wi-Fi the AP client table</td></tr>
+      <tr><td class="l3"><span class="fp">gateway-up-internet-dead</span>Gateway answers, internet does not</td><td>A gateway ping passed, a <code>connectivity-group</code> failed and none passed. <b>The rule does not read the group's name</b> — a site that replaced the Internet group with an internal one (the package README tells IT how) lands here for a failed internal service — and it pairs <b>any</b> passing gateway row with <b>any</b> failed group without checking they share a route: on a multihomed machine gateway A can answer while the failed group leaves through the unavailable gateway B</td><td class="l3">Gateway OK, internet dead — <i>only when the failed group is the Internet one, and the gateway that answered is the one its members route through.</i> Read which group failed, what its members target, and which gateway carries that traffic</td><td class="st">5 → 6 → 8 <span style="font-weight:400">(Internet group, matching route)</span><br>1 → 3 <span style="font-weight:400">(another gateway carries it)</span></td><td>Default route at the gateway; NAT translation and policy hit counters; WAN status. The traceroute row traces the <b>first configured ping target, not the group member that failed</b>, and only three hops by default — so unless those are the same destination it says nothing about this failure. Ask for an uncapped <code>tracert -d &lt;the address that failed&gt;</code>; the row's Manual-check line carries both the wrong target and the cap</td></tr>
+      <tr><td class="l4"><span class="fp">dns</span>Name resolution fails</td><td>A <code>dns</code> row failed or warned, none passed, <b>and something else worked</b> (a connectivity group or a TCP row passed) — but that success may itself have used a host name, so the rule does not prove the differential its title claims</td><td class="l4">IP works, names fail — <i>only once you have confirmed it</i></td><td class="st">7 <span style="font-weight:400">(after the check)</span></td><td>Compare the targets: find a success that needed <b>no</b> lookup (an IP-addressed ping or TCP row). Then which servers the client actually points at (the DNS rows say), and the failure type — timeout vs SERVFAIL vs NXDOMAIN</td></tr>
+      <tr><td class="l2"><span class="fp">quality</span>Connected, but quality is poor</td><td>A quality row (<code>ping-target</code>, <code>ping-gateway</code>, <code>tcp-retransmissions</code>, <code>adapter-errors</code>) warned or failed and <b>no other row warned or failed</b>. Only WARN and FAIL exclude it — an unrelated <b>ERROR</b> row does not, and this rule runs before the ERROR one, so a <i>Test Incomplete</i> verdict can arrive carrying a <code>quality</code> fingerprint</td><td class="l2">Intermittent — front door Q4</td><td class="st">2 → 3</td><td>Counter deltas at the port; RF numbers from the AP; a second run <b>while the problem is happening</b>. If the verdict is <i>Test Incomplete</i>, deal with the ERROR rows too (section 6) — the fingerprint did not consider them</td></tr>
+      <tr><td class="l0"><span class="fp">mixed</span>A required check failed</td><td>Overall FAIL that none of the rules above matched — <b>one unclassified required failure is enough</b>, and a single <code>expected-standard</code> row lands here</td><td class="l0">The lane is not named for you</td><td class="st">Read the rows</td><td>Reproduce each failed row with its Manual-check line; there may be only one. If it is <code>expected-standard</code>, check the config's expectations against this site before treating it as a fault</td></tr>
+      <tr><td class="l0"><span class="fp">attention</span>Warnings to review</td><td>Overall WARN that the quality rule did not match</td><td class="l0">No lane is lit</td><td class="st">Judgement</td><td>Whether the warned thresholds match this site's baseline; the defaults are generic starting values</td></tr>
+      <tr><td class="l0"><span class="fp">incomplete</span>Some checks could not run</td><td>Overall ERROR — something could not be measured</td><td class="l0">No lane is lit</td><td class="st">Section 6</td><td>What blocked the measurement — the details name it. A locked-down machine is itself a finding</td></tr>
+      <tr><td class="l0"><span class="fp">healthy</span>Everything passed</td><td>Nothing above matched and every required check passed</td><td class="l0">None</td><td class="st">Elsewhere</td><td>A run <b>during</b> the failure. If the user reports a problem and this comes back clean, the endpoint's view is not where the fault is</td></tr>
+    </table>
+    <div class="flag"><b>A healthy report does not clear the network.</b> It clears this endpoint's view, at that moment. Say that in the ticket rather than "the tool says it's fine". And because the fingerprint is computed from the verdict-bearing rows alone, <b><code>healthy</code> with a dead optional ping, TCP or HTTP target is a normal outcome</b>, not a contradiction — though an optional target that degrades, or an added DNS name that will not resolve, does move the verdict (section 3).</div>
+  </div>
+
+  <h3>Reading <code>local</code> <span class="k">three faults under one name</span></h3>
+  <div class="card">
+    <p class="lead">One fingerprint, two failing rows, three different first moves. <b>Read which row failed before you choose a station.</b></p>
+    <table class="three">
+      <tr>
+        <th><code>adapters</code> failed · <b>wireless</b> machine</th>
+        <th><code>adapters</code> failed · <b>wired</b> machine</th>
+        <th><code>gateway-config</code> failed</th>
+      </tr>
+      <tr>
+        <td>A radio that is off, or an association that failed, leaves an interface down or unaddressed — which the collector omits, so it looks exactly like a machine with no NIC</td>
+        <td>No working adapter and no lease: the <b>No IP</b> / DHCP lane</td>
+        <td>An address with <b>no default gateway at all</b> — a client-side configuration fault, which a static address can produce with DHCP nowhere in the picture</td>
+      </tr>
+      <tr>
+        <td><b>Station 2 first</b>, before anything else: SSID visible, associated <i>and</i> authenticated, RSSI and SNR at the AP</td>
+        <td><b>1 → 3 → 5</b></td>
+        <td><b>Depends on the address</b> — the three branches below</td>
+      </tr>
+      <tr>
+        <td>The <code>wifi</code> row is the client's own view — weaker evidence than the AP's client table</td>
+        <td>Port link state and PVID; the DHCP scope's utilization</td>
+        <td>—</td>
+      </tr>
+    </table>
+    <p class="lead" style="margin-top:.9rem"><b>When <code>gateway-config</code> failed, the address names the lane.</b> Read the <i>per-adapter</i> rows, not only the aggregate <code>Usable Network Adapters</code> one — that aggregate passes whenever a physical adapter is connected, and the APIPA detection lives on the individual adapter's row.</p>
+    <table>
+      <tr><th>What the adapter rows show</th><th>What it means</th><th>Go to</th></tr>
+      <tr><td><b>169.254.x.x</b>, with the adapter's details showing <b>DHCP enabled</b></td><td>DHCP did not answer — the SOP's own first fingerprint, and nothing to do with client configuration</td><td class="st"><b>1 → 3 → 5</b>: port VLAN, uplink, relay, scope</td></tr>
+      <tr><td><b>169.254.x.x</b>, but the details say <b>DHCP disabled / static</b></td><td>A link-local address configured by hand. The tool's row says this "usually means DHCP did not provide an address" — it reads the address alone and never checks the mode, so read the mode yourself</td><td class="st"><b>1</b> — client configuration</td></tr>
+      <tr><td>A real address <b>from DHCP</b>, but no gateway</td><td>The scope handed out no router option, or it was removed</td><td class="st"><b>5</b> for the scope's options, with <b>1</b> to confirm what the client received</td></tr>
+      <tr><td>A <b>static</b> address and no gateway</td><td>Client-side configuration, DHCP nowhere in the picture</td><td class="st"><b>1</b></td></tr>
+    </table>
+    <p style="margin-top:.8rem"><b>What <code>gateway-config</code> does and does not judge.</b> It fails only when <b>no</b> IPv4 gateway is configured on any adapter. A gateway that is present but <b>wrong</b> passes it, and no fingerprint names that case: nothing answers → <code>gateway-unreachable</code>; it answers but nothing beyond it works → <code>gateway-up-internet-dead</code>; it answers and everything else works → <code>mixed</code> <b>if</b> the site configured <code>AllowedDefaultGateways</code>, because the <code>expected-standard</code> row for <b>Default Gateway</b> then fails — without that setting there is <b>no gateway-specific diagnosis at all</b>, and the chain falls through to its default, <code>healthy</code> / "Everything passed", unless something unrelated selects another key. That <code>expected-standard</code> row is the only place the tool judges a gateway's <i>value</i>.</p>
+    <div class="flag"><b>The one thing the report cannot tell you on this lane.</b> It says whether the address came from DHCP or is static, but <b>not which server answered</b> — so for the rogue-DHCP question (SOP station 1) you still need <code>ipconfig /all</code>'s <code>DHCP Server</code> line from the user.</div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">5</span> What each row testifies to <span class="k">by the SOP's three families of state</span></h2>
+  <div class="card">
+    <div class="lead">Tables — the network's memory</div>
+    <table class="rows">
+      <tr><th>Row</th><th>Scope</th><th>Testifies to</th><th>Limit</th></tr>
+      <tr><td>adapters, adapter</td><td><span class="scope main">Main</span></td><td>The <b>connected and addressed</b> adapters — status Up <i>and</i> holding an IPv4 or IPv6 address — physical vs virtual, with their addresses</td><td><b>Not an inventory of the hardware.</b> A disabled, down or unaddressed NIC never reaches the report, so "the report shows one adapter" does not mean the machine has one. On the <b>CIM fallback path</b> — taken when <code>Get-NetIPConfiguration</code> is unavailable — the rows say <code>Up</code> because the fallback hard-codes that status over IP-enabled configurations, so a disconnected adapter still holding a static address appears connected. Each adapter row's details carry a <b><code>Data source:</code></b> field and that is the reliable indicator — the separate <code>data-source</code> WARN row appears only where <code>Get-NetIPConfiguration</code> actually threw; when it is unavailable, or returns nothing, the tool falls back silently. Classified by flags first, description second; a VM's NIC can be described like a physical one</td></tr>
+      <tr><td>gateway-config, dns-config</td><td><span class="scope main">Main</span></td><td>What the client is <i>configured</i> with, and whether it came from DHCP</td><td>Config, not state — the SOP's own warning applies</td></tr>
+      <tr><td>routes</td><td><span class="scope it">IT</span></td><td>The IPv4 default route as the machine sees it</td><td>Since 1.2.3 a machine with no default route reads <code>INFO — No IPv4 default route exists.</code> rather than an error</td></tr>
+      <tr><td>gateway-neighbor</td><td><span class="scope it">IT</span></td><td>The gateway's MAC <b>as the neighbour cache holds it</b>, with the entry's state</td><td>A cache read, not a probe: <code>Get-NetNeighbor</code> / <code>arp -a</code> report an entry that may be stale, so presence alone proves nothing about the link <i>now</i>. A <code>Reachable</code> entry is Rule 3's second witness for a failed gateway ping; a stale one is history — corroborate with the TCP or HTTP rows before convicting or clearing the link</td></tr>
+      <tr><td>proxy, drivers, wifi</td><td><span class="scope it">IT</span></td><td>Proxy configuration, driver versions, the client's own view of the radio</td><td><code>wifi</code> is the client side: SSID, band, channel, RSSI, rate. The AP's client table is the stronger witness (station 2). <b><code>drivers</code> is empty on the CIM fallback path</b> — the fallback leaves version, date and provider blank by construction and the row still appears showing <code>(none)</code>; check the adapter's <code>Data source:</code> field and read <code>Get-NetAdapter | Format-List Name, DriverVersion, DriverDate</code> instead</td></tr>
+    </table>
+
+    <div class="lead" style="margin-top:1rem">Counters — always deltas</div>
+    <table class="rows">
+      <tr><th>Row</th><th>Scope</th><th>Testifies to</th><th>Limit</th></tr>
+      <tr><td>adapter-errors</td><td><span class="scope main">Main</span></td><td>Errors and discards accumulating <b>during the sample</b>, not since boot</td><td>A zero-traffic adapter reports zero errors, which clears nothing — the tool annotates that case</td></tr>
+      <tr><td>tcp-retransmissions</td><td><span class="scope main">Main</span></td><td>Approximate retransmission ratio over the sample, TCPv4 and TCPv6</td><td>It measures <b>whatever the machine was doing at the time</b> — measured in the tool's own validation. A single high reading is a suspect, not a conviction</td></tr>
+    </table>
+
+    <div class="lead" style="margin-top:1rem">Probes — differential tests</div>
+    <table class="rows">
+      <tr><th>Row</th><th>Scope</th><th>Testifies to</th><th>Limit</th></tr>
+      <tr><td>ping-gateway, ping-target</td><td><span class="scope main">Main</span></td><td>The ladder's rungs, with loss and latency</td><td>ICMP may be filtered — which is why the next two rows exist. <b>The status depends on whether the target is <i>required</i>, and the tests are an ordered chain — the first match decides.</b> No reply at all → FAIL when required, <code>INFO</code> when not. Then loss ≥ critical → FAIL / WARN. Then loss ≥ warning → WARN. Then latency ≥ critical → FAIL / WARN. Then latency ≥ warning → WARN. Because loss is tested before latency, <b>a required target with warning-level loss and critical latency is WARN, not FAIL</b> — the chain stops at the first match, it does not pick the worst. Everything added at run time is optional</td></tr>
+      <tr><td>tcp, http</td><td><span class="scope main">Main</span></td><td>A real connection to a real port, and an HTTP response</td><td>Rule 3's corroboration — but only between probes naming the <b>same destination</b>. Ping, TCP and HTTP targets are configured separately and the IT panel can add more, so read the row targets first: "ping fails, TCP succeeds" is a filtering finding when both went to the same host, and nothing at all when they did not</td></tr>
+      <tr><td>connectivity-group</td><td><span class="scope main">Main</span></td><td>Whether a group's targets are reachable at all</td><td><b>A group is required only if the config lists it in <code>RequiredConnectivityGroups</code>.</b> A group outside that list still gets a row, and its failure is a <b>WARN</b>, not a FAIL — check which kind you are reading before treating it as authoritative. Derived from its members; it carries no Manual-check line of its own</td></tr>
+      <tr><td>traceroute</td><td><span class="scope it">IT</span></td><td>The first hops toward <b>the first configured non-<code>AUTO</code> ping target</b> (<code>1.1.1.1</code> unless the site changed it) — address, status and time, silent hops as <code>*</code>, and whether the destination was reached. <b>It does not trace whatever failed</b>, so compare its target with the failed row first</td><td><b>It samples the first hops only — three by default</b> (<code>TracerouteHops</code>), which is what the row's name says. <b>Neither outcome gives you a boundary.</b> A trace that reached its destination shows no break at all — its last hop <i>is</i> the destination. One that did not stops at the last hop that answered, which under a three-hop cap is simply the last hop sampled. Locating a boundary takes a trace toward the address that actually failed, run far enough to show where the replies stop, and even then a silent hop wants corroboration — routers commonly drop TTL-expired replies while forwarding normally. The row's Manual-check line carries the same cap (<code>tracert -d -h 3 &lt;target&gt;</code>), so ask for an uncapped <code>tracert -d &lt;the address that failed&gt;</code></td></tr>
+      <tr><td>expected-standard</td><td><span class="scope main">Main</span></td><td>Measured values against this organization's configured expectations</td><td>Only as good as the config file. On a site with its own baseline, set <code>NetworkHealthCheck.config.json</code> before believing a WARN</td></tr>
+    </table>
+    <div class="note">Since 1.2.3 a network error carries a <code>Cause:</code> line in the report's language above the operating system's own message, classified by error code; the tool's own DNS and TCP timeouts appear as <code>[ToolTimeout]</code> — nothing answered and nothing refused within the tool's limit, the shape of a firewall dropping packets or an unreachable host.</div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">6</span> When it does not run <span class="k">what comes back, what it means, your move</span></h2>
+  <div class="card">
+    <table>
+      <tr><th>What comes back</th><th>Meaning</th><th>Your move</th></tr>
+      <tr><td><code>LauncherError.txt</code></td><td>The launcher stopped before or after the program. Since 1.2.3 it carries a <b>Suggested action</b> matched to the reason, and the same line is on screen</td><td>Read the suggested action first — it is reason-specific, not boilerplate. Written beside the script, or as <code>%TEMP%\NetworkHealthCheck_LauncherError.txt</code> when that folder cannot be written — exactly what a read-only share or protected folder produces. The launcher checks the first write and <b>not</b> the second, so it prints that <code>%TEMP%</code> path whether or not the file arrived: ask for the file, not just the path, and if it is not there ask for what the window said</td></tr>
+      <tr><td>"…ended with <b>exit code 3</b>" plus <code>NetworkHealthCheck_ENVIRONMENT_&lt;time&gt;.txt</code></td><td>Application control (WDAC / AppLocker) restricted PowerShell to a limited language mode; <b>no check ran</b></td><td>Ask for the environment report — it names the machine, the mode and what IT can do. An IT conversation, not a network one; and itself a finding</td></tr>
+      <tr><td>"The program file NetworkHealthCheck.ps1 is missing"</td><td>Only one file was extracted — usually a double-click inside the ZIP preview window</td><td>Have them extract the whole folder and run it again</td></tr>
+      <tr><td>A startup warning row in an otherwise normal report</td><td><b>Read the message — the row has four sources.</b> The tool ran from inside a compressed-folder view; the report directory was not writable and reports went to the fallback; the graphical interface could not start and console mode was used; or an extra TCP target was ignored as malformed</td><td>Only the compressed-folder message calls for a re-run from a proper folder. The report-directory one tells you where the reports actually are; the GUI one is about that machine, not the network; the target one means a run option was dropped — check what was actually measured</td></tr>
+      <tr><td><code>NetworkHealthCheck_FATAL_&lt;time&gt;.txt</code></td><td>The run collapsed before it could produce a report. Best effort — if the output folder is what broke, there may be no file and no path printed</td><td>Send it with the ticket where it exists; it is the only evidence of that attempt. Where it does not, ask for what the window said</td></tr>
+      <tr><td>Nothing at all, the window closed instantly</td><td>Usually PowerShell blocked by policy before the script's own guard could speak</td><td>Ask for a photo of the window, or have them run the console launcher from an open <code>cmd</code> window so the text stays</td></tr>
+    </table>
+    <div class="note">The launcher exits <code>1</code> on every failure path and names the program's own exit code in its text — so "exit code 1" from the launcher and "exit code 3" in the message are the same event seen from two places.</div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">7</span> Into the escalation package <span class="k">what the report covers, and what it does not</span></h2>
+  <div class="card">
+    <table class="cover">
+      <tr><th>SOP package item</th><th>Covered by the report?</th></tr>
+      <tr><td>Topology sketch of the affected path</td><td class="n">No — draw it</td></tr>
+      <tr><td>Blast radius, timeline, what changed</td><td class="n">No — your notes</td></tr>
+      <tr><td>What you excluded, with the evidence</td><td class="p">Partly</td></tr>
+      <tr><td>Raw outputs — <code>ipconfig</code> / <code>ping</code> / <code>tracert</code>, <b>and the relevant switch and AP status pages</b> <span style="font-weight:400;color:var(--muted)">— the reports carry measured values, not command output; run the Manual-check commands where the escalation asks for raw output. The status pages are not covered at all: the tool never reads a device</span></td><td class="p">Partly</td></tr>
+      <tr><td>Device logs covering the failure window</td><td class="n">No</td></tr>
+      <tr><td>Config exports of the devices in the path</td><td class="n">No</td></tr>
+      <tr><td>Reproduction steps and the workaround</td><td class="n">No</td></tr>
+      <tr><td>Business impact and severity</td><td class="n">No</td></tr>
+    </table>
+    <p class="lead" style="margin-bottom:.6rem">The SOP's package asks for eight things. <b>The report fully covers none of them</b> — it contributes to two, and the other six are yours to bring.</p>
+    <p style="margin-top:.7rem">The passing rows <i>are</i> the exclusions — say in words what they exclude. Attach whichever of the three formats the run actually wrote — the <b>HTML</b> where it exists (readable by anyone) and the <b>JSON</b> (schema 2, carries the run options and the fingerprint); a run that wrote only TXT and JSON is a supported outcome, not a failed run. Name in the ticket, in this order: the machine, the time of the run, the verdict, the fingerprint, and one sentence on what the run excluded. <span style="color:var(--muted)">(Hand-off and delivery report templates are planned for this folder; until they exist, those five facts in that order are the wording.)</span></p>
+    <div class="flag"><b>Personal data.</b> The package's own privacy section (<code>README_*.txt</code>, "Security and privacy") is the list to go by, and it is longer than the four fields the report's summary names: computer name, user name, <b>adapter / MAC / IP / gateway / DNS data</b>, the Wi-Fi network name <b>and the access-point BSSID</b>, <b>the test targets</b>, and <b>exception details</b>. The package's instruction is unconditional — handle them according to company policy — so apply that policy <b>before a report is stored or shared at all</b>, and let the policy, not this manual, decide whether an internal ticket is treated differently from an external one.</div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">8</span> Traps</h2>
+  <div class="card">
+    <ul class="traps">
+      <li><b>"Healthy" is a scope, not a verdict on the network.</b> It means the endpoint's view was fine during that run.</li>
+      <li><b>Intermittent faults need a run during the fault.</b> Two runs — one clean, one during — are worth more than either alone.</li>
+      <li><b>The quality rows measure the machine's own traffic.</b> A download, a backup or a busy remote session during the sample moves the retransmission ratio. Ask what the machine was doing.</li>
+      <li><b>A machine with no wireless adapter still produces a <code>wifi</code> row</b> — an INFO row saying no connected Wi-Fi interface was found (wired, radio off, or no adapter), with the interface count beneath it. Even a machine without <code>netsh.exe</code> gets a row saying that. In a run that reached the IT diagnostics at all, the <i>absence</i> of any <code>wifi</code> row means one thing: the optional <code>WifiRf</code> check is switched off. A report that stopped before them — an unsupported Windows version, or PowerShell below 5, each of which writes a normal report and returns early — has no <code>wifi</code> row either, so read the environment rows first. Never read a disabled or unreached diagnostic as evidence about the hardware.</li>
+      <li><b>Thresholds are generic until someone sets them.</b> A WARN against defaults on a high-latency WAN link is a statement about the defaults.</li>
+      <li><b>A report is about one machine at one moment.</b> Check the computer name and the timestamp before reasoning from it — reports get forwarded, renamed and re-sent.</li>
+      <li><b>Do not let the tool replace the front door.</b> The four isolation questions cost nothing and cut more search space than any single endpoint reading.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>Support Engineer's Field Manual · v1.0 · Kevin (Te-Chin) Lin · September 2026 · companion to the <a href="network-troubleshooting-sop.html">Network Troubleshooting SOP v1.1</a></footer>
+
+</div>
+</body>
+</html>
