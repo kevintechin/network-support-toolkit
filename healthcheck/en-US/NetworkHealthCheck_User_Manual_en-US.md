@@ -189,7 +189,7 @@ A Startup Notice row is a warning, so on its own it turns the verdict to **Atten
 
 **A row says there was not enough TCP traffic during the sample.** The computer was quiet while the tool measured. That row is information, not a fault. If the problem is slowness, run the tool again while you are using the network — during the video call, the download or the thing that is slow.
 
-**I use a VPN.** The report shows both the physical adapter and the VPN adapter; the VPN one is normally marked *Virtual* and listed as information. Tell IT whether the VPN was connected when you ran the check.
+**I use a VPN.** While the VPN is connected, the report shows both the physical adapter and the VPN adapter; the VPN one is normally marked *Virtual* and listed as information. A VPN adapter that is disconnected, or has no address, does not appear at all. Tell IT whether the VPN was connected when you ran the check.
 
 **It says Overall Healthy, but my problem is still there.** The check saw one moment on this computer. Run it again while the problem is happening, note the time, and tell IT what you were doing at that moment — the application, the server, whether other people had the same trouble.
 
