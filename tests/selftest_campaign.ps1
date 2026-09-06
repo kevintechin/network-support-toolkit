@@ -538,14 +538,16 @@ Assert-True '30. exit code 1' ($r30.ExitCode -eq 1) ('exit code ' + $r30.ExitCod
 
 # -------------------- 31. the edition decides how the policy scenarios are done --------------------
 Write-Output ''
-Write-Output '31. the summary names the edition; on a crafted Home state M9 is skipped before anyone is asked while on a crafted Pro state it reaches the gate - since Windows 10 2004 with KB 5024351 the edition no longer decides enforcement - and M8 names the registry lines as the way for this machine, recorded in its facts and in RECOVER.txt - whatever the edition of the host running the self-test (Codex round 2 on PR #14; the Pro reading corrected in Codex round 1 on PR #16)'
+Write-Output '31. the summary names the edition; on a crafted Home state and on a crafted Windows 10 build below 2004 M9 is skipped before anyone is asked while on a crafted Pro state at a supported build it reaches the gate - KB 5024351 ended the edition requirement above that floor - and M8 names the registry lines as the way for this machine, recorded in its facts and in RECOVER.txt - whatever the edition of the host running the self-test (Codex round 2 on PR #14; the Pro reading corrected in Codex round 1 on PR #16)'
 $r31 = Invoke-Campaign 'edition' @('-Zip', $zip, '-Scenarios', 'M9') "M9=skip`r`n"
 $summary31 = Get-Content -LiteralPath (Join-Path $r31.State 'campaign_summary.md') -Raw -Encoding UTF8
 Assert-True '31. the summary header names the edition and the consoles' ($summary31 -match '(?m)^- Edition: .+ \(EditionID \w+, .*build \d+\.\d+\); gpedit\.msc: (yes|no); secpol\.msc: (yes|no)\r?$') (($summary31 -split "`n" | Where-Object { $_ -like '- Edition:*' }) -join ' / ')
 $stateFile31 = Join-Path $r31.State 'campaign.json'
-function Set-CraftedEdition([string]$Path, [bool]$HomeEdition, [string]$Id, [string]$Caption, [bool]$Consoles) {   # not $Home: that is PowerShell's own read-only variable
+function Set-CraftedEdition([string]$Path, [bool]$HomeEdition, [string]$Id, [string]$Caption, [bool]$Consoles, [string]$Build = '22621.1') {   # not $Home: that is PowerShell's own read-only variable
+    # The build is crafted too, because M9's prerequisite reads it: below Windows 10 2004 (19041) a Group-Policy
+    # deployment still needs Enterprise or Server, and the assertions must not depend on the host's own build.
     $c = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
-    $c.Edition.IsHome = $HomeEdition; $c.Edition.EditionId = $Id; $c.Edition.Caption = $Caption; $c.Edition.HasGpedit = $Consoles; $c.Edition.HasSecpol = $Consoles
+    $c.Edition.IsHome = $HomeEdition; $c.Edition.EditionId = $Id; $c.Edition.Caption = $Caption; $c.Edition.HasGpedit = $Consoles; $c.Edition.HasSecpol = $Consoles; $c.Edition.Build = $Build
     [IO.File]::WriteAllText($Path, ($c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
 }
 Set-CraftedEdition $stateFile31 $false 'Professional' 'Microsoft Windows 11 Pro' $true
@@ -567,6 +569,11 @@ Set-CraftedEdition $stateFile31 $true 'Core' 'Microsoft Windows 11 Home' $false
 $r31b = Invoke-Campaign 'edition' @('-Resume', '-Redo', 'M9', '-Scenarios', 'M9') "M9=done`r`n"
 $s31b = Read-State $r31.State
 Assert-True '31. on Home, M9 is skipped before anyone is asked, with the edition named' ($s31b.Scenarios.M9.Result -eq 'SKIPPED' -and $s31b.Scenarios.M9.Detail -like 'prerequisite not met: AppLocker is not available on this edition (Microsoft Windows 11 Home, EditionID Core)*' -and (Get-M9GateCount $r31.State) -eq $gates31) ($s31b.Scenarios.M9.Result + ' / ' + $s31b.Scenarios.M9.Detail)
+Set-CraftedEdition $stateFile31 $false 'Professional' 'Microsoft Windows 10 Pro' $true '18363.1234'
+$r31d = Invoke-Campaign 'edition' @('-Resume', '-Redo', 'M9', '-Scenarios', 'M9') "M9=done`r`n"
+$s31d = Read-State $r31.State
+Assert-True '31. on a Windows 10 build below 2004, M9 is skipped before anyone is asked: there the edition still decides' ($s31d.Scenarios.M9.Result -eq 'SKIPPED' -and $s31d.Scenarios.M9.Detail -like 'prerequisite not met: AppLocker policies deployed through Group Policy are supported on Enterprise and Server editions below Windows 10 version 2004 (Microsoft Windows 10 Pro, EditionID Professional, build 18363.1234)*' -and (Get-M9GateCount $r31.State) -eq $gates31) ($s31d.Scenarios.M9.Result + ' / ' + $s31d.Scenarios.M9.Detail)
+Set-CraftedEdition $stateFile31 $true 'Core' 'Microsoft Windows 11 Home' $false
 # M9's service facts are crafted rather than measured, so that the way-back lines below do not depend on the
 # Application Identity service of whatever host runs the self-test; every invocation rewrites RECOVER.txt from the state.
 $crafted31 = Get-Content -LiteralPath $stateFile31 -Raw -Encoding UTF8 | ConvertFrom-Json
