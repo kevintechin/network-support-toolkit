@@ -14,7 +14,7 @@ Network Health Check looks at the network from this computer's point of view and
 
 **It uploads nothing.** With the settings as shipped, the report is written to a folder on this computer and goes nowhere until you send it yourself; IT may have pointed the report folder elsewhere, and the report's *Computer and Run Information* section shows where it went. What the tests do send is traffic to the test targets — section 9 names the shipped ones — through this computer's own DNS servers, proxy and route.
 
-**How long it takes.** About ten seconds on a working network. When things do not answer it takes longer — up to a minute or so — because every test waits for its time limit before giving up.
+**How long it takes.** About ten seconds on a working network with the settings as shipped. When things do not answer it takes longer — up to a minute or so with those settings — because every test waits for its time limit before giving up. If IT changed the sample length, the targets or the time limits, the run takes correspondingly longer; the line above the progress bar names the step it is on and, near the end, counts down the seconds of sampling that remain, so a run that is still moving is not stuck.
 
 ---
 
@@ -81,7 +81,7 @@ Under the verdict, the report has a section called **What to tell IT**: a title 
 | **Some checks could not run** | No failure was found, but some steps could not be completed on this computer. Send the report as it is; the reasons are recorded in the details. |
 | **Warnings to review** | No required check failed, but some checks raised warnings; see the highlighted rows. Send the report as it is. |
 
-The first three problem titles name things you can check yourself before calling — a cable, the Wi-Fi signal, whether another device on the same network has the same trouble. The rest is for IT.
+The first three problem titles name things you can check yourself before calling — a cable, the Wi-Fi signal, whether another device on the same network has the same trouble. The rest is for IT. And the tool prints *Everything passed* whenever every required check passed: an optional or added target that did not answer is still in the table as an Information row, so read those rows before you conclude that nothing failed.
 
 ### The rest of the report
 
