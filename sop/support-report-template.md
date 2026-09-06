@@ -190,7 +190,7 @@ Three rules for filling it in:
 
 **3 · What was measured** — One console run, verdict **Problem Detected**, fingerprint `local`. The shape recorded on both machines: `gateway-config` FAIL (no IPv4 gateway on any adapter); `ping-gateway` FAIL, because `AUTO_GATEWAY` resolved to nothing; DNS timed out; no gateway rows at all. On the 1.2.3 run the `routes` row read `INFO — No IPv4 default route exists.` — the fact rather than an error, which is what backlog #27 changed.
 
-**5 · Isolated to** — The segment the machine is attached to: it has an address, but no default route exists, so nothing beyond that segment is reachable. The link itself is up and the adapter is healthy; nothing above the gateway was tested, because nothing could be reached to test it.
+**5 · Isolated to** — The segment the machine is attached to: it has an address, but no default route exists, so nothing beyond that segment is reachable. Nothing above the gateway was tested, because nothing could be reached to test it. *Not excluded:* the adapter itself — its row says **connected and addressed**, which is not the same as verified healthy. Nothing here tests the NIC, the driver or the physical path, and on the CIM fallback path even a disconnected adapter holding a static address reports as `Up` (field manual, §5).
 
 **8 · Closure** — *written as it would be for a real case; the campaign reverted this scenario rather than resolving it with a user, so these three lines are the one invented part of the example.* Adapter moved back to the office segment; end-to-end retest: address, gateway, `1.1.1.1`, a name, and the intranet page all reached. The application the user cares about works. Confirmed by the reporter at 09:12.
 
