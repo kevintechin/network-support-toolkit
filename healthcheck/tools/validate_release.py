@@ -74,8 +74,9 @@ for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
 # Every document that names the version names this one. The front page, both READMEs and both manuals (markdown and
 # HTML) may name no other tool version at all - a manual carries it in its title, its heading, the window name it
 # quotes and its footer, and a bump that touches the first line alone must fail here (PR #20 round 2). The technical
-# guides carry the version history, so for them the first line must name this version and no line may name a newer
-# one. A version label is three dotted numbers with the tool's major version that are not part of a longer dotted run
+# guides carry the version history, so for them the first line must name this version, the bold version of the
+# purpose paragraph ("It applies to version **x**", the only bold version label in a guide) must be this one (round 3),
+# and no line may name a newer one. A version label is three dotted numbers with the tool's major version that are not part of a longer dotted run
 # (an IP address, a CIDR, a Windows build); a full stop after the label is ordinary punctuation and does not hide it.
 # Until 1.2.4 only the two scripts were checked, and a bump had to find the nine documents by hand.
 VERSION_LABEL=re.compile(r'(?<!\d)(?<!\d\.)(\d+)\.\d+\.\d+(?!\.?\d)')
@@ -91,6 +92,8 @@ for rel in [d+'/NetworkHealthCheck_Technical_Guide_'+l+'.md' for d in ('docs','e
     text=read_text(ROOT/rel) if (ROOT/rel).is_file() else ''
     first=text.split('\n',1)[0]
     ok('first line names '+TOOL_VERSION+' '+rel,TOOL_VERSION in first,first[:100])
+    bold=re.findall(r'\*\*(\d+\.\d+\.\d+)\*\*',text)
+    ok('the applies-to statement names '+TOOL_VERSION+' '+rel,bool(bold) and all(v==TOOL_VERSION for v in bold),', '.join(bold) or 'none')
     found=version_labels(text)
     ok('no version label newer than '+TOOL_VERSION+' '+rel,bool(found) and found[-1]==TOOL_VERSION,', '.join(found[-3:]) or 'none')
 # The two PowerShell guards that used to live here - arithmetic at the top level of a New-Object argument list, and a

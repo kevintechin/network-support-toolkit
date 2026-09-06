@@ -135,7 +135,7 @@
       <li><b>整包解壓縮。</b> 在 ZIP 上按右鍵 → <kbd>解壓縮全部…</kbd> → <kbd>解壓縮</kbd>（不同 Windows 版本的字樣略有不同）。Windows 會建議一個和 ZIP 同名的資料夾，用它就可以。放在本機任何位置都行，例如桌面或文件。</li>
       <li><b>資料夾要整包保留。</b> 啟動器需要程式和設定檔在旁邊。要搬或複製就搬整個資料夾，不要只拿單一檔案。</li>
     </ol>
-    <div class="flag"><b>不要在 ZIP 視窗裡直接執行。</b> 對 ZIP 按兩下會把內容顯示得像資料夾，但它不是資料夾：Windows 只會把你按的那一個檔案解到暫存位置。啟動器在旁邊找不到程式，就會停下來說「找不到程式檔 NetworkHealthCheck.ps1」。先解壓縮。</div>
+    <div class="flag"><b>不要在 ZIP 視窗裡直接執行。</b> 對 ZIP 按兩下會把內容顯示得像資料夾，但它不是資料夾：Windows 只會把你按的那一個檔案解到暫存位置。啟動器在旁邊找不到東西就停下來：<code>Start-Traditional-Chinese.cmd</code> 說「找不到 zh-TW 繁體中文套件」，<code>zh-TW</code> 資料夾裡的 <code>Start-NetworkCheck.cmd</code> 則說「找不到程式檔 NetworkHealthCheck.ps1」。先解壓縮。</div>
   </div>
 </section>
 
@@ -232,9 +232,10 @@ NetworkHealthCheck_&lt;日期&gt;_&lt;時間&gt;_&lt;電腦名稱&gt;.json</pre>
     <table class="plainfirst">
       <tr><th>你看到的</th><th>意思</th><th>怎麼做</th></tr>
       <tr><td>按兩下啟動器時出現 <b>開啟檔案 - 安全性警告</b></td><td>檔案帶著 Windows 對網際網路下載檔的標記</td><td>選 <kbd>執行</kbd>。不想再被問，就在解壓縮前先解除封鎖 ZIP（第 2 節）</td></tr>
-      <tr><td>黑色視窗顯示 <b>錯誤：找不到程式檔 NetworkHealthCheck.ps1</b>，並列出錯誤報告 <code>LauncherError.txt</code></td><td>只有一個檔案被解出來，通常是在 ZIP 視窗裡按了兩下，或者只複製了單一檔案</td><td>把整個 ZIP 解壓縮到資料夾，從那裡執行啟動器</td></tr>
+      <tr><td>黑色視窗顯示 <b>錯誤：找不到 zh-TW 繁體中文套件</b>，並停下來等你按鍵</td><td><code>Start-Traditional-Chinese.cmd</code> 在旁邊找不到 <code>zh-TW</code> 資料夾，通常是在 ZIP 視窗裡按了兩下，Windows 只解出你按的那一個檔案</td><td>把整個 ZIP 解壓縮到資料夾，從那裡執行啟動器</td></tr>
+      <tr><td>黑色視窗顯示 <b>錯誤：找不到程式檔 NetworkHealthCheck.ps1</b>，並列出錯誤報告 <code>LauncherError.txt</code></td><td>只有一個檔案被解出來：在 ZIP 視窗裡對 <code>Start-NetworkCheck.cmd</code> 按了兩下，或者只複製了單一檔案</td><td>把整個 ZIP 解壓縮到資料夾，從那裡執行啟動器</td></tr>
       <tr><td>黑色視窗顯示 <b>錯誤：此電腦找不到 PowerShell</b></td><td>程式需要 Windows PowerShell，它是 Windows 的一部分</td><td>請 IT 檢查這台電腦，或改在另一台電腦執行檢測</td></tr>
-      <tr><td>黑色視窗說檢測程式<b>結束代碼為 3</b>，程式旁邊（或 Windows 暫存資料夾）多了一個 <b><code>NetworkHealthCheck_ENVIRONMENT_&lt;時間&gt;.txt</code></b></td><td>公司的安全政策限制了 PowerShell 在這台電腦上能做的事。工具在任何檢測開始前就停下，把這個檔案寫給 IT。沒有讀取也沒有變更任何東西</td><td>你這邊沒有什麼要修的。把這個環境檔連同你的請求交給 IT：裡面寫了電腦、限制內容和 IT 可以怎麼做</td></tr>
+      <tr><td>黑色視窗說檢測程式<b>結束代碼為 3</b>，程式旁邊（或 Windows 暫存資料夾）多了一個 <b><code>NetworkHealthCheck_ENVIRONMENT_&lt;時間&gt;.txt</code></b></td><td>公司的安全政策限制了 PowerShell 在這台電腦上能做的事。工具在任何檢測開始前就停下：沒有讀取網路設定，也沒有變更任何東西。它寫給 IT 的檔案記了電腦名稱、使用者、PowerShell 版本與作業系統，好讓 IT 處理</td><td>你這邊沒有什麼要修的。把這個環境檔連同你的請求交給 IT：裡面寫了電腦、限制內容和 IT 可以怎麼做</td></tr>
       <tr><td>黑色視窗說檢測程式<b>結束代碼為</b>其他數字，PowerShell 或公司安全政策可能阻擋執行</td><td>Windows PowerShell 拒絕執行程式，並在錯誤上方印出了原因</td><td>把錯誤上方那幾行連同 <code>LauncherError.txt</code> 一起交給 IT。若寫著檔案<i>未經數位簽署</i>或<i>被原則封鎖</i>，需要 IT 放行程式</td></tr>
       <tr><td>黑色視窗列出一個<b>錯誤報告</b>（<code>LauncherError.txt</code>）</td><td>啟動器把發生的事寫下來了，附一行依原因而定的 <b>建議</b></td><td>照建議做，並把檔案連同請求送出。檔案在啟動器旁邊；那個資料夾無法寫入時，會改寫在 Windows 暫存資料夾裡的 <code>NetworkHealthCheck_LauncherError.txt</code>，視窗會印出路徑</td></tr>
       <tr><td>沒有視窗出現，檢測改在黑色視窗裡以文字進行，做完黑色視窗就關掉</td><td>圖形介面在這台電腦上無法啟動，工具自己切換成文字模式。同樣的檢測都跑了，報告寫到平常的資料夾，報告裡有一列警告說明這件事</td><td>打開 <code>Reports</code> 資料夾（第 5 節），照常送出最新的報告。想讓文字留在畫面上，改用 <code>zh-TW</code> 資料夾裡的 <code>Start-NetworkCheck-Console.cmd</code>：它以文字模式跑同樣的檢測，結束時會暫停，報告路徑就印在上方</td></tr>
