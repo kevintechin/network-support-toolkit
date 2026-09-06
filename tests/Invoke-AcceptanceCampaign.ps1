@@ -869,14 +869,18 @@ function Get-Plan {
            Prerequisite = { $e = $State.Edition
                if ($e.IsHome) { return @{ Ok = $false; Detail = ('AppLocker is not available on this edition (' + $e.Caption + ', EditionID ' + $e.EditionId + ')') } }
                # Below the 2004 floor the old rule still holds: a policy deployed through Group Policy - which is what
-               # secpol.msc writes, and all this scenario can ask for - is supported on Enterprise and Server editions
-               # only. Build 19041 is Windows 10 2004; Windows 11 starts at 22000, so one comparison covers both, and
-               # anything older than 19041 that is not one of those editions would cost the operator the whole
-               # reconfiguration for a FAIL that is the edition rule rather than a finding (Codex round 2 on PR #16).
+               # secpol.msc writes, and all this scenario can ask for - needs one of the editions that carried AppLocker
+               # before the KB. Education is admitted with Enterprise and Server: "Requirements to use AppLocker" names
+               # only Enterprise and Server in that sentence, while the same documentation set lists AppLocker for
+               # Windows Education at Enterprise's level ("Windows security features licensing and edition
+               # requirements"), and refusing it would drop coverage a machine could give. Build 19041 is Windows 10
+               # 2004; Windows 11 starts at 22000, so one comparison covers both, and anything older than 19041 outside
+               # those editions would cost the operator the whole reconfiguration for a FAIL that is the edition rule
+               # rather than a finding (Codex rounds 2 and 3 on PR #16).
                $build = 0
                [void][int]::TryParse((([string]$e.Build) -split '\.')[0], [ref]$build)
                $enforcingEdition = (@('Enterprise', 'Education', 'Server') | Where-Object { [string]$e.EditionId -like ($_ + '*') }).Count -gt 0
-               if ($build -gt 0 -and $build -lt 19041 -and -not $enforcingEdition) { return @{ Ok = $false; Detail = ('AppLocker policies deployed through Group Policy are supported on Enterprise and Server editions below Windows 10 version 2004 (' + $e.Caption + ', EditionID ' + $e.EditionId + ', build ' + $e.Build + '); the edition stopped mattering in 2004 with KB 5024351, so a newer build of this edition would be measured') } }
+               if ($build -gt 0 -and $build -lt 19041 -and -not $enforcingEdition) { return @{ Ok = $false; Detail = ('AppLocker policies deployed through Group Policy are supported on Enterprise, Education and Server editions below Windows 10 version 2004 (' + $e.Caption + ', EditionID ' + $e.EditionId + ', build ' + $e.Build + '); the edition stopped mattering in 2004 with KB 5024351, so a newer build of this edition would be measured') } }
                if (-not $e.HasSecpol) { return @{ Ok = $false; Detail = ('secpol.msc is not present on this machine (' + $e.Caption + ', EditionID ' + $e.EditionId + ')') } }
                @{ Ok = $true; Detail = ($e.Caption + ' (EditionID ' + $e.EditionId + ')') } }
            Prepare = { param($Ctx)
