@@ -4,7 +4,7 @@
 
 Version 1.0 · Kevin (Te-Chin) Lin · September 2026
 
-Companion to the [Network Troubleshooting SOP v1.1](network-troubleshooting-sop.md). Written against NetworkHealthCheck **1.2.3**; behaviour that is version-specific is marked as such.
+Companion to the [Network Troubleshooting SOP v1.2](network-troubleshooting-sop.md). Written against NetworkHealthCheck **1.2.3**; behaviour that is version-specific is marked as such.
 
 ---
 

@@ -2,7 +2,7 @@
 
 **From the user's chair to the ISP — a fault-isolation playbook**
 
-Version 1.1 · Kevin (Te-Chin) Lin · July 2026
+Version 1.2 · Kevin (Te-Chin) Lin · September 2026
 
 ---
 
