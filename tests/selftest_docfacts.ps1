@@ -81,6 +81,7 @@ $ZhConfig = 'healthcheck\zh-TW\NetworkHealthCheck.config.json'
 $EnIt = 'healthcheck\en-US\NetworkHealthCheck_IT_Deployment_Manual_en-US.md'
 $ZhIt = 'healthcheck\zh-TW\NetworkHealthCheck_IT_Deployment_Manual_zh-TW.md'
 $EnItHtml = 'healthcheck\en-US\NetworkHealthCheck_IT_Deployment_Manual_en-US.html'
+$EnUser = 'healthcheck\en-US\NetworkHealthCheck_User_Manual_en-US.md'
 $Guide = 'healthcheck\docs\NetworkHealthCheck_Technical_Guide_en-US.md'
 $Field = 'sop\support-engineer-field-manual.md'
 $FieldHtml = 'sop\support-engineer-field-manual.html'
@@ -206,6 +207,21 @@ Assert-Catches 'a link that resolves to nothing' 'E2' {
 }
 Assert-Catches 'a section reference on an HTML page' 'F1' {
     Write-All $EnItHtml ((Read-All $EnItHtml) -replace '</body>', '<p>The rest is in section 97.</p></body>')
+}
+
+# 5f - the forms round 5 of PR #23 found unguarded: an exit code the package cannot produce, a link that resolves
+# somewhere other than beside its document, a dot-relative program name, and a single-quoted href.
+Assert-Catches 'an exit code no part of the package produces' 'A7' {
+    Write-All $EnUser ((Read-All $EnUser) + "`r`nThe window closes with exit code 7 when that happens.`r`n")
+}
+Assert-Catches 'a link to a file that exists somewhere else in the package' 'E2' {
+    Write-All $Field ((Read-All $Field) + "`r`nSee [the guide](NetworkHealthCheck_Technical_Guide_en-US.md).`r`n")
+}
+Assert-Catches 'a dot-relative program name that does not exist' 'E1' {
+    Write-All $EnIt ((Read-All $EnIt) + "`r`n``````" + "text`r`npowershell -NoProfile -File .\NetworkHealthCheckZ.ps1`r`n" + "``````" + "`r`n")
+}
+Assert-Catches 'a single-quoted href that resolves to nothing' 'E2' {
+    Write-All $EnItHtml ((Read-All $EnItHtml) -replace '</body>', "<p><a href='missing-page.html'>more</a></p></body>")
 }
 
 # 6 - and the control again, to prove every mutation was put back

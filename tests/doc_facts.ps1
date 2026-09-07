@@ -190,6 +190,29 @@ function Get-CodeBlocks([string]$path) {
     return @($out)
 }
 
+function Get-SectionHeadings([string]$path) {
+    $text = Read-Text $path
+    if ($path -like '*.html') {
+        $out = New-Object System.Collections.Generic.List[string]
+        foreach ($m in [regex]::Matches($text, '(?s)<h[1-4][^>]*>(.*?)</h[1-4]>')) {
+            $inner = (ConvertFrom-HtmlText $m.Groups[1].Value).Trim()
+            if ($inner -match '^([0-9]+(?:\.[0-9]+)?)') { $out.Add($Matches[1]) }
+        }
+        return @($out | Sort-Object -Unique)
+    }
+    return @([regex]::Matches($text, '(?m)^#{2,4}\s+([0-9]+(?:\.[0-9]+)?)\s*') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+}
+function Get-ProseText([string]$path) {
+    # The HTML pages carry their own references, and they are maintained by hand beside the markdown, so they are read
+    # the same way - with the stylesheet and any script removed first, since neither is prose.
+    $text = Read-Text $path
+    if ($path -like '*.html') {
+        $text = [regex]::Replace($text, '(?s)<style[^>]*>.*?</style>', ' ')
+        $text = [regex]::Replace($text, '(?s)<script[^>]*>.*?</script>', ' ')
+        return (ConvertFrom-HtmlText $text)
+    }
+    return $text
+}
 # ----------------------------------------------------------------- ground truth
 $Languages = @('en-US', 'zh-TW')
 $tags = @{}; $unresolvedTags = @{}; $fingerprints = @{}; $fingerprintTitles = @{}; $exitCodes = @{}; $exitShapes = @{}; $configKeys = @{}
@@ -320,6 +343,31 @@ if (-not $PackageOnly) {
     }
 }
 
+# ------------------------------- A7. the exit codes the documents quote
+# The codes anything in the package can produce: the two scripts, and the launchers that report them. The other
+# direction is deliberately not asserted - 0 is not a fact a manual is expected to name.
+$launcherExits = New-Object System.Collections.Generic.List[string]
+foreach ($folder in @('', 'en-US', 'zh-TW')) {
+    $path = $(if ($folder) { Join-Path $PackageDir $folder } else { $PackageDir })
+    if (-not (Test-Path -LiteralPath $path)) { continue }
+    foreach ($cmd in @(Get-ChildItem -LiteralPath $path -File -Filter '*.cmd')) {
+        foreach ($m in [regex]::Matches((Read-Text $cmd.FullName), '(?i)exit\s*/b\s*(\d+)')) { $launcherExits.Add($m.Groups[1].Value) }
+    }
+}
+$producibleExits = @($exitCodes['en-US'] + $exitCodes['zh-TW'] + $launcherExits | Sort-Object -Unique)
+$DocumentedExitPatterns = @('(?i)\bexit(?:s|ed)?\s+(?:code\s+)?(\d+)', '\u7d50\u675f\u4ee3\u78bc(?:\u70ba|\u662f)?\s*(\d+)')
+foreach ($doc in $AllDocs) {
+    $name = Split-Path -Leaf $doc
+    $text = Get-ProseText $doc
+    $cited = New-Object System.Collections.Generic.List[string]
+    foreach ($pattern in $DocumentedExitPatterns) {
+        foreach ($m in [regex]::Matches($text, $pattern)) { $cited.Add($m.Groups[1].Value) }
+    }
+    $cited = @($cited | Sort-Object -Unique)
+    $unknown = @($cited | Where-Object { $producibleExits -notcontains $_ })
+    Assert-True ("A7 [{0}] the {1} exit code(s) it quotes are codes the package produces" -f $name, $cited.Count) ($unknown.Count -eq 0) ('nothing produces: ' + ($unknown -join ', '))
+}
+
 # --------------------------------- E. the file names the documents send people to
 $packageFiles = New-Object System.Collections.Generic.List[string]
 foreach ($folder in @('', 'en-US', 'zh-TW', 'docs', 'tools')) {
@@ -339,15 +387,21 @@ foreach ($folder in @('en-US', 'zh-TW', 'docs', 'tools')) {
 # and the reader runs what it says, so the executables inside one are read as well. Only .ps1, .cmd and .py: a report
 # file name in an example is not a package file, and .txt artefacts are written at run time.
 $executableTokenPattern = '^(?:(en-US|zh-TW|docs|tools)[\\/])?([A-Za-z0-9][A-Za-z0-9_.\-]*\.(?:ps1|cmd|py))$'
+function ConvertTo-BareToken([string]$token) {
+    # ".\NetworkHealthCheck.ps1" and "'tools/validate_release.py'" name the same files as the bare forms; a command
+    # line is quoted and dot-relative often enough that dropping those would leave the copied command unchecked.
+    $t = $token.Trim().Trim('"').Trim("'")
+    return ($t -replace '^\.[\\/]', '')
+}
 foreach ($doc in $AllDocs) {
     $name = Split-Path -Leaf $doc
     $spans = @(Get-CodeSpans $doc)
     $quoted = @($spans | Where-Object { $_ -match $fileSpanPattern })
     $quoted += @($spans | Where-Object { $_ -notmatch $fileSpanPattern -and $_ -match '\s' } |
-        ForEach-Object { $_ -split '\s+' } | Where-Object { $_ -match $executableTokenPattern })
+        ForEach-Object { $_ -split '\s+' } | ForEach-Object { ConvertTo-BareToken $_ } | Where-Object { $_ -match $executableTokenPattern })
     # A fenced block is a command the reader copies whole, so the executables in it are read like any other name; the
     # config-key check already reads these blocks, and E1 was the one place they were dropped.
-    $quoted += @(Get-CodeBlocks $doc | ForEach-Object { $_ -split '[\s;|]+' } | Where-Object { $_ -match $executableTokenPattern })
+    $quoted += @(Get-CodeBlocks $doc | ForEach-Object { $_ -split '[\s;|]+' } | ForEach-Object { ConvertTo-BareToken $_ } | Where-Object { $_ -match $executableTokenPattern })
     $quoted = @($quoted | Sort-Object -Unique)
     $absent = @($quoted | Where-Object {
         $normal = $_ -replace '\\', '/'
@@ -366,44 +420,22 @@ foreach ($doc in $AllDocs) {
     $text = Read-Text $doc
     $links = New-Object System.Collections.Generic.List[string]
     foreach ($m in [regex]::Matches($text, '\]\(([^)\s]+)\)')) { $links.Add($m.Groups[1].Value) }
-    foreach ($m in [regex]::Matches($text, 'href="([^"]+)"')) { $links.Add($m.Groups[1].Value) }
+    foreach ($m in [regex]::Matches($text, 'href\s*=\s*"([^"]+)"')) { $links.Add($m.Groups[1].Value) }
+    foreach ($m in [regex]::Matches($text, "href\s*=\s*'([^']+)'")) { $links.Add($m.Groups[1].Value) }
     $local = @($links | Where-Object { $_ -notmatch '^[a-z][a-z0-9+.-]*:' -and $_ -notmatch '^#' } |
         ForEach-Object { ($_ -split '#')[0] } | Where-Object { $_ } | Sort-Object -Unique)
+    # Only from the document's own folder, which is where the browser looks: a leaf name that exists somewhere else in
+    # the package is not the file the reader would get, and accepting it was the check agreeing with itself.
     $broken = @($local | Where-Object {
         $normal = $_ -replace '\\', '/'
         $resolved = $false
         try { $resolved = Test-Path -LiteralPath (Join-Path (Split-Path -Parent $doc) $normal) } catch { $resolved = $false }
-        if (-not $resolved) { $resolved = ($packagePaths -contains $normal) -or ($packageFiles -contains $normal) }
-        if (-not $resolved) { try { $resolved = Test-Path -LiteralPath (Join-Path $RepoRoot $normal) } catch { $resolved = $false } }
         -not $resolved
     })
     Assert-True ("E2 [{0}] the {1} local link(s) it carries resolve" -f $name, $local.Count) ($broken.Count -eq 0) ('broken: ' + ($broken -join ', '))
 }
 
 # ------------------------------------------ F. the section numbers a document cites
-function Get-SectionHeadings([string]$path) {
-    $text = Read-Text $path
-    if ($path -like '*.html') {
-        $out = New-Object System.Collections.Generic.List[string]
-        foreach ($m in [regex]::Matches($text, '(?s)<h[1-4][^>]*>(.*?)</h[1-4]>')) {
-            $inner = (ConvertFrom-HtmlText $m.Groups[1].Value).Trim()
-            if ($inner -match '^([0-9]+(?:\.[0-9]+)?)') { $out.Add($Matches[1]) }
-        }
-        return @($out | Sort-Object -Unique)
-    }
-    return @([regex]::Matches($text, '(?m)^#{2,4}\s+([0-9]+(?:\.[0-9]+)?)\s*') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
-}
-function Get-ProseText([string]$path) {
-    # The HTML pages carry their own references, and they are maintained by hand beside the markdown, so they are read
-    # the same way - with the stylesheet and any script removed first, since neither is prose.
-    $text = Read-Text $path
-    if ($path -like '*.html') {
-        $text = [regex]::Replace($text, '(?s)<style[^>]*>.*?</style>', ' ')
-        $text = [regex]::Replace($text, '(?s)<script[^>]*>.*?</script>', ' ')
-        return (ConvertFrom-HtmlText $text)
-    }
-    return $text
-}
 $MarkdownDocs = @($AllDocs)
 # A reference into another document names it just before the number - "the user manual, section 5", "field manual, §7",
 # and the zh-TW documents' own forms. The window is short and has to end at the number, because a whole sentence of
