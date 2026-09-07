@@ -2,9 +2,10 @@
 # request and on request. tests/README.md says what each step asserts.
 #
 # What runs here needs neither a desktop nor a particular network, so its result depends on the files alone: the
-# Windows PowerShell 5.1 parser, the release validator, the two AST guards with their self-test, the helper unit tests,
-# the report-stage tests, the language-mode guard, the headless Initialize-Gui smoke test, and the asset round trip
-# (build the ZIP from the tracked files, extract it, run the validator from inside the package).
+# Windows PowerShell 5.1 parser, the release validator, the two AST guards with their self-test, the document facts
+# with theirs, the helper unit tests, the report-stage tests, the language-mode guard, the headless Initialize-Gui
+# smoke test, and the asset round trip (build the ZIP from the tracked files, extract it, run the validator from
+# inside the package).
 #
 # What stays local: the real-window `gui` step (an interactive desktop, UI Automation, 125 s of TCP sampling per IT
 # window), the console `acceptance` runs and the `resultset` self-check, which assert every row of a report against the
@@ -51,7 +52,7 @@ jobs:
       # runner's pwsh). The chain writes nothing into the checkout; its exit code is the number of failed cases.
       - name: Run the chain
         shell: cmd
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-ValidationChain.ps1 -Steps parse,validator,guards,unit,report,envguard,launcher,campaign,gui-headless -Package -SkipGui -WorkDir "%RUNNER_TEMP%\nhc-tests"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-ValidationChain.ps1 -Steps parse,validator,guards,docfacts,unit,report,envguard,launcher,campaign,gui-headless -Package -SkipGui -WorkDir "%RUNNER_TEMP%\nhc-tests"
 
       # The table the chain prints, on the run's page.
       - name: Summary table
@@ -60,7 +61,7 @@ jobs:
         run: |
           $summary = Join-Path $env:RUNNER_TEMP 'nhc-tests\summary.md'
           if (Test-Path -LiteralPath $summary) {
-            $text = "## Validation chain (parse, validator, guards, unit, report, envguard, launcher, campaign, gui-headless, package; -SkipGui)`n`n" + [IO.File]::ReadAllText($summary, [Text.Encoding]::UTF8) + "`n"
+            $text = "## Validation chain (parse, validator, guards, docfacts, unit, report, envguard, launcher, campaign, gui-headless, package; -SkipGui)`n`n" + [IO.File]::ReadAllText($summary, [Text.Encoding]::UTF8) + "`n"
             [IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY, $text, (New-Object Text.UTF8Encoding($false)))
           }
 
