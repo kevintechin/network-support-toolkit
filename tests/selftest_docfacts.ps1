@@ -19,9 +19,10 @@ if (-not $WorkDir) { $WorkDir = Join-Path $env:TEMP ('nhc-docfacts\' + (Get-Date
 $Tree = Join-Path $WorkDir 'tree'
 $PsExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
-# The copy: everything the step reads, without the report folders, which it never opens.
+# The copy: everything the step reads, without the report folders, which it never opens. docs/ is part of it because
+# the technical guides point at the repository design note that lives there, and the step resolves such a path.
 New-Item -ItemType Directory -Force -Path $Tree | Out-Null
-foreach ($sub in @('healthcheck', 'sop')) {
+foreach ($sub in @('healthcheck', 'sop', 'docs')) {
     $src = Join-Path $Root $sub
     Get-ChildItem -LiteralPath $src -Recurse -File | Where-Object { $_.FullName -notlike '*\Reports\*' } | ForEach-Object {
         $rel = $_.FullName.Substring($Root.Length).TrimStart('\')
@@ -78,6 +79,7 @@ $ZhScript = 'healthcheck\zh-TW\NetworkHealthCheck.ps1'
 $EnConfig = 'healthcheck\en-US\NetworkHealthCheck.config.json'
 $ZhConfig = 'healthcheck\zh-TW\NetworkHealthCheck.config.json'
 $EnIt = 'healthcheck\en-US\NetworkHealthCheck_IT_Deployment_Manual_en-US.md'
+$ZhIt = 'healthcheck\zh-TW\NetworkHealthCheck_IT_Deployment_Manual_zh-TW.md'
 $Guide = 'healthcheck\docs\NetworkHealthCheck_Technical_Guide_en-US.md'
 $Field = 'sop\support-engineer-field-manual.md'
 
@@ -87,7 +89,9 @@ Assert-Clean 'the untouched copy passes with -PackageOnly' @('-PackageOnly')
 
 # 2 - the two languages drift apart
 Assert-Catches 'a result tag added to one script only' 'A1' {
-    Write-All $EnScript ((Read-All $EnScript) + "`r`n# Add-CheckResult -Tag `"phantom-row`"`r`n")
+    # A real call, not a comment: the step reads the -Tag arguments off the AST, so a commented-out one is invisible
+    # to it - which is right, and is what this case measured until the AST replaced the regular expression.
+    Write-All $EnScript ((Read-All $EnScript) + "`r`nAdd-CheckResult -Check `"x`" -Tag `"phantom-row`" | Out-Null`r`n")
 }
 Assert-Catches 'a fingerprint key renamed in one script' 'A2' {
     Write-All $ZhScript ((Read-All $ZhScript) -replace '\$key = "quality"', '$key = "quality-2"')
@@ -127,6 +131,30 @@ Assert-Catches 'a launcher name that is not in the package' 'E1' {
 }
 Assert-Catches 'a section number that does not exist' 'F1' {
     Write-All $EnIt ((Read-All $EnIt) + "`r`nThe rest is in section 99.4 below.`r`n")
+}
+
+# 5b - the forms round 1 of PR #23 found unguarded: a tag reached through a variable, a section reference in the
+# zh-TW spelling, the second number of a compound reference, and a file name that carries its folder.
+Assert-Catches 'a tag reached through a variable, drifting in one script' 'A1' {
+    Write-All $EnScript ((Read-All $EnScript) -replace '\$pingTag = "ping-target"', '$pingTag = "ping-probe"')
+}
+Assert-Catches 'a -Tag argument that resolves to nothing' 'A6' {
+    Write-All $EnScript ((Read-All $EnScript) + "`r`nAdd-CheckResult -Check `"x`" -Tag `$tagFromNowhere | Out-Null`r`n")
+}
+Assert-Catches 'a section reference in the zh-TW spelling' 'F1' {
+    # "<di> 99 <jie>" - the two characters that bracket a section number in Chinese, built from their code points so
+    # that this file stays ASCII and needs no byte-order mark.
+    $reference = [string][char]0x7B2C + ' 99 ' + [char]0x7BC0
+    Write-All $ZhIt ((Read-All $ZhIt) + "`r`n" + $reference + "`r`n")
+}
+Assert-Catches 'the second number of a compound reference' 'F1' {
+    Write-All $EnIt ((Read-All $EnIt) + "`r`nBoth are covered, in sections 3.1 and 97.`r`n")
+}
+Assert-Catches 'a launcher name that carries its folder' 'E1' {
+    Write-All $EnIt ((Read-All $EnIt) + "`r`nRun ``en-US\Start-NetworkCheck-Nowhere.cmd`` from the package root.`r`n")
+}
+Assert-Catches 'a program the package does not carry' 'E1' {
+    Write-All $EnIt ((Read-All $EnIt) + "`r`nThe validator is ``tools\validate_release_missing.py``.`r`n")
 }
 
 # 6 - and the control again, to prove every mutation was put back

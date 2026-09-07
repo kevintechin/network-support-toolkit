@@ -78,6 +78,41 @@ function Get-CodeSpans([string]$path) {
     }
     return @($out | Sort-Object -Unique)
 }
+function Get-ScriptTags([string]$scriptPath) {
+    # Every -Tag argument, from the AST rather than from a regular expression: a tag can be reached through a variable
+    # ($pingTag is "ping-target", or "ping-gateway" for AUTO_GATEWAY), and a pattern over the file text does not see
+    # those at all - which left two live tags outside every check below.
+    $tokens = $null; $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
+    $found = New-Object System.Collections.Generic.List[string]
+    $unresolved = New-Object System.Collections.Generic.List[string]
+    $assigned = @{}
+    foreach ($a in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)) {
+        if (-not ($a.Left -is [System.Management.Automation.Language.VariableExpressionAst])) { continue }
+        $name = $a.Left.VariablePath.UserPath
+        foreach ($s in $a.Right.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true)) {
+            if (-not $assigned.ContainsKey($name)) { $assigned[$name] = New-Object System.Collections.Generic.List[string] }
+            $assigned[$name].Add($s.Value)
+        }
+    }
+    foreach ($cmd in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+        $elements = @($cmd.CommandElements)
+        for ($i = 0; $i -lt $elements.Count; $i++) {
+            $e = $elements[$i]
+            if (-not ($e -is [System.Management.Automation.Language.CommandParameterAst])) { continue }
+            if ($e.ParameterName -ne 'Tag') { continue }
+            $arg = $e.Argument
+            if (($null -eq $arg) -and (($i + 1) -lt $elements.Count)) { $arg = $elements[$i + 1] }
+            if ($arg -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $found.Add($arg.Value) }
+            elseif (($arg -is [System.Management.Automation.Language.VariableExpressionAst]) -and $assigned.ContainsKey($arg.VariablePath.UserPath)) {
+                foreach ($v in $assigned[$arg.VariablePath.UserPath]) { $found.Add($v) }
+            }
+            elseif ($null -eq $arg) { $unresolved.Add('-Tag with no argument at line ' + $e.Extent.StartLineNumber) }
+            else { $unresolved.Add($arg.Extent.Text + ' at line ' + $arg.Extent.StartLineNumber) }
+        }
+    }
+    return @{ Tags = @($found | Sort-Object -Unique); Unresolved = @($unresolved | Sort-Object -Unique) }
+}
 function Get-CodeBlocks([string]$path) {
     $text = Read-Text $path
     $out = New-Object System.Collections.Generic.List[string]
@@ -91,11 +126,13 @@ function Get-CodeBlocks([string]$path) {
 
 # ----------------------------------------------------------------- ground truth
 $Languages = @('en-US', 'zh-TW')
-$tags = @{}; $fingerprints = @{}; $fingerprintTitles = @{}; $exitCodes = @{}; $configKeys = @{}
+$tags = @{}; $unresolvedTags = @{}; $fingerprints = @{}; $fingerprintTitles = @{}; $exitCodes = @{}; $configKeys = @{}
 foreach ($lang in $Languages) {
     $scriptPath = Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1')
     $text = Read-Text $scriptPath
-    $tags[$lang] = @([regex]::Matches($text, 'Tag\s+"([a-z0-9-]+)"') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+    $tagScan = Get-ScriptTags $scriptPath
+    $tags[$lang] = $tagScan.Tags
+    $unresolvedTags[$lang] = $tagScan.Unresolved
     $exitCodes[$lang] = @([regex]::Matches($text, '(?m)^\s*exit\s+(\d+)\s*$') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
 
     # The fingerprint chain, read from the function itself rather than from the whole file: $key is assigned nowhere
@@ -164,6 +201,8 @@ Assert-SetEqual 'A4 configuration keys are the same in both files' $configKeys['
 foreach ($lang in $Languages) {
     # Every fingerprint the chain can select has a title and its advice lines; "healthy" is the switch's default.
     Assert-SetEqual ("A5 [{0}] every fingerprint key has a case in the switch" -f $lang) $fingerprintTitles[$lang] @($fingerprints[$lang] | Where-Object { $_ -ne 'healthy' })
+    # A tag this step cannot resolve to a literal is a tag it is not checking, so it says so instead of passing.
+    Assert-True ("A6 [{0}] every -Tag argument resolves to a literal" -f $lang) ($unresolvedTags[$lang].Count -eq 0) ('unresolved: ' + ($unresolvedTags[$lang] -join '; '))
 }
 
 # ------------------------- B. the configuration file and the IT deployment manual
@@ -216,32 +255,60 @@ foreach ($folder in @('', 'en-US', 'zh-TW', 'docs', 'tools')) {
     $path = $(if ($folder) { Join-Path $PackageDir $folder } else { $PackageDir })
     if (Test-Path -LiteralPath $path) { Get-ChildItem -LiteralPath $path -File | ForEach-Object { $packageFiles.Add($_.Name) } }
 }
-$fileSpanPattern = '^(Start-[A-Za-z-]+\.cmd|NetworkHealthCheck\.ps1|NetworkHealthCheck\.config\.json|SHA256SUMS\.txt|README_BILINGUAL\.md)$'
+# A quoted name is checked whether it is bare or carries its folder - "tools\validate_release.py" and
+# "en-US\Start-NetworkCheck-IT.cmd" are references a reader follows, and a misspelling in either form used to pass.
+# Runtime artefacts are outside the shape on purpose: they are .txt and nobody ships them.
+$fileSpanPattern = '^(?:(en-US|zh-TW|docs|tools)[\\/])?([A-Za-z0-9][A-Za-z0-9_.\-]*\.(?:ps1|cmd|py|json|md|html))$|^SHA256SUMS\.txt$'
+$packagePaths = New-Object System.Collections.Generic.List[string]
+foreach ($folder in @('en-US', 'zh-TW', 'docs', 'tools')) {
+    $path = Join-Path $PackageDir $folder
+    if (Test-Path -LiteralPath $path) { Get-ChildItem -LiteralPath $path -File | ForEach-Object { $packagePaths.Add(($folder + '/' + $_.Name)) } }
+}
 foreach ($doc in $AllDocs) {
     $name = Split-Path -Leaf $doc
     $quoted = @(Get-CodeSpans $doc | Where-Object { $_ -match $fileSpanPattern })
-    $absent = @($quoted | Where-Object { $packageFiles -notcontains $_ })
+    $absent = @($quoted | Where-Object {
+        $normal = $_ -replace '\\', '/'
+        $inPackage = $(if ($normal -like '*/*') { $packagePaths -contains $normal } else { $packageFiles -contains $normal })
+        # The technical guide points at the repository's own design note - "docs/design-v1.2-triage-wizard.md in the
+        # repository" - which is a real file the package does not carry, so a path that resolves in the checkout counts.
+        -not ($inPackage -or (Test-Path -LiteralPath (Join-Path $RepoRoot $normal)))
+    })
     Assert-True ("E1 [{0}] the {1} file name(s) it quotes are in the package" -f $name, $quoted.Count) ($absent.Count -eq 0) ('not in the package: ' + ($absent -join ', '))
 }
 
 # ------------------------------------------ F. the section numbers a document cites
 $MarkdownDocs = @($AllDocs | Where-Object { $_ -like '*.md' })
-# A reference into another document names it just before the number - "the user manual, section 5", "field manual, §7".
-# The window is short and has to end at the number, because a whole sentence of prose will contain the word "manual"
-# often enough to swallow a real mistake: the first version of this rule did, and the self-test caught it.
-$OtherDocumentReference = '(?i)(manual|guide|sop|template|readme|page)[^.]{0,20}$'
+# A reference into another document names it just before the number - "the user manual, section 5", "field manual, §7",
+# and the zh-TW documents' own forms. The window is short and has to end at the number, because a whole sentence of
+# prose will contain the word "manual" often enough to swallow a real mistake: the first version of this rule did, and
+# the self-test caught it.
+$OtherDocumentReference = '(?i)(manual|guide|sop|template|readme|page|\u624b\u518a|\u6307\u5357|\u7bc4\u672c|\u9801\u9762|\u6587\u4ef6)[^.\u3002]{0,20}$'
+# Both spellings, and a reference that carries more than one number: "sections 3.6 and 8" cites two sections, and the
+# zh-TW documents bracket the number between the two characters \u7b2c and \u7bc0 instead. Only the first number used to be
+# read, and the Chinese form not at all - so a mistyped number in a zh-TW manual met no check whatsoever.
+$SectionNumber = '[0-9]+(?:\.[0-9]+)?'
+$SectionPatterns = @(
+    ('(?i)\bsections?\s+(' + $SectionNumber + '(?:\s*(?:,|and|&)\s*' + $SectionNumber + ')*)'),
+    ('\u7b2c\s*(' + $SectionNumber + '(?:\s*(?:\u3001|,|\u8207|\u548c|\u53ca)\s*' + $SectionNumber + ')*)\s*\u7bc0'))
 foreach ($doc in $MarkdownDocs) {
     $name = Split-Path -Leaf $doc
     $text = Read-Text $doc
     $headings = @([regex]::Matches($text, '(?m)^#{2,4}\s+([0-9]+(?:\.[0-9]+)?)\s*[^\r\n]*') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
     if (-not $headings.Count) { continue }
     $bad = New-Object System.Collections.Generic.List[string]
-    foreach ($m in [regex]::Matches($text, '(?i)\bsections?\s+([0-9]+(?:\.[0-9]+)?)')) {
-        $before = $text.Substring([Math]::Max(0, $m.Index - 40), [Math]::Min(40, $m.Index))
-        if ($before -match $OtherDocumentReference) { continue }   # a reference into another document
-        if ($headings -notcontains $m.Groups[1].Value) { $bad.Add($m.Value.Trim()) }
+    $cited = 0
+    foreach ($pattern in $SectionPatterns) {
+        foreach ($m in [regex]::Matches($text, $pattern)) {
+            $before = $text.Substring([Math]::Max(0, $m.Index - 40), [Math]::Min(40, $m.Index))
+            if ($before -match $OtherDocumentReference) { continue }   # a reference into another document
+            foreach ($number in @([regex]::Matches($m.Groups[1].Value, $SectionNumber) | ForEach-Object { $_.Value })) {
+                $cited++
+                if ($headings -notcontains $number) { $bad.Add($m.Value.Trim()) }
+            }
+        }
     }
-    Assert-True ("F1 [{0}] every section it cites exists ({1} headings)" -f $name, $headings.Count) ($bad.Count -eq 0) ('no such section: ' + (@($bad | Sort-Object -Unique) -join ', '))
+    Assert-True ("F1 [{0}] every section it cites exists ({1} headings, {2} references)" -f $name, $headings.Count, $cited) ($bad.Count -eq 0) ('no such section: ' + (@($bad | Sort-Object -Unique) -join ', '))
 }
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
