@@ -141,7 +141,7 @@ Any `FAIL` produces Problem Detected. With no failure but at least one unexecute
 
 Every adapter is classified as physical or virtual: the NetAdapter `Virtual` / `HardwareInterface` flags win, the CIM fallback uses `Win32_NetworkAdapter.PhysicalAdapter`, and without flags a description pattern (VirtualBox, Hyper-V, VMware, TAP, tunnel, loopback, WAN Miniport, WireGuard, ZeroTier, Tailscale, Docker, VPN, ISATAP, Teredo) decides. Virtual adapters are `INFO` rows and never trigger the APIPA or no-IPv4 rules; the "Usable Network Adapters" row reports physical and virtual counts and becomes `WARN` when only virtual adapters carry a gateway (VPN or virtualization) and `FAIL` when no physical adapter is connected. Error-counter rows for adapters with no traffic during the sample, or for virtual adapters, are `INFO` — counters only testify when traffic flows. Primary-adapter selection for the company-standard comparison is unchanged.
 
-IT diagnostics run on every run (each can be disabled under `Checks` in the configuration or with `-NoWifi` / `-NoTraceroute`), are `INFO` rows when their collection succeeds (`ERROR` when it does not), carry `Scope = "IT"`, and appear in the collapsed IT section of the HTML report:
+IT diagnostics run on every run (each can be disabled under `Checks` in the configuration or with `-NoWifi` / `-NoTraceroute`), are `INFO` rows — what was collected, or a note that there was nothing to collect or no source on this machine — and `ERROR` rows when reading a source throws, carry `Scope = "IT"`, and appear in the collapsed IT section of the HTML report:
 
 | Check | Source | Notes |
 |---|---|---|

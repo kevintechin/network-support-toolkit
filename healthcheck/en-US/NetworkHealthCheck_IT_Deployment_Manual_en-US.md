@@ -71,7 +71,7 @@ The report's *Configuration File* row names the file that was loaded, and the *C
 | `OrganizationName` | `""` | Printed in the HTML report's header; an empty value prints *Organization Not Specified*. The text and JSON reports do not carry it |
 | `ReportFolderName` | `"Reports"` | A relative name is created beside the program (`en-US\Reports`); a rooted path — a drive letter or a UNC path — is taken as given. The folder is created when missing. When it cannot be written, the reports go to `%TEMP%\NetworkHealthCheck\Reports` and the report carries a **Startup Notice** warning row saying so, which on its own turns the verdict to Attention Required |
 
-Each run writes three files, `NetworkHealthCheck_<yyyyMMdd>_<HHmmss>_<COMPUTERNAME>.html`, `.txt` and `.json`, UTF-8 with a byte-order mark. Names are unique for one copy of the tool at a time; nothing is deleted, so the folder grows by three files per run until someone clears it.
+Each run writes up to three files, `NetworkHealthCheck_<yyyyMMdd>_<HHmmss>_<COMPUTERNAME>.html`, `.txt` and `.json`, UTF-8 with a byte-order mark. Each format is written on its own: one that cannot be written is reported — the window says *N of 3 report formats could not be written*, the console lists it as *(not written)* — and the others stay usable; only when all three fail does the tool write an emergency `NetworkHealthCheck_FATAL_<time>.txt` instead. Names are unique for one copy of the tool at a time; nothing is deleted, so the folder grows by up to three files per run until someone clears it.
 
 A rooted `ReportFolderName` on a share is the one setting that moves reports off the machine without anyone sending them: every report of every user then lands there directly, and the person is told in the report — the *Report Directory* line — but not asked. Use it deliberately, with the handling rule of section 7 in place, and make sure every user can write to it: a user who cannot gets the temporary-folder fallback instead.
 
@@ -157,7 +157,7 @@ An Information row never moves the verdict, so an optional TCP or HTTP target ca
 
 ### 3.4 · Optional checks (`Checks`)
 
-The IT diagnostics — IT-scoped rows in the collapsed section at the bottom of the report, Information when the collection succeeded and *Unable to Check* when it did not (the wireless data, the route table, the neighbour table or the traceroute could not be read), never counted in the verdict either way — can each be switched off, here or for one run in the IT panel.
+The IT diagnostics — IT-scoped rows in the collapsed section at the bottom of the report, never counted in the verdict — can each be switched off, here or for one run in the IT panel. An Information row there carries what was collected, or says that there was nothing to collect or that the source is not on this machine (no connected wireless interface or no `netsh.exe`, no `Get-NetRoute`, no default route or no gateway, no connected physical adapter); an *Unable to Check* row means that reading the source threw an error (the wireless data, the route table, the neighbour table or the traceroute).
 
 | Key | Default | Collects |
 |---|---|---|

@@ -176,7 +176,7 @@
       <tr><td><code>OrganizationName</code></td><td><code>""</code></td><td>印在 HTML 報告的標頭；空值印出「未指定單位」。文字與 JSON 報告不含這個值</td></tr>
       <tr><td><code>ReportFolderName</code></td><td><code>"Reports"</code></td><td>相對名稱建立在程式旁邊（<code>zh-TW\Reports</code>）；有根的路徑（磁碟機代號或 UNC 路徑）照用。資料夾不存在會建立。無法寫入時，報告改寫到 <code>%TEMP%\NetworkHealthCheck\Reports</code>，報告裡多一列「<b>啟動提示</b>」警告說明這件事，光是這一列就會讓整體結果變成「需要注意」</td></tr>
     </table>
-    <p>每次執行寫出三個檔案：<code>NetworkHealthCheck_&lt;yyyyMMdd&gt;_&lt;HHmmss&gt;_&lt;電腦名稱&gt;.html</code>、<code>.txt</code>、<code>.json</code>，含 BOM 的 UTF-8。同一時間只跑一份工具時檔名不會重複；工具不刪任何東西，所以資料夾每跑一次多三個檔案，直到有人清理。</p>
+    <p>每次執行最多寫出三個檔案：<code>NetworkHealthCheck_&lt;yyyyMMdd&gt;_&lt;HHmmss&gt;_&lt;電腦名稱&gt;.html</code>、<code>.txt</code>、<code>.json</code>，含 BOM 的 UTF-8。三種格式各自寫入：寫不出來的那一種會被指出（視窗說「3 種報告格式中有 N 種無法寫入」，主控台列為「（未寫入）」），其他格式照常可用；三種都失敗時，工具才改寫緊急的 <code>NetworkHealthCheck_FATAL_&lt;時間&gt;.txt</code>。同一時間只跑一份工具時檔名不會重複；工具不刪任何東西，所以資料夾每跑一次最多多三個檔案，直到有人清理。</p>
     <div class="flag"><b>指到共用資料夾的有根 <code>ReportFolderName</code></b>，是唯一會讓報告在沒有人送出的情況下離開這台電腦的設定：每個使用者的每份報告都直接落在那裡，報告裡的「報告目錄」一行會告訴使用者，但不會問他。要用就有意識地用，把第 7 節的處理規定先定好，並確認每個使用者都寫得進去：寫不進去的使用者會得到暫存資料夾的備援。</div>
 
     <h3>3.2 · 公司標準（<code>Expected</code>）</h3>
@@ -247,7 +247,7 @@
     <div class="flag"><b>不允許連外的環境。</b> 移除公網的 Ping、TCP、HTTP 目標，把 <code>www.microsoft.com</code> 的名稱查詢換成你的解析器查得到的內部名稱（出廠的 <code>DnsNames</code> 項目是必要的，解析不出來就會讓這次執行失敗），把 <code>Internet</code> 群組換成你的內部服務，或者把 <code>Internet</code> 從 <code>RequiredConnectivityGroups</code> 移除（否則群組列會因為沒有成員而變成「無法檢查」），並把 <code>Checks.Traceroute</code> 設為 <code>false</code>：traceroute 會探測往第一個不是佔位符的 Ping 目標，一個都沒有時，仍然會探測往 <code>1.1.1.1</code>。</div>
 
     <h3>3.4 · 可選檢查（<code>Checks</code>）</h3>
-    <p>IT 診斷資料（報告最下方收合區裡 IT 範圍的列：收集成功時是「資訊」，收集失敗時是「無法檢查」，例如無線資料、路由表、鄰居表或 traceroute 讀不到；兩者都永遠不計入整體結果）每一項都可以關掉，在這裡關，或在 IT 面板裡只關一次。</p>
+    <p>IT 診斷資料（報告最下方收合區裡 IT 範圍的列，永遠不計入整體結果）每一項都可以關掉，在這裡關，或在 IT 面板裡只關一次。那裡的「資訊」列記的是收集到的內容，或者說明沒有東西可收集、來源在這台電腦上不存在（沒有已連線的無線介面或沒有 <code>netsh.exe</code>、沒有 <code>Get-NetRoute</code>、沒有預設路由或閘道、沒有已連線的實體網卡）；「無法檢查」列表示讀取來源時發生錯誤（無線資料、路由表、鄰居表或 traceroute）。</p>
     <table>
       <tr><th>鍵</th><th>預設</th><th>收集什麼</th></tr>
       <tr><td><code>WifiRf</code></td><td><code>true</code></td><td>無線介面的 SSID、BSSID、頻段、頻道、速率與訊號，從 <code>netsh wlan show interfaces</code> 解析</td></tr>

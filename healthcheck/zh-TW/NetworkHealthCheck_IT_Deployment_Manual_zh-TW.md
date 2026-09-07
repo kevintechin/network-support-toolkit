@@ -71,7 +71,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 | `OrganizationName` | `""` | 印在 HTML 報告的標頭；空值印出「未指定單位」。文字與 JSON 報告不含這個值 |
 | `ReportFolderName` | `"Reports"` | 相對名稱建立在程式旁邊（`zh-TW\Reports`）；有根的路徑（磁碟機代號或 UNC 路徑）照用。資料夾不存在會建立。無法寫入時，報告改寫到 `%TEMP%\NetworkHealthCheck\Reports`，報告裡多一列「**啟動提示**」警告說明這件事，光是這一列就會讓整體結果變成「需要注意」 |
 
-每次執行寫出三個檔案：`NetworkHealthCheck_<yyyyMMdd>_<HHmmss>_<電腦名稱>.html`、`.txt`、`.json`，含 BOM 的 UTF-8。同一時間只跑一份工具時檔名不會重複；工具不刪任何東西，所以資料夾每跑一次多三個檔案，直到有人清理。
+每次執行最多寫出三個檔案：`NetworkHealthCheck_<yyyyMMdd>_<HHmmss>_<電腦名稱>.html`、`.txt`、`.json`，含 BOM 的 UTF-8。三種格式各自寫入：寫不出來的那一種會被指出（視窗說「3 種報告格式中有 N 種無法寫入」，主控台列為「（未寫入）」），其他格式照常可用；三種都失敗時，工具才改寫緊急的 `NetworkHealthCheck_FATAL_<時間>.txt`。同一時間只跑一份工具時檔名不會重複；工具不刪任何東西，所以資料夾每跑一次最多多三個檔案，直到有人清理。
 
 指到共用資料夾的有根 `ReportFolderName`，是唯一會讓報告在沒有人送出的情況下離開這台電腦的設定：每個使用者的每份報告都直接落在那裡，報告裡的「報告目錄」一行會告訴使用者，但不會問他。要用就有意識地用，把第 7 節的處理規定先定好，並確認每個使用者都寫得進去：寫不進去的使用者會得到暫存資料夾的備援。
 
@@ -157,7 +157,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 
 ### 3.4 · 可選檢查（`Checks`）
 
-IT 診斷資料（報告最下方收合區裡 IT 範圍的列：收集成功時是「資訊」，收集失敗時是「無法檢查」，例如無線資料、路由表、鄰居表或 traceroute 讀不到；兩者都永遠不計入整體結果）每一項都可以關掉，在這裡關，或在 IT 面板裡只關一次。
+IT 診斷資料（報告最下方收合區裡 IT 範圍的列，永遠不計入整體結果）每一項都可以關掉，在這裡關，或在 IT 面板裡只關一次。那裡的「資訊」列記的是收集到的內容，或者說明沒有東西可收集、來源在這台電腦上不存在（沒有已連線的無線介面或沒有 `netsh.exe`、沒有 `Get-NetRoute`、沒有預設路由或閘道、沒有已連線的實體網卡）；「無法檢查」列表示讀取來源時發生錯誤（無線資料、路由表、鄰居表或 traceroute）。
 
 | 鍵 | 預設 | 收集什麼 |
 |---|---|---|
