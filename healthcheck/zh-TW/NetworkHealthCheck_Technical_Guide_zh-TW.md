@@ -141,7 +141,7 @@ FAIL > ERROR > WARN > PASS
 
 每張網卡都會分類為實體或虛擬：以 NetAdapter 的 `Virtual`／`HardwareInterface` 旗標為準，CIM 備援用 `Win32_NetworkAdapter.PhysicalAdapter`，沒有旗標時以描述字串樣式判斷（VirtualBox、Hyper-V、VMware、TAP、tunnel、loopback、WAN Miniport、WireGuard、ZeroTier、Tailscale、Docker、VPN、ISATAP、Teredo）。虛擬網卡列為 `INFO`，不套用 APIPA 與無 IPv4 規則；「可用網卡」列出實體與虛擬數量，只有虛擬網卡承載閘道時（VPN 或虛擬化）為 `WARN`，完全沒有實體網卡時為 `FAIL`。取樣期間沒有流量的網卡或虛擬網卡，其錯誤計數列為 `INFO`，因為計數器只有在有流量時才能作證。公司標準比對的主要網卡選取方式不變。
 
-IT 診斷資料每次都會執行（可在設定檔 `Checks` 區段或用 `-NoWifi`／`-NoTraceroute` 個別停用），只產生 `INFO`，帶 `Scope = "IT"`，顯示在 HTML 報告收合的 IT 區段：
+IT 診斷資料每次都會執行（可在設定檔 `Checks` 區段或用 `-NoWifi`／`-NoTraceroute` 個別停用），收集成功時產生 `INFO`（失敗時為 `ERROR`），帶 `Scope = "IT"`，顯示在 HTML 報告收合的 IT 區段：
 
 | 檢查 | 來源 | 說明 |
 |---|---|---|

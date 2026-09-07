@@ -153,7 +153,7 @@
       <li><b>設定公司標準</b>（第 3.2 節），如果你希望報告能說位址、閘道、DNS 伺服器或 DHCP 模式<i>對不對</i>。出廠狀態下，工具只顯示目前設定，並說明尚未定義標準。</li>
       <li><b>依你自己的基準校正門檻</b>（第 3.5 節）：有線、Wi-Fi、VPN、WAN 和資料中心的線路不會共用同一組數字。</li>
       <li><b>決定報告放哪裡、怎麼處理</b>（第 3.1 與第 7 節）。報告含電腦與使用者名稱、位址、Wi-Fi 網路、Proxy 與前幾跳的路由器；完整清單由使用手冊第 5 節「報告裡有什麼」維護。工具交到任何人手上之前，先決定處理規定。</li>
-      <li><b>在一台有代表性的電腦上用 <code>Start-NetworkCheck-IT.cmd</code> 跑一次</b>，讀報告最前面幾列（第 5 節），把那份報告留作基準。你支援的每一種連線方式（有線、Wi-Fi、VPN、限制連外）都各跑一次。</li>
+      <li><b>在一台有代表性的電腦上用 <code>Start-NetworkCheck-IT.cmd</code> 跑一次</b>，讀報告最前面幾列（第 3.6 節），把那份報告留作基準。你支援的每一種連線方式（有線、Wi-Fi、VPN、限制連外）都各跑一次。</li>
       <li><b>兩個語言資料夾都要設定</b>，如果兩個都要發。<code>zh-TW\NetworkHealthCheck.config.json</code> 和 <code>en-US\NetworkHealthCheck.config.json</code> 是兩個獨立的檔案；出廠時兩者只差預設目標的顯示名稱。</li>
     </ol>
   </div>
@@ -247,7 +247,7 @@
     <div class="flag"><b>不允許連外的環境。</b> 移除公網的 Ping、TCP、HTTP 目標，把 <code>Internet</code> 群組換成你的內部服務，或者把 <code>Internet</code> 從 <code>RequiredConnectivityGroups</code> 移除（否則群組列會因為沒有成員而變成「無法檢查」），並把 <code>Checks.Traceroute</code> 設為 <code>false</code>：traceroute 會探測往第一個不是佔位符的 Ping 目標，一個都沒有時，仍然會探測往 <code>1.1.1.1</code>。</div>
 
     <h3>3.4 · 可選檢查（<code>Checks</code>）</h3>
-    <p>IT 診斷資料（報告最下方收合區裡給 IT 看的資訊列，永遠不計入整體結果）每一項都可以關掉，在這裡關，或在 IT 面板裡只關一次。</p>
+    <p>IT 診斷資料（報告最下方收合區裡 IT 範圍的列：收集成功時是「資訊」，收集失敗時是「無法檢查」，例如無線資料、路由表、鄰居表或 traceroute 讀不到；兩者都永遠不計入整體結果）每一項都可以關掉，在這裡關，或在 IT 面板裡只關一次。</p>
     <table>
       <tr><th>鍵</th><th>預設</th><th>收集什麼</th></tr>
       <tr><td><code>WifiRf</code></td><td><code>true</code></td><td>無線介面的 SSID、BSSID、頻段、頻道、速率與訊號，從 <code>netsh wlan show interfaces</code> 解析</td></tr>

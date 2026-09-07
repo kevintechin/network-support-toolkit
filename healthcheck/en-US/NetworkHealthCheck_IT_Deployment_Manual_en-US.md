@@ -41,7 +41,7 @@ Every launcher runs PowerShell with `-NoProfile -ExecutionPolicy Bypass` and its
 3. **Set the company standards** (section 3.2) if you want the report to say whether an address, gateway, DNS server or DHCP mode is *right*. As shipped, the tool displays the current settings and says that no standard has been defined.
 4. **Calibrate the thresholds** (section 3.5) against your own baselines — Wi-Fi, VPN, WAN and data-centre links do not share one set of numbers.
 5. **Decide where the reports go and how they are handled** (sections 3.1 and 7). A report carries computer and user names, addresses, the Wi-Fi network, the proxy and the first-hop routers; the user manual (section 5, *What the report contains*) keeps the inventory. Decide the handling rule before the tool is in anyone's hands.
-6. **Run it once on a representative machine** with `Start-NetworkCheck-IT.cmd`, read the report's first rows (section 5), and keep that report as a baseline. Repeat for each kind of connection you support (wired, Wi-Fi, VPN, restricted internet).
+6. **Run it once on a representative machine** with `Start-NetworkCheck-IT.cmd`, read the report's first rows (section 3.6), and keep that report as a baseline. Repeat for each kind of connection you support (wired, Wi-Fi, VPN, restricted internet).
 7. **Configure both language folders** if you ship both. `en-US\NetworkHealthCheck.config.json` and `zh-TW\NetworkHealthCheck.config.json` are separate files; as shipped they differ only in the display names of the default targets.
 
 ---
@@ -157,7 +157,7 @@ An Information row never moves the verdict, so an optional TCP or HTTP target ca
 
 ### 3.4 · Optional checks (`Checks`)
 
-The IT diagnostics — Information rows for IT in the collapsed section at the bottom of the report, never counted in the verdict — can each be switched off, here or for one run in the IT panel.
+The IT diagnostics — IT-scoped rows in the collapsed section at the bottom of the report, Information when the collection succeeded and *Unable to Check* when it did not (the wireless data, the route table, the neighbour table or the traceroute could not be read), never counted in the verdict either way — can each be switched off, here or for one run in the IT panel.
 
 | Key | Default | Collects |
 |---|---|---|

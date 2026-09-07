@@ -153,7 +153,7 @@
       <li><b>Set the company standards</b> (section 3.2) if you want the report to say whether an address, gateway, DNS server or DHCP mode is <i>right</i>. As shipped, the tool displays the current settings and says that no standard has been defined.</li>
       <li><b>Calibrate the thresholds</b> (section 3.5) against your own baselines — Wi-Fi, VPN, WAN and data-centre links do not share one set of numbers.</li>
       <li><b>Decide where the reports go and how they are handled</b> (sections 3.1 and 7). A report carries computer and user names, addresses, the Wi-Fi network, the proxy and the first-hop routers; the user manual (section 5, <i>What the report contains</i>) keeps the inventory. Decide the handling rule before the tool is in anyone's hands.</li>
-      <li><b>Run it once on a representative machine</b> with <code>Start-NetworkCheck-IT.cmd</code>, read the report's first rows (section 5), and keep that report as a baseline. Repeat for each kind of connection you support (wired, Wi-Fi, VPN, restricted internet).</li>
+      <li><b>Run it once on a representative machine</b> with <code>Start-NetworkCheck-IT.cmd</code>, read the report's first rows (section 3.6), and keep that report as a baseline. Repeat for each kind of connection you support (wired, Wi-Fi, VPN, restricted internet).</li>
       <li><b>Configure both language folders</b> if you ship both. <code>en-US\NetworkHealthCheck.config.json</code> and <code>zh-TW\NetworkHealthCheck.config.json</code> are separate files; as shipped they differ only in the display names of the default targets.</li>
     </ol>
   </div>
@@ -247,7 +247,7 @@
     <div class="flag"><b>A site without outbound internet.</b> Remove the public ping, TCP and HTTP targets, replace the <code>Internet</code> group with your internal services — or remove <code>Internet</code> from <code>RequiredConnectivityGroups</code>, otherwise the group row is <i>Unable to Check</i> for want of members — and set <code>Checks.Traceroute</code> to <code>false</code>: the traceroute probes toward the first ping target that is not a placeholder, and when there is none it probes toward <code>1.1.1.1</code> regardless.</div>
 
     <h3>3.4 · Optional checks (<code>Checks</code>)</h3>
-    <p>The IT diagnostics — Information rows for IT in the collapsed section at the bottom of the report, never counted in the verdict — can each be switched off, here or for one run in the IT panel.</p>
+    <p>The IT diagnostics — IT-scoped rows in the collapsed section at the bottom of the report, Information when the collection succeeded and <i>Unable to Check</i> when it did not (the wireless data, the route table, the neighbour table or the traceroute could not be read), never counted in the verdict either way — can each be switched off, here or for one run in the IT panel.</p>
     <table>
       <tr><th>Key</th><th>Default</th><th>Collects</th></tr>
       <tr><td><code>WifiRf</code></td><td><code>true</code></td><td>The wireless interface's SSID, BSSID, band, channel, rates and signal, parsed from <code>netsh wlan show interfaces</code></td></tr>
