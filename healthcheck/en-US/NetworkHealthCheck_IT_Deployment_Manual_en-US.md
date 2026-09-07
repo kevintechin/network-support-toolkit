@@ -153,7 +153,7 @@ An Information row never moves the verdict, so an optional TCP or HTTP target ca
 | `HttpTimeoutMs` | 6000 | 500 | Per request, connect and read alike |
 | `RetransmissionSampleSeconds` | 8 | 1 | The TCP counters are sampled at the start and again once this many seconds have passed, so this is the run's minimum length; the tests run inside the window and, when targets do not answer, their timeouts add up on top of it |
 
-**A site without outbound internet.** Remove the public ping, TCP and HTTP targets, replace the `Internet` group with your internal services — or remove `Internet` from `RequiredConnectivityGroups`, otherwise the group row is *Unable to Check* for want of members — and set `Checks.Traceroute` to `false`: the traceroute probes toward the first ping target that is not a placeholder, and when there is none it probes toward `1.1.1.1` regardless.
+**A site without outbound internet.** Remove the public ping, TCP and HTTP targets, replace the `www.microsoft.com` name lookup with an internal name your resolver answers (the shipped `DnsNames` entry is required, and a name that does not resolve fails the run), replace the `Internet` group with your internal services — or remove `Internet` from `RequiredConnectivityGroups`, otherwise the group row is *Unable to Check* for want of members — and set `Checks.Traceroute` to `false`: the traceroute probes toward the first ping target that is not a placeholder, and when there is none it probes toward `1.1.1.1` regardless.
 
 ### 3.4 · Optional checks (`Checks`)
 

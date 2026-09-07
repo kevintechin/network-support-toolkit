@@ -244,7 +244,7 @@
       <tr><td><code>HttpTimeoutMs</code></td><td>6000</td><td>500</td><td>每個請求，連線與讀取皆同</td></tr>
       <tr><td><code>RetransmissionSampleSeconds</code></td><td>8</td><td>1</td><td>TCP 計數器在開始時取樣一次，過了這麼多秒再取樣一次，所以這是執行時間的下限；各項測試在這段時間內進行，目標不回應時，它們的逾時會再疊上去</td></tr>
     </table>
-    <div class="flag"><b>不允許連外的環境。</b> 移除公網的 Ping、TCP、HTTP 目標，把 <code>Internet</code> 群組換成你的內部服務，或者把 <code>Internet</code> 從 <code>RequiredConnectivityGroups</code> 移除（否則群組列會因為沒有成員而變成「無法檢查」），並把 <code>Checks.Traceroute</code> 設為 <code>false</code>：traceroute 會探測往第一個不是佔位符的 Ping 目標，一個都沒有時，仍然會探測往 <code>1.1.1.1</code>。</div>
+    <div class="flag"><b>不允許連外的環境。</b> 移除公網的 Ping、TCP、HTTP 目標，把 <code>www.microsoft.com</code> 的名稱查詢換成你的解析器查得到的內部名稱（出廠的 <code>DnsNames</code> 項目是必要的，解析不出來就會讓這次執行失敗），把 <code>Internet</code> 群組換成你的內部服務，或者把 <code>Internet</code> 從 <code>RequiredConnectivityGroups</code> 移除（否則群組列會因為沒有成員而變成「無法檢查」），並把 <code>Checks.Traceroute</code> 設為 <code>false</code>：traceroute 會探測往第一個不是佔位符的 Ping 目標，一個都沒有時，仍然會探測往 <code>1.1.1.1</code>。</div>
 
     <h3>3.4 · 可選檢查（<code>Checks</code>）</h3>
     <p>IT 診斷資料（報告最下方收合區裡 IT 範圍的列：收集成功時是「資訊」，收集失敗時是「無法檢查」，例如無線資料、路由表、鄰居表或 traceroute 讀不到；兩者都永遠不計入整體結果）每一項都可以關掉，在這裡關，或在 IT 面板裡只關一次。</p>

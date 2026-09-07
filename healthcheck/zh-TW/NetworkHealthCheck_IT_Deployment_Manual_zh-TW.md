@@ -153,7 +153,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 | `HttpTimeoutMs` | 6000 | 500 | 每個請求，連線與讀取皆同 |
 | `RetransmissionSampleSeconds` | 8 | 1 | TCP 計數器在開始時取樣一次，過了這麼多秒再取樣一次，所以這是執行時間的下限；各項測試在這段時間內進行，目標不回應時，它們的逾時會再疊上去 |
 
-**不允許連外的環境。** 移除公網的 Ping、TCP、HTTP 目標，把 `Internet` 群組換成你的內部服務，或者把 `Internet` 從 `RequiredConnectivityGroups` 移除（否則群組列會因為沒有成員而變成「無法檢查」），並把 `Checks.Traceroute` 設為 `false`：traceroute 會探測往第一個不是佔位符的 Ping 目標，一個都沒有時，仍然會探測往 `1.1.1.1`。
+**不允許連外的環境。** 移除公網的 Ping、TCP、HTTP 目標，把 `www.microsoft.com` 的名稱查詢換成你的解析器查得到的內部名稱（出廠的 `DnsNames` 項目是必要的，解析不出來就會讓這次執行失敗），把 `Internet` 群組換成你的內部服務，或者把 `Internet` 從 `RequiredConnectivityGroups` 移除（否則群組列會因為沒有成員而變成「無法檢查」），並把 `Checks.Traceroute` 設為 `false`：traceroute 會探測往第一個不是佔位符的 Ping 目標，一個都沒有時，仍然會探測往 `1.1.1.1`。
 
 ### 3.4 · 可選檢查（`Checks`）
 
