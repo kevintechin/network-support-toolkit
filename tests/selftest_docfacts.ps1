@@ -82,6 +82,7 @@ $EnIt = 'healthcheck\en-US\NetworkHealthCheck_IT_Deployment_Manual_en-US.md'
 $ZhIt = 'healthcheck\zh-TW\NetworkHealthCheck_IT_Deployment_Manual_zh-TW.md'
 $Guide = 'healthcheck\docs\NetworkHealthCheck_Technical_Guide_en-US.md'
 $Field = 'sop\support-engineer-field-manual.md'
+$FieldHtml = 'sop\support-engineer-field-manual.html'
 
 # 1 - the control: the copy as it stands has to pass, in both scopes.
 Assert-Clean 'the untouched copy passes' @()
@@ -169,6 +170,26 @@ Assert-Catches 'the first number of a zh-TW compound reference' 'F1' {
 }
 Assert-Catches 'an executable misspelt inside a command span' 'E1' {
     Write-All $EnIt ((Read-All $EnIt) + "`r`nRun ``powershell -NoProfile -File NetworkHealthCheckX.ps1 -ConsoleOnly`` to see it.`r`n")
+}
+
+# 5d - the forms round 3 of PR #23 found unguarded: an exit code reached through a variable, a tag dropped from the
+# page and not from the markdown, a path read from the document's own folder, and the section-sign form.
+Assert-Catches 'an exit code changed in one language' 'A3' {
+    Write-All $ZhScript ((Read-All $ZhScript) -replace '\$exitCode = 1', '$exitCode = 2')
+}
+Assert-Catches 'what one script exits with, where it is not a literal' 'A3b' {
+    Write-All $ZhScript ((Read-All $ZhScript) -replace 'Start-ConsoleMode', 'Start-OtherMode')
+}
+Assert-Catches 'a tag dropped from the field manual page only' 'D2' {
+    Write-All $FieldHtml ((Read-All $FieldHtml) -replace '<code>routes</code>', '<code>routes-x</code>')
+}
+Assert-Catches 'a parent-relative path that resolves to nothing' 'E1' {
+    Write-All $Guide ((Read-All $Guide) + "`r`nThe record is ``../VALIDATIONX.md``.`r`n")
+}
+Assert-Catches 'a section-sign reference that does not exist' 'F1' {
+    # The filler keeps the reference clear of the closing list, which names other documents: a reference within 40
+    # characters of one of those names is read as pointing at them, and would be skipped for the right reason.
+    Write-All $Field ((Read-All $Field) + "`r`n" + ('-' * 60) + "`r`nSee " + [char]0x00A7 + "99 for the rest.`r`n")
 }
 
 # 6 - and the control again, to prove every mutation was put back

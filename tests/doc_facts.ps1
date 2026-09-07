@@ -78,14 +78,17 @@ function Get-CodeSpans([string]$path) {
     }
     return @($out | Sort-Object -Unique)
 }
-function Get-ScriptTags([string]$scriptPath) {
-    # Every -Tag argument, from the AST rather than from a regular expression: a tag can be reached through a variable
-    # ($pingTag is "ping-target", or "ping-gateway" for AUTO_GATEWAY), and a pattern over the file text does not see
-    # those at all - which left two live tags outside every check below.
+function Get-ScriptFacts([string]$scriptPath) {
+    # The -Tag arguments and the exit codes, from the AST rather than from a regular expression: both can be reached
+    # through a variable ($pingTag is "ping-target", or "ping-gateway" for AUTO_GATEWAY; the entry points end on
+    # "exit $exitCode"), and a pattern over the file text sees neither - which left two live tags and every exit code
+    # but one outside the checks below.
     $tokens = $null; $errors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
     $found = New-Object System.Collections.Generic.List[string]
     $unresolved = New-Object System.Collections.Generic.List[string]
+    $exits = New-Object System.Collections.Generic.List[string]
+    $exitShapes = New-Object System.Collections.Generic.List[string]
     $assigned = @{}
     $computed = @{}
     foreach ($a in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)) {
@@ -100,9 +103,9 @@ function Get-ScriptTags([string]$scriptPath) {
             $node = $(if ($elements.Count -eq 1) { $elements[0] } else { $null })
         }
         $expr = $(if ($node -is [System.Management.Automation.Language.CommandExpressionAst]) { $node.Expression } else { $null })
-        if ($expr -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+        if ($expr -is [System.Management.Automation.Language.ConstantExpressionAst]) {
             if (-not $assigned.ContainsKey($name)) { $assigned[$name] = New-Object System.Collections.Generic.List[string] }
-            $assigned[$name].Add($expr.Value)
+            $assigned[$name].Add([string]$expr.Value)
         } else {
             if (-not $computed.ContainsKey($name)) { $computed[$name] = New-Object System.Collections.Generic.List[string] }
             $computed[$name].Add($a.Right.Extent.Text + ' at line ' + $a.Extent.StartLineNumber)
@@ -127,7 +130,29 @@ function Get-ScriptTags([string]$scriptPath) {
             else { $unresolved.Add($arg.Extent.Text + ' at line ' + $arg.Extent.StartLineNumber) }
         }
     }
-    return @{ Tags = @($found | Sort-Object -Unique); Unresolved = @($unresolved | Sort-Object -Unique) }
+    # An exit statement's argument, read the same way. A3 compares the two languages on the literals and on the shapes
+    # of whatever is not a literal ("Start-ConsoleMode"), so a changed exit code is caught in either form.
+    foreach ($e in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.ExitStatementAst] }, $true)) {
+        $node = $e.Pipeline
+        if ($node -is [System.Management.Automation.Language.PipelineAst]) {
+            $elements = @($node.PipelineElements)
+            $node = $(if ($elements.Count -eq 1) { $elements[0] } else { $null })
+        }
+        $expr = $(if ($node -is [System.Management.Automation.Language.CommandExpressionAst]) { $node.Expression } else { $null })
+        if ($expr -is [System.Management.Automation.Language.ConstantExpressionAst]) { $exits.Add([string]$expr.Value) }
+        elseif ($expr -is [System.Management.Automation.Language.VariableExpressionAst]) {
+            $name = $expr.VariablePath.UserPath
+            if ($assigned.ContainsKey($name)) { foreach ($v in $assigned[$name]) { $exits.Add([string]$v) } }
+            if ($computed.ContainsKey($name)) { foreach ($v in $computed[$name]) { $exitShapes.Add(($v -replace ' at line \d+$', '')) } }
+            if (-not ($assigned.ContainsKey($name) -or $computed.ContainsKey($name))) { $exitShapes.Add('$' + $name + ' is never assigned') }
+        }
+        elseif ($null -eq $expr) { $exitShapes.Add('exit with no argument') }
+        else { $exitShapes.Add($expr.Extent.Text) }
+    }
+    return @{
+        Tags = @($found | Sort-Object -Unique); Unresolved = @($unresolved | Sort-Object -Unique)
+        ExitCodes = @($exits | Sort-Object -Unique); ExitShapes = @($exitShapes | Sort-Object -Unique)
+    }
 }
 function Get-CodeBlocks([string]$path) {
     $text = Read-Text $path
@@ -142,14 +167,15 @@ function Get-CodeBlocks([string]$path) {
 
 # ----------------------------------------------------------------- ground truth
 $Languages = @('en-US', 'zh-TW')
-$tags = @{}; $unresolvedTags = @{}; $fingerprints = @{}; $fingerprintTitles = @{}; $exitCodes = @{}; $configKeys = @{}
+$tags = @{}; $unresolvedTags = @{}; $fingerprints = @{}; $fingerprintTitles = @{}; $exitCodes = @{}; $exitShapes = @{}; $configKeys = @{}
 foreach ($lang in $Languages) {
     $scriptPath = Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1')
     $text = Read-Text $scriptPath
-    $tagScan = Get-ScriptTags $scriptPath
-    $tags[$lang] = $tagScan.Tags
-    $unresolvedTags[$lang] = $tagScan.Unresolved
-    $exitCodes[$lang] = @([regex]::Matches($text, '(?m)^\s*exit\s+(\d+)\s*$') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+    $facts = Get-ScriptFacts $scriptPath
+    $tags[$lang] = $facts.Tags
+    $unresolvedTags[$lang] = $facts.Unresolved
+    $exitCodes[$lang] = $facts.ExitCodes
+    $exitShapes[$lang] = $facts.ExitShapes
 
     # The fingerprint chain, read from the function itself rather than from the whole file: $key is assigned nowhere
     # else in it, but a regex over the file would not know that.
@@ -207,12 +233,13 @@ if (-not $PackageOnly) {
 $AllDocs = @($ItManuals + $UserManuals + $Guides + $FieldManual)
 foreach ($d in $AllDocs) { if (-not (Test-Path -LiteralPath $d)) { throw ('document not found: ' + $d) } }
 Write-Output ("Documents: {0} in the package{1}" -f (@($ItManuals + $UserManuals + $Guides)).Count, $(if ($PackageOnly) { '' } else { ', 2 in sop/' }))
-Write-Output ("Identifiers: {0} tags, {1} fingerprints, {2} configuration keys, exit code(s) {3}" -f $tags['en-US'].Count, $fingerprints['en-US'].Count, $configKeys['en-US'].Count, ($exitCodes['en-US'] -join '/'))
+Write-Output ("Identifiers: {0} tags, {1} fingerprints, {2} configuration keys, exit code(s) {3}{4}" -f $tags['en-US'].Count, $fingerprints['en-US'].Count, $configKeys['en-US'].Count, ($exitCodes['en-US'] -join '/'), $(if ($exitShapes['en-US'].Count) { ' plus ' + ($exitShapes['en-US'] -join ', ') } else { '' }))
 
 # --------------------------------------------------- A. the two languages agree
 Assert-SetEqual 'A1 result tags are the same in both scripts' $tags['zh-TW'] $tags['en-US']
 Assert-SetEqual 'A2 fingerprint keys are the same in both scripts' $fingerprints['zh-TW'] $fingerprints['en-US']
 Assert-SetEqual 'A3 exit codes are the same in both scripts' $exitCodes['zh-TW'] $exitCodes['en-US']
+Assert-SetEqual 'A3b what the scripts exit with, where it is not a literal, is the same' $exitShapes['zh-TW'] $exitShapes['en-US']
 Assert-SetEqual 'A4 configuration keys are the same in both files' $configKeys['zh-TW'] $configKeys['en-US']
 foreach ($lang in $Languages) {
     # Every fingerprint the chain can select has a title and its advice lines; "healthy" is the switch's default.
@@ -261,8 +288,11 @@ if (-not $PackageOnly) {
     $stale = @($InternalTags | Where-Object { $tags['en-US'] -notcontains $_ })
     Assert-True 'D1 the internal-tag list has no stale entry' ($stale.Count -eq 0) ('no longer in the script: ' + ($stale -join ', '))
     $documentedTags = @($tags['en-US'] | Where-Object { $InternalTags -notcontains $_ })
-    $spans = Get-CodeSpans $FieldManual[0]
-    Assert-Covered ("D2 every result tag is documented ({0} of {1}; the rest are internal)" -f $documentedTags.Count, $tags['en-US'].Count) $documentedTags $spans
+    # Both formats: a tag dropped from the page and not from the markdown is exactly the drift this step exists for.
+    foreach ($doc in $FieldManual) {
+        $spans = Get-CodeSpans $doc
+        Assert-Covered ("D2 [{0}] every result tag is documented ({1} of {2}; the rest are internal)" -f (Split-Path -Leaf $doc), $documentedTags.Count, $tags['en-US'].Count) $documentedTags $spans
+    }
 }
 
 # --------------------------------- E. the file names the documents send people to
@@ -274,7 +304,7 @@ foreach ($folder in @('', 'en-US', 'zh-TW', 'docs', 'tools')) {
 # A quoted name is checked whether it is bare or carries its folder - "tools\validate_release.py" and
 # "en-US\Start-NetworkCheck-IT.cmd" are references a reader follows, and a misspelling in either form used to pass.
 # Runtime artefacts are outside the shape on purpose: they are .txt and nobody ships them.
-$fileSpanPattern = '^(?:(en-US|zh-TW|docs|tools)[\\/])?([A-Za-z0-9][A-Za-z0-9_.\-]*\.(?:ps1|cmd|py|json|md|html))$|^SHA256SUMS\.txt$'
+$fileSpanPattern = '^(?:\.\.[\\/])*(?:(en-US|zh-TW|docs|tools)[\\/])?([A-Za-z0-9][A-Za-z0-9_.\-]*\.(?:ps1|cmd|py|json|md|html))$|^SHA256SUMS\.txt$'
 $packagePaths = New-Object System.Collections.Generic.List[string]
 foreach ($folder in @('en-US', 'zh-TW', 'docs', 'tools')) {
     $path = Join-Path $PackageDir $folder
@@ -294,9 +324,12 @@ foreach ($doc in $AllDocs) {
     $absent = @($quoted | Where-Object {
         $normal = $_ -replace '\\', '/'
         $inPackage = $(if ($normal -like '*/*') { $packagePaths -contains $normal } else { $packageFiles -contains $normal })
-        # The technical guide points at the repository's own design note - "docs/design-v1.2-triage-wizard.md in the
-        # repository" - which is a real file the package does not carry, so a path that resolves in the checkout counts.
-        -not ($inPackage -or (Test-Path -LiteralPath (Join-Path $RepoRoot $normal)))
+        # A path is read from where the document sits, which is what "../VALIDATION.md" in every technical-guide copy
+        # means; the package-relative and the checkout-relative readings follow, because the guide also points at
+        # "docs/design-v1.2-triage-wizard.md in the repository", a real file the package does not carry.
+        $fromDocument = $false
+        try { $fromDocument = Test-Path -LiteralPath (Join-Path (Split-Path -Parent $doc) $normal) } catch { $fromDocument = $false }
+        -not ($inPackage -or $fromDocument -or (Test-Path -LiteralPath (Join-Path $RepoRoot $normal)))
     })
     Assert-True ("E1 [{0}] the {1} file name(s) it quotes are in the package" -f $name, $quoted.Count) ($absent.Count -eq 0) ('not in the package: ' + ($absent -join ', '))
 }
@@ -314,6 +347,7 @@ $OtherDocumentReference = '(?i)(manual|guide|sop|template|readme|page|\u624b\u51
 $SectionNumber = '[0-9]+(?:\.[0-9]+)?'
 $SectionPatterns = @(
     ('(?i)\bsections?\s+(' + $SectionNumber + '(?:\s*(?:,|and|&)\s*' + $SectionNumber + ')*)'),
+    ('\u00a7\s*(' + $SectionNumber + '(?:\s*(?:,|and|&|\u3001)\s*\u00a7?\s*' + $SectionNumber + ')*)'),
     ('\u7b2c\s*(' + $SectionNumber + '(?:\s*(?:\u3001|,|\u8207|\u548c|\u53ca)\s*(?:\u7b2c\s*)?' + $SectionNumber + ')*)\s*\u7bc0'))
 foreach ($doc in $MarkdownDocs) {
     $name = Split-Path -Leaf $doc
