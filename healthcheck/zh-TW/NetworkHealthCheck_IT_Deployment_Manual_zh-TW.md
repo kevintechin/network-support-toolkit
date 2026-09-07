@@ -303,7 +303,7 @@ python tools\validate_release.py .
 | 下載的 ZIP 帶有**網路標記** | 啟動器出現「開啟檔案 - 安全性警告」；按「執行」後工具照常運作 | 沒有東西，除非使用者取消 |
 | **群組原則設定的執行原則**（`MachinePolicy`／`UserPolicy`，例如 *AllSigned*） | 蓋過啟動器的程序範圍 Bypass：腳本不會啟動。PowerShell 印出自己的訊息（英文 Windows 上是「…NetworkHealthCheck.ps1 is not digitally signed. You cannot run this script on the current system…」，中文 Windows 則是它的中文版本），啟動器回報非零的結束代碼並暫停，`LauncherError.txt` 建議閱讀上方的訊息並請 IT 允許程式 | `LauncherError.txt` 和主控台的文字。沒有環境報告：腳本根本沒跑 |
 | **PowerShell 被限制在受限語言模式**：強制執行的應用程式控制政策（WDAC）對不允許的腳本做的事，以及 `__PSLockdownPolicy` 對每支腳本做的事 | 腳本最前面幾行偵測到不是 *FullLanguage* 的模式，在任何檢測之前停下：結束代碼 3、原因印在主控台，並在程式旁邊（該資料夾不可寫或是壓縮檔檢視時，改在 `%TEMP%`）寫出 `NetworkHealthCheck_ENVIRONMENT_<時間>.txt`，載明原因、語言模式、工具版本、電腦名稱、使用者、腳本資料夾、PowerShell 版本、地區設定與作業系統，以及「IT 可以怎麼做」下的兩行：在應用程式控制政策（WDAC / AppLocker）中放行 `NetworkHealthCheck.ps1`，或改在沒有這項限制的電腦上執行檢測。啟動器會解釋結束代碼 3 並指向這個檔案。在兩台機器上以 `__PSLockdownPolicy` 量測過；沒有量測過強制執行 WDAC 的機器 | 環境報告和 `LauncherError.txt` |
-| **AppLocker 指令碼規則** | 沒有量測到它生效：唯一一台回報政策在強制執行、且判定拒絕這支腳本的機器，還是不受限制地跑完了它（`VALIDATION.md` 的待辦 #31）。強制執行的規則會拒絕腳本，還是讓它在上面那種受限模式裡跑，都還沒有觀察到 | 看結果產生上面兩個檔案中的哪一個 |
+| **AppLocker 指令碼規則** | 沒有量測到它生效：唯一一台回報政策在強制執行、且判定拒絕這支腳本的機器，還是不受限制地跑完了它（待辦 #31，在 repo 的待辦頁，見第 10 節）。強制執行的規則會拒絕腳本，還是讓它在上面那種受限模式裡跑，都還沒有觀察到 | 看結果產生上面兩個檔案中的哪一個 |
 | **EDR 或防毒**擋住 `powershell.exe` 或腳本 | 沒有量測：驗收執行沒有包含裝了這類產品的機器。啟動器回報它拿到的結束代碼並寫出 `LauncherError.txt` | `LauncherError.txt` 和該產品自己的記錄 |
 
 **要向使用者要什麼**，使用手冊第 6 節逐列寫了；環境報告和 `LauncherError.txt` 就是為這個交接而寫的。`LauncherError.txt` 在啟動器旁邊，那個資料夾無法寫入時改寫在 `%TEMP%` 的 `NetworkHealthCheck_LauncherError.txt`，欄位較少。
@@ -338,7 +338,8 @@ python tools\validate_release.py .
 
 - **使用手冊**：`NetworkHealthCheck_User_Manual_zh-TW.html`（或 `.md`）：使用者看到什麼、整體結果與標籤、報告裡有什麼、跑不起來時怎麼辦。
 - **技術文件**：`NetworkHealthCheck_Technical_Guide_zh-TW.md`：設計、每一條判定規則、驗證方式、已知限制、版本歷程。
-- **驗證記錄**：`VALIDATION.md`：每一版的證據、在其他機器上的驗收執行、待辦清單。
+- **驗證記錄**：`VALIDATION.md`：每一版的證據，以及在其他機器上的驗收執行。
+- **待辦清單**：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.4/docs/backlog.md>（英文）：已知還沒做的事，以及每一項要怎樣才算結案。它和第 8 節的應用程式控制那一頁一樣放在 repo 而不在套件裡，因為它在兩次發行之間就會變動。
 - **Repo**：<https://github.com/kevintechin/network-support-toolkit>：發行版本、驗證鏈（`tests`）、支援工程師現場手冊與報告範本（`sop`），以及第 8 節提到的應用程式控制頁面。
 
 ---
