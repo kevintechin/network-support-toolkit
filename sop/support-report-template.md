@@ -95,7 +95,7 @@ Three rules for filling it in:
 | Evidence | Obtained | Source and coverage `[hand-off]` | If not obtained, why | Effect on the analysis |
 |---|---|---|---|---|
 | Topology of the affected path | yes · partial · no | *who drew it; which devices and ports it covers, and where it stops* | | |
-| Device logs covering the failure window | yes · partial · no | *which devices; the window they cover, and whether their clocks agree* | | |
+| Device logs covering the failure window | yes · partial · no | *which devices; the window they cover; their clocks — time zone, synchronized or not, and the measured offset where one was out* | | |
 | Config exports of the devices in the path | yes · partial · no | *which devices, and that the secrets were removed* | | |
 
 *The third column names devices, ports and people: it is `[hand-off]` — delete that column for a delivery report and keep the rest. Reasons that belong in the fourth: no access, the reporter does not know, a third-party-managed device, logs no longer retained, the window already rotated out. The fifth is written so that either report can carry it — "the switch's records were not available, so the port's VLAN is unverified" — and §4 and §5 have to agree with it.*

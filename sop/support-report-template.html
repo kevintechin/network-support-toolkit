@@ -176,7 +176,7 @@
     <table class="grid" style="margin-top:.5rem">
       <tr><th>Evidence</th><th>Obtained</th><th>Source and coverage <span class="mark ho">hand-off</span></th><th>If not obtained, why</th><th>Effect on the analysis</th></tr>
       <tr><td class="lbl">Topology of the affected path</td><td class="hint">yes · partial · no</td><td class="hint">who drew it; which devices and ports it covers, and where it stops</td><td></td><td></td></tr>
-      <tr><td class="lbl">Device logs covering the failure window</td><td class="hint">yes · partial · no</td><td class="hint">which devices; the window they cover, and whether their clocks agree</td><td></td><td></td></tr>
+      <tr><td class="lbl">Device logs covering the failure window</td><td class="hint">yes · partial · no</td><td class="hint">which devices; the window they cover; their clocks — time zone, synchronized or not, and the measured offset where one was out</td><td></td><td></td></tr>
       <tr><td class="lbl">Config exports of the devices in the path</td><td class="hint">yes · partial · no</td><td class="hint">which devices, and that the secrets were removed</td><td></td><td></td></tr>
     </table>
     <p class="hint" style="margin-top:.55rem">The third column names devices, ports and people: it is <span class="mark ho">hand-off</span> — delete that column for a delivery report and keep the rest. Reasons that belong in the fourth: no access, the reporter does not know, a third-party-managed device, logs no longer retained, the window already rotated out. The fifth is written so that either report can carry it — "the switch's records were not available, so the port's VLAN is unverified" — and §4 and §5 have to agree with it.</p>
