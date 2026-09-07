@@ -4,7 +4,7 @@
 
 Version 1.0 · Kevin (Te-Chin) Lin · September 2026
 
-Companion to the [Network Troubleshooting SOP v1.1](network-troubleshooting-sop.md). Written against NetworkHealthCheck **1.2.3**; behaviour that is version-specific is marked as such.
+Companion to the [Network Troubleshooting SOP v1.2](network-troubleshooting-sop.md). Written against NetworkHealthCheck **1.2.3**; behaviour that is version-specific is marked as such.
 
 ---
 
@@ -226,18 +226,18 @@ The SOP's package asks for eight things. **The report fully covers none of them.
 
 | SOP package item | Covered by the report? |
 |---|---|
-| Topology sketch of the affected path | **No** — draw it |
+| Topology sketch of the affected path | **No** — draw it; what it has to show is in the SOP's *Collecting the infrastructure evidence* |
 | Blast radius, timeline, what changed | **No** — your notes |
 | What you excluded, with the evidence | **Partly** — the passing rows are the exclusions; say in words what they exclude |
 | Raw outputs — `ipconfig` / `ping` / `tracert`, **and the relevant switch and AP status pages** | **Partly** — the reports carry *measured values*, not command output: selected fields and synthesized summaries, with Method and Manual-check lines naming the command that would reproduce each. Where the escalation asks for raw output, run those commands and attach what they print. The **switch and AP status pages are not covered at all** — the tool never reads a device; they are yours to capture |
-| Device logs covering the failure window | **No** — switch / AP / firewall |
-| Config exports of the devices in the path | **No** |
+| Device logs covering the failure window | **No** — switch / AP / firewall; which devices, what window, and the clock note: same SOP sub-section |
+| Config exports of the devices in the path | **No** — and the secrets come out of the file before it travels: same SOP sub-section |
 | Reproduction steps and the workaround | **No** |
 | Business impact and severity | **No** |
 
 Attach whichever of the three formats the run actually wrote — the **HTML** where it exists (readable by anyone) and the **JSON** (machine-readable, schema 2, carries the run options and the fingerprint). A run that wrote only TXT and JSON is a supported outcome, not a failed run. Name in the ticket, in this order: the machine, the time of the run, the verdict, the fingerprint, and one sentence saying what the run excluded. The [support report template](support-report-template.md) beside this manual carries those five facts and the rest of the package in one skeleton — the hand-off and the delivery report are the same document with two fill patterns.
 
-**Personal data.** The package's own privacy list (the user manual, §5 "Sending the report to IT", *What the report contains*) is the list to go by: it is longer than the four fields the report's summary names — it runs from the computer and user names through the adapters' MAC and IP data, the Wi-Fi SSID and BSSID, the proxy settings and the first-hop routers to the configuration and report paths — and it is maintained with the tool, so read it there rather than from memory. The package's instruction is unconditional — handle them according to company policy — so apply that policy **before a report is stored or shared at all**, and let the policy, not this manual, decide whether an internal ticket is treated differently from an external one.
+**Personal data.** The package's own privacy list (the user manual, §5 "Sending the report to IT", *What the report contains*) is the list to go by: it is longer than the four fields the report's summary names — it runs from the computer and user names through the adapters' MAC and IP data, the Wi-Fi SSID and BSSID, the proxy settings and the first-hop routers to the configuration and report paths — and it is maintained with the tool, so read it there rather than from memory. The package's instruction is unconditional — handle them according to company policy — so apply that policy **before a report is stored or shared at all**, and let the policy, not this manual, decide whether an internal ticket is treated differently from an external one. **And a report is not the only thing you attach:** a device configuration export carries credentials — SNMP communities, Wi-Fi PSKs, RADIUS shared secrets, VPN keys, and anything else in the file that would let someone in — and a device log or a screenshot can carry one too; the rule for taking them out is the SOP's, in *Collecting the infrastructure evidence*, not this manual's.
 
 ---
 

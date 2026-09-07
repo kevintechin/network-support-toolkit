@@ -1,6 +1,6 @@
 # Design — NetworkHealthCheck v1.2 and the SOP triage wizard
 
-Status: Phase A implemented in NetworkHealthCheck 1.2.0 (2026-09-03); Phases B and C open · applies to SOP v1.1
+Status: Phase A implemented in NetworkHealthCheck 1.2.0 (2026-09-03); Phases B and C open · applies to SOP v1.2
 Supersedes the earlier roadmap line "NHC v1.2 — separate User / IT modes".
 
 ## 1. Decisions

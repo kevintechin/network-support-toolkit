@@ -2,7 +2,7 @@
 
 **From the user's chair to the ISP — a fault-isolation playbook**
 
-Version 1.1 · Kevin (Te-Chin) Lin · July 2026
+Version 1.2 · Kevin (Te-Chin) Lin · September 2026
 
 ---
 
@@ -46,6 +46,8 @@ Cut the search space before touching anything.
    | **Gateway OK, internet dead** | Routing / NAT / firewall / ISP |
    | **IP works, names fail** | DNS |
 4. **Constant or intermittent?** — Intermittent points at performance causes: RF interference, congestion, duplex mismatch, retransmissions.
+
+**Sketch the path while you ask.** The blast-radius answer already names the devices between the reporter's machine and the point where the traffic fails. Draw them in a line now — five boxes on paper — rather than at escalation time: the sketch is what you mark up as stations are excluded, and it is the first item in the package below.
 
 ---
 
@@ -184,6 +186,20 @@ Two discriminators, used in order. **Counters first:** climbing CRC or alignment
 - **Device logs** (switch / AP / firewall) covering the failure window, and **config exports** of the devices in the path
 - Reproduction steps, and the current workaround if any
 - Business impact and severity
+
+### Collecting the infrastructure evidence
+
+The sketch, the device logs and the config exports are collected from the devices, and the package is only as good as what they contain. What each has to show:
+
+**Topology sketch — the affected path, not the network.** Every device the traffic crosses between the reporter's machine and the point where it fails, in order. For each one: the device and its management IP, the port the client or the next hop sits on, that port's **VLAN and PVID**, and how the device connects upward — uplink port or LAG, with its member ports. For a wireless case add the AP, the SSID and the VLAN it maps to, and the AP's own uplink port. Five boxes in a line beat a site diagram: the whole network takes an hour to draw and tells L3 less. Mark where your evidence stops — the last device you could actually read.
+
+**Device logs — the failure window, with a margin.** Which devices: the ones on the path — the access switch, the AP or its controller, the firewall — and the server whose lane is in play: DHCP, RADIUS, or the DNS resolver or forwarder the client actually points at. Take the window **with a margin on both sides** — starting before the first report, because the event that explains a failure usually precedes what the user noticed, and ending past the recovery. **A hand-off while the fault is still live has no recovery to end at** — the timebox and the severity rules both produce one — so run the window to the moment you export, say in the ticket that it is still open, and send a second export once it recovers. Record each device's **time zone** and whether its clock is synchronized: logs from two devices whose clocks disagree cannot be put on one timeline. Where a clock is not synchronized, read it against a reliable reference at the moment you export and **write the offset down** — the number of minutes, not just the fact — because that is what lets L3 shift those events onto the shared timeline; an unsynchronized clock belongs in the ticket rather than being quietly corrected for. Export text where the device offers it; a screenshot of a log page is evidence for one screen. **A log can carry a secret as well** — a token in a logged URL, a password typed into the username field, an authentication debug trace — so it travels under the same rule as a config export: read it before it goes, and redact what you find. Screenshots too.
+
+**Config exports — the running config, with the secrets out.** The **running** configuration of each device on the path — that is what the device is doing now; where the device also keeps a startup copy, a difference between the two is itself a finding: a change nobody saved, or a reboot that would undo it. **Take it before your first change.** A config exported after you have touched something records the state you made, not the one the fault happened in — take a timestamped copy before the first change and keep the later ones, so the pair lets L3 check what the report template's *What was tried* table says you did. **Take the secrets out before the file travels** — before it is attached to a ticket, pasted into a chat, or copied to a share. **The rule is every password, key, token and credential in the file, and it is not a list to tick off:** read the export through once looking for anything that would let someone in. The ones most often left behind are SNMP community strings and SNMPv3 auth/priv keys, Wi-Fi PSKs, RADIUS and TACACS shared secrets, local account credentials and their hashes, VPN pre-shared keys, private keys and the passphrases that protect them, routing-protocol authentication keys, and API or controller tokens — but a config you have not read is not a config you have cleaned.
+
+**Before any of it travels: redact the value, not the line.** Replace the secret itself with a visible marker and leave the rest of the line standing: an SNMP community line also carries its access mode and its ACL, a routing-protocol key line carries its key id, and those are exactly what L3 has to check. **A public certificate is not a secret either** — its issuer, its subject and SAN, its validity dates and its chain are often the evidence itself when a certificate-backed RADIUS, VPN or TLS handshake is what failed — so take out the private key and leave the certificate standing. A whole line deleted silently reads as a setting that was never there. And a password the device prints in its own encrypted or hashed form is still a secret — some of those forms reverse trivially, and the rest are worth an offline attack — so redact it like any other rather than trusting the display.
+
+**What you could not get travels too.** Say which of the three you could not obtain, and why — no access, a third-party-managed device, logs already rotated out. The package asks for *what you excluded, with the evidence that excludes it*: a station whose evidence you never obtained is **not excluded**, it is unexamined, and a blank line invites L3 to assume somebody looked. The [support report template](support-report-template.md) carries a row for each of the three, with columns for why an item was not obtained and what its absence does to the analysis.
 
 ---
 
