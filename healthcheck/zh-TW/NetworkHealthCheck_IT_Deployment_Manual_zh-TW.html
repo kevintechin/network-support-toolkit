@@ -282,7 +282,7 @@
       <tr><td>設定檔</td><td><span class="badge error">無法檢查</span></td><td>檔案不存在或不是合法 JSON；用內建預設值跑了。整體結果為檢測未完整</td></tr>
       <tr><td>設定值驗證</td><td><span class="badge error">無法檢查</span></td><td>有無效值：<code>Expected</code> 底下解析不了的 IPv4 位址、網段、前綴、閘道或 DNS 伺服器，不是 <code>true</code>、<code>false</code>、<code>null</code> 的 <code>DhcpEnabled</code>，沒有主機或連接埠不在 1–65535 的 TCP 目標，URL 不是絕對 <code>http</code> 或 <code>https</code> 位址的 HTTP 目標，主機空白的 DNS 項目。數量與有問題的值寫在該列的詳細資料裡。值不會被移除：主機或連接埠無效的 TCP 目標、URL 空白的 HTTP 目標，必要時變成它自己的「無法檢查」列，選用時被跳過；主機空白的 DNS 項目被跳過；格式錯誤但不空白的 URL 仍會嘗試，並像連不上的目標一樣失敗；<code>Expected</code> 底下的無效值永遠比對不到任何東西</td></tr>
       <tr><td>設定值驗證</td><td><span class="badge pass">正常</span>：「設定值格式檢查通過。」</td><td>完全沒有東西要報。只有下面那列門檻有話要說時，這一列不會出現</td></tr>
-      <tr><td>設定值門檻</td><td><span class="badge warn">需注意</span></td><td>只在某個次數、逾時、門檻或檢查旗標型別錯誤、超出範圍，或警告值高於嚴重值時出現；詳細資料逐一點名並說明改用了什麼</td></tr>
+      <tr><td>設定值門檻</td><td><span class="badge warn">需注意</span></td><td>只在某個次數、逾時、門檻或檢查旗標型別錯誤、超出範圍，或警告值高於嚴重值時出現；詳細資料逐一點名，被取代的值會說明改用了什麼；順序警告只寫出那一對值，因為它們照寫的值使用（第 3.5 節）</td></tr>
       <tr><td>標準設定</td><td><span class="badge info">資訊</span></td><td><code>Expected</code> 底下沒有規則；設了規則後改出現比對列</td></tr>
       <tr><td>啟動提示</td><td><span class="badge warn">需注意</span></td><td>執行時的狀況：報告資料夾退到暫存資料夾、工具在壓縮檔檢視裡執行、視窗開不起來改用文字模式，或執行選項裡的額外 TCP 目標被忽略</td></tr>
     </table>
@@ -301,14 +301,15 @@
       <tr><td><code>-ConsoleOnly</code></td><td>文字模式；有寫出報告時程序以 0 結束，一份都寫不出來時以 1 結束</td></tr>
       <tr><td><code>-Interactive</code></td><td>帶 IT 面板的視窗，不自動開始（IT 啟動器傳的就是它）</td></tr>
       <tr><td><code>-ExpandDetails</code></td><td>HTML 裡每個「顯示詳細資料」預設展開；同時把這次執行標記為 IT 入口</td></tr>
-      <tr><td><code>-PingTarget</code>、<code>-DnsName</code>、<code>-TcpTarget</code>（host:port）</td><td>額外目標；多個值用逗號、分號或空格分隔，例如 <code>-PingTarget 10.0.0.1,10.0.0.2</code></td></tr>
-      <tr><td><code>-HttpUrl</code></td><td>額外 URL；多個只能用空格分隔，因為逗號和分號在 URL 裡是合法字元</td></tr>
+      <tr><td><code>-PingTarget</code>、<code>-DnsName</code>、<code>-TcpTarget</code>（host:port）</td><td>額外目標。多個值寫成一個逗號分隔的清單：<code>-PingTarget 10.0.0.1,10.0.0.2</code>，從 cmd.exe（<code>powershell -File …</code>）和 PowerShell 提示字元都可以；加了引號的值裡也可以用空格或分號分隔（<code>-PingTarget "10.0.0.1 10.0.0.2"</code>）。見表格下方的說明</td></tr>
+      <tr><td><code>-HttpUrl</code></td><td>額外 URL。多個寫成一個加引號、以空格分隔的值：<code>-HttpUrl "https://a.company.local/ https://b.company.local/"</code>，兩種 shell 都可以。腳本只用空格切開 URL，因為逗號和分號在 URL 裡是合法字元，所以從 cmd.exe 傳 <code>u1,u2</code> 會變成一個無效的 URL；在 PowerShell 提示字元下逗號會組成陣列，可以用。見表格下方的說明</td></tr>
       <tr><td><code>-PingCount</code>、<code>-SampleSeconds</code>、<code>-TracerouteHops</code></td><td>這次執行覆蓋設定檔的值；跳數不在 1–10 內退回 3</td></tr>
       <tr><td><code>-NoTraceroute</code>、<code>-NoWifi</code></td><td>略過這兩項診斷</td></tr>
       <tr><td><code>-ConfigPath &lt;檔案&gt;</code></td><td>載入另一個設定檔（第 3 節）</td></tr>
       <tr><td><code>-STA</code>（PowerShell 自己的參數）</td><td>視窗啟動器會加的；<code>-ConsoleOnly</code> 不需要</td></tr>
     </table>
-    <p><b>額外目標算什麼。</b> 額外目標都是選用的，也不屬於任何群組：沒有回應的額外 Ping，以及連不上的額外 TCP 或 HTTP 目標，是「資訊」列，不影響整體結果；品質不佳的 Ping 和解析不出來的額外 DNS 名稱是「需注意」列。格式不是 <code>host:port</code> 的額外 TCP 目標會被丟掉，並留下一列「啟動提示」警告（「已忽略額外 TCP 目標「…」：格式應為 host:port。」）。這些列的標題是「額外 Ping」、「額外 DNS」、「額外 TCP」、「額外 URL」。</p>
+    <div class="flag"><b>兩種要避免的寫法。</b> 用空格再接第二個值（<code>-PingTarget a b</code>、<code>-HttpUrl u1 u2</code>）不是第二個目標：PowerShell 會把它繫結到腳本的第一個位置參數 <code>-ConfigPath</code>，於是這次執行載入不到設定檔（「找不到設定檔：b」、一列「無法檢查」、內建預設值、整體結果為檢測未完整），而且只測第一個值；從 cmd.exe 和 PowerShell 提示字元都量測過。另外在 PowerShell 提示字元下，沒加引號的分號會結束陳述式：<code>-PingTarget a;b</code> 只測 <code>a</code>，然後把 <code>b</code> 當成命令執行；cmd.exe 則會原樣傳入。上面的逗號寫法和加引號的寫法可以避開這兩者。</div>
+    <p style="margin-top:.8rem"><b>額外目標算什麼。</b> 額外目標都是選用的，也不屬於任何群組：沒有回應的額外 Ping，以及連不上的額外 TCP 或 HTTP 目標，是「資訊」列，不影響整體結果；品質不佳的 Ping 和解析不出來的額外 DNS 名稱是「需注意」列。格式不是 <code>host:port</code> 的額外 TCP 目標會被丟掉，並留下一列「啟動提示」警告（「已忽略額外 TCP 目標「…」：格式應為 host:port。」）。這些列的標題是「額外 Ping」、「額外 DNS」、「額外 TCP」、「額外 URL」。</p>
     <p><b>這次執行的選項記在哪裡。</b> 報告標頭的「執行設定」一行：<code>IT 入口 | 額外目標：ping 10.0.0.1, tcp fileserver:445 | Ping 次數 4 | 取樣 20 秒 | traceroute 3 跳</code>，關掉的檢查以「已停用：…」列出；以及 JSON 的 <code>RunOptions</code>：<code>EntryPoint</code>、<code>ExpandDetails</code>、<code>ExtraTargets</code>（接受的值）、<code>RawTargets</code>（輸入的原文）、<code>PingCount</code>、<code>SampleSeconds</code>、<code>TracerouteHops</code>、<code>ChecksEnabled</code>。</p>
   </div>
 </section>
