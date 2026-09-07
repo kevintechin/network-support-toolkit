@@ -258,7 +258,7 @@
       <tr><td><code>TracerouteHops</code></td><td>3</td><td>1 到 10；其他值退回 3 並附警告。三跳看得出封包停在哪裡，通常到不了公網目標</td></tr>
       <tr><td><code>DriverInfo</code></td><td><code>true</code></td><td>每張已連線實體網卡的驅動程式版本、日期與廠商</td></tr>
     </table>
-    <p>不是 <code>true</code> 或 <code>false</code> 的旗標會停用該檢查，並被指出。</p>
+    <p>不是 <code>true</code> 或 <code>false</code> 的旗標會停用該檢查；其他型別的值會在設定值門檻列被指出，<code>null</code> 則不會，檢查只是關掉了。</p>
 
     <h3>3.5 · 門檻值</h3>
     <p>預設值是通用的起始點。各列拿它們怎麼判定，照程式碼寫出來：</p>
@@ -272,7 +272,7 @@
       <tr><td><code>AdapterErrorWarningDelta</code>、<code>AdapterErrorCriticalDelta</code></td><td>1、10</td><td>取樣期間每張網卡新增的接收加傳送錯誤數：≥ 嚴重 → 異常，≥ 警告 → 需注意。虛擬網卡不論計數一律資訊，取樣期間沒有流量也沒有錯誤的實體網卡也是資訊；計數器倒退是需注意</td></tr>
       <tr><td><code>AdapterDiscardWarningDelta</code>、<code>AdapterDiscardCriticalDelta</code></td><td>1、100</td><td>丟棄封包的同一套規則</td></tr>
     </table>
-    <p>百分比和毫秒可以是小數；次數與增量必須是整數。不是數字的值會被換成預設值並指出。警告值高於嚴重值時，封包遺失、延遲與重傳百分比會被指出並照寫的值使用；網卡增量則悄悄把嚴重值提高到警告值，低於 1 的警告值變成 1。</p>
+    <p>百分比和毫秒可以是小數；次數與增量必須是整數。不是數字的值會被換成預設值並指出；<code>null</code> 會被換成預設值但不指出。警告值高於嚴重值時，封包遺失、延遲與重傳百分比會被指出並照寫的值使用；網卡增量則悄悄把嚴重值提高到警告值，低於 1 的警告值變成 1。</p>
 
     <h3>3.6 · 報告怎麼描述設定檔</h3>
     <p>報告一開始就是設定檔的幾列（設定檔、任何啟動提示，接著設定值驗證與設定值門檻），所以錯誤會出現在使用者不可能錯過的地方；「標準設定」那一列則在較後面比對的位置：</p>
@@ -294,7 +294,7 @@
   <div class="card">
     <p>執行選項只改一次執行，永遠不改檔案。來源有兩個。</p>
     <p><b>IT 面板。</b> <code>Start-NetworkCheck-IT.cmd</code> 開啟的視窗上方有「<b>執行選項（IT）</b>」並停下來等：「就緒，調整選項後按「開始檢測」」。欄位有 <kbd>額外 Ping</kbd>、<kbd>額外 DNS</kbd>、<kbd>額外 TCP（host:port）</kbd>、<kbd>額外 URL</kbd>、<kbd>Ping 次數</kbd>、<kbd>取樣秒數</kbd>；核取方塊 <kbd>Wi-Fi 無線</kbd>、<kbd>Traceroute</kbd> 與 <kbd>Traceroute 跳數</kbd>、<kbd>路由</kbd>、<kbd>閘道 ARP</kbd>、<kbd>Proxy</kbd>、<kbd>驅動程式</kbd> 為這次執行切換可選檢查；<kbd>HTML 預設展開細節</kbd> 預設勾選；<kbd>還原設定檔</kbd> 把每個欄位放回設定檔的值。旋轉鈕涵蓋 1–20 次 Ping 與 1–120 秒；設定檔的值超過這個範圍時範圍會跟著放寬，所以不動面板直接按開始，跑的就是設定檔的值。</p>
-    <p><b>參數。</b> 同樣的選項作為腳本參數，給主控台執行或腳本化執行用：</p>
+    <p><b>參數。</b> 面板上大部分的選項也有腳本參數，給主控台執行或腳本化執行用：額外目標、次數，以及 Wi-Fi 與 traceroute 兩個核取方塊；面板上另外四個核取方塊（路由、閘道 ARP、Proxy、驅動程式）沒有參數，主控台執行時要在以 <code>-ConfigPath</code> 傳入的設定檔裡關掉：</p>
 <pre>powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -ConsoleOnly -PingTarget 10.0.0.1 -TcpTarget fileserver:445 -SampleSeconds 20 -ExpandDetails</pre>
     <table>
       <tr><th>參數</th><th>作用</th></tr>
@@ -304,7 +304,7 @@
       <tr><td><code>-PingTarget</code>、<code>-DnsName</code>、<code>-TcpTarget</code>（host:port）</td><td>額外目標。多個值寫成一個逗號分隔的清單：<code>-PingTarget 10.0.0.1,10.0.0.2</code>，從 cmd.exe（<code>powershell -File …</code>）和 PowerShell 提示字元都可以；加了引號的值裡也可以用空格或分號分隔（<code>-PingTarget "10.0.0.1 10.0.0.2"</code>）。見表格下方的說明</td></tr>
       <tr><td><code>-HttpUrl</code></td><td>額外 URL。多個寫成一個加引號、以空格分隔的值：<code>-HttpUrl "https://a.company.local/ https://b.company.local/"</code>，兩種 shell 都可以。腳本只用空格切開 URL，因為逗號和分號在 URL 裡是合法字元，所以從 cmd.exe 傳 <code>u1,u2</code> 會變成一個無效的 URL；在 PowerShell 提示字元下逗號會組成陣列，可以用。見表格下方的說明</td></tr>
       <tr><td><code>-PingCount</code>、<code>-SampleSeconds</code>、<code>-TracerouteHops</code></td><td>這次執行覆蓋設定檔的值；跳數不在 1–10 內退回 3</td></tr>
-      <tr><td><code>-NoTraceroute</code>、<code>-NoWifi</code></td><td>略過這兩項診斷</td></tr>
+      <tr><td><code>-NoTraceroute</code>、<code>-NoWifi</code></td><td>略過這兩項診斷，也只有這兩項有參數</td></tr>
       <tr><td><code>-ConfigPath &lt;檔案&gt;</code></td><td>載入另一個設定檔（第 3 節）</td></tr>
       <tr><td><code>-STA</code>（PowerShell 自己的參數）</td><td>視窗啟動器會加的；<code>-ConsoleOnly</code> 不需要</td></tr>
     </table>

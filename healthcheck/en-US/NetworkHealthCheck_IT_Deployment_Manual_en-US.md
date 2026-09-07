@@ -169,7 +169,7 @@ The IT diagnostics — IT-scoped rows in the collapsed section at the bottom of 
 | `TracerouteHops` | 3 | 1 to 10; anything else falls back to 3 with a warning. Three hops show where packets stop; they rarely reach a public target |
 | `DriverInfo` | `true` | Driver version, date and maker of every connected physical adapter |
 
-A flag that is not `true` or `false` disables that check and is reported.
+A flag that is not `true` or `false` disables that check; a value of another type is reported in the Thresholds row, a `null` is not — the check is simply off.
 
 ### 3.5 · Thresholds
 
@@ -185,7 +185,7 @@ The defaults are generic starting points. What the rows do with them, read off t
 | `AdapterErrorWarningDelta`, `AdapterErrorCriticalDelta` | 1, 10 | Receive plus send errors added during the sample, per adapter: ≥ critical → Fail, ≥ warning → Warning. A virtual adapter is Information whatever its counters, and so is a physical one that carried no traffic and no errors during the sample; a counter that went backwards is a Warning |
 | `AdapterDiscardWarningDelta`, `AdapterDiscardCriticalDelta` | 1, 100 | The same for discarded packets |
 
-Percentages and milliseconds may be decimals; the counts and deltas must be whole numbers. A value that is not a number is replaced by its default and reported. A warning level above its critical level is reported and used as written for loss, latency and the retransmission percentages; for the adapter deltas the critical level is silently raised to the warning level, and a warning level below 1 becomes 1.
+Percentages and milliseconds may be decimals; the counts and deltas must be whole numbers. A value that is not a number is replaced by its default and reported; a `null` is replaced by its default silently. A warning level above its critical level is reported and used as written for loss, latency and the retransmission percentages; for the adapter deltas the critical level is silently raised to the warning level, and a warning level below 1 becomes 1.
 
 ### 3.6 · What the report says about the configuration
 
@@ -209,7 +209,7 @@ Run options change one run and never the file. They come from two places.
 
 **The IT panel.** `Start-NetworkCheck-IT.cmd` opens the window with **Run options (IT)** at the top and waits: *Ready - adjust the options, then select Start Test.* The fields are **Extra ping**, **Extra DNS**, **Extra TCP (host:port)**, **Extra URL**, **Ping count** and **Sample seconds**; the boxes **Wi-Fi RF**, **Traceroute** with **Traceroute hops**, **Routes**, **Gateway ARP**, **Proxy** and **Drivers** switch the optional checks for this run; **Expand details in HTML** is ticked; **Reset to config** puts every field back to the file's values. The spinners cover 1–20 pings and 1–120 seconds; a configured value above those limits widens the range so the file's value is what an untouched Start runs with.
 
-**The switches.** The same options as parameters of the script, for a console run or a scripted one:
+**The switches.** Most of the panel's options as parameters of the script, for a console run or a scripted one — the extra targets, the counts, and the Wi-Fi and traceroute boxes; the panel's other four boxes (Routes, Gateway ARP, Proxy, Drivers) have no switch, so for a console run they are turned off in a configuration file passed with `-ConfigPath`:
 
 ```text
 powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -ConsoleOnly -PingTarget 10.0.0.1 -TcpTarget fileserver:445 -SampleSeconds 20 -ExpandDetails
@@ -223,7 +223,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 | `-PingTarget`, `-DnsName`, `-TcpTarget` (host:port) | Extra targets. Several values as one comma-separated list — `-PingTarget 10.0.0.1,10.0.0.2` — which works from cmd.exe (`powershell -File …`) and at a PowerShell prompt alike; inside a quoted value they may also be separated by spaces or semicolons (`-PingTarget "10.0.0.1 10.0.0.2"`). See the note below the table |
 | `-HttpUrl` | Extra URLs. Several as one quoted, space-separated value — `-HttpUrl "https://a.company.local/ https://b.company.local/"` — which works from both shells. The script splits URLs on spaces only, because commas and semicolons are legal inside a URL, so `u1,u2` from cmd.exe is one invalid URL; at a PowerShell prompt a comma makes an array and works. See the note below the table |
 | `-PingCount`, `-SampleSeconds`, `-TracerouteHops` | Override the file's values for this run; hops outside 1–10 fall back to 3 |
-| `-NoTraceroute`, `-NoWifi` | Skip those two diagnostics |
+| `-NoTraceroute`, `-NoWifi` | Skip those two diagnostics — the only two with a switch |
 | `-ConfigPath <file>` | Load another configuration file (section 3) |
 | `-STA` (PowerShell's own switch) | What the window launchers add; not needed for `-ConsoleOnly` |
 

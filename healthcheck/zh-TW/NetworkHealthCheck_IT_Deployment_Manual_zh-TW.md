@@ -169,7 +169,7 @@ IT 診斷資料（報告最下方收合區裡 IT 範圍的列，永遠不計入�
 | `TracerouteHops` | 3 | 1 到 10；其他值退回 3 並附警告。三跳看得出封包停在哪裡，通常到不了公網目標 |
 | `DriverInfo` | `true` | 每張已連線實體網卡的驅動程式版本、日期與廠商 |
 
-不是 `true` 或 `false` 的旗標會停用該檢查，並被指出。
+不是 `true` 或 `false` 的旗標會停用該檢查；其他型別的值會在設定值門檻列被指出，`null` 則不會，檢查只是關掉了。
 
 ### 3.5 · 門檻值
 
@@ -185,7 +185,7 @@ IT 診斷資料（報告最下方收合區裡 IT 範圍的列，永遠不計入�
 | `AdapterErrorWarningDelta`、`AdapterErrorCriticalDelta` | 1、10 | 取樣期間每張網卡新增的接收加傳送錯誤數：≥ 嚴重 → 異常，≥ 警告 → 需注意。虛擬網卡不論計數一律資訊，取樣期間沒有流量也沒有錯誤的實體網卡也是資訊；計數器倒退是需注意 |
 | `AdapterDiscardWarningDelta`、`AdapterDiscardCriticalDelta` | 1、100 | 丟棄封包的同一套規則 |
 
-百分比和毫秒可以是小數；次數與增量必須是整數。不是數字的值會被換成預設值並指出。警告值高於嚴重值時，封包遺失、延遲與重傳百分比會被指出並照寫的值使用；網卡增量則悄悄把嚴重值提高到警告值，低於 1 的警告值變成 1。
+百分比和毫秒可以是小數；次數與增量必須是整數。不是數字的值會被換成預設值並指出；`null` 會被換成預設值但不指出。警告值高於嚴重值時，封包遺失、延遲與重傳百分比會被指出並照寫的值使用；網卡增量則悄悄把嚴重值提高到警告值，低於 1 的警告值變成 1。
 
 ### 3.6 · 報告怎麼描述設定檔
 
@@ -209,7 +209,7 @@ IT 診斷資料（報告最下方收合區裡 IT 範圍的列，永遠不計入�
 
 **IT 面板。** `Start-NetworkCheck-IT.cmd` 開啟的視窗上方有「**執行選項（IT）**」並停下來等：「就緒，調整選項後按「開始檢測」」。欄位有「**額外 Ping**」、「**額外 DNS**」、「**額外 TCP（host:port）**」、「**額外 URL**」、「**Ping 次數**」、「**取樣秒數**」；核取方塊「**Wi-Fi 無線**」、「**Traceroute**」與「**Traceroute 跳數**」、「**路由**」、「**閘道 ARP**」、「**Proxy**」、「**驅動程式**」為這次執行切換可選檢查；「**HTML 預設展開細節**」預設勾選；「**還原設定檔**」把每個欄位放回設定檔的值。旋轉鈕涵蓋 1–20 次 Ping 與 1–120 秒；設定檔的值超過這個範圍時範圍會跟著放寬，所以不動面板直接按開始，跑的就是設定檔的值。
 
-**參數。** 同樣的選項作為腳本參數，給主控台執行或腳本化執行用：
+**參數。** 面板上大部分的選項也有腳本參數，給主控台執行或腳本化執行用：額外目標、次數，以及 Wi-Fi 與 traceroute 兩個核取方塊；面板上另外四個核取方塊（路由、閘道 ARP、Proxy、驅動程式）沒有參數，主控台執行時要在以 `-ConfigPath` 傳入的設定檔裡關掉：
 
 ```text
 powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -ConsoleOnly -PingTarget 10.0.0.1 -TcpTarget fileserver:445 -SampleSeconds 20 -ExpandDetails
@@ -223,7 +223,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 | `-PingTarget`、`-DnsName`、`-TcpTarget`（host:port） | 額外目標。多個值寫成一個逗號分隔的清單：`-PingTarget 10.0.0.1,10.0.0.2`，從 cmd.exe（`powershell -File …`）和 PowerShell 提示字元都可以；加了引號的值裡也可以用空格或分號分隔（`-PingTarget "10.0.0.1 10.0.0.2"`）。見表格下方的說明 |
 | `-HttpUrl` | 額外 URL。多個寫成一個加引號、以空格分隔的值：`-HttpUrl "https://a.company.local/ https://b.company.local/"`，兩種 shell 都可以。腳本只用空格切開 URL，因為逗號和分號在 URL 裡是合法字元，所以從 cmd.exe 傳 `u1,u2` 會變成一個無效的 URL；在 PowerShell 提示字元下逗號會組成陣列，可以用。見表格下方的說明 |
 | `-PingCount`、`-SampleSeconds`、`-TracerouteHops` | 這次執行覆蓋設定檔的值；跳數不在 1–10 內退回 3 |
-| `-NoTraceroute`、`-NoWifi` | 略過這兩項診斷 |
+| `-NoTraceroute`、`-NoWifi` | 略過這兩項診斷，也只有這兩項有參數 |
 | `-ConfigPath <檔案>` | 載入另一個設定檔（第 3 節） |
 | `-STA`（PowerShell 自己的參數） | 視窗啟動器會加的；`-ConsoleOnly` 不需要 |
 
