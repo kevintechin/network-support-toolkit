@@ -80,6 +80,7 @@ $EnConfig = 'healthcheck\en-US\NetworkHealthCheck.config.json'
 $ZhConfig = 'healthcheck\zh-TW\NetworkHealthCheck.config.json'
 $EnIt = 'healthcheck\en-US\NetworkHealthCheck_IT_Deployment_Manual_en-US.md'
 $ZhIt = 'healthcheck\zh-TW\NetworkHealthCheck_IT_Deployment_Manual_zh-TW.md'
+$EnItHtml = 'healthcheck\en-US\NetworkHealthCheck_IT_Deployment_Manual_en-US.html'
 $Guide = 'healthcheck\docs\NetworkHealthCheck_Technical_Guide_en-US.md'
 $Field = 'sop\support-engineer-field-manual.md'
 $FieldHtml = 'sop\support-engineer-field-manual.html'
@@ -190,6 +191,21 @@ Assert-Catches 'a section-sign reference that does not exist' 'F1' {
     # The filler keeps the reference clear of the closing list, which names other documents: a reference within 40
     # characters of one of those names is read as pointing at them, and would be skipped for the right reason.
     Write-All $Field ((Read-All $Field) + "`r`n" + ('-' * 60) + "`r`nSee " + [char]0x00A7 + "99 for the rest.`r`n")
+}
+
+# 5e - the forms round 4 of PR #23 found unguarded: the code a called function returns, an executable inside a fenced
+# block, a link destination, and a reference on an HTML page.
+Assert-Catches 'a code the console mode returns, changed in one language' 'A3' {
+    Write-All $ZhScript ((Read-All $ZhScript) -replace 'return 1', 'return 2')
+}
+Assert-Catches 'an executable misspelt in a fenced command block' 'E1' {
+    Write-All $EnIt ((Read-All $EnIt) + "`r`n``````" + "text`r`npowershell -NoProfile -File NetworkHealthCheckY.ps1 -ConsoleOnly`r`n" + "``````" + "`r`n")
+}
+Assert-Catches 'a link that resolves to nothing' 'E2' {
+    Write-All $Field ((Read-All $Field) + "`r`nSee [the SOP](network-troubleshooting-sopX.md).`r`n")
+}
+Assert-Catches 'a section reference on an HTML page' 'F1' {
+    Write-All $EnItHtml ((Read-All $EnItHtml) -replace '</body>', '<p>The rest is in section 97.</p></body>')
 }
 
 # 6 - and the control again, to prove every mutation was put back

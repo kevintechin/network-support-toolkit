@@ -89,6 +89,24 @@ function Get-ScriptFacts([string]$scriptPath) {
     $unresolved = New-Object System.Collections.Generic.List[string]
     $exits = New-Object System.Collections.Generic.List[string]
     $exitShapes = New-Object System.Collections.Generic.List[string]
+    # What each function returns, so that "exit $exitCode" where $exitCode = Start-ConsoleMode is read to the end:
+    # the codes that reach the operating system are the ones that function returns, and a change there is a change in
+    # behaviour that the shape alone would not show.
+    $returns = @{}
+    foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+        $values = New-Object System.Collections.Generic.List[string]
+        foreach ($r in $f.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst] }, $true)) {
+            $node = $r.Pipeline
+            if ($node -is [System.Management.Automation.Language.PipelineAst]) {
+                $elements = @($node.PipelineElements)
+                $node = $(if ($elements.Count -eq 1) { $elements[0] } else { $null })
+            }
+            $expr = $(if ($node -is [System.Management.Automation.Language.CommandExpressionAst]) { $node.Expression } else { $null })
+            if ($expr -is [System.Management.Automation.Language.ConstantExpressionAst]) { $values.Add([string]$expr.Value) }
+            elseif ($null -ne $r.Pipeline) { $values.Add('<' + $r.Pipeline.Extent.Text + '>') }
+        }
+        $returns[$f.Name] = @($values | Sort-Object -Unique)
+    }
     $assigned = @{}
     $computed = @{}
     foreach ($a in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)) {
@@ -143,7 +161,14 @@ function Get-ScriptFacts([string]$scriptPath) {
         elseif ($expr -is [System.Management.Automation.Language.VariableExpressionAst]) {
             $name = $expr.VariablePath.UserPath
             if ($assigned.ContainsKey($name)) { foreach ($v in $assigned[$name]) { $exits.Add([string]$v) } }
-            if ($computed.ContainsKey($name)) { foreach ($v in $computed[$name]) { $exitShapes.Add(($v -replace ' at line \d+$', '')) } }
+            if ($computed.ContainsKey($name)) {
+                foreach ($v in $computed[$name]) {
+                    $shape = $v -replace ' at line \d+$', ''
+                    $exitShapes.Add($shape)
+                    # A call to a function of this script is followed into it: its literal returns are exit codes too.
+                    if ($returns.ContainsKey($shape.Trim())) { foreach ($r in $returns[$shape.Trim()]) { $exits.Add($r) } }
+                }
+            }
             if (-not ($assigned.ContainsKey($name) -or $computed.ContainsKey($name))) { $exitShapes.Add('$' + $name + ' is never assigned') }
         }
         elseif ($null -eq $expr) { $exitShapes.Add('exit with no argument') }
@@ -320,6 +345,9 @@ foreach ($doc in $AllDocs) {
     $quoted = @($spans | Where-Object { $_ -match $fileSpanPattern })
     $quoted += @($spans | Where-Object { $_ -notmatch $fileSpanPattern -and $_ -match '\s' } |
         ForEach-Object { $_ -split '\s+' } | Where-Object { $_ -match $executableTokenPattern })
+    # A fenced block is a command the reader copies whole, so the executables in it are read like any other name; the
+    # config-key check already reads these blocks, and E1 was the one place they were dropped.
+    $quoted += @(Get-CodeBlocks $doc | ForEach-Object { $_ -split '[\s;|]+' } | Where-Object { $_ -match $executableTokenPattern })
     $quoted = @($quoted | Sort-Object -Unique)
     $absent = @($quoted | Where-Object {
         $normal = $_ -replace '\\', '/'
@@ -332,10 +360,51 @@ foreach ($doc in $AllDocs) {
         -not ($inPackage -or $fromDocument -or (Test-Path -LiteralPath (Join-Path $RepoRoot $normal)))
     })
     Assert-True ("E1 [{0}] the {1} file name(s) it quotes are in the package" -f $name, $quoted.Count) ($absent.Count -eq 0) ('not in the package: ' + ($absent -join ', '))
+
+    # And the links a reader clicks: a Markdown target or an href that names a local file has to resolve, from the
+    # folder the document sits in. An absolute URL, a mail address and a bare anchor are somebody else's business.
+    $text = Read-Text $doc
+    $links = New-Object System.Collections.Generic.List[string]
+    foreach ($m in [regex]::Matches($text, '\]\(([^)\s]+)\)')) { $links.Add($m.Groups[1].Value) }
+    foreach ($m in [regex]::Matches($text, 'href="([^"]+)"')) { $links.Add($m.Groups[1].Value) }
+    $local = @($links | Where-Object { $_ -notmatch '^[a-z][a-z0-9+.-]*:' -and $_ -notmatch '^#' } |
+        ForEach-Object { ($_ -split '#')[0] } | Where-Object { $_ } | Sort-Object -Unique)
+    $broken = @($local | Where-Object {
+        $normal = $_ -replace '\\', '/'
+        $resolved = $false
+        try { $resolved = Test-Path -LiteralPath (Join-Path (Split-Path -Parent $doc) $normal) } catch { $resolved = $false }
+        if (-not $resolved) { $resolved = ($packagePaths -contains $normal) -or ($packageFiles -contains $normal) }
+        if (-not $resolved) { try { $resolved = Test-Path -LiteralPath (Join-Path $RepoRoot $normal) } catch { $resolved = $false } }
+        -not $resolved
+    })
+    Assert-True ("E2 [{0}] the {1} local link(s) it carries resolve" -f $name, $local.Count) ($broken.Count -eq 0) ('broken: ' + ($broken -join ', '))
 }
 
 # ------------------------------------------ F. the section numbers a document cites
-$MarkdownDocs = @($AllDocs | Where-Object { $_ -like '*.md' })
+function Get-SectionHeadings([string]$path) {
+    $text = Read-Text $path
+    if ($path -like '*.html') {
+        $out = New-Object System.Collections.Generic.List[string]
+        foreach ($m in [regex]::Matches($text, '(?s)<h[1-4][^>]*>(.*?)</h[1-4]>')) {
+            $inner = (ConvertFrom-HtmlText $m.Groups[1].Value).Trim()
+            if ($inner -match '^([0-9]+(?:\.[0-9]+)?)') { $out.Add($Matches[1]) }
+        }
+        return @($out | Sort-Object -Unique)
+    }
+    return @([regex]::Matches($text, '(?m)^#{2,4}\s+([0-9]+(?:\.[0-9]+)?)\s*') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+}
+function Get-ProseText([string]$path) {
+    # The HTML pages carry their own references, and they are maintained by hand beside the markdown, so they are read
+    # the same way - with the stylesheet and any script removed first, since neither is prose.
+    $text = Read-Text $path
+    if ($path -like '*.html') {
+        $text = [regex]::Replace($text, '(?s)<style[^>]*>.*?</style>', ' ')
+        $text = [regex]::Replace($text, '(?s)<script[^>]*>.*?</script>', ' ')
+        return (ConvertFrom-HtmlText $text)
+    }
+    return $text
+}
+$MarkdownDocs = @($AllDocs)
 # A reference into another document names it just before the number - "the user manual, section 5", "field manual, §7",
 # and the zh-TW documents' own forms. The window is short and has to end at the number, because a whole sentence of
 # prose will contain the word "manual" often enough to swallow a real mistake: the first version of this rule did, and
@@ -351,8 +420,8 @@ $SectionPatterns = @(
     ('\u7b2c\s*(' + $SectionNumber + '(?:\s*(?:\u3001|,|\u8207|\u548c|\u53ca)\s*(?:\u7b2c\s*)?' + $SectionNumber + ')*)\s*\u7bc0'))
 foreach ($doc in $MarkdownDocs) {
     $name = Split-Path -Leaf $doc
-    $text = Read-Text $doc
-    $headings = @([regex]::Matches($text, '(?m)^#{2,4}\s+([0-9]+(?:\.[0-9]+)?)\s*[^\r\n]*') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+    $text = Get-ProseText $doc
+    $headings = Get-SectionHeadings $doc
     if (-not $headings.Count) { continue }
     $bad = New-Object System.Collections.Generic.List[string]
     $cited = 0
