@@ -87,12 +87,25 @@ function Get-ScriptTags([string]$scriptPath) {
     $found = New-Object System.Collections.Generic.List[string]
     $unresolved = New-Object System.Collections.Generic.List[string]
     $assigned = @{}
+    $computed = @{}
     foreach ($a in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)) {
         if (-not ($a.Left -is [System.Management.Automation.Language.VariableExpressionAst])) { continue }
         $name = $a.Left.VariablePath.UserPath
-        foreach ($s in $a.Right.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true)) {
+        # Every assignment counts, not only the ones that happen to carry a literal: a variable that is a string
+        # constant here and a function call there would otherwise look resolved, and the tag the call returns would be
+        # outside every check while A6 stayed green.
+        $node = $a.Right
+        if ($node -is [System.Management.Automation.Language.PipelineAst]) {
+            $elements = @($node.PipelineElements)
+            $node = $(if ($elements.Count -eq 1) { $elements[0] } else { $null })
+        }
+        $expr = $(if ($node -is [System.Management.Automation.Language.CommandExpressionAst]) { $node.Expression } else { $null })
+        if ($expr -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
             if (-not $assigned.ContainsKey($name)) { $assigned[$name] = New-Object System.Collections.Generic.List[string] }
-            $assigned[$name].Add($s.Value)
+            $assigned[$name].Add($expr.Value)
+        } else {
+            if (-not $computed.ContainsKey($name)) { $computed[$name] = New-Object System.Collections.Generic.List[string] }
+            $computed[$name].Add($a.Right.Extent.Text + ' at line ' + $a.Extent.StartLineNumber)
         }
     }
     foreach ($cmd in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
@@ -104,8 +117,11 @@ function Get-ScriptTags([string]$scriptPath) {
             $arg = $e.Argument
             if (($null -eq $arg) -and (($i + 1) -lt $elements.Count)) { $arg = $elements[$i + 1] }
             if ($arg -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $found.Add($arg.Value) }
-            elseif (($arg -is [System.Management.Automation.Language.VariableExpressionAst]) -and $assigned.ContainsKey($arg.VariablePath.UserPath)) {
-                foreach ($v in $assigned[$arg.VariablePath.UserPath]) { $found.Add($v) }
+            elseif ($arg -is [System.Management.Automation.Language.VariableExpressionAst]) {
+                $name = $arg.VariablePath.UserPath
+                if ($computed.ContainsKey($name)) { $unresolved.Add('$' + $name + ' is assigned ' + ($computed[$name] -join '; ')) }
+                elseif ($assigned.ContainsKey($name)) { foreach ($v in $assigned[$name]) { $found.Add($v) } }
+                else { $unresolved.Add('$' + $name + ' at line ' + $arg.Extent.StartLineNumber + ' is never assigned a literal') }
             }
             elseif ($null -eq $arg) { $unresolved.Add('-Tag with no argument at line ' + $e.Extent.StartLineNumber) }
             else { $unresolved.Add($arg.Extent.Text + ' at line ' + $arg.Extent.StartLineNumber) }
@@ -264,9 +280,17 @@ foreach ($folder in @('en-US', 'zh-TW', 'docs', 'tools')) {
     $path = Join-Path $PackageDir $folder
     if (Test-Path -LiteralPath $path) { Get-ChildItem -LiteralPath $path -File | ForEach-Object { $packagePaths.Add(($folder + '/' + $_.Name)) } }
 }
+# A span can be a whole command line - the field manual quotes `powershell ... -File NetworkHealthCheck.ps1 ...` -
+# and the reader runs what it says, so the executables inside one are read as well. Only .ps1, .cmd and .py: a report
+# file name in an example is not a package file, and .txt artefacts are written at run time.
+$executableTokenPattern = '^(?:(en-US|zh-TW|docs|tools)[\\/])?([A-Za-z0-9][A-Za-z0-9_.\-]*\.(?:ps1|cmd|py))$'
 foreach ($doc in $AllDocs) {
     $name = Split-Path -Leaf $doc
-    $quoted = @(Get-CodeSpans $doc | Where-Object { $_ -match $fileSpanPattern })
+    $spans = @(Get-CodeSpans $doc)
+    $quoted = @($spans | Where-Object { $_ -match $fileSpanPattern })
+    $quoted += @($spans | Where-Object { $_ -notmatch $fileSpanPattern -and $_ -match '\s' } |
+        ForEach-Object { $_ -split '\s+' } | Where-Object { $_ -match $executableTokenPattern })
+    $quoted = @($quoted | Sort-Object -Unique)
     $absent = @($quoted | Where-Object {
         $normal = $_ -replace '\\', '/'
         $inPackage = $(if ($normal -like '*/*') { $packagePaths -contains $normal } else { $packageFiles -contains $normal })
@@ -290,7 +314,7 @@ $OtherDocumentReference = '(?i)(manual|guide|sop|template|readme|page|\u624b\u51
 $SectionNumber = '[0-9]+(?:\.[0-9]+)?'
 $SectionPatterns = @(
     ('(?i)\bsections?\s+(' + $SectionNumber + '(?:\s*(?:,|and|&)\s*' + $SectionNumber + ')*)'),
-    ('\u7b2c\s*(' + $SectionNumber + '(?:\s*(?:\u3001|,|\u8207|\u548c|\u53ca)\s*' + $SectionNumber + ')*)\s*\u7bc0'))
+    ('\u7b2c\s*(' + $SectionNumber + '(?:\s*(?:\u3001|,|\u8207|\u548c|\u53ca)\s*(?:\u7b2c\s*)?' + $SectionNumber + ')*)\s*\u7bc0'))
 foreach ($doc in $MarkdownDocs) {
     $name = Split-Path -Leaf $doc
     $text = Read-Text $doc

@@ -157,6 +157,20 @@ Assert-Catches 'a program the package does not carry' 'E1' {
     Write-All $EnIt ((Read-All $EnIt) + "`r`nThe validator is ``tools\validate_release_missing.py``.`r`n")
 }
 
+# 5c - the forms round 2 of PR #23 found unguarded: a tag variable that is also assigned something computed, the
+# zh-TW compound that repeats its marker, and an executable inside a quoted command line.
+Assert-Catches 'a tag variable that is also assigned a computed value' 'A6' {
+    Write-All $EnScript ((Read-All $EnScript) + "`r`n`$pingTag = Get-CustomTag`r`n")
+}
+Assert-Catches 'the first number of a zh-TW compound reference' 'F1' {
+    # "<di> 98 <yu><di> 3 <jie>" - the compound form the zh-TW manuals actually use, with the first number wrong.
+    $reference = [string][char]0x7B2C + ' 98 ' + [char]0x8207 + [char]0x7B2C + ' 3 ' + [char]0x7BC0
+    Write-All $ZhIt ((Read-All $ZhIt) + "`r`n" + $reference + "`r`n")
+}
+Assert-Catches 'an executable misspelt inside a command span' 'E1' {
+    Write-All $EnIt ((Read-All $EnIt) + "`r`nRun ``powershell -NoProfile -File NetworkHealthCheckX.ps1 -ConsoleOnly`` to see it.`r`n")
+}
+
 # 6 - and the control again, to prove every mutation was put back
 Assert-Clean 'the copy is clean again after every mutation' @()
 
