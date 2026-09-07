@@ -20,7 +20,7 @@
 | `NetworkHealthCheck.ps1` | 主要檢測、判定、錯誤處理與報告程式碼。 |
 | `NetworkHealthCheck.config.json` | 公司 IP 標準、測試目標、逾時與門檻。 |
 | `NetworkHealthCheck_User_Manual_*.md`、`.html` | 終端使用者手冊（1.2.4 起）：開始之前、執行檢測、看懂結果、交給 IT、無法執行時怎麼辦。Markdown 與內容相同的單頁 HTML。 |
-| `README_*.txt` | 給 IT 的設定說明：執行選項、公司標準、服務測試、門檻、部署注意事項。 |
+| `NetworkHealthCheck_IT_Deployment_Manual_*.md`、`.html` | IT 部署手冊（1.2.4 起）：需求、逐鍵說明的設定檔、執行選項、部署、套件驗證、安全政策與使用者在政策下看到的畫面、報告。Markdown 與內容相同的單頁 HTML。 |
 | `NetworkHealthCheck_Technical_Guide_*.md` | 本文件的中英文版本。 |
 | `SHA256SUMS.txt` | 發行檔案的 SHA-256。 |
 | `tools/validate_release.py` | 跨平台靜態發行驗證腳本，不執行 Windows 網路檢測。 |
@@ -141,7 +141,7 @@ FAIL > ERROR > WARN > PASS
 
 每張網卡都會分類為實體或虛擬：以 NetAdapter 的 `Virtual`／`HardwareInterface` 旗標為準，CIM 備援用 `Win32_NetworkAdapter.PhysicalAdapter`，沒有旗標時以描述字串樣式判斷（VirtualBox、Hyper-V、VMware、TAP、tunnel、loopback、WAN Miniport、WireGuard、ZeroTier、Tailscale、Docker、VPN、ISATAP、Teredo）。虛擬網卡列為 `INFO`，不套用 APIPA 與無 IPv4 規則；「可用網卡」列出實體與虛擬數量，只有虛擬網卡承載閘道時（VPN 或虛擬化）為 `WARN`，完全沒有實體網卡時為 `FAIL`。取樣期間沒有流量的網卡或虛擬網卡，其錯誤計數列為 `INFO`，因為計數器只有在有流量時才能作證。公司標準比對的主要網卡選取方式不變。
 
-IT 診斷資料每次都會執行（可在設定檔 `Checks` 區段或用 `-NoWifi`／`-NoTraceroute` 個別停用），只產生 `INFO`，帶 `Scope = "IT"`，顯示在 HTML 報告收合的 IT 區段：
+IT 診斷資料每次都會執行（可在設定檔 `Checks` 區段或用 `-NoWifi`／`-NoTraceroute` 個別停用），產生 `INFO`（收集到的內容，或沒有東西可收集、來源不存在的說明），讀取來源發生錯誤時為 `ERROR`，帶 `Scope = "IT"`，顯示在 HTML 報告收合的 IT 區段：
 
 | 檢查 | 來源 | 說明 |
 |---|---|---|
@@ -156,7 +156,7 @@ IT 範圍的項目不影響整體結果與摘要計數：`Get-OverallStatus` 與
 
 每筆結果現在帶有語言中立的 `Tag`（例如 `ping-gateway`、`dns`、`connectivity-group`、`tcp-retransmissions`、`wifi`）與 `Scope`（`Main` 或 `IT`）。指紋由標籤計算：`local`、`gateway-unreachable`、`gateway-up-internet-dead`（閘道有回應、必要連線群組失敗且沒有任何群組通過）、`dns`（只在沒有任何 DNS 檢查通過時）、`quality`（遺失、延遲、重傳或網卡錯誤的警告或異常，且沒有其他項目失敗）、`attention`（其他只有警告的執行）、`mixed`、`incomplete`、`healthy`，驅動 HTML 與文字報告頂端的「要告訴 IT 的話」，JSON 存在 `Fingerprint`。
 
-執行選項由入口決定：`Start-NetworkCheck-IT.cmd` 帶 `-Interactive -ExpandDetails`；`-PingTarget`、`-DnsName`、`-TcpTarget`（host:port）、`-HttpUrl`、`-PingCount`、`-SampleSeconds`、`-TracerouteHops`、`-NoTraceroute`、`-NoWifi` 只影響本次執行（多個 Ping／DNS／TCP 值可用逗號、分號或空白分隔，例如 `-PingTarget 10.0.0.1,10.0.0.2`；多個 URL 只能用空白分隔，因為逗號與分號是 URL 的合法字元），並記錄在報告的執行設定行與 JSON 的 `RunOptions`（`EntryPoint`、`ExtraTargets` 為通過驗證的值、`RawTargets` 為原始輸入、`PingCount`、`SampleSeconds`、`TracerouteHops`、`ChecksEnabled`）。IT 面板的 Ping 次數與取樣秒數旋轉鈕預設範圍為 1–20 與 1–120 秒；設定值超過上限時會放寬旋轉鈕範圍，因此面板會顯示設定值，未更動就開始也會以設定值執行（1.2.1）。設定檔永遠不會被寫入。JSON 的 `SchemaVersion` 為 2。
+執行選項由入口決定：`Start-NetworkCheck-IT.cmd` 帶 `-Interactive -ExpandDetails`；`-PingTarget`、`-DnsName`、`-TcpTarget`（host:port）、`-HttpUrl`、`-PingCount`、`-SampleSeconds`、`-TracerouteHops`、`-NoTraceroute`、`-NoWifi` 只影響本次執行（在同一個值裡，多個 Ping／DNS／TCP 項目可用逗號、分號或空白分隔，例如 `-PingTarget 10.0.0.1,10.0.0.2`，多個 URL 只能用空白分隔，因為逗號與分號是 URL 的合法字元；從 shell 傳入時請把清單寫成一個逗號分隔或加引號的值：多出來的第二個值會繫結到腳本的第一個位置參數 `-ConfigPath`，而在 PowerShell 提示字元下沒加引號的分號會結束陳述式），並記錄在報告的執行設定行與 JSON 的 `RunOptions`（`EntryPoint`、`ExtraTargets` 為通過驗證的值、`RawTargets` 為原始輸入、`PingCount`、`SampleSeconds`、`TracerouteHops`、`ChecksEnabled`）。IT 面板的 Ping 次數與取樣秒數旋轉鈕預設範圍為 1–20 與 1–120 秒；設定值超過上限時會放寬旋轉鈕範圍，因此面板會顯示設定值，未更動就開始也會以設定值執行（1.2.1）。設定檔永遠不會被寫入。JSON 的 `SchemaVersion` 為 2。
 
 ## 5. 錯誤處理設計
 
@@ -201,7 +201,7 @@ IT 範圍的項目不影響整體結果與摘要計數：`Get-OverallStatus` 與
 
 ### 7.2 Windows 驗證狀態
 
-原始 1.1.0 套件在非 Windows 環境打包，當時無法實際執行 Windows Forms、NetTCPIP、NetAdapter、CIM/WMI 效能計數器與真實網路連線。其後 1.1.1–1.1.3 版（2026-07-28／30）已在 Windows 11＋Windows PowerShell 5.1 完成完整實機驗證：中英兩版驗收執行、獨立程式碼審查、以及五個作者實測的故障注入場景。最新記錄維護於 `../VALIDATION.md`。1.1.4 版（2026-09-03）修掉待辦 #4、#5、#6、#11（門檻解析、CIM 備援的閘道／DHCP 判定、無用變數、堆疊不進 HTML/TXT），並以同一條驗證鏈重新驗證：parser、validator、輔助函式單元測試、中英兩版驗收執行、以及故障注入設定檔。1.1.5 版（2026-09-03）修掉待辦 #2 與 #3（緊急報告只產生一次；部分報告格式寫入失敗時保留成功的格式），並以同一條驗證鏈加上模擬檔案寫入失敗的報告階段功能測試完成驗證。1.2.0 版（2026-09-03）實作 v1.2 設計的 Phase A（repo 內 `docs/design-v1.2-triage-wizard.md`）：網卡分類、IT 診斷資料、指紋與「要告訴 IT 的話」、JSON schema 2、IT 入口，並以同一條驗證鏈加上擴充的單元測試（Windows 10／11／本地化的 Wi-Fi 樣本、分類）與執行選項、指紋的功能測試完成驗證。1.2.1 版（2026-09-03）修掉 v1.2.0 PR 第七次 Codex 審查（在合併後才完成）的唯一發現（IT 面板不再截斷超過旋轉鈕預設範圍的設定 Ping 次數與取樣秒數），並修正該版第一次真正開啟 GUI 才發現的兩個 1.2.0 回歸。其一，六個控制項位置寫成 `New-Object System.Drawing.Point(22, 84 + $offset)`，PowerShell 因逗號優先於 `+` 而解析成三個引數，使 `Initialize-Gui` 拋出例外、兩個入口都靜默退回文字模式。其二，腳本層級的初始化 `$script:Interactive = $false` 覆蓋了已繫結的 `-Interactive` 參數（腳本頂層作用域與 `$script:` 作用域是同一個），使 `Start-NetworkCheck-IT.cmd` 開成使用者版面並自動開跑，而不是顯示執行選項面板。現已將算術加上括號、初始化改用參數值、兩種寫法都會被靜態守門檢查擋下（1.2.1 之前在本驗證程式內，2026-09-04 起改以 PowerShell AST 在 repo 的測試鏈執行，因此套件內的 validator 由 66 項檢查減為 62 項，直到 1.2.3；1.2.4 起加入文件檢查），並在既有驗證鏈之外以 UI Automation 實際開啟中英兩版的兩個入口完成驗證。 1.2.2 版（2026-09-04）修掉待辦 #14 與 #18。網路類錯誤改以錯誤碼分類（`SocketException.SocketErrorCode`、`WebException.Status`）而非作業系統的用字，因此原因會以報告語言呈現，原始訊息保留在其後。另外在所有程式碼之前加入守門檢查，偵測受限的 PowerShell 語言模式——也就是應用程式控制（WDAC／AppLocker）造成的狀態，在該模式下腳本從第一行起就不得建立本工具所需的 .NET 物件——並寫出 `NetworkHealthCheck_ENVIRONMENT_<時間>.txt`，載明語言模式、機器資訊與 IT 可採取的動作，而不是丟出使用者無從處理的引擎錯誤。驗證鏈新增一個對不可達目標的文字模式執行（讓失敗路徑每次都被執行），以及一個以受限語言模式啟動腳本的案例。靜態驗證仍不能取代 Windows 實機驗收——兩者互補。 1.2.3 版（2026-09-06）修掉待辦 #26、#27 與 #28，即第一次在 Windows 11 虛擬機驗收活動的發現：壓縮資料夾偵測同時認得 Windows 11 的檢視資料夾（`<guid>_<名稱>.zip.<hex>`）與 Windows 10 的；沒有 IPv4 預設路由的機器如實列出，不再寫成路由表錯誤，本工具自己的 DNS 與 TCP 逾時也像其他網路錯誤一樣附上原因行；`LauncherError.txt` 的建議依啟動器停下的原因而定。 1.2.4 版（2026-09-06）是文件版本：終端使用者手冊以 markdown 與單頁 HTML 兩種形式、兩種語言進入套件，使用者 README 的快速操作部分併入手冊，驗證腳本也開始檢查每份帶版本號的文件；工具本身沒有變更。
+原始 1.1.0 套件在非 Windows 環境打包，當時無法實際執行 Windows Forms、NetTCPIP、NetAdapter、CIM/WMI 效能計數器與真實網路連線。其後 1.1.1–1.1.3 版（2026-07-28／30）已在 Windows 11＋Windows PowerShell 5.1 完成完整實機驗證：中英兩版驗收執行、獨立程式碼審查、以及五個作者實測的故障注入場景。最新記錄維護於 `../VALIDATION.md`。1.1.4 版（2026-09-03）修掉待辦 #4、#5、#6、#11（門檻解析、CIM 備援的閘道／DHCP 判定、無用變數、堆疊不進 HTML/TXT），並以同一條驗證鏈重新驗證：parser、validator、輔助函式單元測試、中英兩版驗收執行、以及故障注入設定檔。1.1.5 版（2026-09-03）修掉待辦 #2 與 #3（緊急報告只產生一次；部分報告格式寫入失敗時保留成功的格式），並以同一條驗證鏈加上模擬檔案寫入失敗的報告階段功能測試完成驗證。1.2.0 版（2026-09-03）實作 v1.2 設計的 Phase A（repo 內 `docs/design-v1.2-triage-wizard.md`）：網卡分類、IT 診斷資料、指紋與「要告訴 IT 的話」、JSON schema 2、IT 入口，並以同一條驗證鏈加上擴充的單元測試（Windows 10／11／本地化的 Wi-Fi 樣本、分類）與執行選項、指紋的功能測試完成驗證。1.2.1 版（2026-09-03）修掉 v1.2.0 PR 第七次 Codex 審查（在合併後才完成）的唯一發現（IT 面板不再截斷超過旋轉鈕預設範圍的設定 Ping 次數與取樣秒數），並修正該版第一次真正開啟 GUI 才發現的兩個 1.2.0 回歸。其一，六個控制項位置寫成 `New-Object System.Drawing.Point(22, 84 + $offset)`，PowerShell 因逗號優先於 `+` 而解析成三個引數，使 `Initialize-Gui` 拋出例外、兩個入口都靜默退回文字模式。其二，腳本層級的初始化 `$script:Interactive = $false` 覆蓋了已繫結的 `-Interactive` 參數（腳本頂層作用域與 `$script:` 作用域是同一個），使 `Start-NetworkCheck-IT.cmd` 開成使用者版面並自動開跑，而不是顯示執行選項面板。現已將算術加上括號、初始化改用參數值、兩種寫法都會被靜態守門檢查擋下（1.2.1 之前在本驗證程式內，2026-09-04 起改以 PowerShell AST 在 repo 的測試鏈執行，因此套件內的 validator 由 66 項檢查減為 62 項，直到 1.2.3；1.2.4 起加入文件檢查），並在既有驗證鏈之外以 UI Automation 實際開啟中英兩版的兩個入口完成驗證。 1.2.2 版（2026-09-04）修掉待辦 #14 與 #18。網路類錯誤改以錯誤碼分類（`SocketException.SocketErrorCode`、`WebException.Status`）而非作業系統的用字，因此原因會以報告語言呈現，原始訊息保留在其後。另外在所有程式碼之前加入守門檢查，偵測受限的 PowerShell 語言模式——也就是應用程式控制（WDAC／AppLocker）造成的狀態，在該模式下腳本從第一行起就不得建立本工具所需的 .NET 物件——並寫出 `NetworkHealthCheck_ENVIRONMENT_<時間>.txt`，載明語言模式、機器資訊與 IT 可採取的動作，而不是丟出使用者無從處理的引擎錯誤。驗證鏈新增一個對不可達目標的文字模式執行（讓失敗路徑每次都被執行），以及一個以受限語言模式啟動腳本的案例。靜態驗證仍不能取代 Windows 實機驗收——兩者互補。 1.2.3 版（2026-09-06）修掉待辦 #26、#27 與 #28，即第一次在 Windows 11 虛擬機驗收活動的發現：壓縮資料夾偵測同時認得 Windows 11 的檢視資料夾（`<guid>_<名稱>.zip.<hex>`）與 Windows 10 的；沒有 IPv4 預設路由的機器如實列出，不再寫成路由表錯誤，本工具自己的 DNS 與 TCP 逾時也像其他網路錯誤一樣附上原因行；`LauncherError.txt` 的建議依啟動器停下的原因而定。 1.2.4 版（2026-09-07）是文件版本：終端使用者手冊與 IT 部署手冊各以 markdown 與單頁 HTML 兩種形式、兩種語言進入套件；使用者 README 由兩者吸收後退場（快速操作部分進使用手冊，設定說明進 IT 部署手冊），驗證腳本也開始檢查每份帶版本號的文件；工具本身沒有變更。
 
 ### 7.3 建議 Windows 驗收矩陣
 
@@ -243,6 +243,7 @@ IT 範圍的項目不影響整體結果與摘要計數：`Get-OverallStatus` 與
 
 ## 9. 發行與維護建議
 
+- 套件內的 IT 部署手冊（`NetworkHealthCheck_IT_Deployment_Manual_*.md`，1.2.4 起）是本節的操作版本：逐鍵說明的設定檔、部署、套件驗證，以及安全政策對工具的影響。
 - IT 應先修改設定檔，把外部預設目標換成公司核准的內部/外部服務。
 - 在代表性的有線、Wi-Fi、VPN 與無外網環境建立基準報告。
 - 修改 `.ps1` 後重新執行靜態驗證與 Windows 驗收，並更新 SHA-256。

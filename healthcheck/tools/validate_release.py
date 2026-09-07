@@ -51,7 +51,9 @@ required=[
  'en-US/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.config.json','en-US/Start-NetworkCheck.cmd','en-US/Start-NetworkCheck-IT.cmd',
  'docs/NetworkHealthCheck_Technical_Guide_zh-TW.md','docs/NetworkHealthCheck_Technical_Guide_en-US.md',
  'en-US/NetworkHealthCheck_User_Manual_en-US.md','en-US/NetworkHealthCheck_User_Manual_en-US.html',
- 'zh-TW/NetworkHealthCheck_User_Manual_zh-TW.md','zh-TW/NetworkHealthCheck_User_Manual_zh-TW.html'
+ 'zh-TW/NetworkHealthCheck_User_Manual_zh-TW.md','zh-TW/NetworkHealthCheck_User_Manual_zh-TW.html',
+ 'en-US/NetworkHealthCheck_IT_Deployment_Manual_en-US.md','en-US/NetworkHealthCheck_IT_Deployment_Manual_en-US.html',
+ 'zh-TW/NetworkHealthCheck_IT_Deployment_Manual_zh-TW.md','zh-TW/NetworkHealthCheck_IT_Deployment_Manual_zh-TW.html'
 ]
 for rel in required: ok('required file '+rel,(ROOT/rel).is_file())
 for rel in ['zh-TW/NetworkHealthCheck.config.json','en-US/NetworkHealthCheck.config.json']:
@@ -66,14 +68,17 @@ ok('PowerShell executable skeleton equality',strip_ps(zh)==strip_ps(en))
 zh_funcs=re.findall(r'^function\s+([A-Za-z0-9_-]+)',zh,re.M); en_funcs=re.findall(r'^function\s+([A-Za-z0-9_-]+)',en,re.M)
 ok('function set equality',zh_funcs==en_funcs,f'zh={len(zh_funcs)}, en={len(en_funcs)}'); ok(f'function count {FUNCTION_COUNT}',len(zh_funcs)==FUNCTION_COUNT,str(len(zh_funcs)))
 cjk=lambda s:any('\u4e00'<=c<='\u9fff' for c in s)
-for rel in ['en-US/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.config.json','en-US/README_en-US.txt',
-            'en-US/NetworkHealthCheck_User_Manual_en-US.md','en-US/NetworkHealthCheck_User_Manual_en-US.html']:
+for rel in ['en-US/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.config.json',
+            'en-US/NetworkHealthCheck_User_Manual_en-US.md','en-US/NetworkHealthCheck_User_Manual_en-US.html',
+            'en-US/NetworkHealthCheck_IT_Deployment_Manual_en-US.md','en-US/NetworkHealthCheck_IT_Deployment_Manual_en-US.html']:
     ok('English file has no CJK '+rel,(ROOT/rel).is_file() and not cjk(read_text(ROOT/rel)))
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1']:
     ok('version '+TOOL_VERSION+' '+rel,'$script:ToolVersion = "'+TOOL_VERSION+'"' in read_text(ROOT/rel))
-# Every document that names the version names this one. The front page, both READMEs and both manuals (markdown and
-# HTML) may name no other tool version at all - a manual carries it in its title, its heading, the window name it
-# quotes and its footer, and a bump that touches the first line alone must fail here (PR #20 round 2). The technical
+# Every document that names the version names this one. The front page and the four manuals (the user manual and the
+# IT deployment manual, markdown and HTML, both languages; the user READMEs they replaced were checked here until
+# 1.2.4) may name no other tool version at all - a manual carries it in its title, its heading, the window name it
+# quotes, its footer and, in the IT manual, the tag of a repository link, and a bump that touches the first line alone
+# must fail here (PR #20 round 2). The technical
 # guides carry the version history, so for them the first line must name this version, the bold version of the
 # purpose paragraph ("It applies to version **x**", the only bold version label in a guide) must be this one (round 3),
 # and no line may name a newer one. A version label is three dotted numbers, each below 1000, that are not part of a
@@ -85,9 +90,11 @@ VERSION_LABEL=re.compile(r'(?<!\d)(?<!\d\.)(\d+)\.(\d+)\.(\d+)(?!\.?\d)')
 def version_labels(text):
     labels={m.group(0) for m in VERSION_LABEL.finditer(text) if all(int(m.group(i))<1000 for i in (1,2,3))}
     return sorted(labels,key=lambda v:tuple(int(x) for x in v.split('.')))
-for rel in ['README_BILINGUAL.md','en-US/README_en-US.txt','zh-TW/README_zh-TW.txt',
+for rel in ['README_BILINGUAL.md',
  'en-US/NetworkHealthCheck_User_Manual_en-US.md','en-US/NetworkHealthCheck_User_Manual_en-US.html',
- 'zh-TW/NetworkHealthCheck_User_Manual_zh-TW.md','zh-TW/NetworkHealthCheck_User_Manual_zh-TW.html']:
+ 'zh-TW/NetworkHealthCheck_User_Manual_zh-TW.md','zh-TW/NetworkHealthCheck_User_Manual_zh-TW.html',
+ 'en-US/NetworkHealthCheck_IT_Deployment_Manual_en-US.md','en-US/NetworkHealthCheck_IT_Deployment_Manual_en-US.html',
+ 'zh-TW/NetworkHealthCheck_IT_Deployment_Manual_zh-TW.md','zh-TW/NetworkHealthCheck_IT_Deployment_Manual_zh-TW.html']:
     found=version_labels(read_text(ROOT/rel)) if (ROOT/rel).is_file() else []
     ok('every version label is '+TOOL_VERSION+' '+rel,found==[TOOL_VERSION],', '.join(found) or 'none')
 for rel in [d+'/NetworkHealthCheck_Technical_Guide_'+l+'.md' for d in ('docs','en-US','zh-TW') for l in ('en-US','zh-TW')]:

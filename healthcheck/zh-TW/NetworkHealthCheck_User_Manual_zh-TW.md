@@ -2,7 +2,7 @@
 
 **寫給執行檢測的人。** 按兩下、視窗自己跑完、把報告交給 IT，就這三件事。
 
-本手冊對應繁體中文套件（`zh-TW` 資料夾）。`en-US` 資料夾裡的英文套件是同一支工具，附有英文版手冊。IT 人員需要的設定說明在 `README_zh-TW.txt`，設計、判定規則與驗證記錄在技術文件。
+本手冊對應繁體中文套件（`zh-TW` 資料夾）。`en-US` 資料夾裡的英文套件是同一支工具，附有英文版手冊。IT 人員的部署手冊就在旁邊（`NetworkHealthCheck_IT_Deployment_Manual_zh-TW.html`），設計、判定規則與驗證記錄在技術文件。
 
 ---
 
@@ -165,7 +165,7 @@ IT 可能設定了別的資料夾。若原本的資料夾無法寫入，工具�
 | `zh-TW\NetworkHealthCheck.ps1` | 程式本體。不要編輯 |
 | `zh-TW\NetworkHealthCheck.config.json` | 設定：公司標準、測試目標、門檻。由 IT 編輯，你不用動 |
 | `zh-TW\NetworkHealthCheck_User_Manual_zh-TW.md`、`.html` | 本手冊，文字版與網頁版 |
-| `zh-TW\README_zh-TW.txt` | 給 IT 的設定說明 |
+| `zh-TW\NetworkHealthCheck_IT_Deployment_Manual_zh-TW.md`、`.html` | IT 部署手冊：設定、部署、驗證、安全政策，給 IT |
 | `zh-TW\NetworkHealthCheck_Technical_Guide_*.md`、`docs\` | 技術文件，中英文各一份：設計、判定規則、限制 |
 | `zh-TW\Reports\` | 工具第一次啟動時建立，存放報告 |
 | `README_BILINGUAL.md` | 套件的雙語首頁 |
