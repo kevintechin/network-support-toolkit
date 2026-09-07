@@ -242,6 +242,15 @@ Assert-Catches 'the zh-TW form that puts the number before the verb' 'A7' {
     Write-All $ZhIt ((Read-All $ZhIt).Replace($before, $after))
 }
 
+# 5h - the forms round 7 of PR #23 found unguarded: a number the markdown puts in a code span, and a code the
+# sentence gives to the launcher, whose own set is smaller than the package's.
+Assert-Catches 'an exit code written as a code span' 'A7' {
+    Write-All $Field ((Read-All $Field) -replace 'launcher exits `1`', 'launcher exits `9`')
+}
+Assert-Catches 'a code attributed to the launcher that only the program produces' 'A7' {
+    Write-All $Field ((Read-All $Field) -replace 'launcher exits `1`', 'launcher exits `3`')
+}
+
 # 6 - and the control again, to prove every mutation was put back
 Assert-Clean 'the copy is clean again after every mutation' @()
 

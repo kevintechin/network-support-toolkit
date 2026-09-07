@@ -373,16 +373,29 @@ $ExitPatterns = @(
     '\u7d50\u675f\u4ee3\u78bc(?:\u70ba|\u662f)?\s*(\d+)',
     '\u4ee5\s*(\d+)\s*\u7d50\u675f')
 $ExitContinuation = '(?i)(?:,|;|\uff0c|\u3001)\s*(?:or\s+)?(\d+)\s+(?:when|if)\b'
+# A code a sentence attributes to the launcher is measured against the launcher's own set, the way a code in the
+# validator's paragraph is. The verb is what decides: "the launcher exits 1" is its own code, while "the launcher
+# explains exit code 3" and "'exit code 1' in the launcher and 'exit code 3' in the message" are the program's, which
+# the launcher only reports - so the pattern binds the number to the verb and not merely to the word.
+$LauncherAttributed = '(?i)\blauncher\s+(?:always\s+|only\s+)?exit(?:s|ed)?\s+(?:with\s+)?(?:code\s+)?(\d+)'
 foreach ($doc in $AllDocs) {
     $name = Split-Path -Leaf $doc
     $text = (Get-ProseText $doc) -replace "`r`n", "`n"
     $unknown = New-Object System.Collections.Generic.List[string]
     $count = 0
     $offset = 0
-    foreach ($line in ($text -split "`n")) {
+    foreach ($rawLine in ($text -split "`n")) {
+        # The markup around a number is not part of it: the field manual writes the launcher's code as `1`, and a
+        # pattern that wants a digit after the space would read the markdown and the page differently.
+        $line = $rawLine -replace '[`*_]', ''
         $codes = New-Object System.Collections.Generic.List[string]
         foreach ($pattern in $ExitPatterns) {
             foreach ($m in [regex]::Matches($line, $pattern)) { $codes.Add($m.Groups[1].Value) }
+        }
+        $launcherCodes = @([regex]::Matches($line, $LauncherAttributed) | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+        foreach ($code in $launcherCodes) {
+            $count++
+            if ($launcherExits -notcontains $code) { $unknown.Add(($code + ' (the launcher produces ' + (@($launcherExits | Sort-Object -Unique) -join '/') + ')')) }
         }
         if ($codes.Count) {
             foreach ($m in [regex]::Matches($line, $ExitContinuation)) { $codes.Add($m.Groups[1].Value) }
@@ -395,7 +408,7 @@ foreach ($doc in $AllDocs) {
                 if ($allowed -notcontains $code) { $unknown.Add(($code + ' (' + $producer + ' produces ' + ($allowed -join '/') + ')')) }
             }
         }
-        $offset += $line.Length + 1
+        $offset += $rawLine.Length + 1
     }
     Assert-True ("A7 [{0}] the {1} exit code(s) it quotes are codes their producer has" -f $name, $count) ($unknown.Count -eq 0) ('not produced: ' + (@($unknown | Sort-Object -Unique) -join ', '))
 }
