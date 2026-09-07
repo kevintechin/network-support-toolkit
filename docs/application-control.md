@@ -23,7 +23,7 @@ The launchers start Windows PowerShell with `-ExecutionPolicy Bypass`, which set
 ## Allowing the tool under policy
 
 - The two scripts are unsigned (backlog #22). A rule by publisher has nothing to match; a rule by hash does: `SHA256SUMS.txt` in the package carries the digest of each `NetworkHealthCheck.ps1`, and every release changes it.
-- Signing with an internal certificate authority would satisfy *AllSigned* and allow rules by publisher; it appends a signature block to the script, so the signed file no longer matches the package manifest.
+- Signing with an internal certificate authority satisfies *AllSigned* only when the signing certificate is also trusted on the machine — its chain, and the certificate in the Trusted Publishers store; PowerShell prompts before running a script from a publisher not yet classified as trusted (about_Execution_Policies) — and it allows rules by publisher; it appends a signature block to the script, so the signed file no longer matches the package manifest.
 
 ## Changing this page
 
