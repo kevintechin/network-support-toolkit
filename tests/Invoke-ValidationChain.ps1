@@ -4,7 +4,8 @@
 
 .DESCRIPTION
     One command reproduces the chain recorded in healthcheck/VALIDATION.md: the Windows PowerShell 5.1 parser, the static
-    release validator and the self-test of the two AST guards, the helper unit tests, the report-stage functional
+    release validator and the self-test of the two AST guards, the document facts against the program's own
+    identifiers, the helper unit tests, the report-stage functional
     tests, the language-mode guard, the headless Initialize-Gui smoke test, the real-window UI Automation run of both
     entry points, the console
     acceptance runs and, on request, the release-asset round trip (build, extract, validate inside the package, open the
@@ -15,8 +16,8 @@
     table as summary.md.
 
 .PARAMETER Steps
-    Steps to run (parse, validator, guards, unit, report, envguard, launcher, campaign, gui-headless, gui, acceptance,
-    resultset, package);
+    Steps to run (parse, validator, guards, docfacts, unit, report, envguard, launcher, campaign, gui-headless, gui,
+    acceptance, resultset, package);
     comma-separated values are accepted, and the steps always execute in the chain's own order. Default: everything
     except package. The resultset step is the negative self-check of the result-set assertion; it uses the en-US user
     report of the acceptance step, or produces one through the console launcher when that step did not run.
@@ -46,7 +47,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string[]]$Steps = @('parse', 'validator', 'guards', 'unit', 'report', 'envguard', 'launcher', 'campaign', 'gui-headless', 'gui', 'acceptance', 'resultset'),
+    [string[]]$Steps = @('parse', 'validator', 'guards', 'docfacts', 'unit', 'report', 'envguard', 'launcher', 'campaign', 'gui-headless', 'gui', 'acceptance', 'resultset'),
     [switch]$Package,
     [switch]$SkipGui,
     [switch]$RequireHealthy,
@@ -57,7 +58,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Order = @('parse', 'validator', 'guards', 'unit', 'report', 'envguard', 'launcher', 'campaign', 'gui-headless', 'gui', 'acceptance', 'resultset', 'package')
+$Order = @('parse', 'validator', 'guards', 'docfacts', 'unit', 'report', 'envguard', 'launcher', 'campaign', 'gui-headless', 'gui', 'acceptance', 'resultset', 'package')
 $Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 if (-not $PackageDir) { $PackageDir = Join-Path $Root 'healthcheck' }
 $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
@@ -520,6 +521,23 @@ try {
             $r = Invoke-TestScript 'selftest_guards.ps1' @() 'guards'
             $corpus = [string]@($r.Output | Where-Object { $_ -match '^corpus:' })[0]
             @{ Passed = (($r.ExitCode -eq 0) -and ($r.Output -contains 'ALL SELF-TESTS OK')); Detail = $corpus }
+        }
+    }
+    if ($selected -contains 'docfacts') {
+        # backlog #33 tier 1: the identifiers the documents quote against the identifiers the scripts and the shipped
+        # configuration define, both directions. Against an extracted package the sop/ documents are not there, so the
+        # step drops them rather than failing on a path nobody shipped.
+        $docArgs = @('-PackageDir', $PackageDir, '-RepoRoot', $Root)
+        if ($PackageDir -ne (Join-Path $Root 'healthcheck')) { $docArgs += '-PackageOnly' }
+        Invoke-Case 'docfacts' 'documents' {
+            $r = Invoke-TestScript 'doc_facts.ps1' $docArgs 'docfacts'
+            $s = Get-SummaryLine $r.Output
+            @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
+        }
+        Invoke-Case 'docfacts' 'self-test' {
+            $r = Invoke-TestScript 'selftest_docfacts.ps1' @('-WorkDir', (Join-Path $WorkDir 'docfacts')) 'docfacts_selftest'
+            $s = Get-SummaryLine $r.Output
+            @{ Passed = (($r.ExitCode -eq 0) -and ($r.Output -contains 'ALL SELF-TESTS OK')); Detail = $s }
         }
     }
     if ($selected -contains 'unit') {
