@@ -14,7 +14,7 @@ A one-page fault-isolation playbook, from the user's chair to the ISP ([markdown
 - **Front door**: four isolation questions that cut the search space before touching anything
 - **The Packet's Journey**: eight stations, each in *read state → verify config → healthy → if broken* form
 - **Read State Before Config**: tables / counters / probes, a counter reference, and two fault discriminators
-- **Escalation — when, and with what**: four hand-off rules and the evidence package that travels with the hand-off
+- **Escalation — when, and with what**: four hand-off rules, the evidence package that travels with the hand-off, and how the topology sketch, the device logs and the config exports are collected
 - **Fingerprint library**: fast symptom-to-suspect lookups
 
 ### 🔧 [healthcheck/](healthcheck/) — NetworkHealthCheck (Portable)

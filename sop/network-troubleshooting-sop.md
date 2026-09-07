@@ -47,6 +47,8 @@ Cut the search space before touching anything.
    | **IP works, names fail** | DNS |
 4. **Constant or intermittent?** — Intermittent points at performance causes: RF interference, congestion, duplex mismatch, retransmissions.
 
+**Sketch the path while you ask.** The blast-radius answer already names the devices between the reporter's machine and the point where the traffic fails. Draw them in a line now — five boxes on paper — rather than at escalation time: the sketch is what you mark up as stations are excluded, and it is the first item in the package below.
+
 ---
 
 ## The Packet's Journey — Station Map
@@ -184,6 +186,18 @@ Two discriminators, used in order. **Counters first:** climbing CRC or alignment
 - **Device logs** (switch / AP / firewall) covering the failure window, and **config exports** of the devices in the path
 - Reproduction steps, and the current workaround if any
 - Business impact and severity
+
+### Collecting the infrastructure evidence
+
+The sketch, the device logs and the config exports are collected from the devices, and the package is only as good as what they contain. What each has to show:
+
+**Topology sketch — the affected path, not the network.** Every device the traffic crosses between the reporter's machine and the point where it fails, in order. For each one: the device and its management IP, the port the client or the next hop sits on, that port's **VLAN and PVID**, and how the device connects upward — uplink port or LAG, with its member ports. For a wireless case add the AP, the SSID and the VLAN it maps to, and the AP's own uplink port. Five boxes in a line beat a site diagram: the whole network takes an hour to draw and tells L3 less. Mark where your evidence stops — the last device you could actually read.
+
+**Device logs — the failure window, with a margin.** Which devices: the access switch, the AP or its controller, the firewall, and the DHCP or RADIUS server when that lane is in play. Take the window **with a margin on both sides** — starting before the first report, ending past the recovery — because the event that explains a failure usually precedes what the user noticed. Record each device's **time zone** and whether its clock is synchronized: logs from two devices whose clocks disagree cannot be put on one timeline, and an unsynchronized clock belongs in the ticket rather than being quietly corrected for. Export text where the device offers it; a screenshot of a log page is evidence for one screen.
+
+**Config exports — the running config, with the secrets out.** The **running** configuration of each device on the path — that is what the device is doing now; where the device also keeps a startup copy, a difference between the two is itself a finding: a change nobody saved, or a reboot that would undo it. **Take the secrets out before the file travels** — before it is attached to a ticket, pasted into a chat, or copied to a share: SNMP community strings, Wi-Fi PSKs, RADIUS and TACACS shared secrets, local account credentials, VPN pre-shared keys. A password the device prints in its own encrypted or hashed form is still a secret — some of those forms reverse trivially, and the rest are worth an offline attack — so remove the line rather than trust the display, and leave a visible marker in its place: a silently deleted line reads as a setting that was never there.
+
+**What you could not get travels too.** Say which of the three you could not obtain, and why — no access, a third-party-managed device, logs already rotated out. The package asks for *what you excluded, with the evidence that excludes it*: a station whose evidence you never obtained is **not excluded**, it is unexamined, and a blank line invites L3 to assume somebody looked. The [support report template](support-report-template.md) carries a row for each of the three, with columns for why an item was not obtained and what its absence does to the analysis.
 
 ---
 
