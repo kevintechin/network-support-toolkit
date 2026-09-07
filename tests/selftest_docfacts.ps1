@@ -224,6 +224,24 @@ Assert-Catches 'a single-quoted href that resolves to nothing' 'E2' {
     Write-All $EnItHtml ((Read-All $EnItHtml) -replace '</body>', "<p><a href='missing-page.html'>more</a></p></body>")
 }
 
+# 5g - the forms round 6 of PR #23 found unguarded: the producer a code belongs to, the second outcome of a sentence
+# that lists two, "exits with code", and the zh-TW form that puts the number before the verb.
+Assert-Catches 'a code the validator cannot produce, in the validator paragraph' 'A7' {
+    Write-All $EnIt ((Read-All $EnIt) -replace 'exit code 1 when anything failed', 'exit code 3 when anything failed')
+}
+Assert-Catches 'the second outcome of a sentence that lists two' 'A7' {
+    Write-All $EnIt ((Read-All $EnIt) -replace '1 when none could be', '7 when none could be')
+}
+Assert-Catches 'the "exits with code" wording' 'A7' {
+    Write-All $EnUser ((Read-All $EnUser) + "`r`nThe launcher exits with code 9 in that case.`r`n")
+}
+Assert-Catches 'the zh-TW form that puts the number before the verb' 'A7' {
+    # "<yi> 1 <jieshu>" -> "<yi> 8 <jieshu>": with 1 it ends -> with 8 it ends.
+    $before = [string][char]0x4EE5 + ' 1 ' + [char]0x7D50 + [char]0x675F
+    $after = [string][char]0x4EE5 + ' 8 ' + [char]0x7D50 + [char]0x675F
+    Write-All $ZhIt ((Read-All $ZhIt).Replace($before, $after))
+}
+
 # 6 - and the control again, to prove every mutation was put back
 Assert-Clean 'the copy is clean again after every mutation' @()
 

@@ -355,17 +355,49 @@ foreach ($folder in @('', 'en-US', 'zh-TW')) {
     }
 }
 $producibleExits = @($exitCodes['en-US'] + $exitCodes['zh-TW'] + $launcherExits | Sort-Object -Unique)
-$DocumentedExitPatterns = @('(?i)\bexit(?:s|ed)?\s+(?:code\s+)?(\d+)', '\u7d50\u675f\u4ee3\u78bc(?:\u70ba|\u662f)?\s*(\d+)')
+# The validator is a third producer with a set of its own, and the manuals document it in its own paragraph. Pooling
+# every code the package can produce would let the validator's documented failure code be one only the PowerShell
+# script has, so the paragraph a code sits in decides which set it is measured against.
+$validatorExits = New-Object System.Collections.Generic.List[string]
+$validatorPath = Join-Path $PackageDir 'tools\validate_release.py'
+if (Test-Path -LiteralPath $validatorPath) {
+    foreach ($m in [regex]::Matches((Read-Text $validatorPath), '(?s)sys\.exit\(([^)]*)\)')) {
+        foreach ($n in [regex]::Matches($m.Groups[1].Value, '\b(\d+)\b')) { $validatorExits.Add($n.Groups[1].Value) }
+    }
+}
+$validatorExits = @($validatorExits | Sort-Object -Unique)
+# The forms the documents actually use, in both languages: "exit code 3", "exits 0", "exits with code 1", the zh-TW
+# "<code> N" and "with N it ends", and the second outcome of a sentence that lists two ("exits 0 when ..., 1 when ...").
+$ExitPatterns = @(
+    '(?i)\bexit(?:s|ed)?\s+(?:with\s+)?(?:code\s+)?(\d+)',
+    '\u7d50\u675f\u4ee3\u78bc(?:\u70ba|\u662f)?\s*(\d+)',
+    '\u4ee5\s*(\d+)\s*\u7d50\u675f')
+$ExitContinuation = '(?i)(?:,|;|\uff0c|\u3001)\s*(?:or\s+)?(\d+)\s+(?:when|if)\b'
 foreach ($doc in $AllDocs) {
     $name = Split-Path -Leaf $doc
-    $text = Get-ProseText $doc
-    $cited = New-Object System.Collections.Generic.List[string]
-    foreach ($pattern in $DocumentedExitPatterns) {
-        foreach ($m in [regex]::Matches($text, $pattern)) { $cited.Add($m.Groups[1].Value) }
+    $text = (Get-ProseText $doc) -replace "`r`n", "`n"
+    $unknown = New-Object System.Collections.Generic.List[string]
+    $count = 0
+    $offset = 0
+    foreach ($line in ($text -split "`n")) {
+        $codes = New-Object System.Collections.Generic.List[string]
+        foreach ($pattern in $ExitPatterns) {
+            foreach ($m in [regex]::Matches($line, $pattern)) { $codes.Add($m.Groups[1].Value) }
+        }
+        if ($codes.Count) {
+            foreach ($m in [regex]::Matches($line, $ExitContinuation)) { $codes.Add($m.Groups[1].Value) }
+            $back = $text.Substring([Math]::Max(0, $offset - 600), [Math]::Min(600, $offset))
+            $allowed = $producibleExits
+            $producer = 'the package'
+            if (($validatorExits.Count -gt 0) -and ($back -match 'validate_release\.py')) { $allowed = $validatorExits; $producer = 'the validator' }
+            foreach ($code in @($codes | Sort-Object -Unique)) {
+                $count++
+                if ($allowed -notcontains $code) { $unknown.Add(($code + ' (' + $producer + ' produces ' + ($allowed -join '/') + ')')) }
+            }
+        }
+        $offset += $line.Length + 1
     }
-    $cited = @($cited | Sort-Object -Unique)
-    $unknown = @($cited | Where-Object { $producibleExits -notcontains $_ })
-    Assert-True ("A7 [{0}] the {1} exit code(s) it quotes are codes the package produces" -f $name, $cited.Count) ($unknown.Count -eq 0) ('nothing produces: ' + ($unknown -join ', '))
+    Assert-True ("A7 [{0}] the {1} exit code(s) it quotes are codes their producer has" -f $name, $count) ($unknown.Count -eq 0) ('not produced: ' + (@($unknown | Sort-Object -Unique) -join ', '))
 }
 
 # --------------------------------- E. the file names the documents send people to
