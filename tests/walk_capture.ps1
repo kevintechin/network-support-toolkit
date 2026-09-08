@@ -70,6 +70,9 @@ Add-Type @"
 using System; using System.Runtime.InteropServices;
 public static class WalkCaptureWin32 {
     [DllImport("user32.dll", SetLastError = true)] public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+    // WinForms controls reach UI Automation through the MSAA bridge, where an edit box often exposes no ValuePattern.
+    // WM_SETTEXT on the control's own window is what is left, and it is what a person typing into it ends up doing.
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern IntPtr SendMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam);
 }
 "@
 $AE = [System.Windows.Automation.AutomationElement]
@@ -77,6 +80,7 @@ $SCOPE = [System.Windows.Automation.TreeScope]
 
 # ---------------------------------------------------------------- the answers
 $script:Answers = New-Object System.Collections.Generic.List[object]
+$script:ReportArtefact = ''
 $script:Failures = 0
 
 function Add-Answer([string]$Row, [string]$Outcome, [string]$Artefact, [string]$Note) {
@@ -86,6 +90,7 @@ function Add-Answer([string]$Row, [string]$Outcome, [string]$Artefact, [string]$
     Write-Output ("{0} {1} {2}{3}" -f $mark, $Row, $Artefact, $(if ($Note) { " - $Note" } else { "" }))
 }
 function Add-NotProduced([string]$Row, [string]$Precondition) { Add-Answer $Row 'not produced' '' $Precondition }
+function Answered([string]$Row) { return @($script:Answers | Where-Object { $_.Row -eq $Row }).Count -gt 0 }
 # -File passes "W7,W9" as one string, and a person types it either way; both mean two rows.
 if ($Rows) { $Rows = @($Rows | ForEach-Object { $_ -split '[,;\s]+' } | Where-Object { $_ }) }
 function Owns([string]$Row) { return (-not $Rows) -or ($Rows -contains $Row) }
@@ -155,6 +160,21 @@ function Get-SyncRoots {
     }
     return @($roots | Sort-Object -Unique)
 }
+function Get-ZoneId([string]$Path) {
+    # The same reading as the campaign's (Invoke-AcceptanceCampaign.ps1): the Zone.Identifier stream's ZoneId line,
+    # 'stream present' without one, 'no mark' without a stream.
+    if (-not (Test-Path -LiteralPath $Path)) { return 'file missing' }
+    $stream = Get-Item -LiteralPath $Path -Stream Zone.Identifier -ErrorAction SilentlyContinue
+    if ($null -eq $stream) { return 'no mark' }
+    $id = @(Get-Content -LiteralPath $Path -Stream Zone.Identifier -ErrorAction SilentlyContinue | Where-Object { $_ -match '^ZoneId=' })[0]
+    if ($id) { return [string]$id }
+    return 'stream present'
+}
+function Test-InternetMark([string]$Zone) {
+    # Only the Internet (3) and Restricted (4) zones raise the security warning. A stream without a ZoneId, or a
+    # local, intranet or trusted zone, is not the mark this row is about - the campaign settled that in PR #11.
+    return ($Zone -match '^ZoneId=[34]$')
+}
 function Test-PathIsSynced([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path)
     foreach ($root in (Get-SyncRoots)) {
@@ -220,8 +240,8 @@ $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $lang = Split-Path -Leaf $PackageDir
 if ($lang -notin @('en-US', 'zh-TW')) { Write-Output "ERROR: -PackageDir must be an en-US or zh-TW folder; got '$lang'"; exit 2 }
 $script:ToolNames = @{
-    'en-US' = @{ Start = 'Start Test'; Close = 'Close'; Reset = 'Reset to config' }
-    'zh-TW' = @{ Start = [string][char]0x958B + [char]0x59CB + [char]0x6AA2 + [char]0x6E2C; Close = [string][char]0x95DC + [char]0x9589; Reset = [string][char]0x9084 + [char]0x539F + [char]0x8A2D + [char]0x5B9A + [char]0x6A94 }
+    'en-US' = @{ Start = 'Start Test'; Close = 'Close'; Reset = 'Reset to config'; Again = 'Run Again' }
+    'zh-TW' = @{ Start = [string][char]0x958B + [char]0x59CB + [char]0x6AA2 + [char]0x6E2C; Close = [string][char]0x95DC + [char]0x9589; Reset = [string][char]0x9084 + [char]0x539F + [char]0x8A2D + [char]0x5B9A + [char]0x6A94; Again = [string][char]0x91CD + [char]0x65B0 + [char]0x6AA2 + [char]0x6E2C }
 }
 $names = $script:ToolNames[$lang]
 if (-not $OutDir) { $OutDir = Join-Path $env:USERPROFILE ('NHC-Walk\' + (Get-Date).ToString('yyyyMMdd_HHmmss')) }
@@ -344,8 +364,11 @@ function Invoke-ToolRun {
     return $result
 }
 
+# Every row whose evidence is produced by the user run, so that -Rows with any one of them still makes the run.
+$UserRunRows = @('W7', 'W9', 'W9b', 'W10', 'W12', 'W14', 'W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W24',
+    'W25', 'W27', 'W38', 'W39', 'W49', 'W51', 'W53', 'W56', 'W57', 'W58', 'W60')
 $userRun = $null
-if ((Owns 'W7') -or (Owns 'W9') -or (Owns 'W12') -or (Owns 'W9b') -or (Owns 'W25')) {
+if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
     Write-Output ""
     Write-Output "-- the user entry, the run the sheet's sections 3 to 5 walk"
     $userRun = Invoke-ToolRun -Entry 'User'
@@ -390,27 +413,68 @@ if ((Owns 'W7') -or (Owns 'W9') -or (Owns 'W12') -or (Owns 'W9b') -or (Owns 'W25
             Add-Answer 'W9b' 'captured' 'W9b-window.txt' 'every control of the window with its position and text, for the log-to-report comparison'
         }
         if ($null -ne $json) {
+            # Each format is written on its own and one that fails leaves the others usable, so the manifest names the
+            # files that exist and not the three the run was supposed to write - and a run that wrote fewer than three
+            # is W49's own condition, met rather than manufactured.
             $stem = [IO.Path]::GetFileNameWithoutExtension($json.Name)
+            $copied = New-Object System.Collections.Generic.List[string]
+            $unwritten = New-Object System.Collections.Generic.List[string]
             foreach ($ext in @('html', 'txt', 'json')) {
                 $file = Join-Path $userRun.ReportDir ($stem + '.' + $ext)
-                if (Test-Path -LiteralPath $file) { [void](Copy-Into $file ('report-' + $ext + '.' + $ext)) }
+                if (Test-Path -LiteralPath $file) { [void](Copy-Into $file ('report-' + $ext + '.' + $ext)); $copied.Add('report-' + $ext + '.' + $ext) }
+                else { $unwritten.Add($ext.ToUpper()) }
             }
+            $script:ReportArtefact = ($copied -join ', ')
+            $note = if ($unwritten.Count -eq 0) { 'the three files of the user run' } else { ('the ' + $copied.Count + ' format(s) this run wrote; ' + ($unwritten -join ' and ') + ' was not written') }
             foreach ($row in @('W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W24', 'W27', 'W38', 'W39', 'W53', 'W57', 'W58', 'W60')) {
-                if (Owns $row) { Add-Answer $row 'captured' 'report-html.html, report-txt.txt, report-json.json' 'the three files of the user run' }
+                if (Owns $row) { Add-Answer $row 'captured' $script:ReportArtefact $note }
+            }
+            if (Owns 'W49') {
+                if ($unwritten.Count -gt 0) { Add-Answer 'W49' 'captured' $script:ReportArtefact ('this run wrote ' + $copied.Count + ' of 3 formats - ' + ($unwritten -join ' and ') + ' missing - which is the row''s own condition, met and not manufactured') }
+                else { Add-NotProduced 'W49' 'all three report formats were written; the sheet says not to manufacture a partial failure, only to record it when it happens' }
             }
             $data = Get-Content -LiteralPath $json.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
             if (Owns 'W51') {
-                if ($data.Overall.Code -eq 'ERROR') { Add-Answer 'W51' 'captured' 'report-html.html' 'this run ended Test Incomplete, which is the row''s own condition' }
+                if ($data.Overall.Code -eq 'ERROR') { Add-Answer 'W51' 'captured' $script:ReportArtefact 'this run ended Test Incomplete, which is the row''s own condition' }
                 else { Add-NotProduced 'W51' ("this run ended " + $data.Overall.Text + "; the row is only answered when a run is Test Incomplete, which the sheet says to record when it happens") }
             }
         }
         else {
-            foreach ($row in @('W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W24', 'W27', 'W38', 'W39', 'W51', 'W53', 'W57', 'W58', 'W60')) { if (Owns $row) { Add-NotProduced $row 'the user run wrote no report' } }
+            foreach ($row in @('W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W24', 'W27', 'W38', 'W39', 'W49', 'W51', 'W53', 'W57', 'W58', 'W60')) { if (Owns $row) { Add-NotProduced $row 'the user run wrote no report' } }
         }
-        if ((Owns 'W14') -or (Owns 'W25')) {
+        if (Owns 'W14') {
+            # The row is about the second run: a new set of three with its own time in the name, the first set still
+            # there. One listing after one run cannot show it, so the button the row names is clicked.
+            $again = Find-ByName $win $names.Again
+            if ($null -eq $json) { Add-NotProduced 'W14' 'the first run wrote no report, so there was nothing to run again from' }
+            elseif ($null -eq $again) { Add-NotProduced 'W14' ("the button the row names (" + $names.Again + ") was not found after the first run") }
+            else {
+                $before = @(Get-ChildItem -LiteralPath $userRun.ReportDir -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+                $secondFrom = Get-Date
+                Send-Click $again
+                $json2 = $null; $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+                while ($null -eq $json2 -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2; $json2 = Get-NewReport $userRun.ReportDir $secondFrom }
+                Start-Sleep -Seconds 2
+                $after = @(Get-ChildItem -LiteralPath $userRun.ReportDir -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+                $survived = @($before | Where-Object { $after -contains $_ }).Count
+                $added = @($after | Where-Object { $before -notcontains $_ })
+                [void](Save-Text 'W14-run-again.txt' (@(
+                            "before Run Again (" + $before.Count + " files):"
+                            ($before -join "`r`n")
+                            ""
+                            "after Run Again (" + $after.Count + " files, " + $survived + " of the first set still present):"
+                            ($after -join "`r`n")
+                            ""
+                            "new in the second run: " + $(if ($added.Count) { ($added -join ', ') } else { '(none)' })
+                        ) -join "`r`n"))
+                if ($null -eq $json2) { Add-NotProduced 'W14' ("the second run wrote no report within " + $TimeoutSeconds + " s; W14-run-again.txt has the folder either side of the click") }
+                else { Add-Answer 'W14' 'captured' 'W14-run-again.txt' ("Run Again added " + $added.Count + " file(s) and left " + $survived + " of " + $before.Count + " untouched") }
+            }
+        }
+        if (Owns 'W25') {
             $listing = @(Get-ChildItem -LiteralPath $userRun.ReportDir -ErrorAction SilentlyContinue | ForEach-Object { "{0,-60} {1,10}  {2}" -f $_.Name, $_.Length, $_.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss') }) -join "`r`n"
-            [void](Save-Text 'W14-W25-reports-folder.txt' ("report directory: " + $userRun.ReportDir + "`r`n`r`n" + $listing))
-            foreach ($row in @('W14', 'W25')) { if (Owns $row) { Add-Answer $row 'captured' 'W14-W25-reports-folder.txt' 'the report folder as it stands after the run' } }
+            [void](Save-Text 'W25-reports-folder.txt' ("report directory: " + $userRun.ReportDir + "`r`n`r`n" + $listing))
+            Add-Answer 'W25' 'captured' 'W25-reports-folder.txt' 'the report folder with the naming of every file in it'
         }
         if (Owns 'W56') {
             $sync = Test-PathIsSynced $userRun.ReportDir
@@ -439,14 +503,53 @@ if ((Owns 'W32') -or (Owns 'W34') -or (Owns 'W33')) {
             Add-Answer 'W32' 'captured' (Split-Path -Leaf $shot) ('the panel at ' + $itRun.WindowSize + ', with every control and its text in W32-it-panel.txt')
         }
         if (Owns 'W34') {
+            # Reset can only be shown to work on a panel that has been changed, so every field is changed first: a
+            # number goes up by one, a text field gains a marker. That is this row's own precondition and not W33,
+            # which is about the person's typing and the run they make with it.
             $reset = Find-ByName $win $names.Reset
-            if ($null -eq $reset) { Add-NotProduced 'W34' 'the Reset to config button was not found in the panel' }
+            # The panel's own fields only: the log box is an edit control too, and it is not one of the six the row is
+            # about, so height keeps it out.
+            $edits = @($win.FindAll($SCOPE::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+                    Where-Object { $_.Current.ClassName -match 'EDIT' -and $_.Current.BoundingRectangle.Height -lt 60 } |
+                    Sort-Object { [int]$_.Current.BoundingRectangle.Top }, { [int]$_.Current.BoundingRectangle.Left })
+            # The spinners are left alone on purpose. Their inner edit takes WM_SETTEXT, but the control's Value does
+            # not change with it, so Reset restores a value that never moved and the picture would show the old text
+            # sitting there - evidence that reads like a defect and is an artefact of the harness. Their three fields
+            # stay the person's to check; the four free-text fields are changed honestly.
+            $changed = 0
+            $skippedNumeric = 0
+            foreach ($e in $edits) {
+                $old = [string]$e.Current.Name
+                if ($old -match '^\d+$') { $skippedNumeric++; continue }
+                $new = ($old + 'walkcapture.example').Trim()
+                $set = $false
+                try {
+                    $vp = $e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+                    $vp.SetValue($new)
+                    $set = $true
+                }
+                catch { }
+                if (-not $set) {
+                    $handle = [IntPtr]$e.Current.NativeWindowHandle
+                    if ($handle -ne [IntPtr]::Zero) {
+                        [void][WalkCaptureWin32]::SendMessageW($handle, 0x000C, [IntPtr]::Zero, $new)   # WM_SETTEXT
+                        Start-Sleep -Milliseconds 100
+                        $set = ([string]$e.Current.Name -eq $new)
+                    }
+                }
+                if ($set) { $changed++ }
+            }
+            Start-Sleep -Milliseconds 500
+            $shotBefore = Save-Screen 'W34-before-reset.png'
+            [void](Save-Text 'W34-before-reset.txt' ("text fields changed by this script: " + $changed + "`r`nnumeric spinners left untouched   : " + $skippedNumeric + " (their value does not follow their text; check them by hand)`r`n`r`n" + (Get-WindowText $win)))
+            if ($null -eq $reset) { Add-NotProduced 'W34' ("the button the row names (" + $names.Reset + ") was not found in the panel; W34-before-reset.png has the panel as it stood") }
+            elseif ($changed -eq 0) { Add-NotProduced 'W34' 'none of the panel''s text fields could be changed, so Reset had nothing to restore and the row would prove nothing' }
             else {
                 Send-Click $reset
                 Start-Sleep -Seconds 2
                 $shot = Save-Screen 'W34-after-reset.png'
                 [void](Save-Text 'W34-after-reset.txt' (Get-WindowText $win))
-                Add-Answer 'W34' 'captured' (Split-Path -Leaf $shot) 'the panel after Reset to config, with the control texts beside it; the six values are the person''s to compare'
+                Add-Answer 'W34' 'captured' ((Split-Path -Leaf $shotBefore) + ', ' + (Split-Path -Leaf $shot)) ($changed.ToString() + ' text field(s) changed and then Reset; the ' + $skippedNumeric + ' numeric spinner(s) were left untouched, so the row''s "all six" is proved for the text fields here and stays the person''s for the spinners')
             }
         }
         if (Owns 'W33') { Add-NotProduced 'W33' 'this script does not type into the panel''s six controls; the row belongs to the person, who is the one whose typing the row is about' }
@@ -500,20 +603,22 @@ if ((Owns 'W5') -or (Owns 'W5b')) {
     Write-Output ""
     Write-Output "-- the Mark of the Web and the security warning, section 3"
     $launcher = Join-Path $PackageDir 'Start-NetworkCheck.cmd'
-    $marked = $null -ne (Get-Item -LiteralPath $launcher -Stream Zone.Identifier -ErrorAction SilentlyContinue)
-    $zipMarked = $null
-    if ($Zip -and (Test-Path -LiteralPath $Zip)) { $zipMarked = $null -ne (Get-Item -LiteralPath $Zip -Stream Zone.Identifier -ErrorAction SilentlyContinue) }
+    $launcherZone = Get-ZoneId $launcher
+    $marked = Test-InternetMark $launcherZone
+    $zipZone = if ($Zip -and (Test-Path -LiteralPath $Zip)) { Get-ZoneId $Zip } else { '(no -Zip given)' }
+    [void](Save-Text 'W5-mark-of-the-web.txt' (@(
+                "ZIP                : " + $zipZone
+                "extracted launcher : " + $launcher
+                "                   : " + $launcherZone + $(if ($marked) { ' - the Internet or Restricted zone, which is the mark that raises the security question' } else { ' - not the mark that raises the security question' })
+            ) -join "`r`n"))
     if (Owns 'W5b') {
-        [void](Save-Text 'W5b-mark-of-the-web.txt' (@(
-                    "ZIP                : " + $(if ($null -eq $zipMarked) { '(no -Zip given)' } elseif ($zipMarked) { 'marked (Zone.Identifier present)' } else { 'not marked' })
-                    "extracted launcher : " + $launcher
-                    "                   : " + $(if ($marked) { 'marked (Zone.Identifier present) - Windows asks the security question' } else { 'not marked - Windows asks nothing' })
-                ) -join "`r`n"))
-        Add-Answer 'W5b' 'captured' 'W5b-mark-of-the-web.txt' $(if ($marked) { 'this copy is marked; the blocked half of the comparison is W5' } else { 'this copy carries no mark, which is the unblocked half of the comparison' })
+        # W5b is the other extraction: the ZIP unblocked, extracted again, and launched with no dialog at all. This
+        # script neither unblocks a file nor makes that second copy, so the row stays the person's.
+        Add-NotProduced 'W5b' 'the unblocked half needs the ZIP unblocked and extracted a second time, which this script does not do; the mark this copy carries is in W5-mark-of-the-web.txt'
     }
     if (Owns 'W5') {
         if (-not $marked) {
-            Add-NotProduced 'W5' 'the extracted launcher carries no Mark of the Web on this machine, so Windows raises no security warning to capture (see W5b)'
+            Add-NotProduced 'W5' ("the extracted launcher carries " + $launcherZone + ", not the Internet or Restricted mark that raises the security warning, so there is no dialog to capture; W5-mark-of-the-web.txt has the state of both files")
         }
         else {
             # ShellExecute the marked launcher: Windows raises its own dialog, which is what the row is about. The
@@ -543,28 +648,39 @@ if ((Owns 'W5') -or (Owns 'W5b')) {
 }
 
 # --------------------------------------------------- the rows whose precondition this machine may not have
+# W40 is the one row whose precondition this machine may actually have, so it is answered on both sides.
+if ((Owns 'W40') -and -not (Answered 'W40')) {
+    $vpn = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and ($_.InterfaceDescription -match 'VPN|TAP|WAN Miniport \(IKEv2\)|WireGuard') })
+    if ($vpn.Count -eq 0) { Add-NotProduced 'W40' 'no VPN adapter is connected on this machine, and the row asks for one only if a VPN is available' }
+    elseif (-not $script:ReportArtefact) { Add-NotProduced 'W40' ("a VPN adapter is connected (" + (@($vpn | ForEach-Object { $_.Name }) -join ', ') + ") but this walk captured no report to read it in") }
+    else { Add-Answer 'W40' 'captured' $script:ReportArtefact ("a VPN adapter was connected during the run (" + (@($vpn | ForEach-Object { $_.Name }) -join ', ') + "), so the report has it beside the physical one; how this VPN is classified is the person's to read") }
+}
 $conditional = @(
-    @{ Row = 'W40'; Test = { $null -ne (Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and ($_.InterfaceDescription -match 'VPN|TAP|WAN Miniport \(IKEv2\)|WireGuard') }) }; Missing = 'no VPN adapter is connected on this machine, and the row asks for one only if a VPN is available' }
-    @{ Row = 'W42'; Test = { $false }; Missing = 'this machine has Windows PowerShell, and the sheet forbids breaking it to produce the row' }
-    @{ Row = 'W47'; Test = { $false }; Missing = 'no archiver that extracts a whole folder into its view was driven; stock Windows stops earlier, which is W3''s row' }
-    @{ Row = 'W48'; Test = { $false }; Missing = 'the sheet says not to manufacture a report-generation failure; record it if it happens' }
-    @{ Row = 'W49'; Test = { $false }; Missing = 'the sheet says not to manufacture a partial report-write failure; record it if it happens' }
-    @{ Row = 'W50'; Test = { $false }; Missing = 'the sheet says not to manufacture an unrecoverable error; record it if it happens' }
-    @{ Row = 'W43'; Test = { $false }; Missing = 'the restricted-language-mode scenario changes a machine-wide policy and needs elevation; the campaign''s M7 owns it' }
-    @{ Row = 'W44'; Test = { $false }; Missing = 'the AllSigned execution policy is a Group Policy change and needs elevation; the campaign''s M8 owns it' }
-    @{ Row = 'W45'; Test = { $false }; Missing = 'the %TEMP% copy of the launcher''s error report needs the package folder made unwritable; not driven by this script' }
-    @{ Row = 'W46'; Test = { $false }; Missing = 'the unwritable report folder needs an ACL change on Reports; not driven by this script' }
-    @{ Row = 'W54'; Test = { $false }; Missing = 'the before-and-after captures of "it changes nothing" are backlog #42''s chain step, not a capture row' }
-    @{ Row = 'W36'; Test = { $false }; Missing = 'the file table is checked by tests\doc_facts.ps1 (E1) and its reverse direction is backlog #41' }
-    @{ Row = 'W37'; Test = { $false }; Missing = 'a pristine extraction is not made by this script; the same check is backlog #41' }
-    @{ Row = 'W59'; Test = { $false }; Missing = 'the other language is walked by running this script against that language folder' }
-    @{ Row = 'W13'; Test = { $false }; Missing = 'the report is opened in the person''s own browser, and the address bar is theirs to read' }
+    @{ Row = 'W42'; Missing = 'this machine has Windows PowerShell, and the sheet forbids breaking it to produce the row' }
+    @{ Row = 'W47'; Missing = 'no archiver that extracts a whole folder into its view was driven; stock Windows stops earlier, which is W3''s row' }
+    @{ Row = 'W48'; Missing = 'the sheet says not to manufacture a report-generation failure; record it if it happens' }
+    @{ Row = 'W49'; Missing = 'the sheet says not to manufacture a partial report-write failure; record it if it happens' }
+    @{ Row = 'W50'; Missing = 'the sheet says not to manufacture an unrecoverable error; record it if it happens' }
+    @{ Row = 'W43'; Missing = 'the restricted-language-mode scenario changes a machine-wide policy and needs elevation; the campaign''s M7 owns it' }
+    @{ Row = 'W44'; Missing = 'the AllSigned execution policy is a Group Policy change and needs elevation; the campaign''s M8 owns it' }
+    @{ Row = 'W45'; Missing = 'the %TEMP% copy of the launcher''s error report needs the package folder made unwritable; not driven by this script' }
+    @{ Row = 'W46'; Missing = 'the unwritable report folder needs an ACL change on Reports; not driven by this script' }
+    @{ Row = 'W54'; Missing = 'the before-and-after captures of "it changes nothing" are backlog #42''s chain step, not a capture row' }
+    @{ Row = 'W36'; Missing = 'the file table is checked by tests\doc_facts.ps1 (E1) and its reverse direction is backlog #41' }
+    @{ Row = 'W37'; Missing = 'a pristine extraction is not made by this script; the same check is backlog #41' }
+    @{ Row = 'W59'; Missing = 'the other language is walked by running this script against that language folder' }
+    @{ Row = 'W13'; Missing = 'the report is opened in the person''s own browser, and the address bar is theirs to read' }
 )
 foreach ($c in $conditional) {
     if (-not (Owns $c.Row)) { continue }
-    $ok = $false
-    try { $ok = & $c.Test } catch { $ok = $false }
-    if (-not $ok) { Add-NotProduced $c.Row $c.Missing }
+    if (Answered $c.Row) { continue }   # a row answered by a capture above is not asked again here
+    Add-NotProduced $c.Row $c.Missing
+}
+# The invariant this script is written around: every row it owns leaves with an answer.
+$owedRows = @($UserRunRows + @('W1', 'W2', 'W3', 'W4', 'W5', 'W5b', 'W13', 'W28', 'W29', 'W31', 'W32', 'W33', 'W34',
+        'W36', 'W37', 'W40', 'W42', 'W43', 'W44', 'W45', 'W46', 'W47', 'W48', 'W50', 'W54', 'W59') | Sort-Object -Unique)
+foreach ($row in $owedRows) {
+    if ((Owns $row) -and -not (Answered $row)) { Add-NotProduced $row 'this run reached no branch that answers the row - a defect in walk_capture.ps1, not a fact about the machine' }
 }
 
 # --------------------------------------------------------------- the manifest
