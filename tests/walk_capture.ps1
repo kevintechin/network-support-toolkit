@@ -104,7 +104,7 @@ function Owns([string]$Row) { return (-not $Rows) -or ($Rows -contains $Row) }
 # silent absence this script exists to prevent.
 # Every row whose evidence is produced by the user run, so that -Rows with any one of them still makes the run.
 $UserRunRows = @('W7', 'W9', 'W9b', 'W10', 'W12', 'W14', 'W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W24',
-    'W25', 'W27', 'W38', 'W39', 'W40', 'W49', 'W51', 'W53', 'W56', 'W57', 'W58', 'W60')
+    'W25', 'W27', 'W38', 'W39', 'W40', 'W48', 'W49', 'W51', 'W53', 'W56', 'W57', 'W58', 'W60')
 $OwnedRows = @($UserRunRows + @('W1', 'W2', 'W3', 'W4', 'W5', 'W5b', 'W13', 'W28', 'W29', 'W31', 'W32', 'W33',
         'W34', 'W36', 'W37', 'W42', 'W43', 'W44', 'W45', 'W46', 'W47', 'W48', 'W50', 'W54', 'W59') | Sort-Object -Unique | Sort-Object { [int]($_ -replace '\D', '') }, { $_ })
 if ($Rows) {
@@ -286,9 +286,16 @@ function Close-ExplorerWindow([int64]$Hwnd) {
 function Get-AnyNewReport([string]$ReportDir, [datetime]$Since) {
     # Save-Reports writes each format on its own, so a run whose JSON failed still wrote the other two - and waiting
     # for the JSON alone would call that run reportless and lose exactly the evidence W49 is for.
+    # The emergency and environment files are named NetworkHealthCheck_FATAL_* and NetworkHealthCheck_ENVIRONMENT_*
+    # and are not report formats: taking one as the run's report would turn a total failure into a "1 of 3 written"
+    # partial and answer W49 with it while leaving W48 unproduced.
     @(Get-ChildItem -LiteralPath $ReportDir -ErrorAction SilentlyContinue |
-            Where-Object { $_.Extension -in @('.html', '.txt', '.json') -and $_.Name -like 'NetworkHealthCheck_*' -and $_.LastWriteTime -gt $Since } |
+            Where-Object { $_.Extension -in @('.html', '.txt', '.json') -and $_.Name -like 'NetworkHealthCheck_*' -and $_.Name -notmatch 'FATAL|ENVIRONMENT' -and $_.LastWriteTime -gt $Since } |
             Sort-Object LastWriteTime -Descending)[0]
+}
+function Get-NewEmergencyFile([string]$ReportDir, [datetime]$Since) {
+    @(Get-ChildItem -LiteralPath $ReportDir -Filter 'NetworkHealthCheck_FATAL_*' -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -gt $Since } | Sort-Object LastWriteTime -Descending)[0]
 }
 
 # ------------------------------------------------------------------ the walk
@@ -516,8 +523,32 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
                 else { Add-Answer 'W39' 'captured' $script:ReportArtefact 'the run was made by this unelevated harness, which is the row''s precondition' }
             }
             if (Owns 'W49') {
-                if ($unwritten.Count -gt 0) { Add-Answer 'W49' 'captured' $script:ReportArtefact ('this run wrote ' + $copied.Count + ' of 3 formats - ' + ($unwritten -join ' and ') + ' missing - which is the row''s own condition, met and not manufactured') }
-                else { Add-NotProduced 'W49' 'all three report formats were written; the sheet says not to manufacture a partial failure, only to record it when it happens' }
+                # The row is the message box that names the count and the surviving file, not the missing files: a
+                # partial write with no dialog is a defect the row exists to catch, so the dialog decides.
+                if ($unwritten.Count -eq 0) { Add-NotProduced 'W49' 'all three report formats were written; the sheet says not to manufacture a partial failure, only to record it when it happens' }
+                else {
+                    $toolDialog = $null
+                    if ($null -ne $win) {
+                        $toolDialog = $AE::RootElement.FindFirst($SCOPE::Children, (New-Object System.Windows.Automation.AndCondition(
+                                    (New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $userRun.GuiPid)),
+                                    (New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, '#32770')))))
+                    }
+                    if ($null -ne $toolDialog) {
+                        $shot = Save-Screen 'W49-partial-write-dialog.png'
+                        [void](Save-Text 'W49-partial-write-dialog.txt' ("dialog title: " + $toolDialog.Current.Name + "`r`n`r`n" + (Get-WindowText $toolDialog)))
+                        Add-Answer 'W49' 'captured' ((Split-Path -Leaf $shot) + ', W49-partial-write-dialog.txt') ('this run wrote ' + $copied.Count + ' of 3 formats (' + ($unwritten -join ' and ') + ' missing) and the tool put up its message box, which the picture and the text hold')
+                    }
+                    else {
+                        Add-Answer 'W49' 'not produced' $script:ReportArtefact ('this run wrote ' + $copied.Count + ' of 3 formats (' + ($unwritten -join ' and ') + ' missing), but no message box from the tool was on screen to capture - the row is about that box naming the count and the surviving file, so it is the person''s to check')
+                    }
+                }
+            }
+            if (Owns 'W48') {
+                $fatal = Get-NewEmergencyFile $userRun.ReportDir $userRun.LaunchedAt
+                if ($null -ne $fatal) {
+                    [void](Copy-Into $fatal.FullName 'W48-FATAL.txt')
+                    Add-Answer 'W48' 'captured' 'W48-FATAL.txt' ('this run could write no report and left ' + $fatal.Name + ' instead, which is the row''s own condition, met and not manufactured')
+                }
             }
             $jsonPath = Join-Path $userRun.ReportDir ($stem + '.json')
             if (Test-Path -LiteralPath $jsonPath) { $script:ReportJsonPath = $jsonPath }
