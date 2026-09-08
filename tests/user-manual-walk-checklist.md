@@ -30,6 +30,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-PackageAcceptan
 
 That checks the digest, extracts, verifies the package against its own `SHA256SUMS.txt` and the CRLF rule, records the machine, and runs the chain steps that need Windows PowerShell alone. Then extract a **second, clean copy** the way section 2 of the manual says to, and walk that one — the walk has to follow the manual's own instructions, not the runner's.
 
+**Then the capture harness, which owns 51 of these rows.** `walk_capture.ps1` runs the tool the way the rows below do and keeps what it saw - the window at whatever size the desktop resolved it to, the report's three files, the launcher's error report, the folder listings, the Mark of the Web and the dialog it raises - and writes one bundle with a `manifest.md` binding each answer to its row. Fill the *Observed* column of those rows from the manifest; a row it could not reach says `not produced` and names the precondition that was missing, so that no row is silently absent. It refuses to run when the session cannot be captured, and when the bundle would land in a synced folder.
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\walk_capture.ps1 -PackageDir <the extracted en-US or zh-TW folder> -Zip <the downloaded ZIP> -OutDir C:\NHC-Walk
+```
+
+| | Rows |
+|---|---|
+| Captured by the harness, when the machine allows it | W1, W5, W5b, W7, W9, W9b, W10, W12, W14, W15, W16, W17, W18, W20, W21, W22, W24, W25, W27, W28, W29, W31, W32, W34, W38, W39, W51, W53, W56, W57, W58, W60 |
+| Answered `not produced`, with the precondition named | W2, W3, W4, W13, W33, W36, W37, W40, W42, W43, W44, W45, W46, W47, W48, W49, W50, W54, W59 |
+| Never the harness's, whatever it can capture | every row not listed above, and **all six questions of *Was it usable?*** |
+
+The last line is the point of the harness rather than a limitation of it: a screenshot judged afterwards by whoever wrote this sheet is a review of the manual and not a walk of it. The harness exists so that the person's time goes to the questions no assertion and no picture can answer.
+
 **Two things already known, so they are not new findings.** The row that says the window closes over a console-mode fallback is [backlog #34](../docs/backlog.md); the manual routes around it. *Everything passed* being printed whenever every required check passed is [backlog #35](../docs/backlog.md); section 4 already tells the reader to read the Information rows. Record them as *known* if you meet them.
 
 ---
