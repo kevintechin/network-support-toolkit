@@ -104,7 +104,7 @@ function Owns([string]$Row) { return (-not $Rows) -or ($Rows -contains $Row) }
 # silent absence this script exists to prevent.
 # Every row whose evidence is produced by the user run, so that -Rows with any one of them still makes the run.
 $UserRunRows = @('W7', 'W9', 'W9b', 'W10', 'W12', 'W14', 'W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W24',
-    'W25', 'W27', 'W38', 'W39', 'W40', 'W48', 'W49', 'W51', 'W53', 'W56', 'W57', 'W58', 'W60')
+    'W25', 'W27', 'W38', 'W39', 'W40', 'W48', 'W49', 'W50', 'W51', 'W53', 'W56', 'W57', 'W58', 'W59', 'W60')
 $OwnedRows = @($UserRunRows + @('W1', 'W2', 'W3', 'W4', 'W5', 'W5b', 'W13', 'W28', 'W29', 'W31', 'W32', 'W33',
         'W34', 'W36', 'W37', 'W42', 'W43', 'W44', 'W45', 'W46', 'W47', 'W48', 'W50', 'W54', 'W59') | Sort-Object -Unique | Sort-Object { [int]($_ -replace '\D', '') }, { $_ })
 if ($Rows) {
@@ -392,16 +392,25 @@ if (Owns 'W1') {
         $shell = New-Object -ComObject Shell.Application
         $item = $shell.Namespace((Split-Path -Parent $zipFull)).ParseName((Split-Path -Leaf $zipFull))
         $item.InvokeVerb('Properties')
-        Start-Sleep -Seconds 3
+        # Wait for the sheet this script opened before photographing anything: a screenshot taken on a timer
+        # would otherwise be the desktop, answered as the ZIP's properties.
+        $props = $null; $deadline = (Get-Date).AddSeconds(15)
+        while ($null -eq $props -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 500
+            $props = @($AE::RootElement.FindAll($SCOPE::Children, $dialogCondition) |
+                    Where-Object { $dialogsBefore -notcontains [int64]$_.Current.NativeWindowHandle })[0]
+        }
+        if ($null -eq $props) {
+            Add-NotProduced 'W1' 'Explorer opened no property sheet for the ZIP within 15 s, so there was nothing to photograph; W1-zone-identifier.txt has the mark this copy carries'
+        }
+        else {
+        Start-Sleep -Seconds 1
         $shot = Save-Screen 'W1-zip-properties.png'
         Add-Answer 'W1' 'captured' (Split-Path -Leaf $shot) ('with W1-zone-identifier.txt; the ZIP carries ' + $zipZoneW1 + ', so ' + $(if ($zipMarkedW1) { 'the Unblock box must be in the picture' } else { 'there must be no Unblock box' }))
         # The property sheet is modal to Explorer, not to this script: close the one this script opened, and only it.
-        $props = @($AE::RootElement.FindAll($SCOPE::Children, $dialogCondition) |
-                Where-Object { $dialogsBefore -notcontains [int64]$_.Current.NativeWindowHandle })[0]
-        if ($null -ne $props) {
-            $cancel = @($props.FindAll($SCOPE::Descendants, (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button))) |
-                    Where-Object { $_.Current.AutomationId -eq '2' })[0]
-            if ($null -ne $cancel) { Send-Click $cancel; Start-Sleep -Seconds 1 }
+        $cancel = @($props.FindAll($SCOPE::Descendants, (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button))) |
+                Where-Object { $_.Current.AutomationId -eq '2' })[0]
+        if ($null -ne $cancel) { Send-Click $cancel; Start-Sleep -Seconds 1 }
         }
     }
 }
@@ -480,13 +489,38 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
         $report = $null; $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
         while ($null -eq $report -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2; $report = Get-AnyNewReport $userRun.ReportDir $userRun.LaunchedAt }
         Start-Sleep -Seconds 2
-        # W48's condition is a run that wrote no report at all, so it is looked for whether or not one appeared -
-        # inside the has-a-report branch it could never have seen the case it is about.
-        if (Owns 'W48') {
+        # An emergency file is looked for whether or not a report appeared - inside the has-a-report branch it
+        # could never have seen the case it is about - and it belongs to the row its own title names: the tool
+        # writes the same NetworkHealthCheck_FATAL_* name for a report-generation failure (W48), an unhandled
+        # error (W50) and a startup failure (neither row). The message box is part of both rows, so it is
+        # captured and dismissed rather than left modal in front of the clicks that follow.
+        if ((Owns 'W48') -or (Owns 'W50')) {
             $fatal = Get-NewEmergencyFile $userRun.ReportDir $userRun.LaunchedAt
             if ($null -ne $fatal) {
-                [void](Copy-Into $fatal.FullName 'W48-FATAL.txt')
-                Add-Answer 'W48' 'captured' 'W48-FATAL.txt' ('this run left ' + $fatal.Name + ' instead of a report, which is the row''s own condition, met and not manufactured')
+                $fatalText = ''
+                try { $fatalText = Get-Content -LiteralPath $fatal.FullName -Raw -Encoding UTF8 } catch { }
+                $fatalRow = if ($fatalText -match 'Report Generation Failed|' + [char]0x5831 + [char]0x544A + [char]0x7522 + [char]0x751F + [char]0x5931 + [char]0x6557) { 'W48' }
+                elseif ($fatalText -match 'Unhandled Error|' + [char]0x672A + [char]0x8655 + [char]0x7406 + [char]0x932F + [char]0x8AA4) { 'W50' }
+                else { '' }
+                [void](Copy-Into $fatal.FullName 'FATAL.txt')
+                $fatalShot = $null
+                $fatalDialog = $null
+                if ($null -ne $win) {
+                    $fatalDialog = $AE::RootElement.FindFirst($SCOPE::Children, (New-Object System.Windows.Automation.AndCondition(
+                                (New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $userRun.GuiPid)),
+                                (New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, '#32770')))))
+                }
+                if ($null -ne $fatalDialog) {
+                    $fatalShot = Save-Screen 'FATAL-dialog.png'
+                    [void](Save-Text 'FATAL-dialog.txt' ("dialog title: " + $fatalDialog.Current.Name + "`r`n`r`n" + (Get-WindowText $fatalDialog)))
+                    $okButton = @($fatalDialog.FindAll($SCOPE::Descendants, [System.Windows.Automation.Condition]::TrueCondition) | Where-Object { $_.Current.AutomationId -in @('1', '2') })[0]
+                    if ($null -ne $okButton) { Send-Click $okButton; Start-Sleep -Seconds 1 }
+                }
+                if ($fatalRow -and (Owns $fatalRow)) {
+                    if ($null -ne $fatalDialog) { Add-Answer $fatalRow 'captured' ('FATAL.txt, FATAL-dialog.png, FATAL-dialog.txt') ('this run left ' + $fatal.Name + ' and the tool put up the message box that names it - the row''s own condition, met and not manufactured') }
+                    else { Add-Answer $fatalRow 'not produced' 'FATAL.txt' ('this run left ' + $fatal.Name + ', but no message box from the tool was on screen to capture, and the row is about that box naming the file') }
+                }
+                elseif (-not $fatalRow) { Write-Output ('  note: ' + $fatal.Name + ' names neither row (a startup failure); it is in the bundle as FATAL.txt') }
             }
         }
         if ((Owns 'W12') -and $null -ne $win) {
@@ -515,8 +549,21 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
             }
             $script:ReportArtefact = ($copied -join ', ')
             $note = if ($unwritten.Count -eq 0) { 'the three files of the user run' } else { ('the ' + $copied.Count + ' format(s) this run wrote; ' + ($unwritten -join ' and ') + ' was not written') }
-            foreach ($row in @('W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W27', 'W38', 'W53', 'W57', 'W60')) {
+            foreach ($row in @('W15', 'W16', 'W17', 'W22', 'W27', 'W38', 'W53', 'W57', 'W60')) {
                 if (Owns $row) { Add-Answer $row 'captured' $script:ReportArtefact $note }
+            }
+            # Show Details, the badges as they render and the IT diagnostics collapsed at the bottom exist in the
+            # HTML report and nowhere else, so the surviving formats cannot answer these three.
+            $htmlWritten = $copied -contains 'report-html.html'
+            foreach ($row in @('W18', 'W20', 'W21')) {
+                if (-not (Owns $row)) { continue }
+                if ($htmlWritten) { Add-Answer $row 'captured' 'report-html.html' 'the HTML report, which is where this row''s controls and badges are' }
+                else { Add-Answer $row 'not produced' $script:ReportArtefact 'this run wrote no HTML report, and the row is about what the HTML shows' }
+            }
+            # W59 is answered by walking the Chinese package, which is this script run against the zh-TW folder.
+            if (Owns 'W59') {
+                if ($lang -eq 'zh-TW') { Add-Answer 'W59' 'captured' $script:ReportArtefact 'the Traditional Chinese package produced this report on this machine, interface and all' }
+                else { Add-NotProduced 'W59' 'this walk ran the en-US package; the row is answered by running this script against the zh-TW folder' }
             }
             # W24 compares the three formats with each other, so two of them cannot answer it - the missing one is
             # W49's evidence and W24's absence.
@@ -588,7 +635,7 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
             }
         }
         else {
-            foreach ($row in @('W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W24', 'W27', 'W38', 'W39', 'W49', 'W51', 'W53', 'W57', 'W58', 'W60')) { if (Owns $row) { Add-NotProduced $row 'the user run wrote no report' } }
+            foreach ($row in @('W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W24', 'W27', 'W38', 'W39', 'W49', 'W51', 'W53', 'W57', 'W58', 'W59', 'W60')) { if (Owns $row) { Add-NotProduced $row 'the user run wrote no report' } }
         }
         if ((Owns 'W14') -and $null -ne $win) {
             # The row is about the second run: a new set of three with its own time in the name, the first set still
@@ -915,8 +962,8 @@ $conditional = @(
     @{ Row = 'W42'; Missing = 'this machine has Windows PowerShell, and the sheet forbids breaking it to produce the row' }
     @{ Row = 'W47'; Missing = 'no archiver that extracts a whole folder into its view was driven; stock Windows stops earlier, which is W3''s row' }
     @{ Row = 'W48'; Missing = 'the sheet says not to manufacture a report-generation failure; record it if it happens' }
-    @{ Row = 'W49'; Missing = 'the sheet says not to manufacture a partial report-write failure; record it if it happens' }
     @{ Row = 'W50'; Missing = 'the sheet says not to manufacture an unrecoverable error; record it if it happens' }
+    @{ Row = 'W49'; Missing = 'the sheet says not to manufacture a partial report-write failure; record it if it happens' }
     @{ Row = 'W43'; Missing = 'the restricted-language-mode scenario changes a machine-wide policy and needs elevation; the campaign''s M7 owns it' }
     @{ Row = 'W44'; Missing = 'the AllSigned execution policy is a Group Policy change and needs elevation; the campaign''s M8 owns it' }
     @{ Row = 'W45'; Missing = 'the %TEMP% copy of the launcher''s error report needs the package folder made unwritable; not driven by this script' }
@@ -924,7 +971,6 @@ $conditional = @(
     @{ Row = 'W54'; Missing = 'the before-and-after captures of "it changes nothing" are backlog #42''s chain step, not a capture row' }
     @{ Row = 'W36'; Missing = 'the file table is checked by tests\doc_facts.ps1 (E1) and its reverse direction is backlog #41' }
     @{ Row = 'W37'; Missing = 'a pristine extraction is not made by this script; the same check is backlog #41' }
-    @{ Row = 'W59'; Missing = 'the other language is walked by running this script against that language folder' }
     @{ Row = 'W13'; Missing = 'the report is opened in the person''s own browser, and the address bar is theirs to read' }
 )
 foreach ($c in $conditional) {
