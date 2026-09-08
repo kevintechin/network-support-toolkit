@@ -39,7 +39,7 @@ That checks the digest, extracts, verifies the package against its own `SHA256SU
 | # | Do this | Expected — the manual's words | Observed | Evidence |
 |---|---|---|---|---|
 | W53 | Read section 1's list of what the tool looks at against the report you produced | Every one has its rows: which adapters are connected and their addresses, whether the default gateway answers, whether names can be looked up, whether known services can be reached, and whether the connection loses packets or retransmits | | the report |
-| W54 | Before the run, save `ipconfig /all`, `route print` and `netsh winhttp show proxy`; after the run, take them again and compare | "**It changes nothing.**" — no IP address, DNS, route or proxy setting differs, and nothing was installed. Any difference is a finding of the first order | | the two outputs |
+| W54 | Before the run, save `ipconfig /all`, `route print`, `netsh winhttp show proxy`, `reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"` (the proxy a user's applications use, which is not the WinHTTP one), `netsh advfirewall show allprofiles` and `Get-NetAdapter | Format-List Name,Status,AdminStatus`; after the run take them again and compare | "**It changes nothing.**" — nothing differs in any of them: no IP address, DNS server, route, either proxy, firewall profile or adapter state. "It installs nothing": no new entry under Programs and Features, and the package folder gained only its `Reports` folder and the report files. Any difference is a finding of the first order | | the two sets of output |
 | W55 | Time a run where things do not answer: from the IT entry, add an unreachable **Extra ping** and an unreachable **Extra URL**, then Start Test | "up to a minute or so with those settings" — the run is longer than W11's and within what the manual promises; write the measured time. If IT changed the sample length or the time limits, the manual says it takes correspondingly longer | | |
 | W56 | After a run, look at what left the computer | "**It uploads nothing.**" What this walk can check is that the report exists only in the report folder and that the tool sent nothing of its own — the wire itself is out of scope here (a capture would be the proof), so record this row as checked at the file level and say so | | the folder |
 
@@ -49,7 +49,7 @@ That checks the digest, extracts, verifies the package against its own `SHA256SU
 
 | # | Do this | Expected — the manual's words | Observed | Evidence |
 |---|---|---|---|---|
-| W1 | Right-click the downloaded ZIP → **Properties** | An **Unblock** box at the bottom. ("If there is no Unblock box, there is nothing to unblock" — record which case this was) | | screenshot |
+| W1 | Right-click the downloaded ZIP → **Properties**, and **leave it blocked for now** | An **Unblock** box at the bottom. ("If there is no Unblock box, there is nothing to unblock" — record which case this was) | | screenshot |
 | W2 | Right-click the ZIP → **Extract All…** | Windows proposes a folder named after the ZIP | | screenshot |
 | W3 | Double-click the ZIP (do **not** extract), double-click `Start-English.cmd` inside the ZIP window | The black window says `ERROR: en-US package is missing` and waits for a key | | the window's text |
 | W4 | In the same ZIP window, open `en-US\` and double-click `Start-NetworkCheck.cmd` | The black window says `The program file NetworkHealthCheck.ps1 is missing`, and names `LauncherError.txt` | | the window's text, the file |
@@ -60,7 +60,8 @@ That checks the digest, extracts, verifies the package against its own `SHA256SU
 
 | # | Do this | Expected — the manual's words | Observed | Evidence |
 |---|---|---|---|---|
-| W5 | From the properly extracted folder, double-click `Start-English.cmd` | If the ZIP was not unblocked: **Open File - Security Warning** → **Run**. Record whether the question appeared | | screenshot |
+| W5 | Extract the **still-blocked** ZIP and double-click `Start-English.cmd` from that folder | **Open File - Security Warning** appears — the manual says this is the download mark and the tool is the same either way; choose **Run** | | screenshot |
+| W5b | Now tick **Unblock** on the ZIP, extract it again into a new folder, and double-click `Start-English.cmd` there | **No security question at all** — this is the claim of section 2 step 2, "unblocking the ZIP before extracting removes that question", and it is only tested by doing both halves | | screenshot |
 | W6 | Watch what opens first | A black text window opens first and stays in the background | | |
 | W7 | Read the window's title bar | **Network Health Check Tool 1.2.4** — the version in the title is this release's | | screenshot |
 | W8 | Time the start | The window **starts by itself within a second** — no button is pressed | | |
@@ -79,6 +80,26 @@ That checks the digest, extracts, verifies the package against its own `SHA256SU
 |---|---|---|---|---|
 | W15 | Read the verdict in the window and at the top of the report | One of **Overall Healthy**, **Attention Required**, **Problem Detected**, **Test Incomplete**, and the tool's own description of it matches the manual's *The tool's description* column word for word | | the report |
 | W16 | Read **What to tell IT** | A title and **two to four lines**; the title is one of the nine in the manual's table and its text matches; **the last line names the file to send and what it contains** | | the report |
+
+**Each verdict and each guidance title on its own line.** W15 and W16 check the one this run produced; the other twelve stay unchecked unless they are recorded. Produce what the machine allows — the campaign's scenarios in `package-acceptance-checklist.md` produce several, and its evidence can be cited instead of producing them again — and record the rest as *not produced*, so that a wrong description for a branch nobody reached is visible as untested rather than invisible.
+
+| # | Branch | How it can be produced here | Observed | Evidence |
+|---|---|---|---|---|
+| W61 | Verdict **Overall Healthy** | the ordinary run of W12 | | |
+| W62 | Verdict **Attention Required** | the unwritable report folder of W46, or a run with loss or latency over the thresholds | | |
+| W63 | Verdict **Problem Detected** | the campaign's `A4` (adapter disconnected) or `A3` (host-only, no gateway) | | |
+| W64 | Verdict **Test Incomplete** | W51, when it happens | | |
+| W65 | *Everything passed* | the ordinary run | | |
+| W66 | *Local link problem* | `A4`, the adapter disconnected | | |
+| W67 | *Gateway does not answer* | a gateway that does not reply to pings — not producible on every network | | |
+| W68 | *Gateway answers, internet does not* | `A3`, or a machine whose gateway answers with no route beyond | | |
+| W69 | *Name resolution fails* | point the adapter at an unreachable DNS server, run, then restore | | |
+| W70 | *Connected, but quality is poor* | loss, latency or retransmissions over the thresholds — record *not produced* if the link is clean | | |
+| W71 | *A required check failed* | any required check failing, as in `A3` / `A4` | | |
+| W72 | *Some checks could not run* | an *Unable to Check* row with no failure — record *not produced* if none appeared | | |
+| W73 | *Warnings to review* | a warning with no failure, as in W46 | | |
+
+For each: the title and its lines match the manual's table word for word, and the last line names the file to send.
 | W17 | Read **Computer and Run Information** | Computer name, user, operating system, tool version, and where the configuration file and the reports are | | the report |
 | W18 | Read a **ping result** row of **Test Results** — a row the manual's own example names, so that it has measurements to show | Time, category, the check's name, a badge, a description; **Show Details** opens the measurements behind it (the individual ping replies), and this row carries the method and the command that repeats it by hand. Rows without measurements — the configuration-file row, the computer row — have no **Show Details** control and need not carry either: that is not a finding, and the manual says "where a row carries them" | | the report |
 | W19 | Click **Expand all**, then **Collapse all** | Every detail block opens and closes at once | | |
@@ -96,7 +117,7 @@ That checks the digest, extracts, verifies the package against its own `SHA256SU
 |---|---|---|---|---|
 | W25 | Click **Open Report Folder** | It opens `en-US\Reports`, holding three files per run named `NetworkHealthCheck_<date>_<time>_<COMPUTERNAME>.html` / `.txt` / `.json` | | the folder listing |
 | W26 | Compare the path under the buttons with the folder that opened | "The path under the buttons is always the one that was actually used" | | |
-| W27 | Read the manual's *What the report contains* paragraph against a real report | Every family it names is in the report, and the report holds no family the paragraph does not name — this is the privacy inventory, and it is the paragraph most worth walking row by row | | the report + the JSON |
+| W27 | Walk the manual's *What the report contains* paragraph against a real report **field by field, in both directions** — list every label in the TXT (the `Label:` lines and the row headings) and every key in the JSON, then match each against the paragraph | Every field the paragraph names is in the report (the BSSID, the driver date and maker, the error counters, the proxy settings, the routes, the profile name, the config and report paths…), **and** every field the report carries is covered by the paragraph. A field the report holds and the paragraph does not name is the finding that matters most here: it is the privacy inventory, and its two previous rebuilds each found fields nobody had listed | | the TXT, the JSON, the list |
 
 ---
 
@@ -119,8 +140,8 @@ Produce at least the first row; the rest are recorded as *produced* or *not prod
 | W43 | **Exit code 3** — the campaign's `M7`: `setx /M __PSLockdownPolicy 4` from an elevated prompt, a **new** session, double-click the launcher, then remove the variable | The window says the program ended with exit code 3, and `NetworkHealthCheck_ENVIRONMENT_<time>.txt` is beside the program or in the temporary folder, naming the computer, the user, the folder, the PowerShell version and language mode, the language settings and the operating system | | the file |
 | W44 | **Another exit code** — the campaign's `M8`: a Group Policy execution policy of *Allow only signed scripts*, then revert | The window says the program ended with another exit code and that PowerShell or company security policy may have blocked it; PowerShell's own reason is printed above the error, and `LauncherError.txt` says to send both | | the window's text, the file |
 | W45 | **The `%TEMP%` copy of the launcher's file** — in this order, which the launcher forces: rename `NetworkHealthCheck.ps1` away, **delete the `LauncherError.txt` W28 left**, then deny write on the `en-US` folder for this account, then double-click the launcher; restore the permission and the file afterwards. The order matters twice: the rename happens while the folder is still writable, and the launcher writes its file and then asks `if exist` — a stale error report would satisfy that check after the write failed, and the `%TEMP%` copy would never be written | The launcher writes `NetworkHealthCheck_LauncherError.txt` in the Windows temporary folder instead, and **the window prints the path** | | the file |
-| W46 | **Report directory not writable** — deny write on `en-US\Reports`, run, then restore | A **Startup Notice** warning row: *"The original report directory is not writable. Reports will be saved to: …"*, the reports are in the folder it names, **Open Report Folder** opens that folder, and the verdict is **Attention Required** because a Startup Notice is a warning | | the report |
-| W47 | **Running from inside a compressed folder** — needs an archiver that extracts the whole folder into its view; stock Windows stops earlier (W3, W4). Record *not produced* if no such archiver is installed | A **Startup Notice** warning row: *"This copy is running from inside a compressed folder…"* | | the report |
+| W46 | **Report directory not writable** — deny write on `en-US\Reports`, run, then restore | A **Startup Notice** warning row: *"The original report directory is not writable. Reports will be saved to: …"*, the reports are in the folder it names, **Open Report Folder** opens that folder, and the notice contributes a warning — **on its own** it makes the verdict **Attention Required**, but a required check that failed in the same run gives **Problem Detected**, which is not a defect of the manual | | the report |
+| W47 | **Running from inside a compressed folder** — needs an archiver that extracts the whole folder into its view; stock Windows stops earlier (W3, W4). Record *not produced* if no such archiver is installed | A **Startup Notice** warning row: *"This copy is running from inside a compressed folder…"*, **and the two claims beside it**: the reports went to a temporary place — find it, then close the archive view and check that it is gone — and the recovery works: extract the whole ZIP and run again, and the row is absent | | the report, the temporary path before and after |
 | W48 | **Report generation failed** — do not manufacture it; record *not produced* unless it happens | A message box naming an emergency error report `NetworkHealthCheck_FATAL_<time>.txt`, which the manual says holds everything the check found before the failure; send that file | | |
 | W49 | **N of 3 report formats could not be written** — same; *not produced* unless it happens | A message box naming the count, the one that was written is named in it, and **Open Report** opens it | | |
 | W50 | **The test could not be completed** — same; *not produced* unless it happens | A message box naming an error report; send the file it names | | |
@@ -153,7 +174,7 @@ Produce at least the first row; the rest are recorded as *produced* or *not prod
 
 | # | Do this | Expected — the manual's words | Observed | Evidence |
 |---|---|---|---|---|
-| W38 | Read *Which addresses does it contact?* against the report's rows — the targets **and** the three routing promises in the same answer | The gateway, `1.1.1.1` (ping, port 443, the first three hops of the traceroute) and `https://www.microsoft.com/`, plus the name lookup for `www.microsoft.com`, and the report's rows name the targets that were actually configured. Then the rest of the sentence: the page request goes **through the proxy Windows is set to use** (compare the report's proxy row), the lookup goes **through this computer's DNS servers** (compare the adapter's DNS servers), and the report **names the address the request finally landed on** after any redirect | | the report |
+| W38 | Read *Which addresses does it contact?* against the report's rows — the targets **and** the three routing promises in the same answer | The gateway, `1.1.1.1` (ping, port 443, the first three hops of the traceroute) and `https://www.microsoft.com/`, plus the name lookup for `www.microsoft.com`, and the report's rows name the targets that were actually configured. Then the rest of the sentence: the report **names the address the request finally landed on** after any redirect — check that here. The other two halves of the sentence, that the page request goes through the proxy Windows is set to use and that the lookup goes through this computer's DNS servers, are claims about the path taken, and configuration rows do not prove a path: without a capture or a proxy or DNS server log this walk cannot settle them, so compare the configured values and record the two as **not verified at the wire level here**, the way W56 records "uploads nothing" | | the report |
 | W39 | Read *Do I need to be an administrator?* against this run | The run was made without elevation, and anything that needed more rights is an *Unable to Check* row, with the check continuing | | the report |
 | W40 | (If a VPN is available) Connect it and run again | Both the physical and the VPN adapter appear, and the VPN one is **normally** marked *Virtual* and listed as information — record how this VPN's adapter was actually classified. The classification is a heuristic (`Test-IsVirtualAdapter` reads the virtual flag, else the hardware flag, else the description), so a VPN adapter that reports itself as hardware can appear as Physical, which is what the manual's "normally" allows; only a classification the manual does not allow is a finding. A disconnected VPN adapter, or one with no address, does not appear at all | | the report |
 | W41 | Delete an old report | It deletes like an ordinary file | | |
