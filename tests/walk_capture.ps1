@@ -115,13 +115,18 @@ function Save-Screen([string]$Name) {
     return $path
 }
 function Test-CaptureWorks {
-    # A capture of a locked screen or a disconnected RDP session is uniformly black. One small capture decides it.
-    $bitmap = New-Object System.Drawing.Bitmap(120, 120)
+    # A capture of a locked screen or a disconnected RDP session is uniformly black. A corner is not evidence of that
+    # - a black wallpaper, hidden icons or one dark window would fail a corner test on a perfectly usable desktop -
+    # so the whole primary screen is sampled on a grid, and one non-black pixel anywhere is enough.
+    $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $bitmap = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     try {
-        $graphics.CopyFromScreen(0, 0, 0, 0, (New-Object System.Drawing.Size(120, 120)))
-        for ($x = 0; $x -lt 120; $x += 7) {
-            for ($y = 0; $y -lt 120; $y += 7) {
+        $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+        $stepX = [Math]::Max(1, [int]($bounds.Width / 40))
+        $stepY = [Math]::Max(1, [int]($bounds.Height / 40))
+        for ($x = 0; $x -lt $bounds.Width; $x += $stepX) {
+            for ($y = 0; $y -lt $bounds.Height; $y += $stepY) {
                 $p = $bitmap.GetPixel($x, $y)
                 if ($p.R -ne 0 -or $p.G -ne 0 -or $p.B -ne 0) { return $true }
             }
@@ -239,23 +244,26 @@ function Get-NewReport([string]$ReportDir, [datetime]$Since, [string]$Extension 
     Get-ChildItem -LiteralPath $ReportDir -Filter ("*." + $Extension) -ErrorAction SilentlyContinue |
         Where-Object { $_.LastWriteTime -gt $Since } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 }
-function Get-ExplorerPaths {
-    # What Explorer has open, so that a button which opens a folder can be judged by the folder it opened.
-    $out = New-Object System.Collections.Generic.List[string]
+function Get-ExplorerWindows {
+    # What Explorer has open, by window identity and not by path: the folder may already be open, and a second window
+    # on the same folder is exactly what the button under test opens.
+    $out = New-Object System.Collections.Generic.List[object]
     try {
         $shell = New-Object -ComObject Shell.Application
         foreach ($w in @($shell.Windows())) {
-            try { if ($w.LocationURL) { $out.Add([string]$w.LocationURL) } } catch { }
+            try { $out.Add([pscustomobject]@{ Hwnd = [int64]$w.HWND; Url = [string]$w.LocationURL }) } catch { }
         }
     }
     catch { }
-    return @($out)
+    # ToArray, not @(...): the array subexpression over a List[object] throws ArgumentException in Windows PowerShell
+    # 5.1 here, which cost this script a run to find.
+    return $out.ToArray()
 }
-function Close-ExplorerPath([string]$LocationUrl) {
+function Close-ExplorerWindow([int64]$Hwnd) {
     try {
         $shell = New-Object -ComObject Shell.Application
         foreach ($w in @($shell.Windows())) {
-            try { if ([string]$w.LocationURL -eq $LocationUrl) { $w.Quit() } } catch { }
+            try { if ([int64]$w.HWND -eq $Hwnd) { $w.Quit() } } catch { }
         }
     }
     catch { }
@@ -409,7 +417,7 @@ function Invoke-ToolRun {
 
 # Every row whose evidence is produced by the user run, so that -Rows with any one of them still makes the run.
 $UserRunRows = @('W7', 'W9', 'W9b', 'W10', 'W12', 'W14', 'W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W24',
-    'W25', 'W27', 'W38', 'W39', 'W49', 'W51', 'W53', 'W56', 'W57', 'W58', 'W60')
+    'W25', 'W27', 'W38', 'W39', 'W40', 'W49', 'W51', 'W53', 'W56', 'W57', 'W58', 'W60')
 $userRun = $null
 if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
     Write-Output ""
@@ -451,9 +459,12 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
             else { Add-NotProduced 'W12' ("no report was written within " + $TimeoutSeconds + " s, so the finished window was never reached") }
         }
         if (Owns 'W9b') {
+            # The row is a comparison of the window's log with the report's rows, so the window's text alone does not
+            # answer it: without a report there is nothing to compare it against.
             $text = Get-WindowText $win
             [void](Save-Text 'W9b-window.txt' $text)
-            Add-Answer 'W9b' 'captured' 'W9b-window.txt' 'every control of the window with its position and text, for the log-to-report comparison'
+            if ($null -ne $report) { Add-Answer 'W9b' 'captured' 'W9b-window.txt' 'every control of the window with its position and text, to be read against the report''s rows in order' }
+            else { Add-Answer 'W9b' 'not produced' 'W9b-window.txt' 'the window''s text is here, but this run wrote no report, so the comparison the row asks for cannot be made' }
         }
         if ($null -ne $report) {
             # Each format is written on its own and one that fails leaves the others usable, so the manifest names the
@@ -548,14 +559,15 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
                 Add-Answer 'W25' 'not produced' 'W25-reports-folder.txt' ("the button the row names (" + $names.Folder + ") was not found, so what it opens could not be recorded; the folder this script resolved is in the file")
             }
             else {
-                $explorerBefore = Get-ExplorerPaths
+                $explorerBefore = @((Get-ExplorerWindows) | ForEach-Object { $_.Hwnd })
                 Send-Click $folderButton
-                $opened = @(); $deadline = (Get-Date).AddSeconds(15)
-                while ($opened.Count -eq 0 -and (Get-Date) -lt $deadline) {
+                $new = @(); $deadline = (Get-Date).AddSeconds(15)
+                while ($new.Count -eq 0 -and (Get-Date) -lt $deadline) {
                     Start-Sleep -Milliseconds 700
-                    $opened = @((Get-ExplorerPaths) | Where-Object { $explorerBefore -notcontains $_ })
+                    $new = @((Get-ExplorerWindows) | Where-Object { $explorerBefore -notcontains $_.Hwnd })
                 }
                 Start-Sleep -Seconds 1
+                $opened = @($new | ForEach-Object { $_.Url })
                 $shot = if ($opened.Count -gt 0) { Save-Screen 'W25-open-report-folder.png' } else { $null }
                 $expectedUrl = ([uri]$userRun.ReportDir).AbsoluteUri.TrimEnd('/')
                 $match = @($opened | Where-Object { $_.TrimEnd('/') -eq $expectedUrl }).Count -gt 0
@@ -563,10 +575,11 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
                             "the button opened : " + $(if ($opened.Count) { ($opened -join ', ') } else { '(no new Explorer window within 15 s)' })
                             "the run wrote to  : " + $userRun.ReportDir
                             "same folder       : " + $(if ($match) { 'yes' } else { 'no - read the two paths above' })
+                            "note              : new windows are told apart by their handle, so a folder that was already open does not hide the one the button opened"
                             ""
                             $listing
                         ) -join "`r`n"))
-                foreach ($url in $opened) { Close-ExplorerPath $url }
+                foreach ($w in $new) { Close-ExplorerWindow $w.Hwnd }
                 if ($opened.Count -eq 0) { Add-Answer 'W25' 'not produced' 'W25-reports-folder.txt' 'the button was clicked and no new Explorer window appeared within 15 s, so what it opens was not recorded' }
                 else { Add-Answer 'W25' 'captured' ((Split-Path -Leaf $shot) + ', W25-reports-folder.txt') ('Open Report Folder opened ' + ($opened -join ', ') + ', which ' + $(if ($match) { 'is' } else { '**is not**' }) + ' the folder the run wrote to') }
             }
@@ -737,13 +750,20 @@ if ((Owns 'W28') -or (Owns 'W29')) {
 if ((Owns 'W5') -or (Owns 'W5b')) {
     Write-Output ""
     Write-Output "-- the Mark of the Web and the security warning, section 3"
-    $launcher = Join-Path $PackageDir 'Start-NetworkCheck.cmd'
+    # The row is about the launcher the reader double-clicks after extracting, which is the package root's
+    # Start-English.cmd / Start-Traditional-Chinese.cmd - not the language folder's inner launcher. A warning raised
+    # by the inner file would say nothing about the one the manual sends people to.
+    $rootLauncherName = @{ 'en-US' = 'Start-English.cmd'; 'zh-TW' = 'Start-Traditional-Chinese.cmd' }[$lang]
+    $rootLauncher = Join-Path (Split-Path -Parent $PackageDir) $rootLauncherName
+    $usingRoot = Test-Path -LiteralPath $rootLauncher
+    $launcher = if ($usingRoot) { $rootLauncher } else { Join-Path $PackageDir 'Start-NetworkCheck.cmd' }
     $launcherZone = Get-ZoneId $launcher
     $marked = Test-InternetMark $launcherZone
     $zipZone = if ($Zip -and (Test-Path -LiteralPath $Zip)) { Get-ZoneId $Zip } else { '(no -Zip given)' }
     [void](Save-Text 'W5-mark-of-the-web.txt' (@(
                 "ZIP                : " + $zipZone
-                "extracted launcher : " + $launcher
+                "launcher double-clicked : " + $launcher
+                "                   : " + $(if ($usingRoot) { 'the package root launcher, which is the one the manual sends people to' } else { 'the language folder''s launcher - the root ' + $rootLauncherName + ' is not beside this package, so the row was answered on the inner one' })
                 "                   : " + $launcherZone + $(if ($marked) { ' - the Internet or Restricted zone, which is the mark that raises the security question' } else { ' - not the mark that raises the security question' })
             ) -join "`r`n"))
     if (Owns 'W5b') {
@@ -760,7 +780,7 @@ if ((Owns 'W5') -or (Owns 'W5b')) {
             # dialog is captured and then cancelled - whether to run a file the machine is warning about is the
             # person's decision, not this script's.
             $shell = New-Object -ComObject Shell.Application
-            $item = $shell.Namespace($PackageDir).ParseName('Start-NetworkCheck.cmd')
+            $item = $shell.Namespace((Split-Path -Parent $launcher)).ParseName((Split-Path -Leaf $launcher))
             $item.InvokeVerb('open')
             $dialog = $null; $deadline = (Get-Date).AddSeconds(15)
             while ($null -eq $dialog -and (Get-Date) -lt $deadline) {
@@ -773,10 +793,11 @@ if ((Owns 'W5') -or (Owns 'W5b')) {
             else {
                 $shot = Save-Screen 'W5-security-warning.png'
                 [void](Save-Text 'W5-security-warning.txt' ("dialog title: " + $dialog.Current.Name + "`r`n`r`n" + (Get-WindowText $dialog)))
-                Add-Answer 'W5' 'captured' (Split-Path -Leaf $shot) ("dialog '" + $dialog.Current.Name + "'; every line of it is in W5-security-warning.txt, which is what a manual quotes")
                 $cancel = @($dialog.FindAll($SCOPE::Descendants, [System.Windows.Automation.Condition]::TrueCondition) | Where-Object { $_.Current.AutomationId -eq '2' })[0]
-                if ($null -ne $cancel) { Send-Click $cancel } else { Add-Answer 'W5' 'captured' (Split-Path -Leaf $shot) 'the dialog is still open: close it by hand' }
+                if ($null -ne $cancel) { Send-Click $cancel }
                 Start-Sleep -Seconds 1
+                # One answer per row, whatever happened to the dialog afterwards.
+                Add-Answer 'W5' 'captured' (Split-Path -Leaf $shot) ("dialog '" + $dialog.Current.Name + "' raised by " + (Split-Path -Leaf $launcher) + "; every line of it is in W5-security-warning.txt, which is what a manual quotes" + $(if ($null -eq $cancel) { ' - its Cancel button was not found, so the dialog may still be on screen: close it by hand' } else { ', and the dialog was cancelled rather than answered' }))
             }
         }
     }
