@@ -234,6 +234,13 @@ function Get-NewReport([string]$ReportDir, [datetime]$Since, [string]$Extension 
     Get-ChildItem -LiteralPath $ReportDir -Filter ("*." + $Extension) -ErrorAction SilentlyContinue |
         Where-Object { $_.LastWriteTime -gt $Since } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 }
+function Get-AnyNewReport([string]$ReportDir, [datetime]$Since) {
+    # Save-Reports writes each format on its own, so a run whose JSON failed still wrote the other two - and waiting
+    # for the JSON alone would call that run reportless and lose exactly the evidence W49 is for.
+    @(Get-ChildItem -LiteralPath $ReportDir -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in @('.html', '.txt', '.json') -and $_.Name -like 'NetworkHealthCheck_*' -and $_.LastWriteTime -gt $Since } |
+            Sort-Object LastWriteTime -Descending)[0]
+}
 
 # ------------------------------------------------------------------ the walk
 $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
@@ -268,6 +275,12 @@ New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 $script:Bundle = (Resolve-Path -LiteralPath $OutDir).Path
 Write-Output ("  bundle   not synced, created")
 
+# Elevation is a fact about every run this makes, not only about W39: a launcher started from an elevated harness
+# runs the tool with an administrator token, and the person the sheet is written for does not have one.
+$script:Elevated = $false
+try { $script:Elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { }
+if ($script:Elevated) { Write-Output "  WARNING  this harness is elevated: every run it makes inherits an administrator token, so W39 cannot be answered and the other rows are not what a user would see" }
+
 # The machine, so that a size or a format in the bundle can be read months later.
 # Two DPI numbers, because they differ and the difference is the point: this script is not per-monitor DPI aware, so
 # the value it sees is 96 on a scaled desktop, while the tool's own window is scaled by the desktop's AppliedDPI -
@@ -284,6 +297,7 @@ $facts = @(
     "captured at      : " + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss K')
     "computer         : " + $env:COMPUTERNAME
     "user             : " + $env:USERNAME
+    "elevated         : " + $(if ($script:Elevated) { 'YES - the runs this harness makes inherit an administrator token, which is not what a user has' } else { 'no' })
     "os               : " + [Environment]::OSVersion.VersionString
     "powershell       : " + $PSVersionTable.PSVersion.ToString()
     "ui culture       : " + (Get-UICulture).Name
@@ -400,11 +414,11 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
             if ($found) { $shot = Save-Screen 'W10-sampling.png'; Add-Answer 'W10' 'captured' (Split-Path -Leaf $shot) 'the countdown line while the sample is running' }
             else { Add-NotProduced 'W10' 'the sampling line was not on screen while this run was watched' }
         }
-        $json = $null; $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-        while ($null -eq $json -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2; $json = Get-NewReport $userRun.ReportDir $userRun.LaunchedAt }
+        $report = $null; $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+        while ($null -eq $report -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2; $report = Get-AnyNewReport $userRun.ReportDir $userRun.LaunchedAt }
         Start-Sleep -Seconds 2
         if (Owns 'W12') {
-            if ($null -ne $json) { $shot = Save-Screen 'W12-finished.png'; Add-Answer 'W12' 'captured' (Split-Path -Leaf $shot) 'the window when the run has finished' }
+            if ($null -ne $report) { $shot = Save-Screen 'W12-finished.png'; Add-Answer 'W12' 'captured' (Split-Path -Leaf $shot) 'the window when the run has finished' }
             else { Add-NotProduced 'W12' ("no report was written within " + $TimeoutSeconds + " s, so the finished window was never reached") }
         }
         if (Owns 'W9b') {
@@ -412,11 +426,11 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
             [void](Save-Text 'W9b-window.txt' $text)
             Add-Answer 'W9b' 'captured' 'W9b-window.txt' 'every control of the window with its position and text, for the log-to-report comparison'
         }
-        if ($null -ne $json) {
+        if ($null -ne $report) {
             # Each format is written on its own and one that fails leaves the others usable, so the manifest names the
             # files that exist and not the three the run was supposed to write - and a run that wrote fewer than three
             # is W49's own condition, met rather than manufactured.
-            $stem = [IO.Path]::GetFileNameWithoutExtension($json.Name)
+            $stem = [IO.Path]::GetFileNameWithoutExtension($report.Name)
             $copied = New-Object System.Collections.Generic.List[string]
             $unwritten = New-Object System.Collections.Generic.List[string]
             foreach ($ext in @('html', 'txt', 'json')) {
@@ -426,17 +440,40 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
             }
             $script:ReportArtefact = ($copied -join ', ')
             $note = if ($unwritten.Count -eq 0) { 'the three files of the user run' } else { ('the ' + $copied.Count + ' format(s) this run wrote; ' + ($unwritten -join ' and ') + ' was not written') }
-            foreach ($row in @('W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W24', 'W27', 'W38', 'W39', 'W53', 'W57', 'W58', 'W60')) {
+            foreach ($row in @('W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W24', 'W27', 'W38', 'W53', 'W57', 'W60')) {
                 if (Owns $row) { Add-Answer $row 'captured' $script:ReportArtefact $note }
+            }
+            # W39 is a claim about the run's rights, and a run started from an elevated harness inherits that token
+            # while the report says nothing about it - so the row is answered from what this process is, not from the
+            # report's existence.
+            if (Owns 'W39') {
+                if ($script:Elevated) { Add-Answer 'W39' 'not produced' $script:ReportArtefact 'this harness is running elevated, so the run it made inherited an administrator token; the row is about a run made without one' }
+                else { Add-Answer 'W39' 'captured' $script:ReportArtefact 'the run was made by this unelevated harness, which is the row''s precondition' }
             }
             if (Owns 'W49') {
                 if ($unwritten.Count -gt 0) { Add-Answer 'W49' 'captured' $script:ReportArtefact ('this run wrote ' + $copied.Count + ' of 3 formats - ' + ($unwritten -join ' and ') + ' missing - which is the row''s own condition, met and not manufactured') }
                 else { Add-NotProduced 'W49' 'all three report formats were written; the sheet says not to manufacture a partial failure, only to record it when it happens' }
             }
-            $data = Get-Content -LiteralPath $json.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            $jsonPath = Join-Path $userRun.ReportDir ($stem + '.json')
+            $data = if (Test-Path -LiteralPath $jsonPath) { Get-Content -LiteralPath $jsonPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
             if (Owns 'W51') {
-                if ($data.Overall.Code -eq 'ERROR') { Add-Answer 'W51' 'captured' $script:ReportArtefact 'this run ended Test Incomplete, which is the row''s own condition' }
+                if ($null -eq $data) { Add-NotProduced 'W51' 'this run wrote no JSON report, so its verdict could not be read here; the HTML or text file carries it' }
+                elseif ($data.Overall.Code -eq 'ERROR') { Add-Answer 'W51' 'captured' $script:ReportArtefact 'this run ended Test Incomplete, which is the row''s own condition' }
                 else { Add-NotProduced 'W51' ("this run ended " + $data.Overall.Text + "; the row is only answered when a run is Test Incomplete, which the sheet says to record when it happens") }
+            }
+            # W58 is two conditional answers - the counters unreadable, or too little traffic to judge - and the sheet
+            # says to record either as not produced when it did not appear. A report that has neither row proves
+            # nothing about them.
+            if (Owns 'W58') {
+                if ($null -eq $data) { Add-NotProduced 'W58' 'this run wrote no JSON report, so its retransmission rows could not be read here' }
+                else {
+                    $tcp = @($data.Results | Where-Object { $_.Tag -eq 'tcp-retransmissions' })
+                    $unable = @($tcp | Where-Object { $_.Status -eq 'ERROR' })
+                    $small = @($tcp | Where-Object { $_.Status -eq 'INFO' })
+                    if ($unable.Count -gt 0) { Add-Answer 'W58' 'captured' $script:ReportArtefact ('the counters could not be read on this run (' + $unable.Count + ' Unable to Check row(s)), which is the first of the row''s two answers') }
+                    elseif ($small.Count -gt 0) { Add-Answer 'W58' 'captured' $script:ReportArtefact ('this run had too little TCP traffic to judge (' + $small.Count + ' information row(s)), which is the second of the row''s two answers') }
+                    else { Add-NotProduced 'W58' ('this run read both counters and had enough traffic (' + $tcp.Count + ' retransmission row(s), none Unable to Check or informational), so neither answer''s row appeared') }
+                }
             }
         }
         else {
@@ -446,14 +483,14 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
             # The row is about the second run: a new set of three with its own time in the name, the first set still
             # there. One listing after one run cannot show it, so the button the row names is clicked.
             $again = Find-ByName $win $names.Again
-            if ($null -eq $json) { Add-NotProduced 'W14' 'the first run wrote no report, so there was nothing to run again from' }
+            if ($null -eq $report) { Add-NotProduced 'W14' 'the first run wrote no report, so there was nothing to run again from' }
             elseif ($null -eq $again) { Add-NotProduced 'W14' ("the button the row names (" + $names.Again + ") was not found after the first run") }
             else {
                 $before = @(Get-ChildItem -LiteralPath $userRun.ReportDir -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
                 $secondFrom = Get-Date
                 Send-Click $again
                 $json2 = $null; $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-                while ($null -eq $json2 -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2; $json2 = Get-NewReport $userRun.ReportDir $secondFrom }
+                while ($null -eq $json2 -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2; $json2 = Get-AnyNewReport $userRun.ReportDir $secondFrom }
                 Start-Sleep -Seconds 2
                 $after = @(Get-ChildItem -LiteralPath $userRun.ReportDir -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
                 $survived = @($before | Where-Object { $after -contains $_ }).Count
@@ -549,7 +586,12 @@ if ((Owns 'W32') -or (Owns 'W34') -or (Owns 'W33')) {
                 Start-Sleep -Seconds 2
                 $shot = Save-Screen 'W34-after-reset.png'
                 [void](Save-Text 'W34-after-reset.txt' (Get-WindowText $win))
-                Add-Answer 'W34' 'captured' ((Split-Path -Leaf $shotBefore) + ', ' + (Split-Path -Leaf $shot)) ($changed.ToString() + ' text field(s) changed and then Reset; the ' + $skippedNumeric + ' numeric spinner(s) were left untouched, so the row''s "all six" is proved for the text fields here and stays the person''s for the spinners')
+                # The row is about all six controls returning, and the three spinners were never moved: their edit
+                # takes WM_SETTEXT while the control's Value does not follow it, and this panel's controls expose no
+                # value pattern to UI Automation at all (measured: every field is a Pane with no supported patterns).
+                # Changing their text and clicking Reset would put a stale number in the picture and read as a defect
+                # that is the harness's. So the pictures go into the bundle and the row is not claimed.
+                Add-Answer 'W34' 'not produced' ((Split-Path -Leaf $shotBefore) + ', ' + (Split-Path -Leaf $shot)) ($changed.ToString() + ' text field(s) were changed and restored, which the two pictures show; the ' + $skippedNumeric + ' numeric spinner(s) cannot be moved from here, so the row''s claim about all six controls is the person''s to finish - it is a quick comparison with the pictures in hand')
             }
         }
         if (Owns 'W33') { Add-NotProduced 'W33' 'this script does not type into the panel''s six controls; the row belongs to the person, who is the one whose typing the row is about' }
