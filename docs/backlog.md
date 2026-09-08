@@ -33,6 +33,7 @@ It is in the repository and not in the package, like [`application-control.md`](
 | 41 | Nothing checks that the package's own file table is complete | tests |
 | 42 | Nothing proves the tool changes nothing | tests |
 | 43 | The tool does not say when the reports are being written into a synced folder | tool |
+| 44 | The launcher's own timestamp cannot be read without knowing the machine's regional format | tool |
 
 The table is an index; each item's own paragraph below is the statement.
 
@@ -115,6 +116,18 @@ What it would take. The report directory is already resolved and already reporte
 **The rule that keeps it honest: the row may only ever be positive.** *This folder is inside <service>, so the reports are copied there* is a fact the tool can establish; *your reports stay on this computer* is not, because a mapped drive, a third-party client or a folder redirection nobody told the tool about can sync anything. A tool that says nothing when it detects nothing is telling the truth; a tool that promises local storage is guessing with the person's data.
 
 It is an **Information** row, not a warning: nothing is broken, the verdict must not move, and a Startup Notice would push a healthy run to *Attention Required* for a configuration choice — which is [#39](#39--a-measurement-that-could-not-be-taken-outranks-a-measurement-that-failed)'s mistake in a new place. Acceptance: on a machine where the report folder resolves under a detected sync root, one Information row naming the service and the folder, with the same fact beside the report path in *Computer and Run Information*; on a machine where nothing is detected, no row and no claim either way; the detection list extensible in one place with a reason recorded per entry; unit tests for a detected path, an undetected path and a path whose sync root is set but unrelated; the verdict unchanged in every case; the user manual's section 5 and the IT deployment manual's deployment section describing the row. — *raised by the owner during the user-manual walk, 2026-09-08, after finding 4 of that walk: the documents can warn, but only the tool can tell the person while they are looking at the path.*
+
+### 44 — The launcher's own timestamp cannot be read without knowing the machine's regional format
+
+`LauncherError.txt` stamps itself with the shell's `%DATE% %TIME%`. On `DESKTOP-5M1K8VU` during the user-manual walk of 2026-09-08 that produced `Date/time: 08/09/2026 11:09:54.54` — a date the IT department receiving the file cannot resolve without knowing the machine it came from: 8 September, or 9 August. The machine is not exotic, and the reason it shows up there is worth keeping: its **display language is en-US**, which is why the walk ran the en-US package, while its **regional format is en-GB**, so `%DATE%` renders `dd/MM/yyyy`. A zh-TW machine renders `2026/09/08` and has no ambiguity at all. What produces the defect is the mismatch between display language and regional format, which is ordinary in a company and is exactly the shape of machine this project's second acceptance run already used (a zh-TW system with an en-US display).
+
+**Why the obvious fixes are not available.** The file cannot use PowerShell to format a date: one of the reasons it is written is that PowerShell was not found, and another is that a policy refused to run the script. `wmic os get localdatetime` would give an unambiguous stamp, but WMIC is deprecated and absent from recent Windows images. Cutting `%DATE%` into pieces with substring expansion picks different fields on different formats — a defect fixing a defect.
+
+**What is always present is `reg.exe`**, and the pattern the shell used is in `HKCU\Control Panel\International\sShortDate`. So the file does not have to reformat its date; it has to say which format the date is in: `Date/time: 08/09/2026 11:09:54.54 (this computer's short-date pattern: dd/MM/yyyy)`. Three rules, because this code runs on the path where something has already failed and this file is the last thing the person has: the lookup happens **before** the redirection block, never inside it; a lookup that fails omits the parenthesis and never blocks the write (`2>nul`, and a test that the variable was set); and nothing is converted or translated — the file states a fact about the machine it ran on.
+
+**A second layer that costs nothing:** the file's own modified time is the authoritative stamp, and the receiving IT department's own Explorer renders it in the format they read. One sentence in the user manual's section 6 and one in the IT deployment manual say so, and they work for every file already written, including the ones sent before this change ships.
+
+Acceptance: on a machine whose short-date pattern is `dd/MM/yyyy`, the file names the pattern; where the registry value cannot be read, the file is written exactly as it is today; six launchers in two languages, with `tests/launcher_check.ps1` asserting the line where the pattern is available and the unchanged shape where it is not; the `%TEMP%` fallback copy carries the same field. — *found by the user-manual walk on `win11-enUS`, 2026-09-08, where it was first recorded as an observation rather than a finding because the constraint — no PowerShell on this path — made it look unfixable.*
 
 ## Closed items
 
