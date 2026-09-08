@@ -98,6 +98,18 @@ Produce at least the first row; the rest are recorded as *produced* or *not prod
 | W30 | (Optional) If a console-mode fallback can be produced | The manual sends the person to the `Reports` folder and to `Start-NetworkCheck-Console.cmd` for a run whose text should stay on screen — **known: backlog #34** | | |
 | W31 | Run `en-US\Start-NetworkCheck-Console.cmd` | Text-mode run, reports written, the window pauses at the end with the report paths above it | | the window's text |
 
+**The rest of section 6.** Every remaining row of the manual's table gets a line here, so that each is either checked or recorded as *not produced on this machine* — a row nobody looked at is not the same as a row that holds. These carry on the sheet's numbering rather than renumbering the rows above. Where the campaign has already produced a state on this machine (`package-acceptance-checklist.md`, scenarios M7 and M8), cite its evidence instead of producing it again, and revert any machine change the way that checklist says.
+
+| # | How to produce it | Expected — the manual's words | Observed | Evidence |
+|---|---|---|---|---|
+| W42 | **PowerShell not found** — not producible on a stock machine without breaking it; record *not produced* unless this machine genuinely lacks Windows PowerShell | `ERROR: PowerShell was not found on this computer`, and the manual sends the person to IT or to another computer | | |
+| W43 | **Exit code 3** — the campaign's `M7`: `setx /M __PSLockdownPolicy 4` from an elevated prompt, a **new** session, double-click the launcher, then remove the variable | The window says the program ended with exit code 3, and `NetworkHealthCheck_ENVIRONMENT_<time>.txt` is beside the program or in the temporary folder, naming the computer, the user, the folder, the PowerShell version and language mode, the language settings and the operating system | | the file |
+| W44 | **Another exit code** — the campaign's `M8`: a Group Policy execution policy of *Allow only signed scripts*, then revert | The window says the program ended with another exit code and that PowerShell or company security policy may have blocked it; PowerShell's own reason is printed above the error, and `LauncherError.txt` says to send both | | the window's text, the file |
+| W45 | **The `%TEMP%` copy of the launcher's file** — deny write on the `en-US` folder for this account, repeat W28, then restore the permission | The launcher writes `NetworkHealthCheck_LauncherError.txt` in the Windows temporary folder instead, and **the window prints the path** | | the file |
+| W46 | **Report directory not writable** — deny write on `en-US\Reports`, run, then restore | A **Startup Notice** warning row: *"The original report directory is not writable. Reports will be saved to: …"*, the reports are in the folder it names, **Open Report Folder** opens that folder, and the verdict is **Attention Required** because a Startup Notice is a warning | | the report |
+| W47 | **Running from inside a compressed folder** — needs an archiver that extracts the whole folder into its view; stock Windows stops earlier (W3, W4). Record *not produced* if no such archiver is installed | A **Startup Notice** warning row: *"This copy is running from inside a compressed folder…"* | | the report |
+| W48 | **The report-write failures** — *Report generation failed* with a `NetworkHealthCheck_FATAL_<time>.txt`, *N of 3 report formats could not be written*, *The test could not be completed*, and the verdict **Test Incomplete**. Do not manufacture these; record *not produced* unless one happens, and check the manual's row against it if one does | Each names a file, and the manual's advice for it is to send that file as it is | | |
+
 ---
 
 ## Section 7 · The IT entry
@@ -105,8 +117,8 @@ Produce at least the first row; the rest are recorded as *produced* or *not prod
 | # | Do this | Expected — the manual's words | Observed | Evidence |
 |---|---|---|---|---|
 | W32 | Double-click `en-US\Start-NetworkCheck-IT.cmd` | A **Run options (IT)** panel at the top; it does **not** start by itself; the line above the progress bar reads *Ready - adjust the options, then select Start Test* | | screenshot |
-| W33 | Type an address into **Extra ping**, click **Start Test**, open the report | The run uses it, and in the report **every detail is already expanded** | | the report |
-| W34 | Click **Reset to config** | The panel returns to the configured values | | |
+| W33 | Give **all six** controls the manual names a recognizable value — **Extra ping**, **Extra TCP (host:port)**, **Extra DNS**, **Extra URL**, **Ping count**, **Sample seconds** — then click **Start Test** and open the report | Every one of the six reached the run: the report's run information names the ping count, the sample length and the typed targets, and there is a row for each extra target. And in the report **every detail is already expanded** | | the report |
+| W34 | Click **Reset to config** | **All six** controls return to the configured values, not only the one you changed last | | screenshot |
 | W35 | Open the configuration file afterwards | It is unchanged — "whatever is typed there applies to that run only" | | |
 
 ---
@@ -124,7 +136,7 @@ Produce at least the first row; the rest are recorded as *produced* or *not prod
 
 | # | Do this | Expected — the manual's words | Observed | Evidence |
 |---|---|---|---|---|
-| W38 | Read *Which addresses does it contact?* against the report's rows | The gateway, `1.1.1.1` (ping, port 443, the first three hops of the traceroute) and `https://www.microsoft.com/` (one page request, following any redirect), plus the name lookup for `www.microsoft.com` — and the report's rows name the targets that were actually configured | | the report |
+| W38 | Read *Which addresses does it contact?* against the report's rows — the targets **and** the three routing promises in the same answer | The gateway, `1.1.1.1` (ping, port 443, the first three hops of the traceroute) and `https://www.microsoft.com/`, plus the name lookup for `www.microsoft.com`, and the report's rows name the targets that were actually configured. Then the rest of the sentence: the page request goes **through the proxy Windows is set to use** (compare the report's proxy row), the lookup goes **through this computer's DNS servers** (compare the adapter's DNS servers), and the report **names the address the request finally landed on** after any redirect | | the report |
 | W39 | Read *Do I need to be an administrator?* against this run | The run was made without elevation, and anything that needed more rights is an *Unable to Check* row, with the check continuing | | the report |
 | W40 | (If a VPN is available) Connect it and run again | Both the physical and the VPN adapter appear, and the VPN one is **normally** marked *Virtual* and listed as information — record how this VPN's adapter was actually classified. The classification is a heuristic (`Test-IsVirtualAdapter` reads the virtual flag, else the hardware flag, else the description), so a VPN adapter that reports itself as hardware can appear as Physical, which is what the manual's "normally" allows; only a classification the manual does not allow is a finding. A disconnected VPN adapter, or one with no address, does not appear at all | | the report |
 | W41 | Delete an old report | It deletes like an ordinary file | | |
