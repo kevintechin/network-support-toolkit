@@ -17,7 +17,7 @@ It asks two questions at once:
 |---|---|
 | Machine | `win11-enUS` (record the facts with `tests\environment_probe.ps1` and keep its output) |
 | Manual | `en-US\NetworkHealthCheck_User_Manual_en-US.html` — read the HTML page, because that is the one a person opens |
-| Package | The **released** asset, downloaded **with the browser of this machine** from the releases page, so that the Mark of the Web is real and steps 2 and 3 of the manual mean something. A ZIP copied from the host carries no mark, and rows W1 and W4 then have to be recorded as *not produced* |
+| Package | The **released** asset, downloaded **with the browser of this machine** from the releases page, so that the Mark of the Web is real and steps 2 and 3 of the manual mean something. A ZIP copied from the host carries no mark, so the Unblock box of W1 and the security prompt of W5 cannot appear and both are recorded as *not produced*; every other row, the ZIP-window trap of W3 and W4 included, is unaffected |
 | Digest | Check the ZIP against the digest in the release notes before extracting anything |
 
 **The automated floor first.** Before walking, prove the package is intact, so that a surprise during the walk is a document defect and not a broken download:
@@ -67,7 +67,7 @@ That checks the digest, extracts, verifies the package against its own `SHA256SU
 | W15 | Read the verdict in the window and at the top of the report | One of **Overall Healthy**, **Attention Required**, **Problem Detected**, **Test Incomplete**, and the tool's own description of it matches the manual's *The tool's description* column word for word | | the report |
 | W16 | Read **What to tell IT** | A title and **two to four lines**; the title is one of the nine in the manual's table and its text matches; **the last line names the file to send and what it contains** | | the report |
 | W17 | Read **Computer and Run Information** | Computer name, user, operating system, tool version, and where the configuration file and the reports are | | the report |
-| W18 | Read one row of **Test Results** | Time, category, the check's name, a badge, a description; **Show Details** opens the measurements behind it; the row's method and the command that repeats it by hand are there where the manual says | | the report |
+| W18 | Read a **ping result** row of **Test Results** — a row the manual's own example names, so that it has measurements to show | Time, category, the check's name, a badge, a description; **Show Details** opens the measurements behind it (the individual ping replies), and this row carries the method and the command that repeats it by hand. Rows without measurements — the configuration-file row, the computer row — have no **Show Details** control and need not carry either: that is not a finding, and the manual says "where a row carries them" | | the report |
 | W19 | Click **Expand all**, then **Collapse all** | Every detail block opens and closes at once | | |
 | W20 | Compare the badges you can see with the manual's five | Pass, Warning, Fail, Unable to Check, Information — no badge on screen is missing from the table | | the report |
 | W21 | Scroll to **IT diagnostics** | Collapsed at the bottom; Wi-Fi radio, routes, gateway hardware address, proxy, traceroute first hops, drivers; none of these rows changed the verdict | | the report |
@@ -116,7 +116,7 @@ Produce at least the first row; the rest are recorded as *produced* or *not prod
 | # | Do this | Expected — the manual's words | Observed | Evidence |
 |---|---|---|---|---|
 | W36 | Walk the manual's file table against the extracted folder, row by row | Every file and folder the table names exists | | the folder listing |
-| W37 | Walk the folder against the table, the other way | Nothing in the package is missing from the table. **This is where 1.2.4 changes**: the two manuals are listed and present, and `README_en-US.txt` / `README_zh-TW.txt` are named nowhere and present nowhere | | the folder listing |
+| W37 | Walk the folder against the table, the other way — on a **pristine extraction**, not on the copy this walk has been running from | Nothing in the package is missing from the table. **This is where 1.2.4 changes**: the two manuals are listed and present, and `README_en-US.txt` / `README_zh-TW.txt` are named nowhere and present nowhere. What the walk itself created is not part of the package and is not a finding: `en-US\Reports\` and its report files (the table lists the folder), and `en-US\LauncherError.txt` from W28 — which is why this row wants a folder that has not been run from | | the folder listing |
 
 ---
 
