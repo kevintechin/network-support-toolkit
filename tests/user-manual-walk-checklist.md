@@ -66,6 +66,7 @@ That checks the digest, extracts, verifies the package against its own `SHA256SU
 | W7 | Read the window's title bar | **Network Health Check Tool 1.2.4** — the version in the title is this release's | | screenshot |
 | W8 | Time the start | The window **starts by itself within a second** — no button is pressed | | |
 | W9 | While it runs, read the four things the manual's table names | **Result: Test in progress**; the line above the progress bar names the step; **the log shows one line per step and per finding, in the order they happen**; **Start Test** greyed out; **Open Report**, **Open Report Folder**, **Open JSON** switched off; **Close** does nothing | | screenshot |
+| W9b | When it has finished, walk the log lines shaped `[status] Category / Check: message` against the report's rows **in order, comparing each line's status, category and check — not merely counting them**: an omitted finding and a duplicated one leave the count right and section 3's promise broken | They match one for one and in the order they happened: the main table's rows plus the *IT diagnostics (N items)* count, because `Add-CheckResult` writes the row and the log line in one call. The only log lines that are not rows are the run's narration — `Starting: …`, the opening line, and the report-writing lines, which cannot be in a report that is already written. **This checks the log's promise in section 3, not the format parity of W24**, and it is only possible while the window is still open | | the window, the report |
 | W10 | Watch the last few seconds | The line reads *Sampling TCP retransmissions, approximately N second(s) remaining* and the number falls | | screenshot |
 | W11 | Time the whole run on a working network | "About ten seconds… with the settings as shipped" — write the measured time | | |
 | W12 | When it finishes, read four places | The line reads **Test Complete**; the Result line shows the verdict in colour; the last log line reads *Report generated: …*; the same path appears under the buttons as *Report: …*; **Start Test** now reads **Run Again** | | screenshot |
@@ -94,7 +95,7 @@ That checks the digest, extracts, verifies the package against its own `SHA256SU
 | W67 | *Gateway does not answer* | a gateway that does not reply to pings — not producible on every network | | |
 | W68 | *Gateway answers, internet does not* | `A3`, or a machine whose gateway answers with no route beyond | | |
 | W69 | *Name resolution fails* | point the adapter at an unreachable DNS server, run, then restore | | |
-| W70 | *Connected, but quality is poor* | loss, latency or retransmissions over the thresholds — record *not produced* if the link is clean | | |
+| W70 | *Connected, but quality is poor* | packet loss, latency, retransmissions or adapter errors over the thresholds — **an idle machine reaches this branch through loss or latency whenever the link is congested or faulty**, and needs no help to do it. The **retransmission** route is harder on an idle machine but not closed to it: a quiet desktop sends a handful of segments in the sample, and if even one of them is retransmitted the small-sample branch raises a `WARN` (`NetworkHealthCheck.ps1:2925`) which carries the same `tcp-retransmissions` tag and reaches the same summary. What an idle machine cannot do is produce that route **reliably**: with no traffic it usually lands in the small-sample Information rows instead. For that route only, make traffic during the sampling seconds — a large download or a file copy when the progress line reads *Sampling TCP retransmissions*. Record *not produced* if the link stays clean | | |
 | W71 | *A required check failed* | any required check failing, as in `A3` / `A4` | | |
 | W72 | *Some checks could not run* | an *Unable to Check* row with no failure — record *not produced* if none appeared | | |
 | W73 | *Warnings to review* | a warning with no failure, as in W46 | | |
@@ -107,7 +108,7 @@ For each: the title and its lines match the manual's table word for word, and th
 | W21 | Scroll to **IT diagnostics** | Collapsed at the bottom; Wi-Fi radio, routes, gateway hardware address, proxy, traceroute first hops, drivers; none of these rows changed the verdict | | the report |
 | W22 | Add up the six counters under the verdict | Pass + Warning + Fail + Unable to Check + Information = **Total**, and Total is the number of rows in Test Results | | the numbers |
 | W23 | Click **Open JSON** | The JSON file opens in Notepad | | |
-| W24 | Open **both** the TXT and the JSON beside the HTML and compare them with the report | "The **TXT** and **JSON** files written beside the HTML carry the same findings" — every row of Test Results is in each of the three, with the same result; a finding present in one and missing from another is the defect this row looks for | | the three files |
+| W24 | Open **both** the TXT and the JSON beside the HTML and compare them with the report | "The **TXT** and **JSON** files written beside the HTML carry the same findings" — every row of Test Results is in each of the three, with the same result; a finding present in one and missing from another is the defect this row looks for. **Compare the contents, not the counts** — equal numbers of rows prove nothing if one writer changed a status or a message | | the three files |
 
 ---
 
@@ -187,13 +188,13 @@ Produce at least the first row; the rest are recorded as *produced* or *not prod
 
 ## Was it usable?
 
-The part no assertion can measure. Answer in your own words, and be specific about where you hesitated — a sentence that is true but sends the reader to the wrong place is a defect this walk exists to find.
+The part no assertion can measure. Answer in your own words, and be specific about where you hesitated — a sentence that is true but sends the reader to the wrong place is a defect this walk exists to find. Prose, not ticks: the two findings this section produced on its first outing came out of a sentence somebody wrote themselves, and a matrix would have collected a tick instead. **When a question here asks about a situation, name the situation** — the first version of question 5 asked “if the tool had failed”, which invites “but it didn't”; it was written by the same person who wrote the manual's claims, and it inherited the same blind spot.
 
 1. Did you ever have to ask somebody, or guess, to get past a step? Which step?
 2. Was anything on the screen that the manual does not explain, and that you wanted explained?
 3. Was anything explained at length that you did not need?
 4. After the run, did you know **which file to send and where to find it** without re-reading?
-5. If the tool had failed, would section 6 have told you what to do?
+5. For each kind of failure you actually met: could you have put it right yourself, which file would you have sent, and whom would you have told? *Section 6 covers four kinds, and they ask different things of the person — answer for the ones you met and say “did not meet it” for the rest, which is data and not a gap.* **A**: the launcher stops before the tool runs (W28, W42–W44, W52). **B**: the tool runs but the window does not (W30). **C**: the report is written somewhere else, in fewer formats, or not at all — the fallback directory of W46, the surviving format of W49, the FATAL file of W48, the unrecoverable error of W50. **D**: the report is written and something in it could not be measured (W51).
 6. Did any sentence turn out to be true but useless — right about the machine, wrong about the situation?
 
 ---
