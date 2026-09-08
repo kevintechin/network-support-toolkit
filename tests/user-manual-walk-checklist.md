@@ -94,7 +94,7 @@ That checks the digest, extracts, verifies the package against its own `SHA256SU
 | W67 | *Gateway does not answer* | a gateway that does not reply to pings — not producible on every network | | |
 | W68 | *Gateway answers, internet does not* | `A3`, or a machine whose gateway answers with no route beyond | | |
 | W69 | *Name resolution fails* | point the adapter at an unreachable DNS server, run, then restore | | |
-| W70 | *Connected, but quality is poor* | loss, latency or retransmissions over the thresholds — record *not produced* if the link is clean | | |
+| W70 | *Connected, but quality is poor* | loss, latency or retransmissions over the thresholds. **An idle machine cannot produce this**: the tool samples system-wide TCP counters for a few seconds, and a quiet desktop sends a handful of segments, so the run lands in the small-sample rows instead. To reach it, make traffic **during the sampling seconds** — start a large download or a file copy when the progress line reads *Sampling TCP retransmissions* — and record *not produced* if the link stays clean anyway | | |
 | W71 | *A required check failed* | any required check failing, as in `A3` / `A4` | | |
 | W72 | *Some checks could not run* | an *Unable to Check* row with no failure — record *not produced* if none appeared | | |
 | W73 | *Warnings to review* | a warning with no failure, as in W46 | | |
@@ -107,7 +107,7 @@ For each: the title and its lines match the manual's table word for word, and th
 | W21 | Scroll to **IT diagnostics** | Collapsed at the bottom; Wi-Fi radio, routes, gateway hardware address, proxy, traceroute first hops, drivers; none of these rows changed the verdict | | the report |
 | W22 | Add up the six counters under the verdict | Pass + Warning + Fail + Unable to Check + Information = **Total**, and Total is the number of rows in Test Results | | the numbers |
 | W23 | Click **Open JSON** | The JSON file opens in Notepad | | |
-| W24 | Open **both** the TXT and the JSON beside the HTML and compare them with the report | "The **TXT** and **JSON** files written beside the HTML carry the same findings" — every row of Test Results is in each of the three, with the same result; a finding present in one and missing from another is the defect this row looks for | | the three files |
+| W24 | Open **both** the TXT and the JSON beside the HTML and compare them with the report | "The **TXT** and **JSON** files written beside the HTML carry the same findings" — every row of Test Results is in each of the three, with the same result; a finding present in one and missing from another is the defect this row looks for. **A cheaper equivalent, while the window is still open:** every line of the log shaped `[status] Category / Check: message` is a row — `Add-CheckResult` writes the row and the log line in one call — so their count must equal the main table's rows plus the *IT diagnostics (N items)* count. The only log lines that are not rows are the run's narration: `Starting: …`, the opening line, and the report-writing lines, which cannot be in a report that is already written | | the three files, the window |
 
 ---
 
