@@ -7,6 +7,8 @@ It asks two questions at once:
 1. **Is it true?** Does the machine do what the sentence says, in the words the sentence uses?
 2. **Is it usable?** Could the person do what the section told them to do without asking anybody? The last part of this document collects that; a manual can be true and still leave somebody stuck.
 
+**How the numbering runs.** Rows are numbered in the order they were added to this sheet, not the order they are walked. Walk the sections in order; the numbers are names, so that a finding can cite one and keep citing it.
+
 **What this walk is not.** It is not the tool's acceptance — that is [`package-acceptance-checklist.md`](package-acceptance-checklist.md), and it was run for 1.2.3 on two machines. For 1.2.4 each script differs from 1.2.3 by one line, its version string, so the tool's behaviour is not what is being measured here; the documents are.
 
 ---
@@ -29,6 +31,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\Invoke-PackageAcceptan
 That checks the digest, extracts, verifies the package against its own `SHA256SUMS.txt` and the CRLF rule, records the machine, and runs the chain steps that need Windows PowerShell alone. Then extract a **second, clean copy** the way section 2 of the manual says to, and walk that one — the walk has to follow the manual's own instructions, not the runner's.
 
 **Two things already known, so they are not new findings.** The row that says the window closes over a console-mode fallback is [backlog #34](../docs/backlog.md); the manual routes around it. *Everything passed* being printed whenever every required check passed is [backlog #35](../docs/backlog.md); section 4 already tells the reader to read the Information rows. Record them as *known* if you meet them.
+
+---
+
+## Section 1 · What the tool is
+
+| # | Do this | Expected — the manual's words | Observed | Evidence |
+|---|---|---|---|---|
+| W53 | Read section 1's list of what the tool looks at against the report you produced | Every one has its rows: which adapters are connected and their addresses, whether the default gateway answers, whether names can be looked up, whether known services can be reached, and whether the connection loses packets or retransmits | | the report |
+| W54 | Before the run, save `ipconfig /all`, `route print` and `netsh winhttp show proxy`; after the run, take them again and compare | "**It changes nothing.**" — no IP address, DNS, route or proxy setting differs, and nothing was installed. Any difference is a finding of the first order | | the two outputs |
+| W55 | Time a run where things do not answer: from the IT entry, add an unreachable **Extra ping** and an unreachable **Extra URL**, then Start Test | "up to a minute or so with those settings" — the run is longer than W11's and within what the manual promises; write the measured time. If IT changed the sample length or the time limits, the manual says it takes correspondingly longer | | |
+| W56 | After a run, look at what left the computer | "**It uploads nothing.**" What this walk can check is that the report exists only in the report folder and that the tool sent nothing of its own — the wire itself is out of scope here (a capture would be the proof), so record this row as checked at the file level and say so | | the folder |
 
 ---
 
@@ -105,10 +118,14 @@ Produce at least the first row; the rest are recorded as *produced* or *not prod
 | W42 | **PowerShell not found** — not producible on a stock machine without breaking it; record *not produced* unless this machine genuinely lacks Windows PowerShell | `ERROR: PowerShell was not found on this computer`, and the manual sends the person to IT or to another computer | | |
 | W43 | **Exit code 3** — the campaign's `M7`: `setx /M __PSLockdownPolicy 4` from an elevated prompt, a **new** session, double-click the launcher, then remove the variable | The window says the program ended with exit code 3, and `NetworkHealthCheck_ENVIRONMENT_<time>.txt` is beside the program or in the temporary folder, naming the computer, the user, the folder, the PowerShell version and language mode, the language settings and the operating system | | the file |
 | W44 | **Another exit code** — the campaign's `M8`: a Group Policy execution policy of *Allow only signed scripts*, then revert | The window says the program ended with another exit code and that PowerShell or company security policy may have blocked it; PowerShell's own reason is printed above the error, and `LauncherError.txt` says to send both | | the window's text, the file |
-| W45 | **The `%TEMP%` copy of the launcher's file** — deny write on the `en-US` folder for this account, repeat W28, then restore the permission | The launcher writes `NetworkHealthCheck_LauncherError.txt` in the Windows temporary folder instead, and **the window prints the path** | | the file |
+| W45 | **The `%TEMP%` copy of the launcher's file** — in this order, which the launcher forces: rename `NetworkHealthCheck.ps1` away, **delete the `LauncherError.txt` W28 left**, then deny write on the `en-US` folder for this account, then double-click the launcher; restore the permission and the file afterwards. The order matters twice: the rename happens while the folder is still writable, and the launcher writes its file and then asks `if exist` — a stale error report would satisfy that check after the write failed, and the `%TEMP%` copy would never be written | The launcher writes `NetworkHealthCheck_LauncherError.txt` in the Windows temporary folder instead, and **the window prints the path** | | the file |
 | W46 | **Report directory not writable** — deny write on `en-US\Reports`, run, then restore | A **Startup Notice** warning row: *"The original report directory is not writable. Reports will be saved to: …"*, the reports are in the folder it names, **Open Report Folder** opens that folder, and the verdict is **Attention Required** because a Startup Notice is a warning | | the report |
 | W47 | **Running from inside a compressed folder** — needs an archiver that extracts the whole folder into its view; stock Windows stops earlier (W3, W4). Record *not produced* if no such archiver is installed | A **Startup Notice** warning row: *"This copy is running from inside a compressed folder…"* | | the report |
-| W48 | **The report-write failures** — *Report generation failed* with a `NetworkHealthCheck_FATAL_<time>.txt`, *N of 3 report formats could not be written*, *The test could not be completed*, and the verdict **Test Incomplete**. Do not manufacture these; record *not produced* unless one happens, and check the manual's row against it if one does | Each names a file, and the manual's advice for it is to send that file as it is | | |
+| W48 | **Report generation failed** — do not manufacture it; record *not produced* unless it happens | A message box naming an emergency error report `NetworkHealthCheck_FATAL_<time>.txt`, which the manual says holds everything the check found before the failure; send that file | | |
+| W49 | **N of 3 report formats could not be written** — same; *not produced* unless it happens | A message box naming the count, the one that was written is named in it, and **Open Report** opens it | | |
+| W50 | **The test could not be completed** — same; *not produced* unless it happens | A message box naming an error report; send the file it names | | |
+| W51 | **The verdict is Test Incomplete** — this one can happen on an ordinary run; record it when it does | The manual says to send the report as it is and that the reasons are in the rows marked *Unable to Check* — check that those rows are there and say why | | the report |
+| W52 | **The black window flashes and closes** — PowerShell stopped before the tool could say anything. The campaign's `M9` (AppLocker enforced) is the scenario that would produce it, and it has never taken effect on any machine this project has measured ([backlog #31](../docs/backlog.md)), so record *not produced* unless it happens | Nothing is written — no report, no `LauncherError.txt`, no environment file — and the manual's advice is to tell IT what was seen, with a photo of the window if one can be caught. This is the case where the package leaves no evidence at all ([backlog #37](../docs/backlog.md)) | | |
 
 ---
 
@@ -140,6 +157,10 @@ Produce at least the first row; the rest are recorded as *produced* or *not prod
 | W39 | Read *Do I need to be an administrator?* against this run | The run was made without elevation, and anything that needed more rights is an *Unable to Check* row, with the check continuing | | the report |
 | W40 | (If a VPN is available) Connect it and run again | Both the physical and the VPN adapter appear, and the VPN one is **normally** marked *Virtual* and listed as information — record how this VPN's adapter was actually classified. The classification is a heuristic (`Test-IsVirtualAdapter` reads the virtual flag, else the hardware flag, else the description), so a VPN adapter that reports itself as hardware can appear as Physical, which is what the manual's "normally" allows; only a classification the manual does not allow is a finding. A disconnected VPN adapter, or one with no address, does not appear at all | | the report |
 | W41 | Delete an old report | It deletes like an ordinary file | | |
+| W57 | Read *Is the report sent anywhere?* against the report's **Computer and Run Information** | "Not by the tool" — the section names the folder the report was actually written to, which is on this computer with the settings as shipped | | the report |
+| W58 | Read the two TCP-counter answers against this run's rows | If the retransmission row says *Unable to Check*, the report itself says the counters could not be read and not that there were retransmissions; if the run was made on a quiet machine, the row about too little TCP traffic is information, not a fault. Produce the second by running while the machine is idle; record either as *not produced* if it did not appear | | the report |
+| W59 | Run `Start-Traditional-Chinese.cmd` on this machine | "It is the same tool with the interface and the report in Traditional Chinese" — the window and the report are in Chinese, and the same checks appear | | the report |
+| W60 | Read *Can I run it on another computer?* | "Yes, on any Windows 10 or Windows 11 computer", and **every report names the computer it was made on** — check the second half here; the first half needs the second machine, so record it as *not produced on this machine* (the zh-TW walk covers it) | | the report |
 
 ---
 
