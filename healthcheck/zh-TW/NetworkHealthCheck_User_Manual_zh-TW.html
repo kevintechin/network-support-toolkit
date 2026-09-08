@@ -144,7 +144,7 @@
   <div class="card">
     <ol class="steps">
       <li>打開解壓縮出來的資料夾，按兩下 <b><code>Start-Traditional-Chinese.cmd</code></b>。ZIP 裡面本來就帶一層資料夾，所以解壓縮出來的資料夾裡常常只有一樣東西：另一個同名的資料夾；進去，啟動器就在裡面。多一層、資料夾叫什麼名字，都沒有關係，只要整棵樹保持在一起。（進入 <code>zh-TW</code> 資料夾按兩下 <code>Start-NetworkCheck.cmd</code> 也是同一件事。）</li>
-      <li>若 Windows 顯示 <b>開啟檔案 - 安全性警告</b>，選 <kbd>執行</kbd>。那是第 2 節說的下載標記，工具本身沒有差別。同一個對話框還會說無法確認發行者，發行者寫著「不明的發行者」：那是實情，這支工具沒有數位簽章，IT 改用套件裡的 <code>SHA256SUMS.txt</code> 驗證它。ZIP 是 IT 給你的，就選 <kbd>執行</kbd>；不確定檔案從哪裡來，先問過再執行。<b>開啟這個檔案前一定要先詢問</b> 保持勾選，代價是每次執行多按一下；取消勾選是把 Windows 對這一個檔案的標記永久移除，也就是第 2 節對整個 ZIP 做的解除封鎖，一次一個檔案。</li>
+      <li>若 Windows 顯示 <b>開啟檔案 - 安全性警告</b>，選 <kbd>執行</kbd>。那是第 2 節說的下載標記，工具本身沒有差別。同一個對話框還會說無法確認發行者，發行者寫著「不明的發行者」：那是實情，這支工具沒有數位簽章。IT 手上代替簽章的是雜湊值：他們拿收到的 ZIP 的 SHA-256 和發行說明公布的那一個比對（IT 部署手冊第 6 節）。套件裡的 <code>SHA256SUMS.txt</code> 是另一種檢查：它證明套件裡的檔案彼此相符，證明不了套件是從哪裡來的。ZIP 是 IT 給你的，就選 <kbd>執行</kbd>；不確定檔案從哪裡來，先問過再執行。<b>開啟這個檔案前一定要先詢問</b> 保持勾選，代價是每次執行多按一下；取消勾選是把 Windows 對這一個檔案的標記永久移除，也就是第 2 節對整個 ZIP 做的解除封鎖，一次一個檔案。</li>
       <li>先出現一個黑色文字視窗，檢測結束前它會一直留在背景。不用理它。</li>
       <li>接著 <b>網路健檢工具 1.2.5</b> 視窗打開，一秒內<b>自己開始</b>。你會看到：
         <table>
@@ -232,7 +232,7 @@ NetworkHealthCheck_&lt;日期&gt;_&lt;時間&gt;_&lt;電腦名稱&gt;.json</pre>
   <div class="card">
     <table class="plainfirst">
       <tr><th>你看到的</th><th>意思</th><th>怎麼做</th></tr>
-      <tr><td>按兩下啟動器時出現 <b>開啟檔案 - 安全性警告</b></td><td>檔案帶著 Windows 對網際網路下載檔的標記。對話框說無法確認發行者、發行者是「不明的發行者」，這是預期中的事：工具沒有數位簽章，IT 改用 <code>SHA256SUMS.txt</code> 驗證</td><td>檔案是 IT 給你的就選 <kbd>執行</kbd>；不確定它從哪裡來，先問過 IT。不想再被問，就在解壓縮前先解除封鎖 ZIP（第 2 節）</td></tr>
+      <tr><td>按兩下啟動器時出現 <b>開啟檔案 - 安全性警告</b></td><td>檔案帶著 Windows 對網際網路下載檔的標記。對話框說無法確認發行者、發行者是「不明的發行者」，這是預期中的事：工具沒有數位簽章，IT 手上的是 ZIP 的 SHA-256，拿去和發行說明公布的那一個比對</td><td>檔案是 IT 給你的就選 <kbd>執行</kbd>；不確定它從哪裡來，先問過 IT。不想再被問，就在解壓縮前先解除封鎖 ZIP（第 2 節）</td></tr>
       <tr><td>黑色視窗顯示 <b>錯誤：找不到 zh-TW 繁體中文套件</b>，並停下來等你按鍵</td><td><code>Start-Traditional-Chinese.cmd</code> 在旁邊找不到 <code>zh-TW</code> 資料夾，通常是在 ZIP 視窗裡按了兩下，Windows 只解出你按的那一個檔案</td><td>把整個 ZIP 解壓縮到資料夾，從那裡執行啟動器</td></tr>
       <tr><td>黑色視窗顯示 <b>錯誤：找不到程式檔 NetworkHealthCheck.ps1</b>，並列出錯誤報告 <code>LauncherError.txt</code></td><td>只有一個檔案被解出來：在 ZIP 視窗裡對 <code>Start-NetworkCheck.cmd</code> 按了兩下，或者只複製了單一檔案</td><td>把整個 ZIP 解壓縮到資料夾，從那裡執行啟動器</td></tr>
       <tr><td>黑色視窗顯示 <b>錯誤：此電腦找不到 PowerShell</b></td><td>程式需要 Windows PowerShell，它是 Windows 的一部分</td><td>請 IT 檢查這台電腦，或改在另一台電腦執行檢測</td></tr>
