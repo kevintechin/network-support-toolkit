@@ -480,8 +480,14 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
             }
             $script:ReportArtefact = ($copied -join ', ')
             $note = if ($unwritten.Count -eq 0) { 'the three files of the user run' } else { ('the ' + $copied.Count + ' format(s) this run wrote; ' + ($unwritten -join ' and ') + ' was not written') }
-            foreach ($row in @('W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W24', 'W27', 'W38', 'W53', 'W57', 'W60')) {
+            foreach ($row in @('W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W27', 'W38', 'W53', 'W57', 'W60')) {
                 if (Owns $row) { Add-Answer $row 'captured' $script:ReportArtefact $note }
+            }
+            # W24 compares the three formats with each other, so two of them cannot answer it - the missing one is
+            # W49's evidence and W24's absence.
+            if (Owns 'W24') {
+                if ($unwritten.Count -eq 0) { Add-Answer 'W24' 'captured' $script:ReportArtefact 'all three formats of the same run, for the comparison the row asks for' }
+                else { Add-Answer 'W24' 'not produced' $script:ReportArtefact ('this run wrote ' + $copied.Count + ' of the 3 formats (' + ($unwritten -join ' and ') + ' missing), so the three cannot be compared with each other; the same fact answers W49') }
             }
             # W39 is a claim about the run's rights, and a run started from an elevated harness inherits that token
             # while the report says nothing about it - so the row is answered from what this process is, not from the
@@ -781,14 +787,25 @@ if ((Owns 'W5') -or (Owns 'W5b')) {
             # person's decision, not this script's.
             $shell = New-Object -ComObject Shell.Application
             $item = $shell.Namespace((Split-Path -Parent $launcher)).ParseName((Split-Path -Leaf $launcher))
+            # Only a dialog that was not there before and that names the file just launched: any other top-level
+            # #32770 - a save box, an update prompt, something the person left open - would otherwise be captured,
+            # cancelled and recorded as this launcher's security warning.
+            $dialogCondition = New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, '#32770')
+            $before = @($AE::RootElement.FindAll($SCOPE::Children, $dialogCondition) | ForEach-Object { [int64]$_.Current.NativeWindowHandle })
             $item.InvokeVerb('open')
-            $dialog = $null; $deadline = (Get-Date).AddSeconds(15)
+            $launcherLeaf = Split-Path -Leaf $launcher
+            $dialog = $null; $stray = $null; $deadline = (Get-Date).AddSeconds(15)
             while ($null -eq $dialog -and (Get-Date) -lt $deadline) {
                 Start-Sleep -Milliseconds 500
-                $dialog = $AE::RootElement.FindFirst($SCOPE::Children, (New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, '#32770')))
+                foreach ($candidate in @($AE::RootElement.FindAll($SCOPE::Children, $dialogCondition))) {
+                    if ($before -contains [int64]$candidate.Current.NativeWindowHandle) { continue }
+                    if ((Get-WindowText $candidate) -match [regex]::Escape($launcherLeaf)) { $dialog = $candidate; break }
+                    $stray = $candidate
+                }
             }
             if ($null -eq $dialog) {
-                Add-NotProduced 'W5' 'the marked launcher raised no dialog within 15 s on this machine; the run may have started instead, which the sheet asks the person to note'
+                $strayNote = if ($null -ne $stray) { " A new dialog did appear ('" + $stray.Current.Name + "') without naming the launcher, so it was left alone." } else { '' }
+                Add-NotProduced 'W5' ('the marked launcher raised no dialog naming ' + $launcherLeaf + ' within 15 s on this machine; the run may have started instead, which the sheet asks the person to note.' + $strayNote)
             }
             else {
                 $shot = Save-Screen 'W5-security-warning.png'
@@ -806,7 +823,12 @@ if ((Owns 'W5') -or (Owns 'W5b')) {
 # --------------------------------------------------- the rows whose precondition this machine may not have
 # W40 is the one row whose precondition this machine may actually have, so it is answered on both sides.
 if ((Owns 'W40') -and -not (Answered 'W40')) {
-    $vpn = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and ($_.InterfaceDescription -match 'VPN|TAP|WAN Miniport \(IKEv2\)|WireGuard') })
+    # The VPN half of the tool's own Test-IsVirtualAdapter list (NetworkHealthCheck.ps1), which is a superset: it also
+    # calls VMware, Hyper-V, vEthernet and Docker adapters virtual, and none of those is the VPN this row is about. So
+    # the vendors and mechanisms that carry a VPN are kept - Tailscale, ZeroTier, WireGuard, Wintun, TAP, tunnels, the
+    # IKEv2 miniport, the enterprise clients - and the host-virtualization names are left out.
+    $vpnPattern = 'vpn|wireguard|zerotier|tailscale|wintun|tap-|tunnel|hamachi|cisco|anyconnect|openvpn|forticlient|globalprotect|pulse secure|ikev2|wan miniport'
+    $vpn = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and ($_.InterfaceDescription -match $vpnPattern -or $_.Name -match $vpnPattern) })
     $vpnNames = @($vpn | ForEach-Object { $_.Name })
     if ($vpn.Count -eq 0) { Add-NotProduced 'W40' 'no VPN adapter is connected on this machine, and the row asks for one only if a VPN is available' }
     elseif (-not $script:ReportArtefact) { Add-NotProduced 'W40' ("a VPN adapter is connected (" + ($vpnNames -join ', ') + ") but this walk captured no report to read it in") }
