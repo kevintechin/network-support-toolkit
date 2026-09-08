@@ -34,6 +34,7 @@ It is in the repository and not in the package, like [`application-control.md`](
 | 42 | Nothing proves the tool changes nothing | tests |
 | 43 | The tool does not say when the reports are being written into a synced folder | tool |
 | 44 | The launcher's own timestamp cannot be read without knowing the machine's regional format | tool |
+| 45 | The IT panel checks a typed target only after the run has started | tool |
 
 The table is an index; each item's own paragraph below is the statement.
 
@@ -130,6 +131,18 @@ It is an **Information** row, not a warning: nothing is broken, the verdict must
 **A second layer that costs nothing:** the file's own modified time is the authoritative stamp, and the receiving IT department's own Explorer renders it in the format they read. One sentence in the user manual's section 6 and one in the IT deployment manual say so, and they work for every file already written, including the ones sent before this change ships.
 
 Acceptance: on a machine whose short-date pattern is `dd/MM/yyyy`, the file names the pattern; where the registry value cannot be read, the file is written exactly as it is today; six launchers in two languages, with `tests/launcher_check.ps1` asserting the line where the pattern is available and the unchanged shape where it is not; the `%TEMP%` fallback copy carries the same field. — *found by the user-manual walk on `win11-enUS`, 2026-09-08, where it was first recorded as an observation rather than a finding because the constraint — no PowerShell on this path — made it look unfixable.*
+
+### 45 — The IT panel checks a typed target only after the run has started
+
+The panel's three numeric fields cannot be given an invalid value at all: **Ping count**, **Sample seconds** and **Traceroute hops** are `NumericUpDown` controls bounded at 1–20, 1–120 and 1–10 (`NetworkHealthCheck.ps1:3912`), so the invalid state is unreachable and nothing about them has to be explained to anybody. The four free-text fields have no equivalent, and the rule that governs them runs too late: `Set-RunOptions` parses them after the run has begun and records what it dropped in `$script:RunOptionMessages`, which reaches the person as a Startup Notice row. Measured during the user-manual walk, 2026-09-08: `8.8.8.8` typed into **Extra TCP (host:port)** — a field whose label already carries the format — cost a fifteen-second run, a report carrying a warning, a verdict of *Attention Required* on a network where every check passed, and a summary telling the person to send the report to IT when the action was to correct one field and start again. **The check already exists; what is wrong is when it runs.**
+
+**The shape.** On Start, run the same parse over the four fields; where it rejects a value, mark that field and name the problem, and offer the two choices this tool's own philosophy implies — fix it, or run without it. Nothing blocks. Everywhere else the tool reports rather than refuses (a restricted language mode, a counter it cannot read, a report folder it cannot write), and a person being guided by IT over the phone must not be stranded behind a dialog they did not expect. A run started with *without it* behaves exactly as it does today, Startup Notice included, because the report still has to say that a target was dropped.
+
+**Two constraints decide whether this is worth doing at all.** *One source of truth:* the validation calls the same parser `Set-RunOptions` uses, never a second copy of the rule, or the panel and the run will disagree on a day nobody is watching — and a check that contradicts the thing it is checking is worse than no check. *The hints belong in the controls, not in prose:* a placeholder or tooltip per field (`host:port`, `name.example.com`, `https://…`), because the panel is already dense at 940 px, and because the label of the field that was mistyped **already carried its format**. Text on a panel is the weakest form of enforcement; the three spinners demonstrate the strongest by needing none.
+
+This reduces how often [#39](#39--a-measurement-that-could-not-be-taken-outranks-a-measurement-that-failed) is reached; it does not replace it. Somebody who chooses *run without it* still ends with a verdict that answers a question about their typing.
+
+Acceptance: an invalid value in any of the four free-text fields is named when Start is pressed, with the field marked and both choices offered; choosing to run leaves today's behaviour and today's report unchanged; the three numeric fields are untouched; the validation and the run share one parser, proved by a test in which changing the rule moves both; the `gui` and `gui-headless` steps cover the invalid-field path in both languages; the IT deployment manual's panel paragraph describes the check. — *raised by the owner during the user-manual walk, 2026-09-08, after that walk's own extra TCP target was dropped for the want of a port number.*
 
 ## Closed items
 
