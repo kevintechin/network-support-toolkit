@@ -280,12 +280,23 @@ function Start-ShellVerb([string]$Path, [string]$Verb) {
     return [pscustomobject]@{ Shell = $ps; Runspace = $rs; Handle = $ps.BeginInvoke() }
 }
 function Stop-ShellVerb($Opener) {
-    # A call that has returned is cleaned up; one still blocked on a dialog nobody answered is left alone, because
-    # disposing its runspace would take the dialog with it and the row has already said it is on the screen.
-    if ($null -eq $Opener) { return }
-    if (-not $Opener.Handle.IsCompleted) { return }
-    try { [void]$Opener.Shell.EndInvoke($Opener.Handle) } catch { }
+    # What became of the call, because the handle reports completion whether ShellExecute returned or the invocation
+    # threw - a folder that is not there, an item the shell will not parse, a verb it refuses - and a row that read
+    # completion as success would say the launcher was started when nothing was launched at all. Three answers:
+    # 'returned' - it ran and Windows raised no question; 'failed' - it never got that far, with the error; and
+    # 'blocked' - it is still holding, which is what a dialog nobody answered looks like. A call that has finished
+    # is cleaned up; one still blocked is left alone, because disposing its runspace would take the dialog with it
+    # and the row has already said it is on the screen.
+    if ($null -eq $Opener) { return [pscustomobject]@{ State = 'not started'; Detail = '' } }
+    $deadline = (Get-Date).AddSeconds(3)
+    while (-not $Opener.Handle.IsCompleted -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
+    if (-not $Opener.Handle.IsCompleted) { return [pscustomobject]@{ State = 'blocked'; Detail = '' } }
+    $detail = ''
+    try { [void]$Opener.Shell.EndInvoke($Opener.Handle) } catch { $detail = $_.Exception.Message }
+    if (-not $detail -and $Opener.Shell.HadErrors) { $detail = [string]@($Opener.Shell.Streams.Error)[0] }
     try { $Opener.Shell.Dispose(); $Opener.Runspace.Dispose() } catch { }
+    if ($detail) { return [pscustomobject]@{ State = 'failed'; Detail = $detail } }
+    return [pscustomobject]@{ State = 'returned'; Detail = '' }
 }
 function New-EmptyStdin {
     # cmd.exe reads a launcher's trailing `pause` from standard input; an empty file ends it without a keypress.
@@ -1006,9 +1017,15 @@ if ((Owns 'W5') -or (Owns 'W5b')) {
             }
             if ($null -eq $dialog) {
                 $strayNote = if ($null -ne $stray) { " A new dialog did appear ('" + $stray.Current.Name + "') without naming the launcher, so it was left alone." } else { '' }
-                # The call itself is evidence now that it no longer blocks: one that has returned with no dialog on
-                # the screen means Windows raised no question and started the launcher.
-                $returned = if ($opener.Handle.IsCompleted) { ' ShellExecute returned without raising one, so the launcher was started.' } else { ' ShellExecute has not returned, so something is still holding it.' }
+                # The call itself is evidence now that it no longer blocks - but only once it is asked what became
+                # of it: a call that threw has completed too, and reading completion as success would put a launch
+                # in the manifest that never happened.
+                $outcome = Stop-ShellVerb $opener
+                $returned = switch ($outcome.State) {
+                    'returned' { ' ShellExecute returned without raising one, so the launcher was started.' }
+                    'failed' { ' ShellExecute did not get that far - it failed with: ' + $outcome.Detail + ' - so nothing was launched and no dialog was ever going to appear.' }
+                    default { ' ShellExecute has not returned, so something is still holding it.' }
+                }
                 Add-NotProduced 'W5' ('the marked launcher raised no dialog naming ' + $launcherLeaf + ' within 15 s on this machine; the run may have started instead, which the sheet asks the person to note.' + $returned + $strayNote)
             }
             else {
@@ -1021,8 +1038,9 @@ if ((Owns 'W5') -or (Owns 'W5b')) {
                 # decision. What the row records is what actually happened to the dialog, not what was attempted.
                 $closedW5 = Close-Dialog $dialog
                 Add-Answer 'W5' 'captured' (Split-Path -Leaf $shot) ("dialog '" + $dialogName + "' raised by " + (Split-Path -Leaf $launcher) + "; every line of it is in W5-security-warning.txt, which is what a manual quotes" + $(if ($closedW5.Closed) { ', and the dialog was cancelled rather than answered (' + $closedW5.How + ')' } else { '. It would not close (' + $closedW5.How + '), so it is still on the screen: cancel it by hand' }))
+                # Cancelling the dialog lets ShellExecute return; the runspace is cleaned up behind it.
+                [void](Stop-ShellVerb $opener)
             }
-            Stop-ShellVerb $opener
         }
     }
 }
