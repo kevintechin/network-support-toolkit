@@ -187,13 +187,13 @@ Produce at least the first row; the rest are recorded as *produced* or *not prod
 
 ## Was it usable?
 
-The part no assertion can measure. Answer in your own words, and be specific about where you hesitated — a sentence that is true but sends the reader to the wrong place is a defect this walk exists to find.
+The part no assertion can measure. Answer in your own words, and be specific about where you hesitated — a sentence that is true but sends the reader to the wrong place is a defect this walk exists to find. Prose, not ticks: the two findings this section produced on its first outing came out of a sentence somebody wrote themselves, and a matrix would have collected a tick instead. **When a question here asks about a situation, name the situation** — the first version of question 5 asked “if the tool had failed”, which invites “but it didn't”; it was written by the same person who wrote the manual's claims, and it inherited the same blind spot.
 
 1. Did you ever have to ask somebody, or guess, to get past a step? Which step?
 2. Was anything on the screen that the manual does not explain, and that you wanted explained?
 3. Was anything explained at length that you did not need?
 4. After the run, did you know **which file to send and where to find it** without re-reading?
-5. If the tool had failed, would section 6 have told you what to do?
+5. For each kind of failure you actually met: could you have put it right yourself, which file would you have sent, and whom would you have told? *Section 6 covers four kinds, and they ask different things of the person — answer for the ones you met and say “did not meet it” for the rest, which is data and not a gap.* **A**: the launcher stops before the tool runs (W28, W42–W44, W52). **B**: the tool runs but the window does not (W30). **C**: the tool runs and the report does not (W46, W48–W50). **D**: the report is written and something in it could not be measured (W51).
 6. Did any sentence turn out to be true but useless — right about the machine, wrong about the situation?
 
 ---
