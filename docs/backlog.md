@@ -36,6 +36,7 @@ It is in the repository and not in the package, like [`application-control.md`](
 | 44 | The launcher's own timestamp cannot be read without knowing the machine's regional format | tool |
 | 45 | The IT panel checks a typed target only after the run has started | tool |
 | 46 | The window names where the report is and never which file to send | tool |
+| 47 | The evidence for a failure that writes no report depends on the person retyping what they saw | tool |
 
 The table is an index; each item's own paragraph below is the statement.
 
@@ -168,6 +169,20 @@ Measured by the walk on 2026-09-08, from the walker asked whether they knew what
 It is the same family as #39 and #43: the thing the tool knows, at the moment it knows it, is not where the person is looking.
 
 Acceptance: in every terminating case the window and the console name the file to send in one line beside the path — the report on a normal run, the format that survived when others did not, the FATAL file, the environment report, the launcher's error file; where a summary exists the wording **is** its last line rather than a copy of it, so the two cannot drift; the user manual's sections 5 and 6 describe that line; the GUI and unit tests cover the normal case and at least the all-formats-failed and refused-to-start cases. — *raised by the owner during the user-manual walk, 2026-09-08, answering whether the manual had made the hand-off obvious.*
+
+### 47 — The evidence for a failure that writes no report depends on the person retyping what they saw
+
+Raised by the owner at the end of the user-manual walk, and it is the argument that orders several of the items above: *強化收集錯誤狀況的 log 機制，因為發生問題時可能 user 也說不清楚* — the moment a person is least able to describe what happened is exactly the moment the tool stops helping them.
+
+**What is already collected, so that this item does not re-invent it.** A run that reports: the rows, and in the JSON the technical diagnostics of any error, with script location and call stack. A script that refused to start under a restricted language mode: `NetworkHealthCheck_ENVIRONMENT_<time>.txt`, timestamped, naming the mode, the machine, the user, the folder, the PowerShell version, the culture and the operating system. A report that could not be written: the FATAL file with everything found before the failure. A launcher that stopped first: `LauncherError.txt` beside the launcher, or `NetworkHealthCheck_LauncherError.txt` in `%TEMP%` when that folder cannot be written, with the time, the computer, the user, the folder, the script and PowerShell paths, the reason and a suggested action.
+
+**The two gaps are both in the launcher's case, which is the worst one to have them in.** *PowerShell's own message is not captured.* Under an execution policy that refuses the script, the sentence that says why — *…is not digitally signed…*, or whatever the engine printed — goes to the console and nowhere else, and `LauncherError.txt` tells the person to *read the message printed above the error in this window … and send it together with this file*. That instruction asks the person to transcribe the one piece of evidence IT actually needs, at the moment they are least equipped to. *And the file is overwritten.* A person who tries three times sends the third; `NetworkHealthCheck_ENVIRONMENT_<time>.txt` already shows the shape that keeps a history.
+
+**The tension to resolve rather than ignore.** Capturing a child process's output in a batch file means redirecting it from the start, and redirecting it takes it off the screen — which is precisely what `Start-NetworkCheck-Console.cmd` exists to put there. So the answer is not one redirection everywhere: the console launcher must keep its live text and its pause, while the two window launchers print almost nothing to the console in a normal run and can afford to capture. Whatever is chosen, the run that succeeds must look exactly as it looks today.
+
+It composes with the items around it rather than replacing them: #46 names the file to send, this one makes sure the file has the evidence in it, #44 makes its timestamp readable by whoever receives it, and #37 is the case beyond the reach of all three — when the launcher itself is refused, nothing of ours runs at all.
+
+Acceptance: a refusal that PowerShell explains on the console leaves that explanation in a file, beside the launcher or in `%TEMP%` under the same rules as the error report; error reports from separate attempts do not overwrite each other; a successful run's console output and the console launcher's live text and pause are unchanged, proved by `tests/launcher_check.ps1` over the six launchers; the user manual's section 6 rows say *send these files* instead of asking the reader to copy text off the screen. — *raised by the owner during the user-manual walk, 2026-09-08.*
 
 ## Closed items
 
