@@ -34,6 +34,8 @@
 
 **What follows.** This entry and the backlog are the first of three pieces of work, and the only one that is done: the document fixes are 1.2.6, and the harness fixes are #48's. Nothing here changes the shipped 1.2.5 package. Of the four tool findings, one is new (#49), one is new and small (#50), and two are second instances of items already open — which is what a second walk is supposed to produce.
 
+**Independent review — Codex, PR #31, rounds 1 and 2 · 2026-09-09: one finding, accepted, and a clean pass on the second.** *Round 1 on `e0a5a6c`, P2:* the repository `README.md`'s roadmap row — the backlog page's mirror, and where this project sends a wish that has no acceptance sentence — said 22 items open while the page held 25. It had fallen behind twice: #48 was never added to it when it was raised, and this branch adds #49 and #50. The row now names all three, and its arithmetic closes against the page again. *Round 2 on `af5c39a`:* no findings. Both rounds ran the validator (109 / 109) and the document-fact step (96 / 96 with its self-test 43 / 43); no script and no packaged document changed on this branch, so the script-facing steps stand from the 1.2.5 release run below.
+
 ## v1.2.5 — the six findings of the walk · 2026-09-08 — documents release (the tool unchanged)
 
 **What and why.** The user-manual walk on `win11-enUS`, whose entry follows this one, found six things: all six are the manuals', none is the scripts'. This release is those six sentences and the version they ship under. Neither script changed but its version string, `FUNCTION_COUNT` stays 81, and nothing the tool does differs from 1.2.4 — the tool items the walk raised (#38 to #47) wait their turn in `docs/backlog.md`.
