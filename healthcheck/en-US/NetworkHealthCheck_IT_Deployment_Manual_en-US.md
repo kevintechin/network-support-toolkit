@@ -1,4 +1,4 @@
-﻿# Network Health Check 1.2.4 — IT Deployment Manual
+﻿# Network Health Check 1.2.5 — IT Deployment Manual
 
 **For the IT department that hands the tool out.** What the package needs, how to configure it for your site, how to deploy it, what security policy does to it, how to verify what you received, and what to do with the reports that come back.
 
@@ -73,7 +73,7 @@ The report's *Configuration File* row names the file that was loaded, and the *C
 
 Each run writes up to three files, `NetworkHealthCheck_<yyyyMMdd>_<HHmmss>_<COMPUTERNAME>.html`, `.txt` and `.json`, UTF-8 with a byte-order mark. Each format is written on its own: one that cannot be written is reported — the window says *N of 3 report formats could not be written*, the console lists it as *(not written)* — and the others stay usable; only when all three fail does the tool write an emergency `NetworkHealthCheck_FATAL_<time>.txt` instead. Names are unique for one copy of the tool at a time; nothing is deleted, so the folder grows by up to three files per run until someone clears it.
 
-A rooted `ReportFolderName` on a share is the one setting that moves reports off the machine without anyone sending them: every report of every user then lands there directly, and the person is told in the report — the *Report Directory* line — but not asked. Use it deliberately, with the handling rule of section 7 in place, and make sure every user can write to it: a user who cannot gets the temporary-folder fallback instead.
+A rooted `ReportFolderName` on a share is the one setting that moves reports off the machine without anyone sending them: every report of every user then lands there directly, and the person is told in the report — the *Report Directory* line — but not asked. Use it deliberately, with the handling rule of section 7 in place, and make sure every user can write to it: a user who cannot gets the temporary-folder fallback instead. It is the one *setting* that does this: a report folder that merely happens to sit inside a cloud-synced folder does the same thing without anyone choosing it, which is what section 5, *Where to put it*, is about.
 
 ### 3.2 · Company standards (`Expected`)
 
@@ -248,7 +248,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 
 Whichever way it arrives, the person must extract the whole ZIP: a launcher double-clicked inside Explorer's ZIP view finds nothing beside itself and stops (the user manual, sections 2 and 6).
 
-**Where to put it.** Any local folder the user can write to — the Desktop or Documents are what the user manual suggests, and where the acceptance runs were made. The folder must stay writable if the reports are to land beside the program; otherwise set `ReportFolderName` (section 3.1) or expect the temporary-folder fallback.
+**Where to put it.** Any local folder the user can write to — the Desktop or Documents are what the user manual suggests, and where the acceptance runs were made. The folder must stay writable if the reports are to land beside the program; otherwise set `ReportFolderName` (section 3.1) or expect the temporary-folder fallback. **On a default Windows 11 that means not the Desktop or Documents, if the reports are to stay on the machine.** OneDrive's Known Folder Move backs both folders up unless it was turned off, so a package extracted there writes its `Reports` folder inside a synced folder, and every report — computer and user names, MAC and IP addresses, SSID and BSSID, DNS servers, proxy settings, routes, driver versions, profile paths — is copied to that user's OneDrive as it is written, before anyone sends anything. It was measured that way on `win11-enUS` during the user-manual walk recorded in `VALIDATION.md`. Where that is not what you want, put the package in a folder outside the sync root — a per-machine tools folder, or `C:\NetworkHealthCheck` — or set `ReportFolderName` (section 3.1) to a rooted path that is not synced; the user manual says the same thing from the person's side in its sections 1, 5 and 9. On such a machine the desktop is also `%OneDrive%\Desktop` and not `%USERPROFILE%\Desktop`, which a deployment script that copies to the desktop has to handle.
 
 **Upgrading.** Replace the folder with the new version and carry your configuration file over. The file's version does not matter to the tool: a key the new version added takes its default when your file does not have it. Compare the shipped file with yours after an upgrade and run one check (section 3.6) before the new folder goes out. Keep your edited configuration under version control; the package cannot tell your edits from the shipped file except by their hash (section 6).
 
@@ -261,10 +261,10 @@ Whichever way it arrives, the person must extract the whole ZIP: a launcher doub
 **The download.** The release notes on the project's Releases page give the SHA-256 of `NetworkHealthCheck-<version>.zip`. Compare before extracting:
 
 ```text
-certutil -hashfile NetworkHealthCheck-1.2.4.zip SHA256
+certutil -hashfile NetworkHealthCheck-1.2.5.zip SHA256
 ```
 
-or in PowerShell `Get-FileHash NetworkHealthCheck-1.2.4.zip`. The asset is built from the repository's tracked files only, so it contains no report and no other output of a run.
+or in PowerShell `Get-FileHash NetworkHealthCheck-1.2.5.zip`. The asset is built from the repository's tracked files only, so it contains no report and no other output of a run.
 
 **The manifest.** `SHA256SUMS.txt` at the package root lists the digest of every shipped file except itself, `VALIDATION.md` and `validation-matrix.html` — one line per file, `<sha256>  <relative path>` with two spaces. Check one file by hand with `Get-FileHash <file>`, or all of them with the validator.
 
@@ -308,7 +308,7 @@ The launchers set the execution policy for their own process (`-ExecutionPolicy 
 
 **What to ask the person for** is in the user manual's section 6, row by row; the environment report and `LauncherError.txt` are written for exactly this hand-off. `LauncherError.txt` sits beside the launcher, or — when that folder cannot be written — in `%TEMP%` as `NetworkHealthCheck_LauncherError.txt` with fewer fields.
 
-**Allowing the tool.** The two scripts are unsigned, so a policy that allows by publisher has nothing to match; what an IT department has today is the hash: `SHA256SUMS.txt` gives the digest of each `NetworkHealthCheck.ps1`, and a WDAC or AppLocker rule can allow that hash. A new version means a new hash. Which Windows builds and editions enforce AppLocker, and what has and has not been observed, changes faster than this package: the repository keeps a page on it, at the version this manual belongs to — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.4/docs/application-control.md> — and its current version on the `main` branch.
+**Allowing the tool.** The two scripts are unsigned, so a policy that allows by publisher has nothing to match; what an IT department has today is the hash: `SHA256SUMS.txt` gives the digest of each `NetworkHealthCheck.ps1`, and a WDAC or AppLocker rule can allow that hash. A new version means a new hash. Which Windows builds and editions enforce AppLocker, and what has and has not been observed, changes faster than this package: the repository keeps a page on it, at the version this manual belongs to — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.5/docs/application-control.md> — and its current version on the `main` branch.
 
 **Signing.** An Authenticode signature from your own certificate authority satisfies an *AllSigned* policy when the signing certificate is also trusted on the machine — its chain trusted, and the certificate in the Trusted Publishers store: for a publisher not yet classified as trusted, PowerShell asks the person before running the script (the launcher's window shows the question), and a session that cannot ask does not run it. A signature also lets an application-control rule allow by publisher. Signing appends a signature block to the script, so the signed file no longer matches `SHA256SUMS.txt`; record the signed files' digests yourself.
 
@@ -339,9 +339,9 @@ The launchers set the execution policy for their own process (`-ExecutionPolicy 
 - **User manual** — `NetworkHealthCheck_User_Manual_en-US.html` (or `.md`): what the person sees, the verdicts and badges, what the report contains, what to do when it does not run.
 - **Technical guide** — `NetworkHealthCheck_Technical_Guide_en-US.md`: design, every decision rule, the validation approach, known limitations, the version history.
 - **Validation record** — `VALIDATION.md`: every release's evidence and the acceptance runs on other machines.
-- **Backlog** — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.4/docs/backlog.md>: what is known and not yet done, and what would close each item. It is in the repository rather than in the package, like the application-control page of section 8, because it changes between releases.
+- **Backlog** — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.5/docs/backlog.md>: what is known and not yet done, and what would close each item. It is in the repository rather than in the package, like the application-control page of section 8, because it changes between releases.
 - **The repository** — <https://github.com/kevintechin/network-support-toolkit>: releases, the validation chain (`tests`), the support engineer's field manual and report template (`sop`), and the application-control page named in section 8.
 
 ---
 
-*NetworkHealthCheck 1.2.4. This manual describes the tool as shipped and the behaviour measured for this release; the rules quoted here are the code's, and the technical guide states them in full.*
+*NetworkHealthCheck 1.2.5. This manual describes the tool as shipped and the behaviour measured for this release; the rules quoted here are the code's, and the technical guide states them in full.*

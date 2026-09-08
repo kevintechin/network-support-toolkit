@@ -3,7 +3,7 @@ from pathlib import Path
 import sys, json, hashlib, re
 
 ROOT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
-TOOL_VERSION = '1.2.4'
+TOOL_VERSION = '1.2.5'
 FUNCTION_COUNT = 81
 failures=[]; passes=[]
 
