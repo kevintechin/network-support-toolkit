@@ -194,7 +194,7 @@ The part no assertion can measure. Answer in your own words, and be specific abo
 2. Was anything on the screen that the manual does not explain, and that you wanted explained?
 3. Was anything explained at length that you did not need?
 4. After the run, did you know **which file to send and where to find it** without re-reading?
-5. For each kind of failure you actually met: could you have put it right yourself, which file would you have sent, and whom would you have told? *Section 6 covers four kinds, and they ask different things of the person — answer for the ones you met and say “did not meet it” for the rest, which is data and not a gap.* **A**: the launcher stops before the tool runs (W28, W42–W44, W52). **B**: the tool runs but the window does not (W30). **C**: the tool runs and the report does not (W46, W48–W50). **D**: the report is written and something in it could not be measured (W51).
+5. For each kind of failure you actually met: could you have put it right yourself, which file would you have sent, and whom would you have told? *Section 6 covers four kinds, and they ask different things of the person — answer for the ones you met and say “did not meet it” for the rest, which is data and not a gap.* **A**: the launcher stops before the tool runs (W28, W42–W44, W52). **B**: the tool runs but the window does not (W30). **C**: the report is written somewhere else, in fewer formats, or not at all — the fallback directory of W46, the surviving format of W49, the FATAL file of W48, the unrecoverable error of W50. **D**: the report is written and something in it could not be measured (W51).
 6. Did any sentence turn out to be true but useless — right about the machine, wrong about the situation?
 
 ---
