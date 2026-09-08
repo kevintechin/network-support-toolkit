@@ -73,6 +73,10 @@ public static class WalkCaptureWin32 {
     // WinForms controls reach UI Automation through the MSAA bridge, where an edit box often exposes no ValuePattern.
     // WM_SETTEXT on the control's own window is what is left, and it is what a person typing into it ends up doing.
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern IntPtr SendMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam);
+    // A console window taller than the screen hides the very line the pause row is about, so it is fitted to the
+    // working area before the picture is taken. Nothing about the run changes; only what the camera can see.
+    [DllImport("user32.dll", SetLastError = true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
 }
 "@
 $AE = [System.Windows.Automation.AutomationElement]
@@ -81,6 +85,7 @@ $SCOPE = [System.Windows.Automation.TreeScope]
 # ---------------------------------------------------------------- the answers
 $script:Answers = New-Object System.Collections.Generic.List[object]
 $script:ReportArtefact = ''
+$script:ReportJsonPath = ''
 $script:Failures = 0
 
 function Add-Answer([string]$Row, [string]$Outcome, [string]$Artefact, [string]$Note) {
@@ -234,6 +239,27 @@ function Get-NewReport([string]$ReportDir, [datetime]$Since, [string]$Extension 
     Get-ChildItem -LiteralPath $ReportDir -Filter ("*." + $Extension) -ErrorAction SilentlyContinue |
         Where-Object { $_.LastWriteTime -gt $Since } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 }
+function Get-ExplorerPaths {
+    # What Explorer has open, so that a button which opens a folder can be judged by the folder it opened.
+    $out = New-Object System.Collections.Generic.List[string]
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        foreach ($w in @($shell.Windows())) {
+            try { if ($w.LocationURL) { $out.Add([string]$w.LocationURL) } } catch { }
+        }
+    }
+    catch { }
+    return @($out)
+}
+function Close-ExplorerPath([string]$LocationUrl) {
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        foreach ($w in @($shell.Windows())) {
+            try { if ([string]$w.LocationURL -eq $LocationUrl) { $w.Quit() } } catch { }
+        }
+    }
+    catch { }
+}
 function Get-AnyNewReport([string]$ReportDir, [datetime]$Since) {
     # Save-Reports writes each format on its own, so a run whose JSON failed still wrote the other two - and waiting
     # for the JSON alone would call that run reportless and lose exactly the evidence W49 is for.
@@ -247,8 +273,8 @@ $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $lang = Split-Path -Leaf $PackageDir
 if ($lang -notin @('en-US', 'zh-TW')) { Write-Output "ERROR: -PackageDir must be an en-US or zh-TW folder; got '$lang'"; exit 2 }
 $script:ToolNames = @{
-    'en-US' = @{ Start = 'Start Test'; Close = 'Close'; Reset = 'Reset to config'; Again = 'Run Again' }
-    'zh-TW' = @{ Start = [string][char]0x958B + [char]0x59CB + [char]0x6AA2 + [char]0x6E2C; Close = [string][char]0x95DC + [char]0x9589; Reset = [string][char]0x9084 + [char]0x539F + [char]0x8A2D + [char]0x5B9A + [char]0x6A94; Again = [string][char]0x91CD + [char]0x65B0 + [char]0x6AA2 + [char]0x6E2C }
+    'en-US' = @{ Start = 'Start Test'; Close = 'Close'; Reset = 'Reset to config'; Again = 'Run Again'; Folder = 'Open Report Folder' }
+    'zh-TW' = @{ Start = [string][char]0x958B + [char]0x59CB + [char]0x6AA2 + [char]0x6E2C; Close = [string][char]0x95DC + [char]0x9589; Reset = [string][char]0x9084 + [char]0x539F + [char]0x8A2D + [char]0x5B9A + [char]0x6A94; Again = [string][char]0x91CD + [char]0x65B0 + [char]0x6AA2 + [char]0x6E2C; Folder = [string][char]0x958B + [char]0x555F + [char]0x5831 + [char]0x544A + [char]0x8CC7 + [char]0x6599 + [char]0x593E }
 }
 $names = $script:ToolNames[$lang]
 if (-not $OutDir) { $OutDir = Join-Path $env:USERPROFILE ('NHC-Walk\' + (Get-Date).ToString('yyyyMMdd_HHmmss')) }
@@ -322,16 +348,19 @@ if (Owns 'W1') {
     elseif (-not (Test-Path -LiteralPath $Zip)) { Add-NotProduced 'W1' ("the ZIP named by -Zip does not exist: " + $Zip) }
     else {
         $zipFull = (Resolve-Path -LiteralPath $Zip).Path
-        $stream = Get-Item -LiteralPath $zipFull -Stream Zone.Identifier -ErrorAction SilentlyContinue
+        # The Unblock box follows the same rule as the security warning: the Internet or Restricted zone, not merely a
+        # stream. A local, intranet or trusted mark shows no box, and the manifest must not contradict the picture.
+        $zipZoneW1 = Get-ZoneId $zipFull
+        $zipMarkedW1 = Test-InternetMark $zipZoneW1
         [void](Save-Text 'W1-zone-identifier.txt' $(
-                if ($stream) { "Zone.Identifier present (" + $stream.Length + " bytes)`r`n`r`n" + (Get-Content -LiteralPath $zipFull -Stream Zone.Identifier -Raw) }
-                else { "no Zone.Identifier: this copy carries no Mark of the Web, so Properties shows no Unblock box" }))
+                if ($zipZoneW1 -eq 'no mark') { "no Zone.Identifier: this copy carries no Mark of the Web, so Properties shows no Unblock box" }
+                else { $zipZoneW1 + "`r`n`r`n" + (Get-Content -LiteralPath $zipFull -Stream Zone.Identifier -Raw -ErrorAction SilentlyContinue) }))
         $shell = New-Object -ComObject Shell.Application
         $item = $shell.Namespace((Split-Path -Parent $zipFull)).ParseName((Split-Path -Leaf $zipFull))
         $item.InvokeVerb('Properties')
         Start-Sleep -Seconds 3
         $shot = Save-Screen 'W1-zip-properties.png'
-        Add-Answer 'W1' 'captured' (Split-Path -Leaf $shot) ('with W1-zone-identifier.txt; ' + $(if ($stream) { 'the ZIP is marked, so the Unblock box must be in the picture' } else { 'the ZIP is unmarked, so there must be no Unblock box' }))
+        Add-Answer 'W1' 'captured' (Split-Path -Leaf $shot) ('with W1-zone-identifier.txt; the ZIP carries ' + $zipZoneW1 + ', so ' + $(if ($zipMarkedW1) { 'the Unblock box must be in the picture' } else { 'there must be no Unblock box' }))
         # The property sheet is modal to Explorer, not to this script: close it before anything else is captured.
         $props = $AE::RootElement.FindFirst($SCOPE::Children, (New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, '#32770')))
         if ($null -ne $props) {
@@ -455,6 +484,7 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
                 else { Add-NotProduced 'W49' 'all three report formats were written; the sheet says not to manufacture a partial failure, only to record it when it happens' }
             }
             $jsonPath = Join-Path $userRun.ReportDir ($stem + '.json')
+            if (Test-Path -LiteralPath $jsonPath) { $script:ReportJsonPath = $jsonPath }
             $data = if (Test-Path -LiteralPath $jsonPath) { Get-Content -LiteralPath $jsonPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
             if (Owns 'W51') {
                 if ($null -eq $data) { Add-NotProduced 'W51' 'this run wrote no JSON report, so its verdict could not be read here; the HTML or text file carries it' }
@@ -509,9 +539,37 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
             }
         }
         if (Owns 'W25') {
+            # The row is about the button, not about the path this script can compute: what Open Report Folder opens
+            # is the thing to record, so it is clicked and the folder Explorer actually opened is read back.
             $listing = @(Get-ChildItem -LiteralPath $userRun.ReportDir -ErrorAction SilentlyContinue | ForEach-Object { "{0,-60} {1,10}  {2}" -f $_.Name, $_.Length, $_.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss') }) -join "`r`n"
-            [void](Save-Text 'W25-reports-folder.txt' ("report directory: " + $userRun.ReportDir + "`r`n`r`n" + $listing))
-            Add-Answer 'W25' 'captured' 'W25-reports-folder.txt' 'the report folder with the naming of every file in it'
+            $folderButton = Find-ByName $win $names.Folder
+            if ($null -eq $folderButton) {
+                [void](Save-Text 'W25-reports-folder.txt' ("report directory (read by this script, not by the button): " + $userRun.ReportDir + "`r`n`r`n" + $listing))
+                Add-Answer 'W25' 'not produced' 'W25-reports-folder.txt' ("the button the row names (" + $names.Folder + ") was not found, so what it opens could not be recorded; the folder this script resolved is in the file")
+            }
+            else {
+                $explorerBefore = Get-ExplorerPaths
+                Send-Click $folderButton
+                $opened = @(); $deadline = (Get-Date).AddSeconds(15)
+                while ($opened.Count -eq 0 -and (Get-Date) -lt $deadline) {
+                    Start-Sleep -Milliseconds 700
+                    $opened = @((Get-ExplorerPaths) | Where-Object { $explorerBefore -notcontains $_ })
+                }
+                Start-Sleep -Seconds 1
+                $shot = if ($opened.Count -gt 0) { Save-Screen 'W25-open-report-folder.png' } else { $null }
+                $expectedUrl = ([uri]$userRun.ReportDir).AbsoluteUri.TrimEnd('/')
+                $match = @($opened | Where-Object { $_.TrimEnd('/') -eq $expectedUrl }).Count -gt 0
+                [void](Save-Text 'W25-reports-folder.txt' (@(
+                            "the button opened : " + $(if ($opened.Count) { ($opened -join ', ') } else { '(no new Explorer window within 15 s)' })
+                            "the run wrote to  : " + $userRun.ReportDir
+                            "same folder       : " + $(if ($match) { 'yes' } else { 'no - read the two paths above' })
+                            ""
+                            $listing
+                        ) -join "`r`n"))
+                foreach ($url in $opened) { Close-ExplorerPath $url }
+                if ($opened.Count -eq 0) { Add-Answer 'W25' 'not produced' 'W25-reports-folder.txt' 'the button was clicked and no new Explorer window appeared within 15 s, so what it opens was not recorded' }
+                else { Add-Answer 'W25' 'captured' ((Split-Path -Leaf $shot) + ', W25-reports-folder.txt') ('Open Report Folder opened ' + ($opened -join ', ') + ', which ' + $(if ($match) { 'is' } else { '**is not**' }) + ' the folder the run wrote to') }
+            }
         }
         if (Owns 'W56') {
             $sync = Test-PathIsSynced $userRun.ReportDir
@@ -608,9 +666,44 @@ if (Owns 'W31') {
     $console = Join-Path $PackageDir 'Start-NetworkCheck-Console.cmd'
     if (-not (Test-Path -LiteralPath $console)) { Add-NotProduced 'W31' 'Start-NetworkCheck-Console.cmd is not in this package' }
     else {
+        # Two runs, because the row asks for two things. The redirected one keeps the text; it cannot show the pause,
+        # since an empty standard input ends `pause` at once. The second run is the launcher as a person starts it -
+        # its own window, nothing redirected - and it is captured while it sits at the pause with the report paths
+        # above it, which is what the row is about.
         $out = Join-Path $script:Bundle 'W31-console.txt'
         $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList @('/c', ('"' + $console + '"')) -WorkingDirectory $PackageDir -RedirectStandardOutput $out -RedirectStandardInput (New-EmptyStdin) -NoNewWindow -PassThru -Wait
-        Add-Answer 'W31' 'captured' 'W31-console.txt' ('the text-mode run as it printed, exit code ' + $p.ExitCode)
+        $reportDir = Join-Path $PackageDir 'Reports'
+        $pauseFrom = Get-Date
+        $p2 = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList @('/c', ('"' + $console + '"')) -WorkingDirectory $PackageDir -PassThru
+        $second = $null; $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+        while ($null -eq $second -and (Get-Date) -lt $deadline -and -not $p2.HasExited) { Start-Sleep -Seconds 2; $second = Get-AnyNewReport $reportDir $pauseFrom }
+        Start-Sleep -Seconds 3
+        $paused = (-not $p2.HasExited)
+        $shot = $null
+        if ($paused) {
+            try {
+                $p2.Refresh()
+                $handle = $p2.MainWindowHandle
+                if ($handle -ne [IntPtr]::Zero) {
+                    $area = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+                    [void][WalkCaptureWin32]::SetWindowPos($handle, [IntPtr]::Zero, 0, 0, $area.Width, $area.Height, 0x0040)   # SWP_SHOWWINDOW
+                    [void][WalkCaptureWin32]::SetForegroundWindow($handle)
+                    Start-Sleep -Milliseconds 800
+                }
+            }
+            catch { }
+            $shot = Save-Screen 'W31-paused-window.png'
+        }
+        if (-not $p2.HasExited) { $p2.Kill() }
+        if ($paused -and $null -ne $second) {
+            Add-Answer 'W31' 'captured' ('W31-console.txt, ' + (Split-Path -Leaf $shot)) ('the text-mode run as it printed (exit code ' + $p.ExitCode + '); the second run had written its report and had still not exited when the picture was taken, which is the pause the row is about, and the window was fitted to the working area first so its last lines are in the picture')
+        }
+        elseif ($null -eq $second) {
+            Add-Answer 'W31' 'not produced' 'W31-console.txt' 'the interactive run wrote no report within the timeout, so the paused window could not be captured; the redirected run''s text is in the bundle'
+        }
+        else {
+            Add-Answer 'W31' 'not produced' 'W31-console.txt' 'the interactive run ended without waiting, so no paused window was there to capture; the redirected run''s text is in the bundle'
+        }
     }
 }
 if ((Owns 'W28') -or (Owns 'W29')) {
@@ -693,9 +786,18 @@ if ((Owns 'W5') -or (Owns 'W5b')) {
 # W40 is the one row whose precondition this machine may actually have, so it is answered on both sides.
 if ((Owns 'W40') -and -not (Answered 'W40')) {
     $vpn = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and ($_.InterfaceDescription -match 'VPN|TAP|WAN Miniport \(IKEv2\)|WireGuard') })
+    $vpnNames = @($vpn | ForEach-Object { $_.Name })
     if ($vpn.Count -eq 0) { Add-NotProduced 'W40' 'no VPN adapter is connected on this machine, and the row asks for one only if a VPN is available' }
-    elseif (-not $script:ReportArtefact) { Add-NotProduced 'W40' ("a VPN adapter is connected (" + (@($vpn | ForEach-Object { $_.Name }) -join ', ') + ") but this walk captured no report to read it in") }
-    else { Add-Answer 'W40' 'captured' $script:ReportArtefact ("a VPN adapter was connected during the run (" + (@($vpn | ForEach-Object { $_.Name }) -join ', ') + "), so the report has it beside the physical one; how this VPN is classified is the person's to read") }
+    elseif (-not $script:ReportArtefact) { Add-NotProduced 'W40' ("a VPN adapter is connected (" + ($vpnNames -join ', ') + ") but this walk captured no report to read it in") }
+    else {
+        # An adapter with no address of its own is left out of the report (NetworkHealthCheck.ps1, the adapter loop),
+        # so a connected VPN is not the same thing as a VPN in the report. The report decides.
+        $reportText = if ($script:ReportJsonPath -and (Test-Path -LiteralPath $script:ReportJsonPath)) { Get-Content -LiteralPath $script:ReportJsonPath -Raw -Encoding UTF8 } else { '' }
+        $named = @($vpnNames | Where-Object { $reportText -and $reportText.Contains($_) })
+        if ($named.Count -gt 0) { Add-Answer 'W40' 'captured' $script:ReportArtefact ("the report names the connected VPN adapter (" + ($named -join ', ') + "); whether it is marked Virtual and listed as information is the person's to read") }
+        elseif (-not $reportText) { Add-Answer 'W40' 'not produced' $script:ReportArtefact ("a VPN adapter is connected (" + ($vpnNames -join ', ') + ") but this run wrote no JSON report to check it against") }
+        else { Add-Answer 'W40' 'not produced' $script:ReportArtefact ("a VPN adapter is connected (" + ($vpnNames -join ', ') + ") and the report does not name it - an adapter without an address of its own is left out, which is worth the person's eye rather than a captured row") }
+    }
 }
 $conditional = @(
     @{ Row = 'W42'; Missing = 'this machine has Windows PowerShell, and the sheet forbids breaking it to produce the row' }
