@@ -100,6 +100,21 @@ function Answered([string]$Row) { return @($script:Answers | Where-Object { $_.R
 if ($Rows) { $Rows = @($Rows | ForEach-Object { $_ -split '[,;\s]+' } | Where-Object { $_ }) }
 function Owns([string]$Row) { return (-not $Rows) -or ($Rows -contains $Row) }
 
+# The rows this script owns. -Rows is checked against it, because a typo that answers nothing and exits 0 is the
+# silent absence this script exists to prevent.
+# Every row whose evidence is produced by the user run, so that -Rows with any one of them still makes the run.
+$UserRunRows = @('W7', 'W9', 'W9b', 'W10', 'W12', 'W14', 'W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W24',
+    'W25', 'W27', 'W38', 'W39', 'W40', 'W49', 'W51', 'W53', 'W56', 'W57', 'W58', 'W60')
+$OwnedRows = @($UserRunRows + @('W1', 'W2', 'W3', 'W4', 'W5', 'W5b', 'W13', 'W28', 'W29', 'W31', 'W32', 'W33',
+        'W34', 'W36', 'W37', 'W42', 'W43', 'W44', 'W45', 'W46', 'W47', 'W48', 'W50', 'W54', 'W59') | Sort-Object -Unique | Sort-Object { [int]($_ -replace '\D', '') }, { $_ })
+if ($Rows) {
+    $unknown = @($Rows | Where-Object { $OwnedRows -notcontains $_ })
+    if ($unknown.Count) {
+        Write-Output ('ERROR: -Rows names ' + ($unknown -join ', ') + ', which this script does not own. It owns: ' + ($OwnedRows -join ', '))
+        exit 2
+    }
+}
+
 # ------------------------------------------------------------------- capture
 function Save-Screen([string]$Name) {
     # The whole primary screen, so a window is seen with the space around it, as gui_check.ps1 does.
@@ -363,14 +378,19 @@ if (Owns 'W1') {
         [void](Save-Text 'W1-zone-identifier.txt' $(
                 if ($zipZoneW1 -eq 'no mark') { "no Zone.Identifier: this copy carries no Mark of the Web, so Properties shows no Unblock box" }
                 else { $zipZoneW1 + "`r`n`r`n" + (Get-Content -LiteralPath $zipFull -Stream Zone.Identifier -Raw -ErrorAction SilentlyContinue) }))
+        # The property sheet this script opened, told apart from anything already on screen by its handle: an
+        # unrelated dialog would otherwise be photographed as the ZIP's properties and cancelled in its place.
+        $dialogCondition = New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, '#32770')
+        $dialogsBefore = @($AE::RootElement.FindAll($SCOPE::Children, $dialogCondition) | ForEach-Object { [int64]$_.Current.NativeWindowHandle })
         $shell = New-Object -ComObject Shell.Application
         $item = $shell.Namespace((Split-Path -Parent $zipFull)).ParseName((Split-Path -Leaf $zipFull))
         $item.InvokeVerb('Properties')
         Start-Sleep -Seconds 3
         $shot = Save-Screen 'W1-zip-properties.png'
         Add-Answer 'W1' 'captured' (Split-Path -Leaf $shot) ('with W1-zone-identifier.txt; the ZIP carries ' + $zipZoneW1 + ', so ' + $(if ($zipMarkedW1) { 'the Unblock box must be in the picture' } else { 'there must be no Unblock box' }))
-        # The property sheet is modal to Explorer, not to this script: close it before anything else is captured.
-        $props = $AE::RootElement.FindFirst($SCOPE::Children, (New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, '#32770')))
+        # The property sheet is modal to Explorer, not to this script: close the one this script opened, and only it.
+        $props = @($AE::RootElement.FindAll($SCOPE::Children, $dialogCondition) |
+                Where-Object { $dialogsBefore -notcontains [int64]$_.Current.NativeWindowHandle })[0]
         if ($null -ne $props) {
             $cancel = @($props.FindAll($SCOPE::Descendants, (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button))) |
                     Where-Object { $_.Current.AutomationId -eq '2' })[0]
@@ -415,20 +435,19 @@ function Invoke-ToolRun {
     return $result
 }
 
-# Every row whose evidence is produced by the user run, so that -Rows with any one of them still makes the run.
-$UserRunRows = @('W7', 'W9', 'W9b', 'W10', 'W12', 'W14', 'W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W24',
-    'W25', 'W27', 'W38', 'W39', 'W40', 'W49', 'W51', 'W53', 'W56', 'W57', 'W58', 'W60')
 $userRun = $null
 if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
     Write-Output ""
     Write-Output "-- the user entry, the run the sheet's sections 3 to 5 walk"
     $userRun = Invoke-ToolRun -Entry 'User'
+    # A run without a window is not a run without a report: the tool falls back to console mode and writes its three
+    # files anyway, and that fallback is one of the things the sheet's section 6 is about. The window rows are
+    # answered here; the report rows are answered from the report below, window or no window.
     if ($null -eq $userRun.Window) {
-        foreach ($row in @('W7', 'W9', 'W10', 'W12', 'W9b', 'W13', 'W14', 'W25')) { if (Owns $row) { Add-NotProduced $row 'the user entry opened no window on this machine (a console-mode fallback, or the launcher stopped)' } }
+        foreach ($row in @('W7', 'W9', 'W10', 'W12', 'W9b', 'W14', 'W25')) { if (Owns $row) { Add-NotProduced $row 'the user entry opened no window on this machine - a console-mode fallback, or the launcher stopped; what the run wrote is answered from the report' } }
     }
-    else {
-        $win = $userRun.Window
-        if (Owns 'W7') {
+    $win = $userRun.Window
+        if ((Owns 'W7') -and $null -ne $win) {
             $shot = Save-Screen 'W7-window-title.png'
             [void](Save-Text 'W7-window-title.txt' (@(
                         "window name  : " + $win.Current.Name
@@ -439,8 +458,8 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
                     ) -join "`r`n"))
             Add-Answer 'W7' 'captured' (Split-Path -Leaf $shot) ("window '" + $win.Current.Name + "' at " + $userRun.WindowSize + " (recorded, not set)")
         }
-        if (Owns 'W9') { $shot = Save-Screen 'W9-running.png'; Add-Answer 'W9' 'captured' (Split-Path -Leaf $shot) 'the window while the run is going' }
-        if (Owns 'W10') {
+        if ((Owns 'W9') -and $null -ne $win) { $shot = Save-Screen 'W9-running.png'; Add-Answer 'W9' 'captured' (Split-Path -Leaf $shot) 'the window while the run is going' }
+        if ((Owns 'W10') -and $null -ne $win) {
             # The sampling line only exists for the last seconds of the run; look for it rather than guessing a moment.
             $found = $false; $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
             while (-not $found -and (Get-Date) -lt $deadline) {
@@ -454,11 +473,11 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
         $report = $null; $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
         while ($null -eq $report -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2; $report = Get-AnyNewReport $userRun.ReportDir $userRun.LaunchedAt }
         Start-Sleep -Seconds 2
-        if (Owns 'W12') {
+        if ((Owns 'W12') -and $null -ne $win) {
             if ($null -ne $report) { $shot = Save-Screen 'W12-finished.png'; Add-Answer 'W12' 'captured' (Split-Path -Leaf $shot) 'the window when the run has finished' }
             else { Add-NotProduced 'W12' ("no report was written within " + $TimeoutSeconds + " s, so the finished window was never reached") }
         }
-        if (Owns 'W9b') {
+        if ((Owns 'W9b') -and $null -ne $win) {
             # The row is a comparison of the window's log with the report's rows, so the window's text alone does not
             # answer it: without a report there is nothing to compare it against.
             $text = Get-WindowText $win
@@ -526,7 +545,7 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
         else {
             foreach ($row in @('W15', 'W16', 'W17', 'W18', 'W20', 'W21', 'W22', 'W24', 'W27', 'W38', 'W39', 'W49', 'W51', 'W53', 'W57', 'W58', 'W60')) { if (Owns $row) { Add-NotProduced $row 'the user run wrote no report' } }
         }
-        if (Owns 'W14') {
+        if ((Owns 'W14') -and $null -ne $win) {
             # The row is about the second run: a new set of three with its own time in the name, the first set still
             # there. One listing after one run cannot show it, so the button the row names is clicked.
             $again = Find-ByName $win $names.Again
@@ -555,7 +574,7 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
                 else { Add-Answer 'W14' 'captured' 'W14-run-again.txt' ("Run Again added " + $added.Count + " file(s) and left " + $survived + " of " + $before.Count + " untouched") }
             }
         }
-        if (Owns 'W25') {
+        if ((Owns 'W25') -and $null -ne $win) {
             # The row is about the button, not about the path this script can compute: what Open Report Folder opens
             # is the thing to record, so it is clicked and the folder Explorer actually opened is read back.
             $listing = @(Get-ChildItem -LiteralPath $userRun.ReportDir -ErrorAction SilentlyContinue | ForEach-Object { "{0,-60} {1,10}  {2}" -f $_.Name, $_.Length, $_.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss') }) -join "`r`n"
@@ -595,10 +614,11 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
             [void](Save-Text 'W56-report-directory.txt' ("resolved report directory: " + $userRun.ReportDir + "`r`nsynced                   : " + $(if ($sync) { 'YES - inside ' + $sync } else { 'no' }) + "`r`nOneDrive env             : " + $(if ($env:OneDrive) { $env:OneDrive } else { '(not set)' })))
             Add-Answer 'W56' 'captured' 'W56-report-directory.txt' $(if ($sync) { 'the reports of this walk are being copied to the cloud as they are written' } else { 'the report folder is not inside a synced folder on this machine' })
         }
+    if ($null -ne $win) {
         $close = Find-ByName $win $names.Close
         if ($null -ne $close) { Send-Click $close; [void]$userRun.Process.WaitForExit(15000) }
-        if (-not $userRun.Process.HasExited) { $userRun.Process.Kill() }
     }
+    if (-not $userRun.Process.HasExited) { $userRun.Process.Kill() }
 }
 
 # --------------------------------------------------- the IT entry
@@ -737,12 +757,16 @@ if ((Owns 'W28') -or (Owns 'W29')) {
         $out = Join-Path $script:Bundle 'W28-launcher-window.txt'
         $launcher = Join-Path $PackageDir 'Start-NetworkCheck.cmd'
         $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList @('/c', ('"' + $launcher + '"')) -WorkingDirectory $PackageDir -RedirectStandardOutput $out -RedirectStandardInput (New-EmptyStdin) -NoNewWindow -PassThru -Wait
-        if (Owns 'W28') { Add-Answer 'W28' 'captured' 'W28-launcher-window.txt' ('what the black window said, exit code ' + $p.ExitCode) }
+        # The file is the evidence of both rows - W28 names it appearing, W29 reads its fields - and the finally below
+        # deletes the original, so it is copied whenever either row is owned.
+        $errCopied = $false
+        if (Test-Path -LiteralPath $errFile) { [void](Copy-Into $errFile 'W29-LauncherError.txt'); $errCopied = $true }
+        if (Owns 'W28') {
+            if ($errCopied) { Add-Answer 'W28' 'captured' 'W28-launcher-window.txt, W29-LauncherError.txt' ('what the black window said (exit code ' + $p.ExitCode + '), and the error report it named') }
+            else { Add-Answer 'W28' 'not produced' 'W28-launcher-window.txt' ('the window''s text is here (exit code ' + $p.ExitCode + '), but no LauncherError.txt appeared beside the launcher, which is half of what the row asks for') }
+        }
         if (Owns 'W29') {
-            if (Test-Path -LiteralPath $errFile) {
-                [void](Copy-Into $errFile 'W29-LauncherError.txt')
-                Add-Answer 'W29' 'captured' 'W29-LauncherError.txt' 'the file as the launcher wrote it, fields and all, for reading against section 6''s description'
-            }
+            if ($errCopied) { Add-Answer 'W29' 'captured' 'W29-LauncherError.txt' 'the file as the launcher wrote it, fields and all, for reading against section 6''s description' }
             else { Add-NotProduced 'W29' 'the launcher wrote no LauncherError.txt beside itself on this machine' }
         }
     }
@@ -864,9 +888,7 @@ foreach ($c in $conditional) {
     Add-NotProduced $c.Row $c.Missing
 }
 # The invariant this script is written around: every row it owns leaves with an answer.
-$owedRows = @($UserRunRows + @('W1', 'W2', 'W3', 'W4', 'W5', 'W5b', 'W13', 'W28', 'W29', 'W31', 'W32', 'W33', 'W34',
-        'W36', 'W37', 'W40', 'W42', 'W43', 'W44', 'W45', 'W46', 'W47', 'W48', 'W50', 'W54', 'W59') | Sort-Object -Unique)
-foreach ($row in $owedRows) {
+foreach ($row in $OwnedRows) {
     if ((Owns $row) -and -not (Answered $row)) { Add-NotProduced $row 'this run reached no branch that answers the row - a defect in walk_capture.ps1, not a fact about the machine' }
 }
 
