@@ -35,6 +35,7 @@ It is in the repository and not in the package, like [`application-control.md`](
 | 43 | The tool does not say when the reports are being written into a synced folder | tool |
 | 44 | The launcher's own timestamp cannot be read without knowing the machine's regional format | tool |
 | 45 | The IT panel checks a typed target only after the run has started | tool |
+| 46 | The window names where the report is and never which file to send | tool |
 
 The table is an index; each item's own paragraph below is the statement.
 
@@ -155,6 +156,18 @@ The panel's three numeric fields cannot be given an invalid value at all: **Ping
 This reduces how often [#39](#39--a-measurement-that-could-not-be-taken-outranks-a-measurement-that-failed) is reached; it does not replace it. Somebody who chooses *run without it* still ends with a verdict that answers a question about their typing.
 
 Acceptance: an invalid value in any of the four free-text fields is named when Start is pressed, with the field marked and both choices offered; choosing to run leaves today's behaviour and today's report unchanged; the three numeric fields are untouched; the validation and the run share one parser, proved by a test in which changing the rule moves both; the `gui` and `gui-headless` steps cover the invalid-field path in both languages; the IT deployment manual's panel paragraph describes the check. — *raised by the owner during the user-manual walk, 2026-09-08, after that walk's own extra TCP target was dropped for the want of a port number.*
+
+### 46 — The window names where the report is and never which file to send
+
+The tool's own reading of the fault — *What to tell IT*, a title and two to four lines whose last one always names the file to send and what it contains — is produced by `Get-FingerprintSummary` and written by the HTML, the TXT and the JSON writers, and by nothing else. The window sets one line, `Report: <path>` (`NetworkHealthCheck.ps1:3422`); the console prints the verdict and the three paths. **The most useful sentence the tool produces lives only inside a file the person may never open**, and the screen they are looking at names a location without naming an action.
+
+Measured by the walk on 2026-09-08, from the walker asked whether they knew what to send and where to find it: *where* was answered immediately — “**Open Report Folder** 就在按鈕上，而且有按鈕可以直接打開報告” — by the buttons, not by the manual, which is a compliment to the window and a fact about section 5. *Which* was not answered at all: three files sit in that folder for every run.
+
+**And the right answer differs by outcome**, which is what makes it belong on the screen rather than only in a document. A normal run: the HTML. Some formats unwritten: whichever one was written, which the window already says in a message box. All three unwritten: `NetworkHealthCheck_FATAL_<time>.txt`. The script refused before any check ran: `NetworkHealthCheck_ENVIRONMENT_<time>.txt`. The launcher stopped first: `LauncherError.txt`. Every one of those is documented in the user manual's section 6 and none of them is on the screen at the moment it applies — which is the owner's requirement in one sentence: *不論成功或是失敗的要可以拿到報告*.
+
+It is the same family as #39 and #43: the thing the tool knows, at the moment it knows it, is not where the person is looking.
+
+Acceptance: in every terminating case the window and the console name the file to send in one line beside the path — the report on a normal run, the format that survived when others did not, the FATAL file, the environment report, the launcher's error file; where a summary exists the wording **is** its last line rather than a copy of it, so the two cannot drift; the user manual's sections 5 and 6 describe that line; the GUI and unit tests cover the normal case and at least the all-formats-failed and refused-to-start cases. — *raised by the owner during the user-manual walk, 2026-09-08, answering whether the manual had made the hand-off obvious.*
 
 ## Closed items
 
