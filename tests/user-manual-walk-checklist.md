@@ -51,7 +51,7 @@ That checks the digest, extracts, verifies the package against its own `SHA256SU
 | W6 | Watch what opens first | A black text window opens first and stays in the background | | |
 | W7 | Read the window's title bar | **Network Health Check Tool 1.2.4** — the version in the title is this release's | | screenshot |
 | W8 | Time the start | The window **starts by itself within a second** — no button is pressed | | |
-| W9 | While it runs, read the four things the manual's table names | **Result: Test in progress**; the line above the progress bar names the step; **Start Test** greyed out; **Open Report**, **Open Report Folder**, **Open JSON** switched off; **Close** does nothing | | screenshot |
+| W9 | While it runs, read the four things the manual's table names | **Result: Test in progress**; the line above the progress bar names the step; **the log shows one line per step and per finding, in the order they happen**; **Start Test** greyed out; **Open Report**, **Open Report Folder**, **Open JSON** switched off; **Close** does nothing | | screenshot |
 | W10 | Watch the last few seconds | The line reads *Sampling TCP retransmissions, approximately N second(s) remaining* and the number falls | | screenshot |
 | W11 | Time the whole run on a working network | "About ten seconds… with the settings as shipped" — write the measured time | | |
 | W12 | When it finishes, read four places | The line reads **Test Complete**; the Result line shows the verdict in colour; the last log line reads *Report generated: …*; the same path appears under the buttons as *Report: …*; **Start Test** now reads **Run Again** | | screenshot |
@@ -73,7 +73,7 @@ That checks the digest, extracts, verifies the package against its own `SHA256SU
 | W21 | Scroll to **IT diagnostics** | Collapsed at the bottom; Wi-Fi radio, routes, gateway hardware address, proxy, traceroute first hops, drivers; none of these rows changed the verdict | | the report |
 | W22 | Add up the six counters under the verdict | Pass + Warning + Fail + Unable to Check + Information = **Total**, and Total is the number of rows in Test Results | | the numbers |
 | W23 | Click **Open JSON** | The JSON file opens in Notepad | | |
-| W24 | Open the TXT file beside the HTML | It carries the same findings | | |
+| W24 | Open **both** the TXT and the JSON beside the HTML and compare them with the report | "The **TXT** and **JSON** files written beside the HTML carry the same findings" — every row of Test Results is in each of the three, with the same result; a finding present in one and missing from another is the defect this row looks for | | the three files |
 
 ---
 
@@ -94,7 +94,7 @@ Produce at least the first row; the rest are recorded as *produced* or *not prod
 | # | Do this | Expected — the manual's words | Observed | Evidence |
 |---|---|---|---|---|
 | W28 | Rename `en-US\NetworkHealthCheck.ps1` to `NetworkHealthCheck.ps1.bak`, double-click `en-US\Start-NetworkCheck.cmd`, then rename it back | The window says **ERROR: The program file NetworkHealthCheck.ps1 is missing**; `LauncherError.txt` appears beside the launcher with the time, the computer, the user, the reason, and a **Suggested action** line that fits the reason (extract the complete ZIP) | | the file |
-| W29 | Open the `LauncherError.txt` from W28 as the manual tells the person to | The person can tell from that file alone what to do and what to send | | the file |
+| W29 | Open the `LauncherError.txt` from W28 and read it against the manual's description of it | The file holds what the manual says it holds: the time, the computer, the user, the reason, the folder and the program's path (it was written beside the launcher), and a **Suggested action** line that fits the reason. The file does **not** say which file to send — that instruction is the manual's, in the same section-6 row — so check the two separately: the action from the file, the send from the manual | | the file |
 | W30 | (Optional) If a console-mode fallback can be produced | The manual sends the person to the `Reports` folder and to `Start-NetworkCheck-Console.cmd` for a run whose text should stay on screen — **known: backlog #34** | | |
 | W31 | Run `en-US\Start-NetworkCheck-Console.cmd` | Text-mode run, reports written, the window pauses at the end with the report paths above it | | the window's text |
 
@@ -126,7 +126,7 @@ Produce at least the first row; the rest are recorded as *produced* or *not prod
 |---|---|---|---|---|
 | W38 | Read *Which addresses does it contact?* against the report's rows | The gateway, `1.1.1.1` (ping, port 443, the first three hops of the traceroute) and `https://www.microsoft.com/` (one page request, following any redirect), plus the name lookup for `www.microsoft.com` — and the report's rows name the targets that were actually configured | | the report |
 | W39 | Read *Do I need to be an administrator?* against this run | The run was made without elevation, and anything that needed more rights is an *Unable to Check* row, with the check continuing | | the report |
-| W40 | (If a VPN is available) Connect it and run again | Both the physical and the VPN adapter appear; the VPN one is marked *Virtual* and listed as information | | the report |
+| W40 | (If a VPN is available) Connect it and run again | Both the physical and the VPN adapter appear, and the VPN one is **normally** marked *Virtual* and listed as information — record how this VPN's adapter was actually classified. The classification is a heuristic (`Test-IsVirtualAdapter` reads the virtual flag, else the hardware flag, else the description), so a VPN adapter that reports itself as hardware can appear as Physical, which is what the manual's "normally" allows; only a classification the manual does not allow is a finding. A disconnected VPN adapter, or one with no address, does not appear at all | | the report |
 | W41 | Delete an old report | It deletes like an ordinary file | | |
 
 ---
