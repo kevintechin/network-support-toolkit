@@ -1,4 +1,4 @@
-﻿# Network Health Check 1.2.5 — User Manual
+﻿# Network Health Check 1.2.6 — User Manual
 
 **For the person who runs the check.** One double-click, a window that runs by itself, and a report you send to IT.
 
@@ -34,7 +34,7 @@ Network Health Check looks at the network from this computer's point of view and
 1. Open the extracted folder and double-click **`Start-English.cmd`**. The ZIP carries a folder of its own, so the folder Windows extracted often holds a single thing — another folder of the same name; open that one and the launcher is inside. Neither the extra level nor the folder's name matters, as long as the whole tree stays together. (Opening the `en-US` folder and double-clicking `Start-NetworkCheck.cmd` does the same thing.)
 2. If Windows shows **Open File - Security Warning**, choose **Run**. That is the download mark from step 2 above; the tool is the same either way. The same dialog says *The publisher could not be verified* and gives the publisher as **Unknown Publisher**: that is expected — this tool is not digitally signed. What IT has instead of a signature is a digest: they compare the SHA-256 of the ZIP they received with the one published with the release (the IT deployment manual, section 6). The `SHA256SUMS.txt` inside the package is a different check: it shows that the files in the package match each other, not where the package came from. If IT sent you the ZIP, **Run** is the answer; if you are not sure where the file came from, ask before you run it. Leaving **Always ask before opening this file** ticked costs one click per run; clearing it removes Windows' mark from that one file for good, which is what unblocking in section 2 does for the whole ZIP.
 3. A black text window opens first and stays in the background until the check finishes. Leave it alone.
-4. The window **Network Health Check Tool 1.2.5** opens and **starts by itself** within a second. You will see:
+4. The window **Network Health Check Tool 1.2.6** opens and **starts by itself** within a second. You will see:
 
    | On screen | What it means |
    |---|---|
@@ -153,6 +153,8 @@ A Startup Notice row is a warning, so on its own it turns the verdict to **Atten
 
 `Start-NetworkCheck-IT.cmd` in the `en-US` folder opens the same tool with a **Run options (IT)** panel at the top, and it does **not** start by itself — the line above the progress bar reads *Ready - adjust the options, then select Start Test*. IT may ask you to type an address into **Extra ping**, a host and port into **Extra TCP (host:port)**, a name into **Extra DNS** or a web address into **Extra URL**, perhaps to change **Ping count** or **Sample seconds**, and then to click **Start Test**. When you open the report afterwards, every detail is already expanded. Whatever is typed there applies to that run only; it never changes the configuration file. **Reset to config** puts the panel back to the configured values.
 
+**The label on that field is cut short.** *Extra TCP (host:port)* is wider than the space the panel gives it, so its second line is clipped and the format cannot be read on the screen: type the host and the port together, like `8.8.8.8:443`. A value typed without a port is ignored - the report says so, and the result becomes *Attention Required* even when every check passed.
+
 ---
 
 ## 8 · The files in the package
@@ -203,4 +205,4 @@ A Startup Notice row is a warning, so on its own it turns the verdict to **Atten
 
 ---
 
-*NetworkHealthCheck 1.2.5. This manual describes the tool as shipped; what your IT department changed in the configuration file — targets, thresholds, the report folder — shows up in the report's rows and in its Computer and Run Information section.*
+*NetworkHealthCheck 1.2.6. This manual describes the tool as shipped; what your IT department changed in the configuration file — targets, thresholds, the report folder — shows up in the report's rows and in its Computer and Run Information section.*

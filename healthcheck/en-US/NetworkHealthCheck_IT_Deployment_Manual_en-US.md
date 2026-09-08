@@ -1,4 +1,4 @@
-﻿# Network Health Check 1.2.5 — IT Deployment Manual
+﻿# Network Health Check 1.2.6 — IT Deployment Manual
 
 **For the IT department that hands the tool out.** What the package needs, how to configure it for your site, how to deploy it, what security policy does to it, how to verify what you received, and what to do with the reports that come back.
 
@@ -209,6 +209,8 @@ Run options change one run and never the file. They come from two places.
 
 **The IT panel.** `Start-NetworkCheck-IT.cmd` opens the window with **Run options (IT)** at the top and waits: *Ready - adjust the options, then select Start Test.* The fields are **Extra ping**, **Extra DNS**, **Extra TCP (host:port)**, **Extra URL**, **Ping count** and **Sample seconds**; the boxes **Wi-Fi RF**, **Traceroute** with **Traceroute hops**, **Routes**, **Gateway ARP**, **Proxy** and **Drivers** switch the optional checks for this run; **Expand details in HTML** is ticked; **Reset to config** puts every field back to the file's values. The spinners cover 1–20 pings and 1–120 seconds; a configured value above those limits widens the range so the file's value is what an untouched Start runs with.
 
+**The extra-TCP label does not fit its box.** The panel's label is *Extra TCP (host:port)* - 134 px of text in the 100 px box the panel gives it, 153 px in the Traditional Chinese package - so it wraps and its second line is clipped, and the person in front of the screen cannot read the format. Tell them the value rather than the notation: `8.8.8.8:443`. What a value without a port costs is under *What an extra target counts for* below; the panel itself is backlog #49 on the repository's backlog page, section 10.
+
 **The switches.** Most of the panel's options as parameters of the script, for a console run or a scripted one — the extra targets, the counts, and the Wi-Fi and traceroute boxes; the panel's other four boxes (Routes, Gateway ARP, Proxy, Drivers) have no switch, so for a console run they are turned off in a configuration file passed with `-ConfigPath`:
 
 ```text
@@ -261,10 +263,10 @@ Whichever way it arrives, the person must extract the whole ZIP: a launcher doub
 **The download.** The release notes on the project's Releases page give the SHA-256 of `NetworkHealthCheck-<version>.zip`. Compare before extracting:
 
 ```text
-certutil -hashfile NetworkHealthCheck-1.2.5.zip SHA256
+certutil -hashfile NetworkHealthCheck-1.2.6.zip SHA256
 ```
 
-or in PowerShell `Get-FileHash NetworkHealthCheck-1.2.5.zip`. The asset is built from the repository's tracked files only, so it contains no report and no other output of a run.
+or in PowerShell `Get-FileHash NetworkHealthCheck-1.2.6.zip`. The asset is built from the repository's tracked files only, so it contains no report and no other output of a run.
 
 **The manifest.** `SHA256SUMS.txt` at the package root lists the digest of every shipped file except itself, `VALIDATION.md` and `validation-matrix.html` — one line per file, `<sha256>  <relative path>` with two spaces. Check one file by hand with `Get-FileHash <file>`, or all of them with the validator.
 
@@ -308,7 +310,7 @@ The launchers set the execution policy for their own process (`-ExecutionPolicy 
 
 **What to ask the person for** is in the user manual's section 6, row by row; the environment report and `LauncherError.txt` are written for exactly this hand-off. `LauncherError.txt` sits beside the launcher, or — when that folder cannot be written — in `%TEMP%` as `NetworkHealthCheck_LauncherError.txt` with fewer fields.
 
-**Allowing the tool.** The two scripts are unsigned, so a policy that allows by publisher has nothing to match; what an IT department has today is the hash: `SHA256SUMS.txt` gives the digest of each `NetworkHealthCheck.ps1`, and a WDAC or AppLocker rule can allow that hash. A new version means a new hash. Which Windows builds and editions enforce AppLocker, and what has and has not been observed, changes faster than this package: the repository keeps a page on it, at the version this manual belongs to — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.5/docs/application-control.md> — and its current version on the `main` branch.
+**Allowing the tool.** The two scripts are unsigned, so a policy that allows by publisher has nothing to match; what an IT department has today is the hash: `SHA256SUMS.txt` gives the digest of each `NetworkHealthCheck.ps1`, and a WDAC or AppLocker rule can allow that hash. A new version means a new hash. Which Windows builds and editions enforce AppLocker, and what has and has not been observed, changes faster than this package: the repository keeps a page on it, at the version this manual belongs to — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.6/docs/application-control.md> — and its current version on the `main` branch.
 
 **Signing.** An Authenticode signature from your own certificate authority satisfies an *AllSigned* policy when the signing certificate is also trusted on the machine — its chain trusted, and the certificate in the Trusted Publishers store: for a publisher not yet classified as trusted, PowerShell asks the person before running the script (the launcher's window shows the question), and a session that cannot ask does not run it. A signature also lets an application-control rule allow by publisher. Signing appends a signature block to the script, so the signed file no longer matches `SHA256SUMS.txt`; record the signed files' digests yourself.
 
@@ -339,9 +341,9 @@ The launchers set the execution policy for their own process (`-ExecutionPolicy 
 - **User manual** — `NetworkHealthCheck_User_Manual_en-US.html` (or `.md`): what the person sees, the verdicts and badges, what the report contains, what to do when it does not run.
 - **Technical guide** — `NetworkHealthCheck_Technical_Guide_en-US.md`: design, every decision rule, the validation approach, known limitations, the version history.
 - **Validation record** — `VALIDATION.md`: every release's evidence and the acceptance runs on other machines.
-- **Backlog** — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.5/docs/backlog.md>: what is known and not yet done, and what would close each item. It is in the repository rather than in the package, like the application-control page of section 8, because it changes between releases.
+- **Backlog** — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.6/docs/backlog.md>: what is known and not yet done, and what would close each item. It is in the repository rather than in the package, like the application-control page of section 8, because it changes between releases.
 - **The repository** — <https://github.com/kevintechin/network-support-toolkit>: releases, the validation chain (`tests`), the support engineer's field manual and report template (`sop`), and the application-control page named in section 8.
 
 ---
 
-*NetworkHealthCheck 1.2.5. This manual describes the tool as shipped and the behaviour measured for this release; the rules quoted here are the code's, and the technical guide states them in full.*
+*NetworkHealthCheck 1.2.6. This manual describes the tool as shipped and the behaviour measured for this release; the rules quoted here are the code's, and the technical guide states them in full.*

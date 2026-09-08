@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>網路健檢工具 1.2.5 — 使用手冊</title>
+<title>網路健檢工具 1.2.6 — 使用手冊</title>
 <style>
   :root{
     --ink:#16233b; --muted:#5b6b85; --line:#d8e0ec; --bg:#f4f7fb; --card:#ffffff;
@@ -94,7 +94,7 @@
 <div class="page">
 
 <header>
-  <h1>網路健檢工具 <span class="ver">1.2.5</span></h1>
+  <h1>網路健檢工具 <span class="ver">1.2.6</span></h1>
   <div class="tag">使用手冊 — 寫給執行檢測的人</div>
   <div class="meta">繁體中文套件（<code>zh-TW</code> 資料夾）· <code>en-US</code> 資料夾是英文套件，附英文版手冊 · IT 人員：部署手冊就在旁邊（<code>NetworkHealthCheck_IT_Deployment_Manual_zh-TW.html</code>），設計與判定規則在技術文件</div>
   <div class="principle">
@@ -144,9 +144,9 @@
   <div class="card">
     <ol class="steps">
       <li>打開解壓縮出來的資料夾，按兩下 <b><code>Start-Traditional-Chinese.cmd</code></b>。ZIP 裡面本來就帶一層資料夾，所以解壓縮出來的資料夾裡常常只有一樣東西：另一個同名的資料夾；進去，啟動器就在裡面。多一層、資料夾叫什麼名字，都沒有關係，只要整棵樹保持在一起。（進入 <code>zh-TW</code> 資料夾按兩下 <code>Start-NetworkCheck.cmd</code> 也是同一件事。）</li>
-      <li>若 Windows 顯示 <b>開啟檔案 - 安全性警告</b>，選 <kbd>執行</kbd>。那是第 2 節說的下載標記，工具本身沒有差別。同一個對話框還會說無法確認發行者，發行者寫著「不明的發行者」：那是實情，這支工具沒有數位簽章。IT 手上代替簽章的是雜湊值：他們拿收到的 ZIP 的 SHA-256 和發行說明公布的那一個比對（IT 部署手冊第 6 節）。套件裡的 <code>SHA256SUMS.txt</code> 是另一種檢查：它證明套件裡的檔案彼此相符，證明不了套件是從哪裡來的。ZIP 是 IT 給你的，就選 <kbd>執行</kbd>；不確定檔案從哪裡來，先問過再執行。<b>開啟這個檔案前一定要先詢問</b> 保持勾選，代價是每次執行多按一下；取消勾選是把 Windows 對這一個檔案的標記永久移除，也就是第 2 節對整個 ZIP 做的解除封鎖，一次一個檔案。</li>
+      <li>若 Windows 顯示 <b>開啟檔案 - 安全性警告</b>，選 <kbd>執行</kbd>。那是第 2 節說的下載標記，工具本身沒有差別。同一個對話框還會說無法確認發行者，發行者那一行寫著「發行者不明」：那是實情，這支工具沒有數位簽章。IT 手上代替簽章的是雜湊值：他們拿收到的 ZIP 的 SHA-256 和發行說明公布的那一個比對（IT 部署手冊第 6 節）。套件裡的 <code>SHA256SUMS.txt</code> 是另一種檢查：它證明套件裡的檔案彼此相符，證明不了套件是從哪裡來的。ZIP 是 IT 給你的，就選 <kbd>執行</kbd>；不確定檔案從哪裡來，先問過再執行。<b>開啟這個檔案前一定要先詢問</b> 保持勾選，代價是每次執行多按一下；取消勾選是把 Windows 對這一個檔案的標記永久移除，也就是第 2 節對整個 ZIP 做的解除封鎖，一次一個檔案。</li>
       <li>先出現一個黑色文字視窗，檢測結束前它會一直留在背景。不用理它。</li>
-      <li>接著 <b>網路健檢工具 1.2.5</b> 視窗打開，一秒內<b>自己開始</b>。你會看到：
+      <li>接著 <b>網路健檢工具 1.2.6</b> 視窗打開，一秒內<b>自己開始</b>。你會看到：
         <table>
           <tr><th>畫面上</th><th>意思</th></tr>
           <tr><td>結果：檢測進行中</td><td>正在檢測</td></tr>
@@ -232,7 +232,7 @@ NetworkHealthCheck_&lt;日期&gt;_&lt;時間&gt;_&lt;電腦名稱&gt;.json</pre>
   <div class="card">
     <table class="plainfirst">
       <tr><th>你看到的</th><th>意思</th><th>怎麼做</th></tr>
-      <tr><td>按兩下啟動器時出現 <b>開啟檔案 - 安全性警告</b></td><td>檔案帶著 Windows 對網際網路下載檔的標記。對話框說無法確認發行者、發行者是「不明的發行者」，這是預期中的事：工具沒有數位簽章，IT 手上的是 ZIP 的 SHA-256，拿去和發行說明公布的那一個比對</td><td>檔案是 IT 給你的就選 <kbd>執行</kbd>；不確定它從哪裡來，先問過 IT。不想再被問，就在解壓縮前先解除封鎖 ZIP（第 2 節）</td></tr>
+      <tr><td>按兩下啟動器時出現 <b>開啟檔案 - 安全性警告</b></td><td>檔案帶著 Windows 對網際網路下載檔的標記。對話框說無法確認發行者、發行者那一行寫著「發行者不明」，這是預期中的事：工具沒有數位簽章，IT 手上的是 ZIP 的 SHA-256，拿去和發行說明公布的那一個比對</td><td>檔案是 IT 給你的就選 <kbd>執行</kbd>；不確定它從哪裡來，先問過 IT。不想再被問，就在解壓縮前先解除封鎖 ZIP（第 2 節）</td></tr>
       <tr><td>黑色視窗顯示 <b>錯誤：找不到 zh-TW 繁體中文套件</b>，並停下來等你按鍵</td><td><code>Start-Traditional-Chinese.cmd</code> 在旁邊找不到 <code>zh-TW</code> 資料夾，通常是在 ZIP 視窗裡按了兩下，Windows 只解出你按的那一個檔案</td><td>把整個 ZIP 解壓縮到資料夾，從那裡執行啟動器</td></tr>
       <tr><td>黑色視窗顯示 <b>錯誤：找不到程式檔 NetworkHealthCheck.ps1</b>，並列出錯誤報告 <code>LauncherError.txt</code></td><td>只有一個檔案被解出來：在 ZIP 視窗裡對 <code>Start-NetworkCheck.cmd</code> 按了兩下，或者只複製了單一檔案</td><td>把整個 ZIP 解壓縮到資料夾，從那裡執行啟動器</td></tr>
       <tr><td>黑色視窗顯示 <b>錯誤：此電腦找不到 PowerShell</b></td><td>程式需要 Windows PowerShell，它是 Windows 的一部分</td><td>請 IT 檢查這台電腦，或改在另一台電腦執行檢測</td></tr>
@@ -256,6 +256,7 @@ NetworkHealthCheck_&lt;日期&gt;_&lt;時間&gt;_&lt;電腦名稱&gt;.json</pre>
   <h2><span class="num">7</span> IT 請你用 IT 入口的時候</h2>
   <div class="card">
     <p><code>zh-TW</code> 資料夾裡的 <code>Start-NetworkCheck-IT.cmd</code> 開的是同一支工具，上方多了一個 <b>執行選項（IT）</b> 面板，而且<b>不會</b>自己開始：進度列上方那一行寫著 <i>就緒，調整選項後按「開始檢測」</i>。IT 可能請你在 <b>額外 Ping</b> 填一個位址、在 <b>額外 TCP（host:port）</b> 填主機和連接埠、在 <b>額外 DNS</b> 填名稱、在 <b>額外 URL</b> 填網址，或改一下 <b>Ping 次數</b>、<b>取樣秒數</b>，然後按 <kbd>開始檢測</kbd>。之後打開報告時，每個項目的詳細資料都已經展開。這裡填的東西只對那一次執行有效，永遠不會改到設定檔。<kbd>還原設定檔</kbd> 會把面板放回設定檔的值。</p>
+    <p style="margin-top:.8rem"><b>那個欄位的標籤會被切掉。</b>「額外 TCP（host:port）」比面板給它的空間寬，第二行被裁掉，格式在螢幕上讀不到：主機和連接埠要一起打，像 <code>8.8.8.8:443</code>。少了連接埠的值會被忽略 — 報告裡會寫，整體結果也會變成「需要注意」，即使每一項檢查都通過。</p>
   </div>
 </section>
 
@@ -300,7 +301,7 @@ NetworkHealthCheck_&lt;日期&gt;_&lt;時間&gt;_&lt;電腦名稱&gt;.json</pre>
   </div>
 </section>
 
-<footer>NetworkHealthCheck 1.2.5。本手冊描述的是出廠狀態的工具；IT 在設定檔改過的東西（目標、門檻、報告資料夾）會反映在報告的各列和「電腦與執行資訊」一節。</footer>
+<footer>NetworkHealthCheck 1.2.6。本手冊描述的是出廠狀態的工具；IT 在設定檔改過的東西（目標、門檻、報告資料夾）會反映在報告的各列和「電腦與執行資訊」一節。</footer>
 
 </div>
 </body>

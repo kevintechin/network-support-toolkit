@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Network Health Check 1.2.5 — User Manual</title>
+<title>Network Health Check 1.2.6 — User Manual</title>
 <style>
   :root{
     --ink:#16233b; --muted:#5b6b85; --line:#d8e0ec; --bg:#f4f7fb; --card:#ffffff;
@@ -94,7 +94,7 @@
 <div class="page">
 
 <header>
-  <h1>Network Health Check <span class="ver">1.2.5</span></h1>
+  <h1>Network Health Check <span class="ver">1.2.6</span></h1>
   <div class="tag">User Manual — for the person who runs the check</div>
   <div class="meta">English package (the <code>en-US</code> folder) · the <code>zh-TW</code> folder holds the Traditional Chinese package with its own copy of this manual · IT staff: the IT deployment manual is beside this file (<code>NetworkHealthCheck_IT_Deployment_Manual_en-US.html</code>), the design and decision rules in the technical guide</div>
   <div class="principle">
@@ -146,7 +146,7 @@
       <li>Open the extracted folder and double-click <b><code>Start-English.cmd</code></b>. The ZIP carries a folder of its own, so the folder Windows extracted often holds a single thing — another folder of the same name; open that one and the launcher is inside. Neither the extra level nor the folder's name matters, as long as the whole tree stays together. (Opening the <code>en-US</code> folder and double-clicking <code>Start-NetworkCheck.cmd</code> does the same thing.)</li>
       <li>If Windows shows <b>Open File - Security Warning</b>, choose <kbd>Run</kbd>. That is the download mark from section 2; the tool is the same either way. The same dialog says <i>The publisher could not be verified</i> and gives the publisher as <b>Unknown Publisher</b>: that is expected — this tool is not digitally signed. What IT has instead of a signature is a digest: they compare the SHA-256 of the ZIP they received with the one published with the release (the IT deployment manual, section 6). The <code>SHA256SUMS.txt</code> inside the package is a different check: it shows that the files in the package match each other, not where the package came from. If IT sent you the ZIP, <kbd>Run</kbd> is the answer; if you are not sure where the file came from, ask before you run it. Leaving <b>Always ask before opening this file</b> ticked costs one click per run; clearing it removes Windows' mark from that one file for good, which is what unblocking in section 2 does for the whole ZIP.</li>
       <li>A black text window opens first and stays in the background until the check finishes. Leave it alone.</li>
-      <li>The window <b>Network Health Check Tool 1.2.5</b> opens and <b>starts by itself</b> within a second. You will see:
+      <li>The window <b>Network Health Check Tool 1.2.6</b> opens and <b>starts by itself</b> within a second. You will see:
         <table>
           <tr><th>On screen</th><th>What it means</th></tr>
           <tr><td>Result: Test in progress</td><td>The check is running</td></tr>
@@ -256,6 +256,7 @@ NetworkHealthCheck_&lt;date&gt;_&lt;time&gt;_&lt;COMPUTERNAME&gt;.json</pre>
   <h2><span class="num">7</span> When IT asks you to use the IT entry</h2>
   <div class="card">
     <p><code>Start-NetworkCheck-IT.cmd</code> in the <code>en-US</code> folder opens the same tool with a <b>Run options (IT)</b> panel at the top, and it does <b>not</b> start by itself — the line above the progress bar reads <i>Ready - adjust the options, then select Start Test</i>. IT may ask you to type an address into <b>Extra ping</b>, a host and port into <b>Extra TCP (host:port)</b>, a name into <b>Extra DNS</b> or a web address into <b>Extra URL</b>, perhaps to change <b>Ping count</b> or <b>Sample seconds</b>, and then to click <kbd>Start Test</kbd>. When you open the report afterwards, every detail is already expanded. Whatever is typed there applies to that run only; it never changes the configuration file. <kbd>Reset to config</kbd> puts the panel back to the configured values.</p>
+    <p style="margin-top:.8rem"><b>The label on that field is cut short.</b> <i>Extra TCP (host:port)</i> is wider than the space the panel gives it, so its second line is clipped and the format cannot be read on the screen: type the host and the port together, like <code>8.8.8.8:443</code>. A value typed without a port is ignored - the report says so, and the result becomes <i>Attention Required</i> even when every check passed.</p>
   </div>
 </section>
 
@@ -300,7 +301,7 @@ NetworkHealthCheck_&lt;date&gt;_&lt;time&gt;_&lt;COMPUTERNAME&gt;.json</pre>
   </div>
 </section>
 
-<footer>NetworkHealthCheck 1.2.5. This manual describes the tool as shipped; what your IT department changed in the configuration file — targets, thresholds, the report folder — shows up in the report's rows and in its Computer and Run Information section.</footer>
+<footer>NetworkHealthCheck 1.2.6. This manual describes the tool as shipped; what your IT department changed in the configuration file — targets, thresholds, the report folder — shows up in the report's rows and in its Computer and Run Information section.</footer>
 
 </div>
 </body>
