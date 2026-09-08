@@ -290,7 +290,7 @@ function Get-AnyNewReport([string]$ReportDir, [datetime]$Since) {
     # and are not report formats: taking one as the run's report would turn a total failure into a "1 of 3 written"
     # partial and answer W49 with it while leaving W48 unproduced.
     @(Get-ChildItem -LiteralPath $ReportDir -ErrorAction SilentlyContinue |
-            Where-Object { $_.Extension -in @('.html', '.txt', '.json') -and $_.Name -like 'NetworkHealthCheck_*' -and $_.Name -notmatch 'FATAL|ENVIRONMENT' -and $_.LastWriteTime -gt $Since } |
+            Where-Object { $_.Extension -in @('.html', '.txt', '.json') -and $_.Name -like 'NetworkHealthCheck_*' -and $_.Name -notmatch '^NetworkHealthCheck_(FATAL|ENVIRONMENT)_' -and $_.LastWriteTime -gt $Since } |
             Sort-Object LastWriteTime -Descending)[0]
 }
 function Get-NewEmergencyFile([string]$ReportDir, [datetime]$Since) {
@@ -303,8 +303,8 @@ $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $lang = Split-Path -Leaf $PackageDir
 if ($lang -notin @('en-US', 'zh-TW')) { Write-Output "ERROR: -PackageDir must be an en-US or zh-TW folder; got '$lang'"; exit 2 }
 $script:ToolNames = @{
-    'en-US' = @{ Start = 'Start Test'; Close = 'Close'; Reset = 'Reset to config'; Again = 'Run Again'; Folder = 'Open Report Folder' }
-    'zh-TW' = @{ Start = [string][char]0x958B + [char]0x59CB + [char]0x6AA2 + [char]0x6E2C; Close = [string][char]0x95DC + [char]0x9589; Reset = [string][char]0x9084 + [char]0x539F + [char]0x8A2D + [char]0x5B9A + [char]0x6A94; Again = [string][char]0x91CD + [char]0x65B0 + [char]0x6AA2 + [char]0x6E2C; Folder = [string][char]0x958B + [char]0x555F + [char]0x5831 + [char]0x544A + [char]0x8CC7 + [char]0x6599 + [char]0x593E }
+    'en-US' = @{ Start = 'Start Test'; Close = 'Close'; Reset = 'Reset to config'; Again = 'Run Again'; Folder = 'Open Report Folder'; Report = 'Open Report' }
+    'zh-TW' = @{ Start = [string][char]0x958B + [char]0x59CB + [char]0x6AA2 + [char]0x6E2C; Close = [string][char]0x95DC + [char]0x9589; Reset = [string][char]0x9084 + [char]0x539F + [char]0x8A2D + [char]0x5B9A + [char]0x6A94; Again = [string][char]0x91CD + [char]0x65B0 + [char]0x6AA2 + [char]0x6E2C; Folder = [string][char]0x958B + [char]0x555F + [char]0x5831 + [char]0x544A + [char]0x8CC7 + [char]0x6599 + [char]0x593E; Report = [string][char]0x958B + [char]0x555F + [char]0x5831 + [char]0x544A }
 }
 $names = $script:ToolNames[$lang]
 if (-not $OutDir) { $OutDir = Join-Path $env:USERPROFILE ('NHC-Walk\' + (Get-Date).ToString('yyyyMMdd_HHmmss')) }
@@ -480,6 +480,15 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
         $report = $null; $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
         while ($null -eq $report -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2; $report = Get-AnyNewReport $userRun.ReportDir $userRun.LaunchedAt }
         Start-Sleep -Seconds 2
+        # W48's condition is a run that wrote no report at all, so it is looked for whether or not one appeared -
+        # inside the has-a-report branch it could never have seen the case it is about.
+        if (Owns 'W48') {
+            $fatal = Get-NewEmergencyFile $userRun.ReportDir $userRun.LaunchedAt
+            if ($null -ne $fatal) {
+                [void](Copy-Into $fatal.FullName 'W48-FATAL.txt')
+                Add-Answer 'W48' 'captured' 'W48-FATAL.txt' ('this run left ' + $fatal.Name + ' instead of a report, which is the row''s own condition, met and not manufactured')
+            }
+        }
         if ((Owns 'W12') -and $null -ne $win) {
             if ($null -ne $report) { $shot = Save-Screen 'W12-finished.png'; Add-Answer 'W12' 'captured' (Split-Path -Leaf $shot) 'the window when the run has finished' }
             else { Add-NotProduced 'W12' ("no report was written within " + $TimeoutSeconds + " s, so the finished window was never reached") }
@@ -536,18 +545,23 @@ if (@($UserRunRows | Where-Object { Owns $_ }).Count -gt 0) {
                     if ($null -ne $toolDialog) {
                         $shot = Save-Screen 'W49-partial-write-dialog.png'
                         [void](Save-Text 'W49-partial-write-dialog.txt' ("dialog title: " + $toolDialog.Current.Name + "`r`n`r`n" + (Get-WindowText $toolDialog)))
-                        Add-Answer 'W49' 'captured' ((Split-Path -Leaf $shot) + ', W49-partial-write-dialog.txt') ('this run wrote ' + $copied.Count + ' of 3 formats (' + ($unwritten -join ' and ') + ' missing) and the tool put up its message box, which the picture and the text hold')
+                        # The box is modal: it must be dismissed or every later click on this window - W14's Run
+                        # Again, W25's Open Report Folder - waits behind it. Then the row's second half: Open Report
+                        # has to open the format that survived, so the button is clicked and what appeared is kept.
+                        $ok = @($toolDialog.FindAll($SCOPE::Descendants, [System.Windows.Automation.Condition]::TrueCondition) | Where-Object { $_.Current.AutomationId -in @('1', '2') })[0]
+                        if ($null -ne $ok) { Send-Click $ok; Start-Sleep -Seconds 1 }
+                        $openReport = Find-ByName $win $names.Report
+                        $afterShot = $null
+                        if ($null -ne $openReport) {
+                            Send-Click $openReport
+                            Start-Sleep -Seconds 4
+                            $afterShot = Save-Screen 'W49-after-open-report.png'
+                        }
+                        Add-Answer 'W49' 'captured' ((Split-Path -Leaf $shot) + ', W49-partial-write-dialog.txt' + $(if ($afterShot) { ', ' + (Split-Path -Leaf $afterShot) } else { '' })) ('this run wrote ' + $copied.Count + ' of 3 formats (' + ($unwritten -join ' and ') + ' missing) and the tool put up its message box' + $(if ($null -eq $ok) { '; its button was not found, so it may still be on screen' } else { ', which was dismissed' }) + $(if ($afterShot) { '; Open Report was then clicked and what it opened is in the second picture, for the person to check that it is the surviving format' } else { '; the Open Report button was not found, so the row''s second half is the person''s' }))
                     }
                     else {
                         Add-Answer 'W49' 'not produced' $script:ReportArtefact ('this run wrote ' + $copied.Count + ' of 3 formats (' + ($unwritten -join ' and ') + ' missing), but no message box from the tool was on screen to capture - the row is about that box naming the count and the surviving file, so it is the person''s to check')
                     }
-                }
-            }
-            if (Owns 'W48') {
-                $fatal = Get-NewEmergencyFile $userRun.ReportDir $userRun.LaunchedAt
-                if ($null -ne $fatal) {
-                    [void](Copy-Into $fatal.FullName 'W48-FATAL.txt')
-                    Add-Answer 'W48' 'captured' 'W48-FATAL.txt' ('this run could write no report and left ' + $fatal.Name + ' instead, which is the row''s own condition, met and not manufactured')
                 }
             }
             $jsonPath = Join-Path $userRun.ReportDir ($stem + '.json')
