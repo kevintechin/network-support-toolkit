@@ -1,4 +1,4 @@
-﻿# 網路健檢工具 1.2.4 — IT 部署手冊
+﻿# 網路健檢工具 1.2.5 — IT 部署手冊
 
 **寫給把工具發出去的 IT 部門。** 套件需要什麼、怎麼依你的環境設定、怎麼部署、安全政策會對它做什麼、怎麼驗證收到的東西沒被動過，以及回來的報告該怎麼處理。
 
@@ -73,7 +73,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 
 每次執行最多寫出三個檔案：`NetworkHealthCheck_<yyyyMMdd>_<HHmmss>_<電腦名稱>.html`、`.txt`、`.json`，含 BOM 的 UTF-8。三種格式各自寫入：寫不出來的那一種會被指出（視窗說「3 種報告格式中有 N 種無法寫入」，主控台列為「（未寫入）」），其他格式照常可用；三種都失敗時，工具才改寫緊急的 `NetworkHealthCheck_FATAL_<時間>.txt`。同一時間只跑一份工具時檔名不會重複；工具不刪任何東西，所以資料夾每跑一次最多多三個檔案，直到有人清理。
 
-指到共用資料夾的有根 `ReportFolderName`，是唯一會讓報告在沒有人送出的情況下離開這台電腦的設定：每個使用者的每份報告都直接落在那裡，報告裡的「報告目錄」一行會告訴使用者，但不會問他。要用就有意識地用，把第 7 節的處理規定先定好，並確認每個使用者都寫得進去：寫不進去的使用者會得到暫存資料夾的備援。
+指到共用資料夾的有根 `ReportFolderName`，是唯一會讓報告在沒有人送出的情況下離開這台電腦的設定：每個使用者的每份報告都直接落在那裡，報告裡的「報告目錄」一行會告訴使用者，但不會問他。要用就有意識地用，把第 7 節的處理規定先定好，並確認每個使用者都寫得進去：寫不進去的使用者會得到暫存資料夾的備援。它是唯一會這樣做的*設定*：報告資料夾若只是剛好落在一個被雲端同步的資料夾裡，同樣的事不必有人選擇就會發生，那是第 5 節「放在哪裡」談的事。
 
 ### 3.2 · 公司標準（`Expected`）
 
@@ -248,7 +248,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 
 不管怎麼送達，使用者都必須把整個 ZIP 解壓縮：在檔案總管的 ZIP 檢視裡對啟動器按兩下，它在旁邊找不到東西就停下（使用手冊第 2 與第 6 節）。
 
-**放在哪裡。** 任何使用者可寫入的本機資料夾；使用手冊建議桌面或文件，驗收執行也是在那裡做的。報告要落在程式旁邊，資料夾就得一直可寫；否則設定 `ReportFolderName`（第 3.1 節），或接受暫存資料夾的備援。
+**放在哪裡。** 任何使用者可寫入的本機資料夾；使用手冊建議桌面或文件，驗收執行也是在那裡做的。報告要落在程式旁邊，資料夾就得一直可寫；否則設定 `ReportFolderName`（第 3.1 節），或接受暫存資料夾的備援。**在出廠設定的 Windows 11 上，這代表報告若要留在機器上，就不要放桌面或文件。** OneDrive 的「已知資料夾移動」預設會把這兩個資料夾備份上去（除非被關掉），所以套件解壓縮在那裡時，`Reports` 資料夾是建在一個被同步的資料夾裡：每份報告（電腦與使用者名稱、MAC 與 IP 位址、SSID 與 BSSID、DNS 伺服器、Proxy 設定、路由、驅動程式版本、設定檔路徑）一寫出就被複製到該使用者的 OneDrive，不必等任何人送出。這是 `VALIDATION.md` 記錄的使用手冊實機走查在 `win11-enUS` 上量到的。不希望這樣，就把套件放在同步範圍以外的資料夾（每台機器的工具資料夾，或 `C:\NetworkHealthCheck`），或把 `ReportFolderName`（第 3.1 節）設成沒有被同步的絕對路徑；使用手冊的第 1 節、第 5 節與第 9 節從使用者那一側說同一件事。這種機器上的桌面也是 `%OneDrive%\Desktop` 而不是 `%USERPROFILE%\Desktop`，會把檔案複製到桌面的部署腳本要處理這一點。
 
 **升級。** 用新版本換掉整個資料夾，把你的設定檔帶過去。檔案是哪一版對工具無所謂：新版本新增的鍵，你的檔案沒有時就取預設值。升級後比對出廠檔案與你的檔案，並在新資料夾發出去之前跑一次檢測（第 3.6 節）。改過的設定檔請納入版本控制；套件分不出你的修改和出廠檔案，只能靠雜湊值（第 6 節）。
 
@@ -261,10 +261,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 **下載檔。** 專案 Releases 頁面的發行說明給出 `NetworkHealthCheck-<版本>.zip` 的 SHA-256。解壓縮前先比對：
 
 ```text
-certutil -hashfile NetworkHealthCheck-1.2.4.zip SHA256
+certutil -hashfile NetworkHealthCheck-1.2.5.zip SHA256
 ```
 
-或在 PowerShell 用 `Get-FileHash NetworkHealthCheck-1.2.4.zip`。發行檔只由 repo 裡受版本控制的檔案打包，所以裡面沒有任何報告或執行輸出。
+或在 PowerShell 用 `Get-FileHash NetworkHealthCheck-1.2.5.zip`。發行檔只由 repo 裡受版本控制的檔案打包，所以裡面沒有任何報告或執行輸出。
 
 **清單檔。** 套件最上層的 `SHA256SUMS.txt` 列出每個出廠檔案的摘要，除了它自己、`VALIDATION.md` 和 `validation-matrix.html`：每個檔案一行，`<sha256>  <相對路徑>`，中間兩個空格。單一檔案可以用 `Get-FileHash <檔案>` 手動比對，全部則交給驗證程式。
 
@@ -308,7 +308,7 @@ python tools\validate_release.py .
 
 **要向使用者要什麼**，使用手冊第 6 節逐列寫了；環境報告和 `LauncherError.txt` 就是為這個交接而寫的。`LauncherError.txt` 在啟動器旁邊，那個資料夾無法寫入時改寫在 `%TEMP%` 的 `NetworkHealthCheck_LauncherError.txt`，欄位較少。
 
-**放行工具。** 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：`SHA256SUMS.txt` 給出每支 `NetworkHealthCheck.ps1` 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.4/docs/application-control.md>（英文），最新版本在 `main` 分支。
+**放行工具。** 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：`SHA256SUMS.txt` 給出每支 `NetworkHealthCheck.ps1` 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.5/docs/application-control.md>（英文），最新版本在 `main` 分支。
 
 **簽章。** 用你自己的憑證授權單位做 Authenticode 簽章，要在簽署憑證也受這台電腦信任時（憑證鏈受信任，且憑證在「受信任的發行者」存放區）才滿足 *AllSigned* 原則：發行者尚未被歸為信任時，PowerShell 會先詢問使用者才執行腳本（問題會出現在啟動器的視窗裡），無法詢問的工作階段就不執行。簽章也讓應用程式控制規則能依發行者放行。簽章會在腳本後面附加一段簽章區塊，所以簽過的檔案不再符合 `SHA256SUMS.txt`；請自己記下簽過檔案的摘要。
 
@@ -339,9 +339,9 @@ python tools\validate_release.py .
 - **使用手冊**：`NetworkHealthCheck_User_Manual_zh-TW.html`（或 `.md`）：使用者看到什麼、整體結果與標籤、報告裡有什麼、跑不起來時怎麼辦。
 - **技術文件**：`NetworkHealthCheck_Technical_Guide_zh-TW.md`：設計、每一條判定規則、驗證方式、已知限制、版本歷程。
 - **驗證記錄**：`VALIDATION.md`：每一版的證據，以及在其他機器上的驗收執行。
-- **待辦清單**：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.4/docs/backlog.md>（英文）：已知還沒做的事，以及每一項要怎樣才算結案。它和第 8 節的應用程式控制那一頁一樣放在 repo 而不在套件裡，因為它在兩次發行之間就會變動。
+- **待辦清單**：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.5/docs/backlog.md>（英文）：已知還沒做的事，以及每一項要怎樣才算結案。它和第 8 節的應用程式控制那一頁一樣放在 repo 而不在套件裡，因為它在兩次發行之間就會變動。
 - **Repo**：<https://github.com/kevintechin/network-support-toolkit>：發行版本、驗證鏈（`tests`）、支援工程師現場手冊與報告範本（`sop`），以及第 8 節提到的應用程式控制頁面。
 
 ---
 
-*NetworkHealthCheck 1.2.4。本手冊描述的是出廠狀態的工具與本版本量測到的行為；這裡引用的規則都是程式碼的規則，技術文件有完整的陳述。*
+*NetworkHealthCheck 1.2.5。本手冊描述的是出廠狀態的工具與本版本量測到的行為；這裡引用的規則都是程式碼的規則，技術文件有完整的陳述。*

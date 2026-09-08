@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Network Health Check 1.2.4 — IT Deployment Manual</title>
+<title>Network Health Check 1.2.5 — IT Deployment Manual</title>
 <style>
   :root{
     --ink:#16233b; --muted:#5b6b85; --line:#d8e0ec; --bg:#f4f7fb; --card:#ffffff;
@@ -96,7 +96,7 @@
 <div class="page">
 
 <header>
-  <h1>Network Health Check <span class="ver">1.2.4</span></h1>
+  <h1>Network Health Check <span class="ver">1.2.5</span></h1>
   <div class="tag">IT Deployment Manual — for the IT department that hands the tool out</div>
   <div class="meta">English package (the <code>en-US</code> folder) · the <code>zh-TW</code> folder holds the Traditional Chinese package with its own copy of this manual and its own configuration file · the person who runs the check has the user manual beside this file; the design and the decision rules are in the technical guide</div>
   <div class="principle">
@@ -177,7 +177,7 @@
       <tr><td><code>ReportFolderName</code></td><td><code>"Reports"</code></td><td>A relative name is created beside the program (<code>en-US\Reports</code>); a rooted path — a drive letter or a UNC path — is taken as given. The folder is created when missing. When it cannot be written, the reports go to <code>%TEMP%\NetworkHealthCheck\Reports</code> and the report carries a <b>Startup Notice</b> warning row saying so, which on its own turns the verdict to Attention Required</td></tr>
     </table>
     <p>Each run writes up to three files, <code>NetworkHealthCheck_&lt;yyyyMMdd&gt;_&lt;HHmmss&gt;_&lt;COMPUTERNAME&gt;.html</code>, <code>.txt</code> and <code>.json</code>, UTF-8 with a byte-order mark. Each format is written on its own: one that cannot be written is reported — the window says <i>N of 3 report formats could not be written</i>, the console lists it as <i>(not written)</i> — and the others stay usable; only when all three fail does the tool write an emergency <code>NetworkHealthCheck_FATAL_&lt;time&gt;.txt</code> instead. Names are unique for one copy of the tool at a time; nothing is deleted, so the folder grows by up to three files per run until someone clears it.</p>
-    <div class="flag"><b>A rooted <code>ReportFolderName</code> on a share</b> is the one setting that moves reports off the machine without anyone sending them: every report of every user then lands there directly, and the person is told in the report — the <i>Report Directory</i> line — but not asked. Use it deliberately, with the handling rule of section 7 in place, and make sure every user can write to it: a user who cannot gets the temporary-folder fallback instead.</div>
+    <div class="flag"><b>A rooted <code>ReportFolderName</code> on a share</b> is the one setting that moves reports off the machine without anyone sending them: every report of every user then lands there directly, and the person is told in the report — the <i>Report Directory</i> line — but not asked. Use it deliberately, with the handling rule of section 7 in place, and make sure every user can write to it: a user who cannot gets the temporary-folder fallback instead. It is the one <i>setting</i> that does this: a report folder that merely happens to sit inside a cloud-synced folder does the same thing without anyone choosing it, which is what section 5, <i>Where to put it</i>, is about.</div>
 
     <h3>3.2 · Company standards (<code>Expected</code>)</h3>
     <p>As shipped every rule is empty, and the report says so in an Information row: <i>No company standard has been defined in the configuration file. The current settings can be displayed, but compliance cannot be determined.</i> Fill in the rules that describe your site; leave the others empty. The comparison runs as soon as one rule is set.</p>
@@ -325,7 +325,7 @@
       <li><i>A package that arrives without a browser</i> — pushed by a distribution tool, or copied in, as the campaign's copy from its host was — carried no mark on the machines measured, and no prompt appears.</li>
     </ul>
     <p>Whichever way it arrives, the person must extract the whole ZIP: a launcher double-clicked inside Explorer's ZIP view finds nothing beside itself and stops (the user manual, sections 2 and 6).</p>
-    <p><b>Where to put it.</b> Any local folder the user can write to — the Desktop or Documents are what the user manual suggests, and where the acceptance runs were made. The folder must stay writable if the reports are to land beside the program; otherwise set <code>ReportFolderName</code> (section 3.1) or expect the temporary-folder fallback.</p>
+    <p><b>Where to put it.</b> Any local folder the user can write to — the Desktop or Documents are what the user manual suggests, and where the acceptance runs were made. The folder must stay writable if the reports are to land beside the program; otherwise set <code>ReportFolderName</code> (section 3.1) or expect the temporary-folder fallback. <b>On a default Windows 11 that means not the Desktop or Documents, if the reports are to stay on the machine.</b> OneDrive's Known Folder Move backs both folders up unless it was turned off, so a package extracted there writes its <code>Reports</code> folder inside a synced folder, and every report — computer and user names, MAC and IP addresses, SSID and BSSID, DNS servers, proxy settings, routes, driver versions, profile paths — is copied to that user's OneDrive as it is written, before anyone sends anything. It was measured that way on <code>win11-enUS</code> during the user-manual walk recorded in <code>VALIDATION.md</code>. Where that is not what you want, put the package in a folder outside the sync root — a per-machine tools folder, or <code>C:\NetworkHealthCheck</code> — or set <code>ReportFolderName</code> (section 3.1) to a rooted path that is not synced; the user manual says the same thing from the person's side in its sections 1, 5 and 9. On such a machine the desktop is also <code>%OneDrive%\Desktop</code> and not <code>%USERPROFILE%\Desktop</code>, which a deployment script that copies to the desktop has to handle.</p>
     <p><b>Upgrading.</b> Replace the folder with the new version and carry your configuration file over. The file's version does not matter to the tool: a key the new version added takes its default when your file does not have it. Compare the shipped file with yours after an upgrade and run one check (section 3.6) before the new folder goes out. Keep your edited configuration under version control; the package cannot tell your edits from the shipped file except by their hash (section 6).</p>
     <p><b>The program file.</b> Configure; do not edit the script. An edited script no longer matches the manifest, and the two language versions are checked against each other by the validator (section 6), so a change in one folder alone fails it. If a change is really needed, keep the original, re-run the validator knowing which checks you expect to fail, and record your own digests. The scripts are not digitally signed (section 8, <i>Signing</i>).</p>
   </div>
@@ -335,8 +335,8 @@
   <h2><span class="num">6</span> Verifying the package</h2>
   <div class="card">
     <p><b>The download.</b> The release notes on the project's Releases page give the SHA-256 of <code>NetworkHealthCheck-&lt;version&gt;.zip</code>. Compare before extracting:</p>
-<pre>certutil -hashfile NetworkHealthCheck-1.2.4.zip SHA256</pre>
-    <p>or in PowerShell <code>Get-FileHash NetworkHealthCheck-1.2.4.zip</code>. The asset is built from the repository's tracked files only, so it contains no report and no other output of a run.</p>
+<pre>certutil -hashfile NetworkHealthCheck-1.2.5.zip SHA256</pre>
+    <p>or in PowerShell <code>Get-FileHash NetworkHealthCheck-1.2.5.zip</code>. The asset is built from the repository's tracked files only, so it contains no report and no other output of a run.</p>
     <p><b>The manifest.</b> <code>SHA256SUMS.txt</code> at the package root lists the digest of every shipped file except itself, <code>VALIDATION.md</code> and <code>validation-matrix.html</code> — one line per file, <code>&lt;sha256&gt;  &lt;relative path&gt;</code> with two spaces. Check one file by hand with <code>Get-FileHash &lt;file&gt;</code>, or all of them with the validator.</p>
     <p><b>The validator.</b> <code>tools\validate_release.py</code> needs Python 3 and nothing else. Run it against the package root:</p>
 <pre>python tools\validate_release.py .</pre>
@@ -369,7 +369,7 @@
       <tr><td><b>EDR or antivirus</b> blocking <code>powershell.exe</code> or the script</td><td>Not measured: no machine with such a product was part of the acceptance runs. The launcher reports whatever exit code it gets and writes <code>LauncherError.txt</code></td><td><code>LauncherError.txt</code> and the product's own record</td></tr>
     </table>
     <p><b>What to ask the person for</b> is in the user manual's section 6, row by row; the environment report and <code>LauncherError.txt</code> are written for exactly this hand-off. <code>LauncherError.txt</code> sits beside the launcher, or — when that folder cannot be written — in <code>%TEMP%</code> as <code>NetworkHealthCheck_LauncherError.txt</code> with fewer fields.</p>
-    <p><b>Allowing the tool.</b> The two scripts are unsigned, so a policy that allows by publisher has nothing to match; what an IT department has today is the hash: <code>SHA256SUMS.txt</code> gives the digest of each <code>NetworkHealthCheck.ps1</code>, and a WDAC or AppLocker rule can allow that hash. A new version means a new hash. Which Windows builds and editions enforce AppLocker, and what has and has not been observed, changes faster than this package: the repository keeps a page on it, at the version this manual belongs to — <a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.4/docs/application-control.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.4/docs/application-control.md</a> — and its current version on the <code>main</code> branch.</p>
+    <p><b>Allowing the tool.</b> The two scripts are unsigned, so a policy that allows by publisher has nothing to match; what an IT department has today is the hash: <code>SHA256SUMS.txt</code> gives the digest of each <code>NetworkHealthCheck.ps1</code>, and a WDAC or AppLocker rule can allow that hash. A new version means a new hash. Which Windows builds and editions enforce AppLocker, and what has and has not been observed, changes faster than this package: the repository keeps a page on it, at the version this manual belongs to — <a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.5/docs/application-control.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.5/docs/application-control.md</a> — and its current version on the <code>main</code> branch.</p>
     <p><b>Signing.</b> An Authenticode signature from your own certificate authority satisfies an <i>AllSigned</i> policy when the signing certificate is also trusted on the machine — its chain trusted, and the certificate in the Trusted Publishers store: for a publisher not yet classified as trusted, PowerShell asks the person before running the script (the launcher's window shows the question), and a session that cannot ask does not run it. A signature also lets an application-control rule allow by publisher. Signing appends a signature block to the script, so the signed file no longer matches <code>SHA256SUMS.txt</code>; record the signed files' digests yourself.</p>
   </div>
 </section>
@@ -403,13 +403,13 @@
       <li><b>User manual</b> — <code>NetworkHealthCheck_User_Manual_en-US.html</code> (or <code>.md</code>): what the person sees, the verdicts and badges, what the report contains, what to do when it does not run.</li>
       <li><b>Technical guide</b> — <code>NetworkHealthCheck_Technical_Guide_en-US.md</code>: design, every decision rule, the validation approach, known limitations, the version history.</li>
       <li><b>Validation record</b> — <code>VALIDATION.md</code>: every release's evidence and the acceptance runs on other machines.</li>
-      <li><b>Backlog</b> — <a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.4/docs/backlog.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.4/docs/backlog.md</a>: what is known and not yet done, and what would close each item. It is in the repository rather than in the package, like the application-control page of section 8, because it changes between releases.</li>
+      <li><b>Backlog</b> — <a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.5/docs/backlog.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.5/docs/backlog.md</a>: what is known and not yet done, and what would close each item. It is in the repository rather than in the package, like the application-control page of section 8, because it changes between releases.</li>
       <li><b>The repository</b> — <a href="https://github.com/kevintechin/network-support-toolkit">github.com/kevintechin/network-support-toolkit</a>: releases, the validation chain (<code>tests</code>), the support engineer's field manual and report template (<code>sop</code>), and the application-control page named in section 8.</li>
     </ul>
   </div>
 </section>
 
-<footer>NetworkHealthCheck 1.2.4. This manual describes the tool as shipped and the behaviour measured for this release; the rules quoted here are the code's, and the technical guide states them in full.</footer>
+<footer>NetworkHealthCheck 1.2.5. This manual describes the tool as shipped and the behaviour measured for this release; the rules quoted here are the code's, and the technical guide states them in full.</footer>
 
 </div>
 </body>
