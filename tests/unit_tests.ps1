@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Compare-TcpCounters'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -297,6 +297,174 @@ Assert-Equal 'archive: a folder merely named zipped' (Test-IsRunningFromArchive 
 Assert-Equal 'archive: the archive itself, not a folder inside it' (Test-IsRunningFromArchive 'C:\Downloads\pack.zip') False
 Assert-Equal 'archive: empty path' (Test-IsRunningFromArchive '') False
 Assert-Equal 'archive: null path' (Test-IsRunningFromArchive $null) False
+
+# ---------------------------------------------------------------------------
+# backlog #38: a counter read that fails takes the measurement and the run's length with it. The measured reads now
+# get a second attempt, the pre-window read pays the provider's first-query cost outside the sample window, and a row
+# whose window ran long says so with the seconds and the attempts that account for it. Everything asserted below is
+# language-neutral - statuses, tags, numbers and the "TCPv4 #1" token are the same in both packages - because these
+# cases run against each of them; the prose around those tokens is not compared here.
+# ---------------------------------------------------------------------------
+$script:TcpRows = New-Object System.Collections.ArrayList
+function Add-CheckResult {
+    param([string]$Category, [string]$Check, [string]$Status, [string]$Message, [string]$Details = "", [string]$Diagnostics = "", [string]$Tag = "", [string]$Scope = "Main")
+    $row = [pscustomobject]@{ Category = $Category; Check = $Check; Status = $Status; Message = $Message; Details = $Details; Diagnostics = $Diagnostics; Tag = $Tag; Scope = $Scope }
+    [void]$script:TcpRows.Add($row)
+    return $row
+}
+$script:Config = [pscustomobject]@{ Thresholds = [pscustomobject]@{ TcpRetransmissionWarningPercent = 2; TcpRetransmissionCriticalPercent = 5; TcpRetransmissionCriticalCount = 50; MinimumTcpSegmentsForRate = 50 } }
+$script:RunOptions = [pscustomobject]@{ SampleSeconds = 8 }
+$script:RetransmissionRateComputed = $false
+
+# The stub stands where Get-CimInstance stands, so what runs above it is the helper's own retry loop and the snapshot
+# function's own bookkeeping. $CimPlan holds one outcome per call per class ('fail', anything else succeeds) and calls
+# past the plan succeed; the counters it returns rise with each call of that class, so a later snapshot is always
+# ahead of an earlier one. The exception is the one the walk recorded on win11-enUS on 2026-09-08 - a real timeout
+# needs a machine under load, which a unit test cannot arrange and tests\tcp_counter_rate.ps1 measures instead.
+$script:CimPlan = @{}
+$script:CimCalls = New-Object System.Collections.ArrayList
+function Get-CimInstance {
+    [CmdletBinding()]
+    param([string]$ClassName, [int]$OperationTimeoutSec)
+    $index = @($script:CimCalls | Where-Object { $_ -eq $ClassName }).Count
+    [void]$script:CimCalls.Add($ClassName)
+    $plan = @($script:CimPlan[$ClassName])
+    if ($index -lt $plan.Count -and ([string]$plan[$index]) -eq 'fail') {
+        throw (New-Object Microsoft.Management.Infrastructure.CimException "Timed out")
+    }
+    return [pscustomobject]@{ SegmentsSentPersec = [uint64](1000 + 100 * $index); SegmentsRetransmittedPersec = [uint64](10 + $index) }
+}
+function Reset-CimStub($plan) {
+    $script:CimPlan = $plan
+    $script:CimCalls = New-Object System.Collections.ArrayList
+    $script:TcpRows = New-Object System.Collections.ArrayList
+}
+function Get-CimCallCount($className) { @($script:CimCalls | Where-Object { $_ -eq $className }).Count }
+$v4Class = 'Win32_PerfRawData_Tcpip_TCPv4'
+$v6Class = 'Win32_PerfRawData_Tcpip_TCPv6'
+
+# The helper attempts once unless asked for more, and records the attempt that failed even so.
+Reset-CimStub @{ 'X' = @('fail') }
+$attemptLog = New-Object System.Collections.ArrayList
+$helperThrew = $false
+try { Get-CimOrWmiInstance -ClassName 'X' -FailedAttempts $attemptLog | Out-Null } catch { $helperThrew = $true }
+Assert-Equal '#38 helper: one attempt unless more are asked for' $helperThrew True
+Assert-Equal '#38 helper: one call was made' (Get-CimCallCount 'X') 1
+Assert-Equal '#38 helper: the failed attempt is recorded' (@($attemptLog).Count) 1
+Assert-Equal '#38 helper: the record names the attempt' (@($attemptLog)[0].Attempt) 1
+Assert-Equal '#38 helper: the record carries the seconds it spent' (@($attemptLog)[0].Seconds -ge 0) True
+# Two attempts that both fail reach the caller as the failure, not as a reading: a retry that hides a real failure is
+# worse than no retry.
+Reset-CimStub @{ 'X' = @('fail', 'fail') }
+$helperError = $null
+try { Get-CimOrWmiInstance -ClassName 'X' -Attempts 2 | Out-Null } catch { $helperError = $_ }
+Assert-Equal '#38 helper: the failure still reaches the caller' ((Get-ExceptionDetails $helperError) -match 'Timed out') True
+Assert-Equal '#38 helper: it stops at the attempts it was given' (Get-CimCallCount 'X') 2
+
+# A read that times out once and works on the second attempt is a reading, not an Unable to Check row - and the
+# attempt it spent is kept, because the row that explains a long window is written from it.
+Reset-CimStub @{ $v4Class = @('fail') }
+$snapRetry = Get-TcpCounterSnapshot
+Assert-Equal '#38 retry: both protocols are read' $snapRetry.Counters.Count 2
+Assert-Equal '#38 retry: nothing is reported as unreadable' (@($snapRetry.Errors).Count) 0
+Assert-Equal '#38 retry: the read that failed was attempted twice' (Get-CimCallCount $v4Class) 2
+Assert-Equal '#38 retry: the read that worked was attempted once' (Get-CimCallCount $v6Class) 1
+Assert-Equal '#38 retry: the failed attempt survives the success' (@($snapRetry.FailedAttempts).Count) 1
+Assert-Equal '#38 retry: it names its protocol and its number' ("{0} #{1}" -f @($snapRetry.FailedAttempts)[0].Protocol, @($snapRetry.FailedAttempts)[0].Attempt) 'TCPv4 #1'
+
+# Both attempts failing produces what today produced: no counter, one error, and no third attempt.
+Reset-CimStub @{ $v4Class = @('fail', 'fail') }
+$snapFailed = Get-TcpCounterSnapshot
+Assert-Equal '#38 both fail: no counter is invented' ($snapFailed.Counters.ContainsKey('TCPv4')) False
+Assert-Equal '#38 both fail: the error is recorded' (@($snapFailed.Errors).Count) 1
+Assert-Equal '#38 both fail: the error names the protocol' (@($snapFailed.Errors)[0].Protocol) 'TCPv4'
+Assert-Equal '#38 both fail: exactly two attempts were made' (Get-CimCallCount $v4Class) 2
+Assert-Equal '#38 both fail: both attempts are kept' (@($snapFailed.FailedAttempts).Count) 2
+Assert-Equal '#38 both fail: the other protocol is unaffected' ($snapFailed.Counters.ContainsKey('TCPv6')) True
+
+# -WarmUp takes one throwaway read per class before the measured one. Its reading is discarded and its failure is
+# neither an error nor a measured attempt: TCPv4 fails the warm-up and the first measured attempt here, and the
+# counter is still read on the second - three calls, one warm-up failure, one measured failure, no error row.
+Reset-CimStub @{ $v4Class = @('fail', 'fail') }
+$snapWarm = Get-TcpCounterSnapshot -WarmUp
+Assert-Equal '#38 warm-up: the throwaway read is taken as well' (Get-CimCallCount $v4Class) 3
+Assert-Equal '#38 warm-up: the other protocol is warmed too' (Get-CimCallCount $v6Class) 2
+Assert-Equal '#38 warm-up: the counter is still read' ($snapWarm.Counters.ContainsKey('TCPv4')) True
+Assert-Equal '#38 warm-up: a failed warm-up is not an error' (@($snapWarm.Errors).Count) 0
+Assert-Equal '#38 warm-up: its failure is kept apart' (@($snapWarm.WarmUpFailures).Count) 1
+Assert-Equal '#38 warm-up: and is not counted as a measured attempt' (@($snapWarm.FailedAttempts).Count) 1
+Assert-Equal '#38 warm-up: the throwaway read is attempted once, not twice' (@($snapWarm.WarmUpFailures)[0].Attempt) 1
+
+# Where the warm-up goes: the baseline snapshot takes it, the ending one does not - a throwaway read inside the
+# sample window would lengthen the very thing it is there to protect. Read off the AST, because the run itself needs
+# a machine with counters on it.
+$snapshotCalls = @($scriptAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-TcpCounterSnapshot' }, $true))
+Assert-Equal '#38 warm-up: the run takes two snapshots' $snapshotCalls.Count 2
+Assert-Equal '#38 warm-up: exactly one of them warms the provider' (@($snapshotCalls | Where-Object { $_.Extent.Text -match '-WarmUp' }).Count) 1
+Assert-Equal '#38 warm-up: it is the baseline, the first of the two' ((@($snapshotCalls | Sort-Object { $_.Extent.StartOffset })[0].Extent.Text -match '-WarmUp')) True
+
+# The duration a row reports comes from that protocol's own two stamps. The fixture is the shape of the failure the
+# walk found: the ending TCPv4 read waits out its limit twice (8 seconds each) and TCPv6, read after it, is stamped
+# 24.5 seconds after its own baseline stamp - while the snapshots enclosing the pair are 26 seconds apart, which is
+# the number this row printed until 1.2.8 and the one nobody could explain.
+function New-CounterFixture($protocol, $stamp, $sent, $retransmitted) {
+    return [pscustomobject]@{ Protocol = $protocol; Timestamp = $stamp; SegmentsSent = [uint64]$sent; Retransmitted = [uint64]$retransmitted }
+}
+$fixtureStart = Get-Date '2026-09-08T12:47:00'
+$beforeFixture = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(1.0)
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $fixtureStart 1000 10); 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(0.5) 1000 10) }
+    Errors    = @()
+    FailedAttempts = @()
+    WarmUpFailures = @([pscustomobject]@{ Protocol = 'TCPv6'; Attempt = 1; Seconds = 8.0; Error = 'Timed out' })
+}
+$afterFixture = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(27.0)
+    Counters  = @{ 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(25.0) 1100 11) }
+    Errors    = @([pscustomobject]@{ Protocol = 'TCPv4'; Error = 'Timed out'; Diagnostics = '' })
+    FailedAttempts = @(
+        [pscustomobject]@{ Protocol = 'TCPv4'; Attempt = 1; Seconds = 8.0; Error = 'Timed out' },
+        [pscustomobject]@{ Protocol = 'TCPv4'; Attempt = 2; Seconds = 8.0; Error = 'Timed out' })
+    WarmUpFailures = @()
+}
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $beforeFixture -After $afterFixture
+$rowsUnreadable = @($script:TcpRows | Where-Object { $_.Status -eq 'ERROR' })
+$rowV6 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv6' })
+Assert-Equal '#38 rows: the read that failed keeps its own row' $rowsUnreadable.Count 1
+Assert-Equal '#38 rows: that row is still about TCPv4' ($rowsUnreadable[0].Check -like 'TCPv4*') True
+Assert-Equal '#38 rows: it carries the original error text' ($rowsUnreadable[0].Details -match 'Timed out') True
+Assert-Equal '#38 rows: and the attempts behind it' ($rowsUnreadable[0].Details -match 'TCPv4 #1, TCPv4 #2') True
+Assert-Equal '#38 rows: it says nothing about the other protocol' ($rowsUnreadable[0].Details -match 'TCPv6') False
+Assert-Equal '#38 rows: the protocol that was read still has its own' $rowV6.Count 1
+Assert-Equal '#38 duration: the window is this protocol''s own, from its own stamps' ($rowV6[0].Details -match '24\.5') True
+Assert-Equal '#38 duration: not the span of the snapshots enclosing it' ($rowV6[0].Details -match '(?<![\d.])26(?![\d.])') False
+Assert-Equal '#38 duration: the configured minimum stands beside it' ($rowV6[0].Details -match '(?<![\d.])8(?![\d.])') True
+Assert-Equal '#38 window: the seconds that went on failed reads are named' ($rowV6[0].Details -match '(?<![\d.])16(?![\d.])') True
+Assert-Equal '#38 window: and the attempts they went on' ($rowV6[0].Details -match 'TCPv4 #1, TCPv4 #2') True
+Assert-Equal '#38 window: the pre-window read that failed is named too' ($rowV6[0].Details -match 'TCPv6 #1') True
+Assert-Equal '#38 window: the reading itself is unaffected' ($rowV6[0].Status) 'PASS'
+Assert-Equal '#38 window: and its delta is the one the counters give' ($rowV6[0].Details -match '(?<![\d.])100(?![\d.])') True
+
+# Nothing failed: no attempt line, no note, and the duration is still the protocol's own.
+$cleanBefore = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(1.0)
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $fixtureStart 1000 10); 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(0.5) 1000 10) }
+    Errors    = @(); FailedAttempts = @(); WarmUpFailures = @()
+}
+$cleanAfter = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(12.0)
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $fixtureStart.AddSeconds(10.5) 1100 11); 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(11.0) 1100 11) }
+    Errors    = @(); FailedAttempts = @(); WarmUpFailures = @()
+}
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $cleanBefore -After $cleanAfter
+$cleanV4 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv4' })
+Assert-Equal '#38 clean run: one row per protocol' (@($script:TcpRows).Count) 2
+Assert-Equal '#38 clean run: no row is about an unreadable counter' (@($script:TcpRows | Where-Object { $_.Status -eq 'ERROR' }).Count) 0
+Assert-Equal '#38 clean run: the window is the protocol''s own' ($cleanV4[0].Details -match '10\.5') True
+Assert-Equal '#38 clean run: nothing is said about attempts that did not fail' ($cleanV4[0].Details -match '#') False
+Assert-Equal '#38 clean run: and nothing about a window that did not run long' (@(Get-TcpReadFailureLines -Snapshot $cleanBefore -Protocol 'TCPv4').Count) 0
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

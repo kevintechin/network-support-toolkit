@@ -49,7 +49,7 @@ param(
 # - Traceability: exception type, message, and inner exceptions are stored in every
 #   report; script location and call stack go to the JSON report only (Diagnostics).
 
-$script:ToolVersion = "1.2.7"
+$script:ToolVersion = "1.2.8"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -2825,25 +2825,84 @@ function Add-DriverInfoResult {
 }
 
 function Get-CimOrWmiInstance {
-    param([string]$ClassName)
+    param(
+        [string]$ClassName,
+        [int]$Attempts = 1,
+        [System.Collections.IList]$FailedAttempts
+    )
 
-    if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
-        return Get-CimInstance -ClassName $ClassName -OperationTimeoutSec 8 -ErrorAction Stop
+    # The one place every CIM/WMI query of this tool passes through, and since 1.2.8 the place where a query may be
+    # attempted more than once (backlog #38). A performance-counter read that waits out its eight-second limit and
+    # then succeeds on a second attempt costs the run those seconds; a read that is not attempted again costs it the
+    # measurement, and on the evidence of 2026-09-08 that is the first run inside a freshly extracted copy - the run
+    # a person makes when something is wrong. Every attempt that failed is recorded in $FailedAttempts with the
+    # seconds it spent, whether or not a later one worked: a retry that leaves no trace cannot explain the sample
+    # window it lengthened. Callers that pass no -Attempts keep the single attempt they have always made.
+    if ($Attempts -lt 1) { $Attempts = 1 }
+    $lastError = $null
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $attemptStarted = Get-Date
+        try {
+            if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
+                return Get-CimInstance -ClassName $ClassName -OperationTimeoutSec 8 -ErrorAction Stop
+            }
+            if (Get-Command Get-WmiObject -ErrorAction SilentlyContinue) {
+                return Get-WmiObject -Class $ClassName -ErrorAction Stop
+            }
+            throw "No usable CIM/WMI command is available on this system."
+        }
+        catch {
+            $lastError = $_
+            if ($null -ne $FailedAttempts) {
+                [void]$FailedAttempts.Add([pscustomobject][ordered]@{
+                    ClassName = $ClassName
+                    Attempt   = $attempt
+                    Seconds   = [math]::Round(((Get-Date) - $attemptStarted).TotalSeconds, 1)
+                    Error     = Get-ExceptionDetails $_
+                })
+            }
+        }
     }
-    if (Get-Command Get-WmiObject -ErrorAction SilentlyContinue) {
-        return Get-WmiObject -Class $ClassName -ErrorAction Stop
-    }
-    throw "No usable CIM/WMI command is available on this system."
+    throw $lastError
 }
 
 function Get-TcpCounterSnapshot {
+    param([switch]$WarmUp)
+
     $snapshot = @{}
     $errors = New-Object System.Collections.ArrayList
+    $failedAttempts = New-Object System.Collections.ArrayList
+    $warmUpFailures = New-Object System.Collections.ArrayList
 
     foreach ($protocol in @("TCPv4", "TCPv6")) {
         $className = "Win32_PerfRawData_Tcpip_$protocol"
+        # -WarmUp: one throwaway read per class before the sample window opens (backlog #38). The two reads of a
+        # snapshot are serial, so a call that waits out its limit inside the window lengthens the window this
+        # protocol and the one after it report; the same call made here costs the run its seconds and the
+        # measurement nothing. The reading is discarded - this is not a measurement, and a failure of it is not a
+        # finding. It is recorded and no more, because whether the first read of a session is the one that fails is
+        # exactly the question this item leaves open.
+        if ($WarmUp) {
+            $warmUpAttempts = New-Object System.Collections.ArrayList
+            try {
+                Get-CimOrWmiInstance -ClassName $className -FailedAttempts $warmUpAttempts | Out-Null
+            }
+            catch {
+                # Discarded on purpose: the attempt is already in $warmUpAttempts, and this read is not a reading.
+            }
+            foreach ($item in $warmUpAttempts) {
+                [void]$warmUpFailures.Add([pscustomobject][ordered]@{
+                    Protocol = $protocol
+                    Attempt  = $item.Attempt
+                    Seconds  = $item.Seconds
+                    Error    = $item.Error
+                })
+            }
+        }
+
+        $readAttempts = New-Object System.Collections.ArrayList
         try {
-            $counter = Get-CimOrWmiInstance -ClassName $className
+            $counter = Get-CimOrWmiInstance -ClassName $className -Attempts 2 -FailedAttempts $readAttempts
             if ($counter -is [array]) {
                 $counter = $counter | Select-Object -First 1
             }
@@ -2869,13 +2928,48 @@ function Get-TcpCounterSnapshot {
                 Diagnostics = Get-ExceptionDiagnostics $_
             })
         }
+        foreach ($item in $readAttempts) {
+            [void]$failedAttempts.Add([pscustomobject][ordered]@{
+                Protocol = $protocol
+                Attempt  = $item.Attempt
+                Seconds  = $item.Seconds
+                Error    = $item.Error
+            })
+        }
     }
 
+    # Timestamp is when the whole snapshot finished; each protocol carries its own, taken when its own read returned,
+    # and since 1.2.8 that is the pair a sample duration is measured from. FailedAttempts holds the measured reads
+    # that failed even where a later attempt worked; WarmUpFailures holds the discarded pre-window reads that failed.
     return [pscustomobject][ordered]@{
-        Timestamp = Get-Date
-        Counters  = $snapshot
-        Errors    = @($errors)
+        Timestamp      = Get-Date
+        Counters       = $snapshot
+        Errors         = @($errors)
+        FailedAttempts = @($failedAttempts)
+        WarmUpFailures = @($warmUpFailures)
     }
+}
+
+function Get-TcpReadFailureLines {
+    param(
+        [object]$Snapshot,
+        [string]$Protocol
+    )
+
+    # What a row says about the counter reads of its own protocol that failed in one snapshot, whether or not a later
+    # attempt worked (backlog #38). Until 1.2.8 a read that timed out and then succeeded would have handed back a
+    # clean counter and no record of the seconds it spent, and the row could not have explained its own window.
+    # Nothing is said about a read that behaved: a row explains what happened, not what did not (backlog #40).
+    $lines = @()
+    $failed = @(@(Get-PropertyValue $Snapshot "FailedAttempts" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
+    if ($failed.Count -gt 0) {
+        $lines += ("Counter reads that failed: {0} ({1} seconds in total)." -f (($failed | ForEach-Object { "{0} #{1}" -f $_.Protocol, $_.Attempt }) -join ", "), [math]::Round((($failed | Measure-Object -Property Seconds -Sum).Sum), 1))
+    }
+    $warmUp = @(@(Get-PropertyValue $Snapshot "WarmUpFailures" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
+    if ($warmUp.Count -gt 0) {
+        $lines += ("The read taken before the sample window, whose reading is discarded, failed as well: {0} ({1} seconds in total)." -f (($warmUp | ForEach-Object { "{0} #{1}" -f $_.Protocol, $_.Attempt }) -join ", "), [math]::Round((($warmUp | Measure-Object -Property Seconds -Sum).Sum), 1))
+    }
+    return $lines
 }
 
 function Compare-TcpCounters {
@@ -2889,17 +2983,29 @@ function Compare-TcpCounters {
         return
     }
 
-    $counterErrors = @()
-    $counterErrors += @($Before.Errors)
-    $counterErrors += @($After.Errors)
-    foreach ($errorItem in $counterErrors) {
-        Add-CheckResult -Category "TCP Retransmissions" -Check ("{0} counters" -f $errorItem.Protocol) -Status "ERROR" -Message "The TCP retransmission counter could not be read." -Details $errorItem.Error -Diagnostics $errorItem.Diagnostics -Tag "tcp-retransmissions" | Out-Null
+    # One row per read that failed, in the order the reads were made, and the attempts behind it (backlog #38). The
+    # status, the check name and the message are what they were before the retry existed - a retry that hides a real
+    # failure is worse than no retry - and what the row gained is the attempts: a failure that says nothing about
+    # what was tried teaches nothing afterwards. Read per snapshot rather than from one merged list, so that each
+    # error is rendered with the attempts of the snapshot it came from.
+    foreach ($snapshot in @($Before, $After)) {
+        foreach ($errorItem in @($snapshot.Errors)) {
+            $errorDetails = @([string]$errorItem.Error) + @(Get-TcpReadFailureLines -Snapshot $snapshot -Protocol ([string]$errorItem.Protocol))
+            Add-CheckResult -Category "TCP Retransmissions" -Check ("{0} counters" -f $errorItem.Protocol) -Status "ERROR" -Message "The TCP retransmission counter could not be read." -Details ((@($errorDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Diagnostics $errorItem.Diagnostics -Tag "tcp-retransmissions" | Out-Null
+        }
     }
 
     $warningPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionWarningPercent" 2) 2
     $criticalPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalPercent" 5) 5
     $criticalCount = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalCount" 50) 50)
     $minimumSegments = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
+    # The order Get-TcpCounterSnapshot reads the two protocols in, which is what decides whose window a failed read
+    # lands in (backlog #38): the reads are serial and each stamp is taken when its own read returns, so an attempt
+    # that failed sits inside the window of its own protocol and of every protocol read after it. The baseline
+    # snapshot's failures lengthen no window - they push both of its stamps and the sample start along with them -
+    # so only the ending snapshot's attempts are counted against a window below.
+    $readOrder = @("TCPv4", "TCPv6")
+    $configuredSeconds = [math]::Max(1, (ConvertTo-IntSafe (Get-PropertyValue $script:RunOptions "SampleSeconds" 8) 8))
 
     foreach ($protocol in @("TCPv4", "TCPv6")) {
         if (-not $Before.Counters.ContainsKey($protocol) -or -not $After.Counters.ContainsKey($protocol)) {
@@ -2924,9 +3030,13 @@ function Compare-TcpCounters {
             $script:RetransmissionRateComputed = $true
         }
 
-        $sampleSeconds = [math]::Round((New-TimeSpan -Start $Before.Timestamp -End $After.Timestamp).TotalSeconds, 1)
+        # The window this protocol really measured, from its own two stamps rather than from the stamps of the
+        # snapshots enclosing them (backlog #38). The deltas were always this protocol's own and the rate is a ratio,
+        # so only the duration was ever wrong: on win11-enUS, 2026-09-08, a TCPv4 read that waited out its limit was
+        # reported inside TCPv6's sample as 13.3 seconds against a configured 8, with no word about why.
+        $sampleSeconds = [math]::Round((New-TimeSpan -Start $start.Timestamp -End $end.Timestamp).TotalSeconds, 1)
         $details = @(
-            "Sample duration: $sampleSeconds seconds",
+            "Sample duration: $sampleSeconds seconds (configured minimum: $configuredSeconds)",
             "Sent TCP segment delta: $sentDelta",
             "Retransmitted segment delta: $retransDelta",
             "Approximate retransmission rate: $rate%",
@@ -2939,6 +3049,14 @@ function Compare-TcpCounters {
 
         if ($rate -gt 100) {
             $details += [Environment]::NewLine + "Note: a rate above 100% means retransmissions of segments sent before the sample window - read it as a ratio, not a percentage."
+        }
+
+        foreach ($line in @(Get-TcpReadFailureLines -Snapshot $Before -Protocol $protocol)) {
+            $details += [Environment]::NewLine + $line
+        }
+        $windowAttempts = @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $readOrder.IndexOf($protocol) })
+        if ($windowAttempts.Count -gt 0) {
+            $details += [Environment]::NewLine + ("Note: {1} of these {0} seconds went on counter reads that failed inside the window ({2}); the configured minimum is {3} seconds. The deltas above are still this protocol's own counts over the window shown." -f $sampleSeconds, [math]::Round((($windowAttempts | Measure-Object -Property Seconds -Sum).Sum), 1), (($windowAttempts | ForEach-Object { "{0} #{1}" -f $_.Protocol, $_.Attempt }) -join ", "), $configuredSeconds)
         }
 
         if ($sentDelta -eq 0 -and $retransDelta -eq 0) {
@@ -3675,7 +3793,9 @@ function Run-AllChecks {
     } | Out-Null
 
     $tcpBaseline = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Get TCP Retransmission Baseline" -Progress 10 -Action {
-        $snapshot = Get-TcpCounterSnapshot
+        # -WarmUp on the baseline only: the throwaway read that pays whatever the counter provider charges for a
+        # first query outside the sample window, where it cannot lengthen what the window reports (backlog #38).
+        $snapshot = Get-TcpCounterSnapshot -WarmUp
         if ($snapshot.Counters.Count -eq 0) {
             throw "Neither the TCPv4 nor TCPv6 counters could be read."
         }
