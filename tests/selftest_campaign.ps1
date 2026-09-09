@@ -45,6 +45,11 @@ Write-Output ('asset for the self-test: ' + $zip)
 function Invoke-Campaign([string]$Name, [string[]]$Arguments, [string]$AnswersText) {
     # One invocation of the driver with its own state folder under the work dir and an answers file; returns the
     # output lines, the exit code and the state folder.
+    # The driver's lines go to the host, never to the success stream (backlog #53): every caller assigns this
+    # call, so a Write-Output here lands in $rN beside the returned hashtable instead of reaching the log, while
+    # member-access enumeration keeps $rN.ExitCode answering over the array so nothing looks wrong. That left
+    # campaign.log with two driver lines in 199 - both from case 12, the one place that bypasses this helper -
+    # and #25's bundle explanation unproven from 2026-09-06 to 2026-09-09 across two occurrences of its failure.
     $state = Join-Path $WorkDir ('state-' + $Name)
     $answers = Join-Path $WorkDir ('answers-' + $Name + '.txt')
     [IO.File]::WriteAllText($answers, $AnswersText, (New-Object System.Text.UTF8Encoding($false)))
@@ -53,7 +58,7 @@ function Invoke-Campaign([string]$Name, [string[]]$Arguments, [string]$AnswersTe
     $out = @(& $psExe @argList 2>&1 | ForEach-Object { [string]$_ })
     $code = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
-    foreach ($l in $out) { Write-Output ('    | ' + $l) }
+    foreach ($l in $out) { Write-Host ('    | ' + $l) }
     return @{ Output = $out; ExitCode = $code; State = $state }
 }
 function Read-State([string]$State) { Get-Content -LiteralPath (Join-Path $State 'campaign.json') -Raw -Encoding UTF8 | ConvertFrom-Json }
@@ -202,7 +207,7 @@ $ErrorActionPreference = 'Continue'
 $out12 = @(& $psExe -NoProfile -ExecutionPolicy Bypass -Command $command 2>&1 | ForEach-Object { [string]$_ })
 $code12 = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
-foreach ($l in $out12) { Write-Output ('    | ' + $l) }
+foreach ($l in $out12) { Write-Host ('    | ' + $l) }   # driver lines go to the host here too, so every one of them travels the same way (#53)
 Assert-True '12. exit code 3' ($code12 -eq 3) ('exit code ' + $code12)
 Assert-True '12. the output names ConstrainedLanguage and RECOVER.txt, and no New-Object error' ((@($out12 | Where-Object { $_ -match 'ConstrainedLanguage' -and $_ -match 'cannot run or resume' }).Count -ge 1) -and (@($out12 | Where-Object { $_ -match 'RECOVER\.txt' }).Count -ge 1) -and (@($out12 | Where-Object { $_ -match 'New-Object' }).Count -eq 0)) ($out12 -join ' / ')
 
@@ -666,6 +671,31 @@ $crafted34d.Scenarios.M8.Facts.RegEnableScriptsBefore = 'a\0b'; $crafted34d.Scen
 $r34d = Invoke-Campaign 'm8facts' @('-Resume', '-Scenarios', 'M8') "M8/revert=done`r`n"
 $out34d = $r34d.Output -join "`n"
 Assert-True '34. the data comes back as recorded, whatever it says, and a REG_MULTI_SZ comes back as one (Codex round 4)' (($out34d -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_SZ /d "absent" /f') -and ($out34d -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v EnableScripts /t REG_MULTI_SZ /d "a\\0b" /f')) (($r34d.Output | Where-Object { $_ -match 'reg add|reg delete' }) -join ' / ')
+
+# -------------------- 35. the driver's own lines cannot go back to the success stream --------------------
+# Backlog #53: every call to Invoke-Campaign is assigned, so anything it writes to the success stream lands in the
+# caller's variable instead of the log, while member-access enumeration keeps $rN.ExitCode answering so that nothing
+# looks wrong. This case asserts the rule on the AST of this file, not on its text: a comment mentioning Write-Output
+# can neither satisfy nor trip it.
+Write-Output ''
+Write-Output '35. Invoke-Campaign writes the driver output to the host, and every call to it is assigned - which is why it must'
+$tokens35 = $null
+$errors35 = $null
+$ast35 = [System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$tokens35, [ref]$errors35)
+$fn35 = @($ast35.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Campaign' }, $true))
+Assert-True '35. Invoke-Campaign is defined exactly once' ($fn35.Count -eq 1) ('definitions: ' + $fn35.Count)
+$successWrites35 = @()
+if ($fn35.Count -eq 1) {
+    $successWrites35 = @($fn35[0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and @('Write-Output', 'Write-Information') -contains $n.GetCommandName() }, $true))
+}
+Assert-True '35. it writes nothing to the success stream' ($successWrites35.Count -eq 0) (($successWrites35 | ForEach-Object { $_.Extent.Text }) -join ' / ')
+$calls35 = @($ast35.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-Campaign' }, $true))
+$unassigned35 = @($calls35 | Where-Object {
+    $p = $_.Parent
+    while ($null -ne $p -and -not ($p -is [System.Management.Automation.Language.AssignmentStatementAst])) { $p = $p.Parent }
+    $null -eq $p
+})
+Assert-True '35. every call to it is assigned, which is the reason for the rule above' (($calls35.Count -gt 0) -and ($unassigned35.Count -eq 0)) (('calls: ' + $calls35.Count + ', unassigned: ' + $unassigned35.Count) + $(if ($unassigned35.Count) { ' -> ' + (($unassigned35 | ForEach-Object { $_.Extent.Text }) -join ' / ') } else { '' }))
 
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
