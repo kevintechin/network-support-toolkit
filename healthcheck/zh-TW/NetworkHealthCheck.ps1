@@ -822,16 +822,18 @@ function Set-RunOptions {
     $extra = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
     $raw = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
 
+    # 額外目標的列標題帶著它自己的值，於是同一種的兩個目標在表格裡、以及在點名沒有回應者的結語裡，都分得出來
+    #（PR #35 第 2 輪）。
     foreach ($value in @(@($Overrides["PingTarget"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $raw.Ping += [string]$value
-        $config.Tests.PingTargets = @($config.Tests.PingTargets) + [pscustomobject][ordered]@{ Name = "額外 Ping"; Address = [string]$value; Required = $false }
+        $config.Tests.PingTargets = @($config.Tests.PingTargets) + [pscustomobject][ordered]@{ Name = ("額外 Ping " + [string]$value); Address = [string]$value; Required = $false }
         $extra.Ping += [string]$value
     }
     foreach ($value in @(@($Overrides["DnsName"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $raw.Dns += [string]$value
-        $config.Tests.DnsNames = @($config.Tests.DnsNames) + [pscustomobject][ordered]@{ Name = "額外 DNS"; Host = [string]$value; Required = $false }
+        $config.Tests.DnsNames = @($config.Tests.DnsNames) + [pscustomobject][ordered]@{ Name = ("額外 DNS " + [string]$value); Host = [string]$value; Required = $false }
         $extra.Dns += [string]$value
     }
     foreach ($value in @(@($Overrides["TcpTarget"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
@@ -844,13 +846,13 @@ function Set-RunOptions {
             [void]$script:RunOptionMessages.Add("已忽略額外 TCP 目標「$value」：格式應為 host:port。")
             continue
         }
-        $config.Tests.TcpTargets = @($config.Tests.TcpTargets) + [pscustomobject][ordered]@{ Name = "額外 TCP"; Host = $parts[0]; Port = $port; Required = $false; Group = "" }
+        $config.Tests.TcpTargets = @($config.Tests.TcpTargets) + [pscustomobject][ordered]@{ Name = ("額外 TCP " + [string]$value); Host = $parts[0]; Port = $port; Required = $false; Group = "" }
         $extra.Tcp += [string]$value
     }
     foreach ($value in @(@($Overrides["HttpUrl"]) | ForEach-Object { ([string]$_) -split '\s+' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $raw.Http += [string]$value
-        $config.Tests.HttpTargets = @($config.Tests.HttpTargets) + [pscustomobject][ordered]@{ Name = "額外 URL"; Url = [string]$value; Required = $false; Group = "" }
+        $config.Tests.HttpTargets = @($config.Tests.HttpTargets) + [pscustomobject][ordered]@{ Name = ("額外 URL " + [string]$value); Url = [string]$value; Required = $false; Group = "" }
         $extra.Http += [string]$value
     }
 

@@ -839,16 +839,18 @@ function Set-RunOptions {
     $extra = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
     $raw = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
 
+    # An added target carries its value in the row title, so two of the same kind are told apart in the table and
+    # in the summary that names the ones which did not answer (PR #35, round 2).
     foreach ($value in @(@($Overrides["PingTarget"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $raw.Ping += [string]$value
-        $config.Tests.PingTargets = @($config.Tests.PingTargets) + [pscustomobject][ordered]@{ Name = "Extra ping"; Address = [string]$value; Required = $false }
+        $config.Tests.PingTargets = @($config.Tests.PingTargets) + [pscustomobject][ordered]@{ Name = ("Extra ping " + [string]$value); Address = [string]$value; Required = $false }
         $extra.Ping += [string]$value
     }
     foreach ($value in @(@($Overrides["DnsName"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $raw.Dns += [string]$value
-        $config.Tests.DnsNames = @($config.Tests.DnsNames) + [pscustomobject][ordered]@{ Name = "Extra DNS"; Host = [string]$value; Required = $false }
+        $config.Tests.DnsNames = @($config.Tests.DnsNames) + [pscustomobject][ordered]@{ Name = ("Extra DNS " + [string]$value); Host = [string]$value; Required = $false }
         $extra.Dns += [string]$value
     }
     foreach ($value in @(@($Overrides["TcpTarget"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
@@ -861,13 +863,13 @@ function Set-RunOptions {
             [void]$script:RunOptionMessages.Add("Ignored extra TCP target '$value': expected host:port.")
             continue
         }
-        $config.Tests.TcpTargets = @($config.Tests.TcpTargets) + [pscustomobject][ordered]@{ Name = "Extra TCP"; Host = $parts[0]; Port = $port; Required = $false; Group = "" }
+        $config.Tests.TcpTargets = @($config.Tests.TcpTargets) + [pscustomobject][ordered]@{ Name = ("Extra TCP " + [string]$value); Host = $parts[0]; Port = $port; Required = $false; Group = "" }
         $extra.Tcp += [string]$value
     }
     foreach ($value in @(@($Overrides["HttpUrl"]) | ForEach-Object { ([string]$_) -split '\s+' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $raw.Http += [string]$value
-        $config.Tests.HttpTargets = @($config.Tests.HttpTargets) + [pscustomobject][ordered]@{ Name = "Extra URL"; Url = [string]$value; Required = $false; Group = "" }
+        $config.Tests.HttpTargets = @($config.Tests.HttpTargets) + [pscustomobject][ordered]@{ Name = ("Extra URL " + [string]$value); Url = [string]$value; Required = $false; Group = "" }
         $extra.Http += [string]$value
     }
 

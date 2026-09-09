@@ -250,11 +250,14 @@ $script:OptionsPanel = $null
 $script:Results = New-Object System.Collections.ArrayList
 $script:RetransmissionRateComputed = $false
 Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
-Add-CheckResult -Category "Test" -Check "Extra ping" -Status "INFO" -Message "no reply" -Details "" -Tag "ping-target" | Out-Null
+# Two added targets of the same kind, which is where a generic row title would collapse them into one name
+# (PR #35, round 2): Set-RunOptions gives every added target its value in the title, so both are named.
+Add-CheckResult -Category "Test" -Check "Extra ping 10.0.0.1" -Status "INFO" -Message "no reply" -Details "" -Tag "ping-target" | Out-Null
+Add-CheckResult -Category "Test" -Check "Extra TCP fileserver:445" -Status "INFO" -Message "no connection" -Details "" -Tag "tcp" | Out-Null
 $summary = Get-FingerprintSummary
 Assert-Equal 'J: an optional target that did not answer leaves the verdict healthy' $summary.Key "healthy"
 Assert-Equal 'J: the summary claims required, not all (#35)' (@($summary.Lines)[0] -match '(All required checks passed|必要檢查都通過)') True
-Assert-Equal 'J: and names the target that did not answer' (@($summary.Lines)[1] -match '(Extra ping|額外 Ping)') True
+Assert-Equal 'J: and names both targets that did not answer' ((@($summary.Lines)[1] -match '10\.0\.0\.1') -and (@($summary.Lines)[1] -match 'fileserver:445')) True
 Assert-Equal 'J: the last line names one file (#46)' ((@($summary.Lines)[-1] -match '(Send this file|把這個檔案)')) True
 Assert-Equal 'J: and no longer offers a choice of two' ((@($summary.Lines)[-1] -match '(or the JSON|或 JSON)')) False
 $flags = Get-ReportNoticeFlags
@@ -294,6 +297,9 @@ Assert-Equal 'J: a well-formed target is accepted' (@(Get-RejectedPanelValues).C
 $script:RunOptionMessages = New-Object System.Collections.ArrayList
 Set-RunOptions -Overrides @{ EntryPoint = "IT"; TcpTarget = @("8.8.8.8") } | Out-Null
 Assert-Equal 'J: the run drops exactly what the panel would have refused' ((@($script:RunOptionMessages) -join " ") -match '(expected host:port|格式應為 host:port)') True
+# The accepted half of the same rule, after the message assertion because Set-RunOptions starts a new message list.
+Set-RunOptions -Overrides @{ EntryPoint = "IT"; TcpTarget = @("fileserver:445") } | Out-Null
+Assert-Equal 'J: an accepted target carries its value in the row title' (@(@($script:Config.Tests.TcpTargets) | Where-Object { [string]$_.Name -match 'fileserver:445' }).Count) 1
 $ruleCalls = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq "Test-TcpTargetSyntax" }, $true))
 Assert-Equal 'J: one rule, called by both the run and the panel' ($ruleCalls.Count -ge 2) True
 $script:OptionsPanel = $null

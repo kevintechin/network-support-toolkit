@@ -231,7 +231,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 
 **兩種要避免的寫法。** 用空格再接第二個值（`-PingTarget a b`、`-HttpUrl u1 u2`）不是第二個目標：PowerShell 會直接拒絕繫結 ——「A positional parameter cannot be found that accepts argument 'b'」—— 腳本根本不會開始。1.2.7 之前它會被繫結到腳本的第一個位置參數 `-ConfigPath`，於是那次執行載入不到設定檔（「找不到設定檔：b」、一列「無法檢查」、內建預設值、整體結果為檢測未完整），而且只測第一個值，第二個目標就這樣無聲無息地不見了。另外在 PowerShell 提示字元下，沒加引號的分號會結束陳述式：`-PingTarget a;b` 只測 `a`，然後把 `b` 當成命令執行；cmd.exe 則會原樣傳入。上面的逗號寫法和加引號的寫法可以避開這兩者。
 
-**額外目標算什麼。** 額外目標都是選用的，也不屬於任何群組：沒有回應的額外 Ping，以及連不上的額外 TCP 或 HTTP 目標，是「資訊」列，不影響整體結果；品質不佳的 Ping 和解析不出來的額外 DNS 名稱是「需注意」列。格式不是 `host:port` 的額外 TCP 目標會被丟掉，並留下一列「啟動提示」警告（「已忽略額外 TCP 目標「…」：格式應為 host:port。」）。這些列的標題是「額外 Ping」、「額外 DNS」、「額外 TCP」、「額外 URL」。
+**額外目標算什麼。** 額外目標都是選用的，也不屬於任何群組：沒有回應的額外 Ping，以及連不上的額外 TCP 或 HTTP 目標，是「資訊」列，不影響整體結果；品質不佳的 Ping 和解析不出來的額外 DNS 名稱是「需注意」列。格式不是 `host:port` 的額外 TCP 目標會被丟掉，並留下一列「啟動提示」警告（「已忽略額外 TCP 目標「…」：格式應為 host:port。」）。這些列的標題是「額外 Ping」、「額外 DNS」、「額外 TCP」、「額外 URL」，後面接著它拿到的值，所以同一種的兩個額外目標在表格裡和結語裡都分得出來。
 
 **這次執行的選項記在哪裡。** 報告標頭的「執行設定」一行：`IT 入口 | 額外目標：ping 10.0.0.1, tcp fileserver:445 | Ping 次數 4 | 取樣 20 秒 | traceroute 3 跳`，關掉的檢查以「已停用：…」列出；以及 JSON 的 `RunOptions`：`EntryPoint`、`ExpandDetails`、`ExtraTargets`（接受的值）、`RawTargets`（輸入的原文）、`PingCount`、`SampleSeconds`、`TracerouteHops`、`ChecksEnabled`。
 
