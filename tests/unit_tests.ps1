@@ -524,5 +524,93 @@ Assert-Equal '#38 first-read delay: it is named once, as TCPv4''s own failed rea
 Assert-Equal '#38 first-read delay: and not against the other protocol''s window' ($firstV6.Details -match 'TCPv4 #1') False
 Assert-Equal '#38 first-read delay: the windows are the ones the stamps give' ((("{0}|{1}" -f ($firstV4.Details -match '(?<![\d.])2\.5(?![\d.])'), ($firstV6.Details -match '(?<![\d.])2\.5(?![\d.])')))) 'True|True'
 
+# PR #40, round 4: a protocol whose counter could not be read has no reading, so no quality row - and the row that
+# says it could not be read was the only place its attempts could still appear. Rendering only the failing snapshot's
+# attempts therefore threw away the other snapshot's: a failed baseline warm-up before a successful baseline read
+# vanished when the ending read failed twice, and a redeemed ending attempt vanished when the baseline read failed.
+$lostEndingBefore = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(0.6)
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $fixtureStart 1000 10); 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(0.5) 1000 10) }
+    Errors    = @()
+    FailedAttempts = @()
+    WarmUpFailures = @([pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'warm-up'; Attempt = 1; Seconds = 6.1; Error = 'Timed out' })
+}
+$lostEndingAfter = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(21.0)
+    Counters  = @{ 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(20.5) 1100 11) }
+    Errors    = @([pscustomobject]@{ Protocol = 'TCPv4'; Error = 'Timed out'; Diagnostics = '' })
+    FailedAttempts = @(
+        [pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 1; Seconds = 8.0; Error = 'Timed out' },
+        [pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 2; Seconds = 8.0; Error = 'Timed out' })
+    WarmUpFailures = @()
+}
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $lostEndingBefore -After $lostEndingAfter
+$lostEndingRow = @($script:TcpRows | Where-Object { $_.Status -eq 'ERROR' })
+Assert-Equal '#38 lost reading: one row says the counter could not be read' $lostEndingRow.Count 1
+Assert-Equal '#38 lost reading: it carries the attempts that failed' ($lostEndingRow[0].Details -match 'TCPv4 #1, TCPv4 #2') True
+Assert-Equal '#38 lost reading: and the baseline warm-up that has nowhere else to go' ($lostEndingRow[0].Details -match 'TCPv4 #1 \(the discarded|TCPv4 #1（窗前捨棄') True
+Assert-Equal '#38 lost reading: with its own seconds' ($lostEndingRow[0].Details -match '6\.1') True
+# A line that does not say which snapshot it came from would let a baseline failure read as an ending one, and this
+# row now carries both. Mutation Q3 of this round - the ending line labelled as the baseline's - passed every other
+# assertion in the file, which is why these three exist.
+Assert-Equal '#38 lost reading: the ending attempts say they are the ending''s' ($lostEndingRow[0].Details -match 'while the ending values were taken|取結束值時') True
+Assert-Equal '#38 lost reading: and the baseline one says it is the baseline''s' ($lostEndingRow[0].Details -match 'while the baseline was taken|取基準值時') True
+
+# The mirror image: the baseline read fails twice, and the ending read of the same protocol failed once before
+# succeeding. That redeemed attempt is recorded, and this row is the only place it can be read.
+$lostBaselineBefore = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(16.6)
+    Counters  = @{ 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(16.5) 1000 10) }
+    Errors    = @([pscustomobject]@{ Protocol = 'TCPv4'; Error = 'Timed out'; Diagnostics = '' })
+    FailedAttempts = @(
+        [pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 1; Seconds = 8.0; Error = 'Timed out' },
+        [pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 2; Seconds = 8.0; Error = 'Timed out' })
+    WarmUpFailures = @()
+}
+$lostBaselineAfter = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(33.0)
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $fixtureStart.AddSeconds(32.0) 1100 11); 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(32.5) 1100 11) }
+    Errors    = @()
+    FailedAttempts = @([pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 1; Seconds = 7.4; Error = 'Timed out' })
+    WarmUpFailures = @()
+}
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $lostBaselineBefore -After $lostBaselineAfter
+$lostBaselineRow = @($script:TcpRows | Where-Object { $_.Status -eq 'ERROR' })
+Assert-Equal '#38 redeemed attempt: one row again' $lostBaselineRow.Count 1
+Assert-Equal '#38 redeemed attempt: the ending attempt that a later one redeemed is in it' ($lostBaselineRow[0].Details -match '7\.4') True
+Assert-Equal '#38 redeemed attempt: three attempts in all, two failed and one redeemed' (([regex]::Matches($lostBaselineRow[0].Details, 'TCPv4 #')).Count) 3
+Assert-Equal '#38 redeemed attempt: no reading is invented for the protocol that lost its baseline' (@($script:TcpRows | Where-Object { $_.Check -eq 'TCPv4' }).Count) 0
+
+# Both snapshots fail for the same protocol: each row carries its own attempts and neither repeats the other's,
+# because each snapshot already has a row of its own to be read in.
+$bothFailBefore = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(16.6)
+    Counters  = @{ 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(16.5) 1000 10) }
+    Errors    = @([pscustomobject]@{ Protocol = 'TCPv4'; Error = 'Timed out'; Diagnostics = '' })
+    FailedAttempts = @(
+        [pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 1; Seconds = 8.0; Error = 'Timed out' },
+        [pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 2; Seconds = 8.0; Error = 'Timed out' })
+    WarmUpFailures = @()
+}
+$bothFailAfter = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(33.0)
+    Counters  = @{ 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(32.5) 1100 11) }
+    Errors    = @([pscustomobject]@{ Protocol = 'TCPv4'; Error = 'Timed out'; Diagnostics = '' })
+    FailedAttempts = @(
+        [pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 1; Seconds = 8.0; Error = 'Timed out' },
+        [pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 2; Seconds = 8.0; Error = 'Timed out' })
+    WarmUpFailures = @()
+}
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $bothFailBefore -After $bothFailAfter
+$bothFailRows = @($script:TcpRows | Where-Object { $_.Status -eq 'ERROR' })
+Assert-Equal '#38 both snapshots fail: one row each' $bothFailRows.Count 2
+Assert-Equal '#38 both snapshots fail: the first names two attempts, not four' (([regex]::Matches($bothFailRows[0].Details, 'TCPv4 #')).Count) 2
+Assert-Equal '#38 both snapshots fail: and so does the second' (([regex]::Matches($bothFailRows[1].Details, 'TCPv4 #')).Count) 2
+Assert-Equal '#38 both snapshots fail: the first is the baseline''s and says so' ((("{0}|{1}" -f ($bothFailRows[0].Details -match 'while the baseline was taken|取基準值時'), ($bothFailRows[0].Details -match 'while the ending values were taken|取結束值時')))) 'True|False'
+Assert-Equal '#38 both snapshots fail: the second is the ending''s and says so' ((("{0}|{1}" -f ($bothFailRows[1].Details -match 'while the ending values were taken|取結束值時'), ($bothFailRows[1].Details -match 'while the baseline was taken|取基準值時')))) 'True|False'
+
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

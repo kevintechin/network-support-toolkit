@@ -2979,21 +2979,28 @@ function Get-TcpAttemptSeconds {
 function Get-TcpReadFailureLines {
     param(
         [object]$Snapshot,
-        [string]$Protocol
+        [string]$Protocol,
+        [switch]$Ending
     )
 
     # What a row says about the counter reads of its own protocol that failed in one snapshot, whether or not a later
-    # attempt worked (backlog #38): one line, the pre-window read first because it was taken first. Until 1.2.8 a read
-    # that timed out and then succeeded handed back a clean counter and no record of the seconds it spent, and the row
-    # could not explain its own window. Which of these seconds fell inside that window is a different question, and
-    # the note below answers it; this line is about this counter, not about this window. Nothing is said about a read
-    # that behaved: a row explains what happened, not what did not (backlog #40).
+    # attempt worked (backlog #38): one line, naming the snapshot it belongs to, with the pre-window read first
+    # because it was taken first. Until 1.2.8 a read that timed out and then succeeded handed back a clean counter
+    # and no record of the seconds it spent, and the row could not explain its own window. Which of these seconds
+    # fell inside that window is a different question, and the note below answers it; this line is about this
+    # counter, not about this window. Nothing is said about a read that behaved: a row explains what happened, not
+    # what did not (backlog #40).
     $lines = @()
     $failed = @()
     $failed += @(@(Get-PropertyValue $Snapshot "WarmUpFailures" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
     $failed += @(@(Get-PropertyValue $Snapshot "FailedAttempts" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
     if (@($failed).Count -gt 0) {
-        $lines += ("Counter reads of this protocol that failed: {0} ({1} seconds in total)." -f (Format-TcpAttemptList $failed), (Get-TcpAttemptSeconds $failed))
+        if ($Ending) {
+            $lines += ("Counter reads of this protocol that failed while the ending values were taken: {0} ({1} seconds in total)." -f (Format-TcpAttemptList $failed), (Get-TcpAttemptSeconds $failed))
+        }
+        else {
+            $lines += ("Counter reads of this protocol that failed while the baseline was taken: {0} ({1} seconds in total)." -f (Format-TcpAttemptList $failed), (Get-TcpAttemptSeconds $failed))
+        }
     }
     return $lines
 }
@@ -3012,11 +3019,24 @@ function Compare-TcpCounters {
     # One row per read that failed, in the order the reads were made, and the attempts behind it (backlog #38). The
     # status, the check name and the message are what they were before the retry existed - a retry that hides a real
     # failure is worse than no retry - and what the row gained is the attempts: a failure that says nothing about
-    # what was tried teaches nothing afterwards. Read per snapshot rather than from one merged list, so that each
-    # error is rendered with the attempts of the snapshot it came from.
-    foreach ($snapshot in @($Before, $After)) {
+    # what was tried teaches nothing afterwards. Read per snapshot, so that each error is rendered with the attempts
+    # of the snapshot it came from - and with the other snapshot's attempts for that protocol when the other
+    # snapshot wrote no row of its own for it (PR #40, round 4). That case is the one where they would otherwise be
+    # lost entirely: a protocol whose counter could not be read in one snapshot has no reading and therefore no
+    # quality row, and the quality row is the only other place those attempts are named.
+    foreach ($isEnding in @($false, $true)) {
+        $snapshot = $Before
+        $other = $After
+        if ($isEnding) {
+            $snapshot = $After
+            $other = $Before
+        }
         foreach ($errorItem in @($snapshot.Errors)) {
-            $errorDetails = @([string]$errorItem.Error) + @(Get-TcpReadFailureLines -Snapshot $snapshot -Protocol ([string]$errorItem.Protocol))
+            $errorProtocol = [string]$errorItem.Protocol
+            $errorDetails = @([string]$errorItem.Error) + @(Get-TcpReadFailureLines -Snapshot $snapshot -Protocol $errorProtocol -Ending:$isEnding)
+            if (@(@($other.Errors) | Where-Object { [string]$_.Protocol -eq $errorProtocol }).Count -eq 0) {
+                $errorDetails += @(Get-TcpReadFailureLines -Snapshot $other -Protocol $errorProtocol -Ending:(-not $isEnding))
+            }
             Add-CheckResult -Category "TCP Retransmissions" -Check ("{0} counters" -f $errorItem.Protocol) -Status "ERROR" -Message "The TCP retransmission counter could not be read." -Details ((@($errorDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Diagnostics $errorItem.Diagnostics -Tag "tcp-retransmissions" | Out-Null
         }
     }

@@ -2956,19 +2956,26 @@ function Get-TcpAttemptSeconds {
 function Get-TcpReadFailureLines {
     param(
         [object]$Snapshot,
-        [string]$Protocol
+        [string]$Protocol,
+        [switch]$Ending
     )
 
     # 一列在單一快照中，對於自己這個通訊協定失敗的計數器讀取所要說的話——不論後續嘗試是否成功（backlog #38）：
-    # 寫成一行，窗前的讀取排在最前面，因為它最先發生。1.2.8 之前，逾時後才成功的讀取會交回乾淨的計數器、卻不留下
-    # 它花掉幾秒的紀錄，該列也就無法解釋自己的取樣窗。這些秒數有哪些落在窗內是另一個問題，由下面那句補充回答；
-    # 這一行講的是這個計數器，不是這個窗。讀取正常時什麼都不說：一列只解釋發生過的事，不解釋沒發生的事（backlog #40）。
+    # 寫成一行，指明它屬於哪一次快照，窗前的讀取排在最前面，因為它最先發生。1.2.8 之前，逾時後才成功的讀取會交回
+    # 乾淨的計數器、卻不留下它花掉幾秒的紀錄，該列也就無法解釋自己的取樣窗。這些秒數有哪些落在窗內是另一個問題，
+    # 由下面那句補充回答；這一行講的是這個計數器，不是這個窗。讀取正常時什麼都不說：一列只解釋發生過的事，不解釋
+    # 沒發生的事（backlog #40）。
     $lines = @()
     $failed = @()
     $failed += @(@(Get-PropertyValue $Snapshot "WarmUpFailures" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
     $failed += @(@(Get-PropertyValue $Snapshot "FailedAttempts" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
     if (@($failed).Count -gt 0) {
-        $lines += ("這個通訊協定讀取失敗的嘗試：{0}（合計 {1} 秒）。" -f (Format-TcpAttemptList $failed), (Get-TcpAttemptSeconds $failed))
+        if ($Ending) {
+            $lines += ("取結束值時，這個通訊協定讀取失敗的嘗試：{0}（合計 {1} 秒）。" -f (Format-TcpAttemptList $failed), (Get-TcpAttemptSeconds $failed))
+        }
+        else {
+            $lines += ("取基準值時，這個通訊協定讀取失敗的嘗試：{0}（合計 {1} 秒）。" -f (Format-TcpAttemptList $failed), (Get-TcpAttemptSeconds $failed))
+        }
     }
     return $lines
 }
@@ -2986,10 +2993,22 @@ function Compare-TcpCounters {
 
     # 每一次失敗的讀取一列，順序就是讀取的順序，後面附上嘗試紀錄（backlog #38）。狀態、檢查名稱與訊息維持重試出現
     # 之前的樣子——會掩蓋真實失敗的重試比不重試更糟——這一列多出來的是嘗試紀錄：不說明試過什麼的失敗，事後教不了
-    # 任何事。逐份快照讀取而不是合成一份清單，讓每個錯誤都配上它自己那份快照的嘗試紀錄。
-    foreach ($snapshot in @($Before, $After)) {
+    # 任何事。逐份快照讀取，讓每個錯誤都配上它自己那份快照的嘗試紀錄；另一份快照若沒有為同一個通訊協定寫出自己的
+    # 列，它的嘗試紀錄也一併附在這裡（PR #40 第 4 輪）。那正是它們原本會完全消失的情況：某個通訊協定的計數器在其中
+    # 一份快照讀不到，就沒有讀數、也就沒有品質列，而品質列是唯一另一個會提到那些嘗試的地方。
+    foreach ($isEnding in @($false, $true)) {
+        $snapshot = $Before
+        $other = $After
+        if ($isEnding) {
+            $snapshot = $After
+            $other = $Before
+        }
         foreach ($errorItem in @($snapshot.Errors)) {
-            $errorDetails = @([string]$errorItem.Error) + @(Get-TcpReadFailureLines -Snapshot $snapshot -Protocol ([string]$errorItem.Protocol))
+            $errorProtocol = [string]$errorItem.Protocol
+            $errorDetails = @([string]$errorItem.Error) + @(Get-TcpReadFailureLines -Snapshot $snapshot -Protocol $errorProtocol -Ending:$isEnding)
+            if (@(@($other.Errors) | Where-Object { [string]$_.Protocol -eq $errorProtocol }).Count -eq 0) {
+                $errorDetails += @(Get-TcpReadFailureLines -Snapshot $other -Protocol $errorProtocol -Ending:(-not $isEnding))
+            }
             Add-CheckResult -Category "TCP 重傳" -Check ("{0} 計數器" -f $errorItem.Protocol) -Status "ERROR" -Message "無法讀取 TCP 重傳計數器。" -Details ((@($errorDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Diagnostics $errorItem.Diagnostics -Tag "tcp-retransmissions" | Out-Null
         }
     }
