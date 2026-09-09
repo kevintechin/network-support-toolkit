@@ -95,13 +95,20 @@ function Start-LoadJobs {
         $flag = Join-Path $Root ("started_$j.flag")
         $jobs += Start-Job -ScriptBlock {
             param($from, $to, $flag)
-            # The flag is written after the first copy completes, so it signals real I/O rather than a job that has
-            # merely been created.
-            Copy-Item -LiteralPath $from -Destination $to -Recurse -Force -ErrorAction SilentlyContinue
-            New-Item -ItemType File -Path $flag -Force | Out-Null
+            # The flag means "this worker has copied the tree", not "this worker has tried to": the copy is silenced
+            # with -ErrorAction SilentlyContinue, so one that fails - no room for another copy of the tree, a
+            # permission, a path that cannot be written - would otherwise still signal ready, and a worker repeating
+            # failed copies is not load (PR #40, round 17). The destination is counted against the source before the
+            # flag is written, and a worker that cannot copy never signals at all, which the parent's wait reports as
+            # fewer jobs copying than were asked for.
+            $expected = @(Get-ChildItem -LiteralPath $from -File -ErrorAction SilentlyContinue).Count
             while ($true) {
                 Remove-Item -LiteralPath $to -Recurse -Force -ErrorAction SilentlyContinue
                 Copy-Item -LiteralPath $from -Destination $to -Recurse -Force -ErrorAction SilentlyContinue
+                if (-not (Test-Path -LiteralPath $flag)) {
+                    $copied = @(Get-ChildItem -LiteralPath $to -File -Recurse -ErrorAction SilentlyContinue).Count
+                    if ($expected -gt 0 -and $copied -ge $expected) { New-Item -ItemType File -Path $flag -Force | Out-Null }
+                }
             }
         } -ArgumentList $source, $target, $flag
     }
