@@ -42,7 +42,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：報告保存例外類型、訊息與內部例外；腳本位置與呼叫堆疊只寫入 JSON 報告（Diagnostics）。
 
-$script:ToolVersion = "1.2.7"
+$script:ToolVersion = "1.2.8"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -2806,35 +2806,107 @@ function Add-DriverInfoResult {
 }
 
 function Get-CimOrWmiInstance {
-    param([string]$ClassName)
+    param(
+        [string]$ClassName,
+        [int]$Attempts = 1,
+        [System.Collections.IList]$FailedAttempts,
+        [string[]]$RequireProperty
+    )
 
-    if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
-        return Get-CimInstance -ClassName $ClassName -OperationTimeoutSec 8 -ErrorAction Stop
+    # 本工具所有 CIM/WMI 查詢的唯一入口；從 1.2.8 起，這裡也是查詢可以嘗試一次以上的地方（backlog #38）。效能計數器
+    # 讀取若耗盡八秒上限、第二次才成功，代價是這幾秒；若不再嘗試，代價是整個量測——而依 2026-09-08 的證據，付出代價
+    # 的正是剛解壓縮的副本裡的第一次執行，也就是使用者出問題時會做的那一次。每一次失敗的嘗試都會連同耗時記錄到
+    # $FailedAttempts，無論後續是否成功：不留痕跡的重試無法解釋它拉長的取樣窗。未指定 -Attempts 的呼叫者維持原本的
+    # 單次嘗試。
+    if ($Attempts -lt 1) { $Attempts = 1 }
+    $lastError = $null
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $attemptStarted = Get-Date
+        try {
+            $instance = $null
+            if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
+                $instance = Get-CimInstance -ClassName $ClassName -OperationTimeoutSec 8 -ErrorAction Stop
+            }
+            elseif (Get-Command Get-WmiObject -ErrorAction SilentlyContinue) {
+                $instance = Get-WmiObject -Class $ClassName -ErrorAction Stop
+            }
+            else {
+                throw "系統沒有可用的 CIM/WMI 指令。"
+            }
+            # 查詢沒有回傳任何東西，或回傳的實例缺少呼叫者要的欄位，同樣是一次失敗的讀取，和拋出例外沒有兩樣——
+            # 這個檢查搬進嘗試之前是寫在迴圈外的，於是逾時有第二次機會、它卻沒有（PR #40 第 5 輪）。只有指名欄位的
+            # 呼叫者會被檢查；窗前讀取不指名任何欄位，因為它的讀數本來就要丟棄。
+            if (@($RequireProperty).Count -gt 0) {
+                if ($instance -is [array]) {
+                    $instance = $instance | Select-Object -First 1
+                }
+                if ($null -eq $instance) {
+                    throw "效能計數器類別 $ClassName 沒有回傳資料。"
+                }
+                foreach ($requiredName in $RequireProperty) {
+                    if ($null -eq $instance.PSObject.Properties[$requiredName]) {
+                        throw "效能計數器類別 $ClassName 缺少必要欄位。"
+                    }
+                }
+            }
+            return $instance
+        }
+        catch {
+            $lastError = $_
+            if ($null -ne $FailedAttempts) {
+                [void]$FailedAttempts.Add([pscustomobject][ordered]@{
+                    ClassName = $ClassName
+                    Attempt   = $attempt
+                    Seconds   = [math]::Round(((Get-Date) - $attemptStarted).TotalSeconds, 1)
+                    Error     = Get-ExceptionDetails $_
+                })
+            }
+        }
     }
-    if (Get-Command Get-WmiObject -ErrorAction SilentlyContinue) {
-        return Get-WmiObject -Class $ClassName -ErrorAction Stop
-    }
-    throw "系統沒有可用的 CIM/WMI 指令。"
+    throw $lastError
 }
 
 function Get-TcpCounterSnapshot {
+    param([switch]$WarmUp)
+
     $snapshot = @{}
     $errors = New-Object System.Collections.ArrayList
+    $failedAttempts = New-Object System.Collections.ArrayList
+    $warmUpFailures = New-Object System.Collections.ArrayList
+
+    # -WarmUp：每個類別做一次會被丟掉的讀取，而且自成一輪，排在任何計數器被讀取之前（backlog #38）。自成一輪正是
+    # 重點（PR #40 第 3 輪）：和量測讀取交錯時，TCPv6 的暖身落在 TCPv4 的基準時間戳之後，也就是落在 TCPv4 的窗內
+    # ——而只是「比較慢」的暖身，正是這個機制要吸收的啟動成本，會拉長那個窗、卻留不下任何失敗紀錄可以解釋它。放在
+    # 這裡，每次暖身都在兩個基準時間戳之前，對它們的延後一視同仁，因此拉長不了任何窗。讀數會被丟棄——這不是量測，
+    # 它失敗也不是發現。失敗只記錄、不做別的，因為「一個工作階段的第一次讀取是不是失敗的那一次」正是這個項目還沒
+    # 有答案的問題。
+    if ($WarmUp) {
+        foreach ($protocol in @("TCPv4", "TCPv6")) {
+            $className = "Win32_PerfRawData_Tcpip_$protocol"
+            $warmUpAttempts = New-Object System.Collections.ArrayList
+            try {
+                Get-CimOrWmiInstance -ClassName $className -FailedAttempts $warmUpAttempts | Out-Null
+            }
+            catch {
+                # 刻意丟棄：這次嘗試已經記在 $warmUpAttempts，而這次讀取本來就不是讀數。
+            }
+            foreach ($item in $warmUpAttempts) {
+                [void]$warmUpFailures.Add([pscustomobject][ordered]@{
+                    Protocol = $protocol
+                    Phase    = "warm-up"
+                    Attempt  = $item.Attempt
+                    Seconds  = $item.Seconds
+                    Error    = $item.Error
+                })
+            }
+        }
+    }
 
     foreach ($protocol in @("TCPv4", "TCPv6")) {
         $className = "Win32_PerfRawData_Tcpip_$protocol"
+        $readAttempts = New-Object System.Collections.ArrayList
         try {
-            $counter = Get-CimOrWmiInstance -ClassName $className
-            if ($counter -is [array]) {
-                $counter = $counter | Select-Object -First 1
-            }
-            if ($null -eq $counter) {
-                throw "效能計數器類別 $className 沒有回傳資料。"
-            }
-            if ($null -eq $counter.PSObject.Properties["SegmentsSentPersec"] -or
-                $null -eq $counter.PSObject.Properties["SegmentsRetransmittedPersec"]) {
-                throw "效能計數器類別 $className 缺少必要欄位。"
-            }
+            $counter = Get-CimOrWmiInstance -ClassName $className -Attempts 2 -FailedAttempts $readAttempts -RequireProperty @("SegmentsSentPersec", "SegmentsRetransmittedPersec")
 
             $snapshot[$protocol] = [pscustomobject][ordered]@{
                 Protocol        = $protocol
@@ -2850,13 +2922,73 @@ function Get-TcpCounterSnapshot {
                 Diagnostics = Get-ExceptionDiagnostics $_
             })
         }
+        foreach ($item in $readAttempts) {
+            [void]$failedAttempts.Add([pscustomobject][ordered]@{
+                Protocol = $protocol
+                Phase    = "read"
+                Attempt  = $item.Attempt
+                Seconds  = $item.Seconds
+                Error    = $item.Error
+            })
+        }
     }
 
+    # Timestamp 是整份快照完成的時間；每個通訊協定另有自己的時間戳，在它自己的讀取回來時取得，1.2.8 起取樣時間就是
+    # 由那一對時間戳計算。FailedAttempts 保留量測讀取中失敗的嘗試（即使之後成功也保留）；WarmUpFailures 則是取樣窗
+    # 之前那次會被丟棄的讀取失敗的紀錄。
     return [pscustomobject][ordered]@{
-        Timestamp = Get-Date
-        Counters  = $snapshot
-        Errors    = @($errors)
+        Timestamp      = Get-Date
+        Counters       = $snapshot
+        Errors         = @($errors)
+        FailedAttempts = @($failedAttempts)
+        WarmUpFailures = @($warmUpFailures)
     }
+}
+
+function Format-TcpAttemptList {
+    param([object[]]$Attempts)
+
+    # 失敗讀取要怎麼稱呼，只有這一個地方決定，因為有三種列會引用它：讀不到的計數器那一列、窗內承受了該失敗的通訊
+    # 協定那一列，以及列出某個通訊協定自己失敗讀取的那一行。窗前的讀取不論出現在哪裡都會標明，這樣它的秒數就不會
+    # 被當成某個窗裡的秒數。
+    return ((@($Attempts) | ForEach-Object {
+        if ([string]$_.Phase -eq "warm-up") { "{0} #{1}（窗前捨棄的讀取）" -f $_.Protocol, $_.Attempt }
+        else { "{0} #{1}" -f $_.Protocol, $_.Attempt }
+    }) -join ", ")
+}
+
+function Get-TcpAttemptSeconds {
+    param([object[]]$Attempts)
+
+    if (@($Attempts).Count -eq 0) { return 0 }
+    return [math]::Round(((@($Attempts) | Measure-Object -Property Seconds -Sum).Sum), 1)
+}
+
+function Get-TcpReadFailureLines {
+    param(
+        [object]$Snapshot,
+        [string]$Protocol,
+        [switch]$Ending
+    )
+
+    # 一列在單一快照中，對於自己這個通訊協定失敗的計數器讀取所要說的話——不論後續嘗試是否成功（backlog #38）：
+    # 寫成一行，指明它屬於哪一次快照，窗前的讀取排在最前面，因為它最先發生。1.2.8 之前，逾時後才成功的讀取會交回
+    # 乾淨的計數器、卻不留下它花掉幾秒的紀錄，該列也就無法解釋自己的取樣窗。這些秒數有哪些落在窗內是另一個問題，
+    # 由下面那句補充回答；這一行講的是這個計數器，不是這個窗。讀取正常時什麼都不說：一列只解釋發生過的事，不解釋
+    # 沒發生的事（backlog #40）。
+    $lines = @()
+    $failed = @()
+    $failed += @(@(Get-PropertyValue $Snapshot "WarmUpFailures" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
+    $failed += @(@(Get-PropertyValue $Snapshot "FailedAttempts" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
+    if (@($failed).Count -gt 0) {
+        if ($Ending) {
+            $lines += ("取結束值時，這個通訊協定讀取失敗的嘗試：{0}（合計 {1} 秒）。" -f (Format-TcpAttemptList $failed), (Get-TcpAttemptSeconds $failed))
+        }
+        else {
+            $lines += ("取基準值時，這個通訊協定讀取失敗的嘗試：{0}（合計 {1} 秒）。" -f (Format-TcpAttemptList $failed), (Get-TcpAttemptSeconds $failed))
+        }
+    }
+    return $lines
 }
 
 function Compare-TcpCounters {
@@ -2870,17 +3002,40 @@ function Compare-TcpCounters {
         return
     }
 
-    $counterErrors = @()
-    $counterErrors += @($Before.Errors)
-    $counterErrors += @($After.Errors)
-    foreach ($errorItem in $counterErrors) {
-        Add-CheckResult -Category "TCP 重傳" -Check ("{0} 計數器" -f $errorItem.Protocol) -Status "ERROR" -Message "無法讀取 TCP 重傳計數器。" -Details $errorItem.Error -Diagnostics $errorItem.Diagnostics -Tag "tcp-retransmissions" | Out-Null
+    # 每一次失敗的讀取一列，順序就是讀取的順序，後面附上嘗試紀錄（backlog #38）。狀態、檢查名稱與訊息維持重試出現
+    # 之前的樣子——會掩蓋真實失敗的重試比不重試更糟——這一列多出來的是嘗試紀錄：不說明試過什麼的失敗，事後教不了
+    # 任何事。逐份快照讀取，讓每個錯誤都配上它自己那份快照的嘗試紀錄；另一份快照若沒有為同一個通訊協定寫出自己的
+    # 列，它的嘗試紀錄也一併附在這裡（PR #40 第 4 輪）。那正是它們原本會完全消失的情況：某個通訊協定的計數器在其中
+    # 一份快照讀不到，就沒有讀數、也就沒有品質列，而品質列是唯一另一個會提到那些嘗試的地方。
+    foreach ($isEnding in @($false, $true)) {
+        $snapshot = $Before
+        $other = $After
+        if ($isEnding) {
+            $snapshot = $After
+            $other = $Before
+        }
+        foreach ($errorItem in @($snapshot.Errors)) {
+            $errorProtocol = [string]$errorItem.Protocol
+            $errorDetails = @([string]$errorItem.Error) + @(Get-TcpReadFailureLines -Snapshot $snapshot -Protocol $errorProtocol -Ending:$isEnding)
+            if (@(@($other.Errors) | Where-Object { [string]$_.Protocol -eq $errorProtocol }).Count -eq 0) {
+                $errorDetails += @(Get-TcpReadFailureLines -Snapshot $other -Protocol $errorProtocol -Ending:(-not $isEnding))
+            }
+            Add-CheckResult -Category "TCP 重傳" -Check ("{0} 計數器" -f $errorItem.Protocol) -Status "ERROR" -Message "無法讀取 TCP 重傳計數器。" -Details ((@($errorDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Diagnostics $errorItem.Diagnostics -Tag "tcp-retransmissions" | Out-Null
+        }
     }
 
     $warningPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionWarningPercent" 2) 2
     $criticalPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalPercent" 5) 5
     $criticalCount = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalCount" 50) 50)
     $minimumSegments = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
+    # Get-TcpCounterSnapshot 讀取兩個通訊協定的順序，決定失敗的讀取落在誰的窗裡（backlog #38）。讀取是循序的，每個
+    # 通訊協定的時間戳都在它自己的讀取回來時取得，因此會拉長某個窗的，是那些延後了它的結束時間戳、卻沒有延後它的
+    # 起始時間戳的讀取。在結束快照裡，那是排在這個通訊協定之前（含自己）的每次讀取；在基準快照裡，則是排在它*之後*
+    # 的每次讀取——卡住的 TCPv6 基準讀取會把 TCPv6 的起始時間戳連同後面整段執行一起往後推，卻推不動 TCPv4 的，
+    # 於是它正好落在 TCPv4 的窗內（PR #40 第 1 輪：初稿說基準快照的失敗一律無害，那只對最先讀取的通訊協定成立）。
+    # 窗前讀取兩份清單都不列入，因為它們全都在兩個基準時間戳之前完成，拉長不了任何窗（第 3 輪）。
+    $readOrder = @("TCPv4", "TCPv6")
+    $configuredSeconds = [math]::Max(1, (ConvertTo-IntSafe (Get-PropertyValue $script:RunOptions "SampleSeconds" 8) 8))
 
     foreach ($protocol in @("TCPv4", "TCPv6")) {
         if (-not $Before.Counters.ContainsKey($protocol) -or -not $After.Counters.ContainsKey($protocol)) {
@@ -2892,8 +3047,29 @@ function Compare-TcpCounters {
         $sentDeltaDouble = [double]$end.SegmentsSent - [double]$start.SegmentsSent
         $retransDeltaDouble = [double]$end.Retransmitted - [double]$start.Retransmitted
 
+        # 一列對於它背後那些讀取應該交代的證據，在任何分支可能提前返回之前就先備妥：計數器重設那一列以前是寫完就
+        # 跳過這幾行的，於是在計數器重設的執行裡，失敗後又被救回的讀取就消失了（PR #40 第 5 輪）。這個通訊協定的每
+        # 一列都會帶著它們。
+        $sampleSeconds = [math]::Round((New-TimeSpan -Start $start.Timestamp -End $end.Timestamp).TotalSeconds, 1)
+        $durationLine = "取樣時間：$sampleSeconds 秒（設定的最短時間：$configuredSeconds 秒）"
+        $evidenceLines = @()
+        $evidenceLines += @(Get-TcpReadFailureLines -Snapshot $Before -Protocol $protocol)
+        $selfIndex = $readOrder.IndexOf($protocol)
+        $windowAttempts = @()
+        $windowAttempts += @(@(Get-PropertyValue $Before "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -gt $selfIndex })
+        $windowAttempts += @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $selfIndex })
+        $windowNote = ""
+        if (@($windowAttempts).Count -gt 0) {
+            $windowNote = ("補充：這 {0} 秒當中有 {1} 秒花在取樣窗內失敗的計數器讀取（{2}）；設定的最短時間是 {3} 秒。" -f $sampleSeconds, (Get-TcpAttemptSeconds $windowAttempts), (Format-TcpAttemptList $windowAttempts), $configuredSeconds)
+            $evidenceLines += $windowNote
+        }
+
         if ($sentDeltaDouble -lt 0 -or $retransDeltaDouble -lt 0) {
-            Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "ERROR" -Message "計數器在檢測期間重設或溢位，無法計算增量。" -Details ("起始 Sent={0}, Retrans={1}; 結束 Sent={2}, Retrans={3}" -f $start.SegmentsSent, $start.Retransmitted, $end.SegmentsSent, $end.Retransmitted) -Tag "tcp-retransmissions" | Out-Null
+            # 即使增量算不出來，窗仍然是事實，所以這一列會印出它跨越的時間長度與相應證據。不該印的是關於「上面的
+            # 增量」那句話——這一列根本沒有增量。補充句只講秒數與讀取，那句關於增量的話由有增量的那一列自己加上
+            # （PR #40 第 7 輪）。
+            $resetDetails = @($durationLine, ("起始 Sent={0}, Retrans={1}; 結束 Sent={2}, Retrans={3}" -f $start.SegmentsSent, $start.Retransmitted, $end.SegmentsSent, $end.Retransmitted)) + $evidenceLines
+            Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "ERROR" -Message "計數器在檢測期間重設或溢位，無法計算增量。" -Details ((@($resetDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Tag "tcp-retransmissions" | Out-Null
             continue
         }
 
@@ -2905,9 +3081,8 @@ function Compare-TcpCounters {
             $script:RetransmissionRateComputed = $true
         }
 
-        $sampleSeconds = [math]::Round((New-TimeSpan -Start $Before.Timestamp -End $After.Timestamp).TotalSeconds, 1)
         $details = @(
-            "取樣時間：$sampleSeconds 秒",
+            $durationLine,
             "傳送 TCP Segments 增量：$sentDelta",
             "重傳 Segments 增量：$retransDelta",
             "近似重傳比例：$rate%",
@@ -2920,6 +3095,13 @@ function Compare-TcpCounters {
 
         if ($rate -gt 100) {
             $details += [Environment]::NewLine + "補充：比例超過 100% 代表重傳的是取樣窗之前送出的 segment——請視為比值而非百分比。"
+        }
+
+        foreach ($line in $evidenceLines) {
+            $details += [Environment]::NewLine + $line
+        }
+        if ($windowNote -ne "") {
+            $details += [Environment]::NewLine + "上面的增量仍然是這個通訊協定在所示窗內自己的計數。"
         }
 
         if ($sentDelta -eq 0 -and $retransDelta -eq 0) {
@@ -3651,11 +3833,13 @@ function Run-AllChecks {
     } | Out-Null
 
     $tcpBaseline = Invoke-CheckStep -Category "TCP 重傳" -Name "取得 TCP 重傳基準值" -Progress 10 -Action {
-        $snapshot = Get-TcpCounterSnapshot
-        if ($snapshot.Counters.Count -eq 0) {
-            throw "TCPv4 與 TCPv6 計數器都無法讀取。"
-        }
-        return $snapshot
+        # 只有基準值使用 -WarmUp：這次會被丟棄的讀取，把計數器提供者第一次查詢要收的成本付在取樣窗之外，
+        # 在那裡它不會拉長窗所回報的數字（backlog #38）。
+        # 不論快照裡有什麼都照樣回傳，包括兩個類別都失敗的基準快照（PR #40 第 5 輪）。在那裡拋出例外，換來的是
+        # Invoke-CheckStep 的通用步驟錯誤列，而快照——四次嘗試、它們的秒數，以及任何窗前失敗——會跟著被丟掉，分析
+        # 階段只能寫出「沒有完整的前後資料」，對那些讀取隻字未提。Compare-TcpCounters 會從這個物件為每一次失敗的
+        # 讀取寫出一列，說的是同一件事，但證據都在。
+        return (Get-TcpCounterSnapshot -WarmUp)
     }
     $tcpSampleStart = Get-Date
 

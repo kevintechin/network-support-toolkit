@@ -10,7 +10,7 @@ param([string]$ReportPath, [string]$ReportDir, [string]$ConfigDir)
 # two configured standard rules against one row, a required connectivity group without targets, the CIM fallback's
 # data-source row missing, three retransmission rows with both counter classes readable, a protocol never named), while
 # the zero-adapter shape on a machine without a connected adapter, a present data-source row after a cmdlet failure and
-# the TCPv6 error rows with the TCPv6 class unreadable, the one step-error row and one generic row with neither TCP class
+# the TCPv6 error rows with the TCPv6 class unreadable, the four error rows and no step error with neither TCP class
 # readable, and the two step-error rows and one aggregate counter row without adapter statistics are accepted. Nothing
 # depends on the connectivity of the machine.
 #   -ReportPath: the JSON report to use (the runner passes the en-US user report the acceptance step produced)
@@ -102,15 +102,23 @@ function ConvertTo-TcpV6Unreadable($Report) {
 $r = ConvertTo-TcpV6Unreadable (New-Fixture); Assert-Case 'TCPv6 counters unreadable: two error rows, facts agree' @(Test-ResultSet $r $cfg @{} (With $facts @{ TcpCounters = @{ TCPv4 = $true; TCPv6 = $false } })) $true ''
 $r = ConvertTo-TcpV6Unreadable (New-Fixture); Assert-Case 'three retransmission rows with both counter classes readable' @(Test-ResultSet $r $cfg @{} $facts) $false 'tcp-retransmissions: 3 row(s), expected 2'
 $r = New-Fixture; foreach ($x in $r.Results) { if ($x.Tag -eq 'tcp-retransmissions') { $x.Check = 'TCPv4' } }; Assert-Case 'TCPv4 named twice, TCPv6 never' @(Test-ResultSet $r $cfg @{} $facts) $false 'no tcp-retransmissions row for TCPv6'
-# With neither TCP counter class readable the baseline step fails (one step-error row) and the analysis writes the single
-# generic "System Counters" row.
+# With neither TCP counter class readable the baseline is no longer thrown away (backlog #38): each sample writes one
+# error row per class - four in all - and there is no step-error row for the baseline step at all.
 function ConvertTo-TcpUnreadable($Report) {
     $Report.Results = @($Report.Results | Where-Object { $_.Tag -ne 'tcp-retransmissions' })
-    $Report.Results = @($Report.Results) + @((New-Row $Report.Results[0] 'step-error' 'Get TCP Retransmission Baseline' 'ERROR'), (New-Row $Report.Results[0] 'tcp-retransmissions' 'System Counters' 'ERROR'))
+    foreach ($protocol in @('TCPv4', 'TCPv6')) {
+        foreach ($i in 1..2) { $Report.Results = @($Report.Results) + @(New-Row $Report.Results[0] 'tcp-retransmissions' ($protocol + ' counters') 'ERROR') }
+    }
     return $Report
 }
-$r = ConvertTo-TcpUnreadable (New-Fixture); Assert-Case 'neither TCP counter class readable: one step-error row and the generic row, facts agree' @(Test-ResultSet $r $cfg @{} (With $facts @{ TcpCounters = @{ TCPv4 = $false; TCPv6 = $false } })) $true ''
-$r = ConvertTo-TcpUnreadable (New-Fixture); Assert-Case 'the same shape with both counter classes readable' @(Test-ResultSet $r $cfg @{} $facts) $false 'step-error: 1 row(s), expected 0'
+$r = ConvertTo-TcpUnreadable (New-Fixture); Assert-Case 'neither TCP counter class readable: four error rows and no step error, facts agree' @(Test-ResultSet $r $cfg @{} (With $facts @{ TcpCounters = @{ TCPv4 = $false; TCPv6 = $false } })) $true ''
+$r = ConvertTo-TcpUnreadable (New-Fixture); Assert-Case 'the same shape with both counter classes readable' @(Test-ResultSet $r $cfg @{} $facts) $false 'tcp-retransmissions: 4 row(s), expected 2'
+# And the shape 1.2.7 produced - the baseline step failing and one generic row for the pair - is now a report the
+# facts do not explain, whatever the counters did.
+$r = New-Fixture
+$r.Results = @($r.Results | Where-Object { $_.Tag -ne 'tcp-retransmissions' })
+$r.Results = @($r.Results) + @((New-Row $r.Results[0] 'step-error' 'Get TCP Retransmission Baseline' 'ERROR'), (New-Row $r.Results[0] 'tcp-retransmissions' 'System Counters' 'ERROR'))
+Assert-Case 'the pre-1.2.8 shape with neither class readable' @(Test-ResultSet $r $cfg @{} (With $facts @{ TcpCounters = @{ TCPv4 = $false; TCPv6 = $false } })) $false 'step-error: 1 row(s), expected 0'
 # Without adapter statistics both sampling steps fail (two step-error rows) and the analysis writes one aggregate row.
 function ConvertTo-NoAdapterStatistics($Report) {
     $Report.Results = @($Report.Results | Where-Object { $_.Tag -ne 'adapter-errors' })
