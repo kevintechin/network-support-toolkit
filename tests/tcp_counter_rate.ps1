@@ -110,6 +110,10 @@ function Measure-Condition {
                 Attempts    = 1 + $failed.Count
                 FailedFirst = ($failed.Count -gt 0)
                 FailSeconds = [math]::Round((($failed | Measure-Object -Property Seconds -Sum).Sum), 1)
+                # Each attempt keeps its own duration beside the total, because the per-iteration line quotes the
+                # attempts one by one: a total printed as one attempt's time is evidence that says something false,
+                # which is worse than none at all and is the very thing #38 is about (PR #40, round 2).
+                FailDetail  = ((@($failed) | ForEach-Object { "attempt {0} failed after {1} s" -f $_.Attempt, $_.Seconds }) -join '; ')
                 Error       = (@($snapshot.Errors | Where-Object { [string]$_.Protocol -eq $protocol } | ForEach-Object { ($_.Error -split "`r`n")[0] }) -join ' | ')
             })
         }
@@ -132,7 +136,7 @@ function Write-ConditionSummary {
     if ($total -gt 0) { $lostRate = [math]::Round((100.0 * $lost.Count / $total), 1) }
     Write-Output ("{0,-6} {1,6} reads   first-attempt failures {2,4} ({3,5}%)   lost after both attempts {4,4} ({5,5}%)   {6} s spent on failed attempts" -f $Name, $total, $firstFailures.Count, $rate, $lost.Count, $lostRate, $seconds)
     foreach ($item in $firstFailures) {
-        Write-Output ("       iteration {0,3} {1}: attempt 1 failed after {2} s{3}" -f $item.Iteration, $item.Protocol, $item.FailSeconds, $(if ($item.Read) { ', the second attempt succeeded' } else { ', and so did the second: ' + $item.Error }))
+        Write-Output ("       iteration {0,3} {1}: {2}{3}" -f $item.Iteration, $item.Protocol, $item.FailDetail, $(if ($item.Read) { '; a later attempt succeeded' } else { '; the read was lost: ' + $item.Error }))
     }
 }
 
