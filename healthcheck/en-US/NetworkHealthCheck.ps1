@@ -2874,15 +2874,17 @@ function Get-TcpCounterSnapshot {
     $failedAttempts = New-Object System.Collections.ArrayList
     $warmUpFailures = New-Object System.Collections.ArrayList
 
-    foreach ($protocol in @("TCPv4", "TCPv6")) {
-        $className = "Win32_PerfRawData_Tcpip_$protocol"
-        # -WarmUp: one throwaway read per class before the sample window opens (backlog #38). The two reads of a
-        # snapshot are serial, so a call that waits out its limit inside the window lengthens the window this
-        # protocol and the one after it report; the same call made here costs the run its seconds and the
-        # measurement nothing. The reading is discarded - this is not a measurement, and a failure of it is not a
-        # finding. It is recorded and no more, because whether the first read of a session is the one that fails is
-        # exactly the question this item leaves open.
-        if ($WarmUp) {
+    # -WarmUp: one throwaway read per class, in a pass of its own before any counter is read (backlog #38). A pass
+    # of its own is the point (PR #40, round 3): interleaved with the measured reads, TCPv6's warm-up fell after
+    # TCPv4's baseline stamp and so inside TCPv4's window - and a warm-up that is merely slow, which is the
+    # start-up cost this feature exists to absorb, would have lengthened that window while leaving no failure to
+    # explain it. Taken here, every warm-up precedes both baseline stamps, delays them equally, and lengthens no
+    # window at all. The readings are discarded - this is not a measurement, and a failure of one is not a finding.
+    # Failures are recorded and no more, because whether the first read of a session is the one that fails is
+    # exactly the question this item leaves open.
+    if ($WarmUp) {
+        foreach ($protocol in @("TCPv4", "TCPv6")) {
+            $className = "Win32_PerfRawData_Tcpip_$protocol"
             $warmUpAttempts = New-Object System.Collections.ArrayList
             try {
                 Get-CimOrWmiInstance -ClassName $className -FailedAttempts $warmUpAttempts | Out-Null
@@ -2900,7 +2902,10 @@ function Get-TcpCounterSnapshot {
                 })
             }
         }
+    }
 
+    foreach ($protocol in @("TCPv4", "TCPv6")) {
+        $className = "Win32_PerfRawData_Tcpip_$protocol"
         $readAttempts = New-Object System.Collections.ArrayList
         try {
             $counter = Get-CimOrWmiInstance -ClassName $className -Attempts 2 -FailedAttempts $readAttempts
@@ -3026,8 +3031,8 @@ function Compare-TcpCounters {
     # ending snapshot that is every read at or before this protocol; in the baseline snapshot it is every read
     # *after* it - a stalled TCPv6 baseline read pushes TCPv6's opening stamp and the rest of the run alike, but not
     # TCPv4's, so it lands squarely inside TCPv4's window (PR #40, round 1: the first draft called every baseline
-    # failure harmless, which is true only of the protocol read first). The pre-window reads of those later
-    # protocols count the same way, for the same reason.
+    # failure harmless, which is true only of the protocol read first). The pre-window reads are in neither list,
+    # because they are all taken before either baseline stamp and lengthen no window (round 3).
     $readOrder = @("TCPv4", "TCPv6")
     $configuredSeconds = [math]::Max(1, (ConvertTo-IntSafe (Get-PropertyValue $script:RunOptions "SampleSeconds" 8) 8))
 
@@ -3080,7 +3085,6 @@ function Compare-TcpCounters {
         }
         $selfIndex = $readOrder.IndexOf($protocol)
         $windowAttempts = @()
-        $windowAttempts += @(@(Get-PropertyValue $Before "WarmUpFailures" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -gt $selfIndex })
         $windowAttempts += @(@(Get-PropertyValue $Before "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -gt $selfIndex })
         $windowAttempts += @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $selfIndex })
         if (@($windowAttempts).Count -gt 0) {

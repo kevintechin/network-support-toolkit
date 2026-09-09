@@ -395,6 +395,15 @@ Assert-Equal '#38 warm-up: its failure is kept apart' (@($snapWarm.WarmUpFailure
 Assert-Equal '#38 warm-up: and is not counted as a measured attempt' (@($snapWarm.FailedAttempts).Count) 1
 Assert-Equal '#38 warm-up: the throwaway read is attempted once, not twice' (@($snapWarm.WarmUpFailures)[0].Attempt) 1
 
+# PR #40, round 3: the warm-ups are a pass of their own, taken before any counter is read. Interleaved with the
+# measured reads, TCPv6's warm-up fell after TCPv4's baseline stamp and so inside TCPv4's window - and a warm-up that
+# is merely slow, which is the start-up cost the feature exists to absorb, would have lengthened that window while
+# leaving no failure behind to explain it. The call order is the assertion: both classes warmed, then both read.
+Reset-CimStub @{}
+$snapOrdered = Get-TcpCounterSnapshot -WarmUp
+Assert-Equal '#38 warm-up: every protocol is warmed before any counter is read' ($script:CimCalls -join ',') ("{0},{1},{0},{1}" -f $v4Class, $v6Class)
+Assert-Equal '#38 warm-up: and both counters are still read' $snapOrdered.Counters.Count 2
+
 # Where the warm-up goes: the baseline snapshot takes it, the ending one does not - a throwaway read inside the
 # sample window would lengthen the very thing it is there to protect. Read off the AST, because the run itself needs
 # a machine with counters on it.
@@ -468,9 +477,10 @@ Assert-Equal '#38 clean run: and nothing about a window that did not run long' (
 
 # PR #40, round 1: a baseline read that stalls delays every stamp taken after it, so it lands inside the window of
 # each protocol read *before* it - the first draft of this change called every baseline failure harmless, which is
-# true only of the protocol read first. Here TCPv6's pre-window read and its first measured attempt fail (7.3 s and
-# 8.9 s, 16.2 together): TCPv6's own window opens after them and is untouched, while TCPv4's window opened before
-# them and carries all 16.2 of those seconds inside it.
+# true only of the protocol read first. Here TCPv6's pre-window read and its first measured attempt both fail (7.3 s
+# and 8.9 s). Only the measured one is inside TCPv4's window: since round 3 the warm-ups are a pass of their own,
+# before either baseline stamp, so a pre-window read lengthens nobody's window and appears only as the failed read
+# of its own protocol. TCPv6's own window opens after both and is untouched either way.
 $baselineDelayBefore = [pscustomobject]@{
     Timestamp = $fixtureStart.AddSeconds(17.0)
     Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $fixtureStart 1000 10); 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(16.5) 1000 10) }
@@ -488,11 +498,13 @@ Compare-TcpCounters -Before $baselineDelayBefore -After $baselineDelayAfter
 $delayV4 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv4' })[0]
 $delayV6 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv6' })[0]
 Assert-Equal '#38 baseline delay: the earlier protocol reports the window it really measured' ($delayV4.Details -match '(?<![\d.])25(?![\d.])') True
-Assert-Equal '#38 baseline delay: and says the later protocol''s failed reads are inside it' ($delayV4.Details -match '16\.2') True
-Assert-Equal '#38 baseline delay: naming both of them, the pre-window read included' (([regex]::Matches($delayV4.Details, 'TCPv6 #1')).Count) 2
-Assert-Equal '#38 baseline delay: the pre-window read is marked as one' ($delayV4.Details -match 'TCPv6 #1 \(the discarded|TCPv6 #1（窗前捨棄') True
+Assert-Equal '#38 baseline delay: and says the later protocol''s failed measured read is inside it' ($delayV4.Details -match '8\.9') True
+Assert-Equal '#38 baseline delay: naming it, once' (([regex]::Matches($delayV4.Details, 'TCPv6 #1')).Count) 1
+Assert-Equal '#38 baseline delay: the pre-window read is not among them, being taken before either baseline stamp' ($delayV4.Details -match 'TCPv6 #1 \(the discarded|TCPv6 #1（窗前捨棄') False
+Assert-Equal '#38 baseline delay: so the seconds are the measured attempt''s alone' ($delayV4.Details -match '16\.2') False
 Assert-Equal '#38 baseline delay: the later protocol''s own window opened after them' ($delayV6.Details -match '(?<![\d.])9(?![\d.])') True
 Assert-Equal '#38 baseline delay: so its row names them once, as its own reads, and not as its window''s' (([regex]::Matches($delayV6.Details, 'TCPv6 #1')).Count) 2
+Assert-Equal '#38 baseline delay: with the pre-window read marked as one there' ($delayV6.Details -match 'TCPv6 #1 \(the discarded|TCPv6 #1（窗前捨棄') True
 Assert-Equal '#38 baseline delay: neither reading is disturbed' (("{0}/{1}" -f $delayV4.Status, $delayV6.Status)) 'PASS/PASS'
 
 # A baseline read of the protocol read *first* stalls: it pushes its own stamp, the other protocol's and the sample

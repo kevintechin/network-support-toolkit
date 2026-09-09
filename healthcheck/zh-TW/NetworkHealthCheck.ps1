@@ -2853,13 +2853,15 @@ function Get-TcpCounterSnapshot {
     $failedAttempts = New-Object System.Collections.ArrayList
     $warmUpFailures = New-Object System.Collections.ArrayList
 
-    foreach ($protocol in @("TCPv4", "TCPv6")) {
-        $className = "Win32_PerfRawData_Tcpip_$protocol"
-        # -WarmUp：取樣窗開始前，每個類別先做一次會被丟掉的讀取（backlog #38）。一次快照的兩次讀取是循序的，因此在
-        # 窗內耗盡時間上限的呼叫會拉長這個通訊協定、以及排在它後面那個通訊協定所回報的窗；同樣一次呼叫放在這裡，
-        # 代價只有執行時間，量測本身不受影響。讀數會被丟棄——這不是量測，它失敗也不是發現。只記錄、不做別的，因為
-        # 「一個工作階段的第一次讀取是不是失敗的那一次」正是這個項目還沒有答案的問題。
-        if ($WarmUp) {
+    # -WarmUp：每個類別做一次會被丟掉的讀取，而且自成一輪，排在任何計數器被讀取之前（backlog #38）。自成一輪正是
+    # 重點（PR #40 第 3 輪）：和量測讀取交錯時，TCPv6 的暖身落在 TCPv4 的基準時間戳之後，也就是落在 TCPv4 的窗內
+    # ——而只是「比較慢」的暖身，正是這個機制要吸收的啟動成本，會拉長那個窗、卻留不下任何失敗紀錄可以解釋它。放在
+    # 這裡，每次暖身都在兩個基準時間戳之前，對它們的延後一視同仁，因此拉長不了任何窗。讀數會被丟棄——這不是量測，
+    # 它失敗也不是發現。失敗只記錄、不做別的，因為「一個工作階段的第一次讀取是不是失敗的那一次」正是這個項目還沒
+    # 有答案的問題。
+    if ($WarmUp) {
+        foreach ($protocol in @("TCPv4", "TCPv6")) {
+            $className = "Win32_PerfRawData_Tcpip_$protocol"
             $warmUpAttempts = New-Object System.Collections.ArrayList
             try {
                 Get-CimOrWmiInstance -ClassName $className -FailedAttempts $warmUpAttempts | Out-Null
@@ -2877,7 +2879,10 @@ function Get-TcpCounterSnapshot {
                 })
             }
         }
+    }
 
+    foreach ($protocol in @("TCPv4", "TCPv6")) {
+        $className = "Win32_PerfRawData_Tcpip_$protocol"
         $readAttempts = New-Object System.Collections.ArrayList
         try {
             $counter = Get-CimOrWmiInstance -ClassName $className -Attempts 2 -FailedAttempts $readAttempts
@@ -2998,7 +3003,7 @@ function Compare-TcpCounters {
     # 起始時間戳的讀取。在結束快照裡，那是排在這個通訊協定之前（含自己）的每次讀取；在基準快照裡，則是排在它*之後*
     # 的每次讀取——卡住的 TCPv6 基準讀取會把 TCPv6 的起始時間戳連同後面整段執行一起往後推，卻推不動 TCPv4 的，
     # 於是它正好落在 TCPv4 的窗內（PR #40 第 1 輪：初稿說基準快照的失敗一律無害，那只對最先讀取的通訊協定成立）。
-    # 那些較後面通訊協定的窗前讀取，基於同樣的理由，也一樣要算。
+    # 窗前讀取兩份清單都不列入，因為它們全都在兩個基準時間戳之前完成，拉長不了任何窗（第 3 輪）。
     $readOrder = @("TCPv4", "TCPv6")
     $configuredSeconds = [math]::Max(1, (ConvertTo-IntSafe (Get-PropertyValue $script:RunOptions "SampleSeconds" 8) 8))
 
@@ -3050,7 +3055,6 @@ function Compare-TcpCounters {
         }
         $selfIndex = $readOrder.IndexOf($protocol)
         $windowAttempts = @()
-        $windowAttempts += @(@(Get-PropertyValue $Before "WarmUpFailures" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -gt $selfIndex })
         $windowAttempts += @(@(Get-PropertyValue $Before "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -gt $selfIndex })
         $windowAttempts += @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $selfIndex })
         if (@($windowAttempts).Count -gt 0) {
