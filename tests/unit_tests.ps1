@@ -329,9 +329,14 @@ function Get-CimInstance {
     $index = @($script:CimCalls | Where-Object { $_ -eq $ClassName }).Count
     [void]$script:CimCalls.Add($ClassName)
     $plan = @($script:CimPlan[$ClassName])
-    if ($index -lt $plan.Count -and ([string]$plan[$index]) -eq 'fail') {
+    $outcome = ''
+    if ($index -lt $plan.Count) { $outcome = [string]$plan[$index] }
+    if ($outcome -eq 'fail') {
         throw (New-Object Microsoft.Management.Infrastructure.CimException "Timed out")
     }
+    # The other two ways a read fails without throwing: nothing comes back, or what comes back has no counters on it.
+    if ($outcome -eq 'empty') { return $null }
+    if ($outcome -eq 'partial') { return [pscustomobject]@{ Name = 'an instance with no counters on it' } }
     return [pscustomobject]@{ SegmentsSentPersec = [uint64](1000 + 100 * $index); SegmentsRetransmittedPersec = [uint64](10 + $index) }
 }
 function Reset-CimStub($plan) {
@@ -611,6 +616,78 @@ Assert-Equal '#38 both snapshots fail: the first names two attempts, not four' (
 Assert-Equal '#38 both snapshots fail: and so does the second' (([regex]::Matches($bothFailRows[1].Details, 'TCPv4 #')).Count) 2
 Assert-Equal '#38 both snapshots fail: the first is the baseline''s and says so' ((("{0}|{1}" -f ($bothFailRows[0].Details -match 'while the baseline was taken|取基準值時'), ($bothFailRows[0].Details -match 'while the ending values were taken|取結束值時')))) 'True|False'
 Assert-Equal '#38 both snapshots fail: the second is the ending''s and says so' ((("{0}|{1}" -f ($bothFailRows[1].Details -match 'while the ending values were taken|取結束值時'), ($bothFailRows[1].Details -match 'while the baseline was taken|取基準值時')))) 'True|False'
+
+# PR #40, round 5. A query that returns nothing, or an instance without the fields the caller needs, is a read that
+# failed as surely as one that threw - and the check for it used to sit outside the retry loop, so a timeout got a
+# second attempt and an empty result did not.
+Reset-CimStub @{ $v4Class = @('empty') }
+$snapEmpty = Get-TcpCounterSnapshot
+Assert-Equal '#38 empty result: it is attempted again' (Get-CimCallCount $v4Class) 2
+Assert-Equal '#38 empty result: and the counter is read on the second attempt' ($snapEmpty.Counters.ContainsKey('TCPv4')) True
+Assert-Equal '#38 empty result: the attempt that returned nothing is kept' (@($snapEmpty.FailedAttempts).Count) 1
+Assert-Equal '#38 empty result: nothing is reported as unreadable' (@($snapEmpty.Errors).Count) 0
+Reset-CimStub @{ $v4Class = @('partial', 'partial') }
+$snapPartial = Get-TcpCounterSnapshot
+Assert-Equal '#38 missing fields: two attempts, and no third' (Get-CimCallCount $v4Class) 2
+Assert-Equal '#38 missing fields: no counter is invented from an instance without them' ($snapPartial.Counters.ContainsKey('TCPv4')) False
+Assert-Equal '#38 missing fields: the row that says so is written' (@($snapPartial.Errors).Count) 1
+Assert-Equal '#38 missing fields: both attempts are kept' (@($snapPartial.FailedAttempts).Count) 2
+# The pre-window read asks for no properties, because its reading is discarded: an empty answer to it is not a
+# failure and must not be recorded as one.
+Reset-CimStub @{ $v4Class = @('empty') }
+$snapWarmEmpty = Get-TcpCounterSnapshot -WarmUp
+Assert-Equal '#38 empty result: an empty pre-window read is not a failure' (@($snapWarmEmpty.WarmUpFailures).Count) 0
+Assert-Equal '#38 empty result: and it costs the measured read nothing' (@($snapWarmEmpty.FailedAttempts).Count) 0
+
+# A counter that reset or overflowed writes its own row and skips the rest of the loop - and used to skip the
+# evidence with it, so a read that failed and was redeemed vanished from a run whose counters had reset.
+$resetBefore = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(0.6)
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $fixtureStart 5000 50); 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(0.5) 1000 10) }
+    Errors    = @(); FailedAttempts = @(); WarmUpFailures = @()
+}
+$resetAfter = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(19.0)
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $fixtureStart.AddSeconds(18.0) 120 2); 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(18.5) 1100 11) }
+    Errors    = @()
+    FailedAttempts = @([pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 1; Seconds = 8.0; Error = 'Timed out' })
+    WarmUpFailures = @()
+}
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $resetBefore -After $resetAfter
+$resetRow = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv4' })
+Assert-Equal '#38 counter reset: the row still says the delta cannot be calculated' ("{0}/{1}" -f $resetRow.Count, $resetRow[0].Status) '1/ERROR'
+Assert-Equal '#38 counter reset: it keeps the cumulative values it always printed' ($resetRow[0].Details -match '5000') True
+Assert-Equal '#38 counter reset: and now carries the attempt that failed inside its window' ($resetRow[0].Details -match 'TCPv4 #1') True
+
+# A baseline where both classes failed is returned rather than thrown away: Compare-TcpCounters writes one row per
+# read that failed out of it, instead of the generic "no complete data" row with no evidence behind it.
+$deadBaseline = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(32.0)
+    Counters  = @{}
+    Errors    = @(
+        [pscustomobject]@{ Protocol = 'TCPv4'; Error = 'Timed out'; Diagnostics = '' },
+        [pscustomobject]@{ Protocol = 'TCPv6'; Error = 'Timed out'; Diagnostics = '' })
+    FailedAttempts = @(
+        [pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 1; Seconds = 8.0; Error = 'Timed out' },
+        [pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 2; Seconds = 8.0; Error = 'Timed out' },
+        [pscustomobject]@{ Protocol = 'TCPv6'; Phase = 'read'; Attempt = 1; Seconds = 8.0; Error = 'Timed out' },
+        [pscustomobject]@{ Protocol = 'TCPv6'; Phase = 'read'; Attempt = 2; Seconds = 8.0; Error = 'Timed out' })
+    WarmUpFailures = @([pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'warm-up'; Attempt = 1; Seconds = 5.5; Error = 'Timed out' })
+}
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $deadBaseline -After $cleanAfter
+Assert-Equal '#38 dead baseline: one row per read that failed, and no others' ("{0}/{1}" -f @($script:TcpRows).Count, @($script:TcpRows | Where-Object { $_.Status -eq 'ERROR' }).Count) '2/2'
+Assert-Equal '#38 dead baseline: the first is about TCPv4' (@($script:TcpRows)[0].Check -like 'TCPv4*') True
+Assert-Equal '#38 dead baseline: with its two attempts and its pre-window read' (([regex]::Matches(@($script:TcpRows)[0].Details, 'TCPv4 #')).Count) 3
+Assert-Equal '#38 dead baseline: the second is about TCPv6, with its two' ("{0}/{1}" -f (@($script:TcpRows)[1].Check -like 'TCPv6*'), ([regex]::Matches(@($script:TcpRows)[1].Details, 'TCPv6 #')).Count) 'True/2'
+# And the step that takes the baseline no longer throws it away: Invoke-CheckStep would have returned $null, taking
+# every attempt with it. Read off the AST, because the run needs a machine whose counters both fail.
+$warmCall = @($snapshotCalls | Where-Object { $_.Extent.Text -match '-WarmUp' })[0]
+$enclosingBlock = $warmCall.Parent
+while ($null -ne $enclosingBlock -and -not ($enclosingBlock -is [System.Management.Automation.Language.ScriptBlockExpressionAst])) { $enclosingBlock = $enclosingBlock.Parent }
+Assert-Equal '#38 dead baseline: the baseline step has a script block to read' ($null -ne $enclosingBlock) True
+Assert-Equal '#38 dead baseline: and it throws nothing away' (@($enclosingBlock.FindAll({ param($n) $n -is [System.Management.Automation.Language.ThrowStatementAst] }, $true)).Count) 0
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails
