@@ -659,6 +659,11 @@ $resetRow = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv4' })
 Assert-Equal '#38 counter reset: the row still says the delta cannot be calculated' ("{0}/{1}" -f $resetRow.Count, $resetRow[0].Status) '1/ERROR'
 Assert-Equal '#38 counter reset: it keeps the cumulative values it always printed' ($resetRow[0].Details -match '5000') True
 Assert-Equal '#38 counter reset: and now carries the attempt that failed inside its window' ($resetRow[0].Details -match 'TCPv4 #1') True
+# PR #40, round 7: the note the row borrows speaks of "these N seconds", so the row prints the window it spans - and
+# it must not borrow the sentence about the deltas above, which a row reporting an uncalculable delta does not have.
+Assert-Equal '#38 counter reset: the window it spans is printed, so the note has a referent' (([regex]::Matches($resetRow[0].Details, '(?<![\d.])18(?![\d.])')).Count) 2
+Assert-Equal '#38 counter reset: and it claims nothing about deltas it does not have' ($resetRow[0].Details -match "deltas above|上面的增量") False
+Assert-Equal '#38 window: a row that does have deltas still says they are its own' ($rowV6[0].Details -match "deltas above|上面的增量") True
 
 # A baseline where both classes failed is returned rather than thrown away: Compare-TcpCounters writes one row per
 # read that failed out of it, instead of the generic "no complete data" row with no evidence behind it.

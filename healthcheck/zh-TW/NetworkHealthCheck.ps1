@@ -3051,18 +3051,24 @@ function Compare-TcpCounters {
         # 跳過這幾行的，於是在計數器重設的執行裡，失敗後又被救回的讀取就消失了（PR #40 第 5 輪）。這個通訊協定的每
         # 一列都會帶著它們。
         $sampleSeconds = [math]::Round((New-TimeSpan -Start $start.Timestamp -End $end.Timestamp).TotalSeconds, 1)
+        $durationLine = "取樣時間：$sampleSeconds 秒（設定的最短時間：$configuredSeconds 秒）"
         $evidenceLines = @()
         $evidenceLines += @(Get-TcpReadFailureLines -Snapshot $Before -Protocol $protocol)
         $selfIndex = $readOrder.IndexOf($protocol)
         $windowAttempts = @()
         $windowAttempts += @(@(Get-PropertyValue $Before "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -gt $selfIndex })
         $windowAttempts += @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $selfIndex })
+        $windowNote = ""
         if (@($windowAttempts).Count -gt 0) {
-            $evidenceLines += ("補充：這 {0} 秒當中有 {1} 秒花在取樣窗內失敗的計數器讀取（{2}）；設定的最短時間是 {3} 秒。上面的增量仍然是這個通訊協定在所示窗內自己的計數。" -f $sampleSeconds, (Get-TcpAttemptSeconds $windowAttempts), (Format-TcpAttemptList $windowAttempts), $configuredSeconds)
+            $windowNote = ("補充：這 {0} 秒當中有 {1} 秒花在取樣窗內失敗的計數器讀取（{2}）；設定的最短時間是 {3} 秒。" -f $sampleSeconds, (Get-TcpAttemptSeconds $windowAttempts), (Format-TcpAttemptList $windowAttempts), $configuredSeconds)
+            $evidenceLines += $windowNote
         }
 
         if ($sentDeltaDouble -lt 0 -or $retransDeltaDouble -lt 0) {
-            $resetDetails = @(("起始 Sent={0}, Retrans={1}; 結束 Sent={2}, Retrans={3}" -f $start.SegmentsSent, $start.Retransmitted, $end.SegmentsSent, $end.Retransmitted)) + $evidenceLines
+            # 即使增量算不出來，窗仍然是事實，所以這一列會印出它跨越的時間長度與相應證據。不該印的是關於「上面的
+            # 增量」那句話——這一列根本沒有增量。補充句只講秒數與讀取，那句關於增量的話由有增量的那一列自己加上
+            # （PR #40 第 7 輪）。
+            $resetDetails = @($durationLine, ("起始 Sent={0}, Retrans={1}; 結束 Sent={2}, Retrans={3}" -f $start.SegmentsSent, $start.Retransmitted, $end.SegmentsSent, $end.Retransmitted)) + $evidenceLines
             Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "ERROR" -Message "計數器在檢測期間重設或溢位，無法計算增量。" -Details ((@($resetDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Tag "tcp-retransmissions" | Out-Null
             continue
         }
@@ -3076,7 +3082,7 @@ function Compare-TcpCounters {
         }
 
         $details = @(
-            "取樣時間：$sampleSeconds 秒（設定的最短時間：$configuredSeconds 秒）",
+            $durationLine,
             "傳送 TCP Segments 增量：$sentDelta",
             "重傳 Segments 增量：$retransDelta",
             "近似重傳比例：$rate%",
@@ -3093,6 +3099,9 @@ function Compare-TcpCounters {
 
         foreach ($line in $evidenceLines) {
             $details += [Environment]::NewLine + $line
+        }
+        if ($windowNote -ne "") {
+            $details += [Environment]::NewLine + "上面的增量仍然是這個通訊協定在所示窗內自己的計數。"
         }
 
         if ($sentDelta -eq 0 -and $retransDelta -eq 0) {

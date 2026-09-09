@@ -3082,18 +3082,25 @@ function Compare-TcpCounters {
         # counter-reset row used to be written and skipped past these lines, so a read that failed and was redeemed
         # vanished from a run whose counters had reset (PR #40, round 5). Every row of this protocol carries them.
         $sampleSeconds = [math]::Round((New-TimeSpan -Start $start.Timestamp -End $end.Timestamp).TotalSeconds, 1)
+        $durationLine = "Sample duration: $sampleSeconds seconds (configured minimum: $configuredSeconds)"
         $evidenceLines = @()
         $evidenceLines += @(Get-TcpReadFailureLines -Snapshot $Before -Protocol $protocol)
         $selfIndex = $readOrder.IndexOf($protocol)
         $windowAttempts = @()
         $windowAttempts += @(@(Get-PropertyValue $Before "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -gt $selfIndex })
         $windowAttempts += @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $selfIndex })
+        $windowNote = ""
         if (@($windowAttempts).Count -gt 0) {
-            $evidenceLines += ("Note: {1} of these {0} seconds went on counter reads that failed inside the window ({2}); the configured minimum is {3} seconds. The deltas above are still this protocol's own counts over the window shown." -f $sampleSeconds, (Get-TcpAttemptSeconds $windowAttempts), (Format-TcpAttemptList $windowAttempts), $configuredSeconds)
+            $windowNote = ("Note: {1} of these {0} seconds went on counter reads that failed inside the window ({2}); the configured minimum is {3} seconds." -f $sampleSeconds, (Get-TcpAttemptSeconds $windowAttempts), (Format-TcpAttemptList $windowAttempts), $configuredSeconds)
+            $evidenceLines += $windowNote
         }
 
         if ($sentDeltaDouble -lt 0 -or $retransDeltaDouble -lt 0) {
-            $resetDetails = @(("Start Sent={0}, Retrans={1}; end Sent={2}, Retrans={3}" -f $start.SegmentsSent, $start.Retransmitted, $end.SegmentsSent, $end.Retransmitted)) + $evidenceLines
+            # The window is a fact even where the delta is not, so this row prints the duration it spans and the
+            # evidence for it. What it must not print is the sentence about the deltas above, which this row does
+            # not have - the note keeps to the seconds and the reads, and the row with deltas adds that sentence
+            # for itself (PR #40, round 7).
+            $resetDetails = @($durationLine, ("Start Sent={0}, Retrans={1}; end Sent={2}, Retrans={3}" -f $start.SegmentsSent, $start.Retransmitted, $end.SegmentsSent, $end.Retransmitted)) + $evidenceLines
             Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "ERROR" -Message "The counter was reset or overflowed during the test, so the delta cannot be calculated." -Details ((@($resetDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Tag "tcp-retransmissions" | Out-Null
             continue
         }
@@ -3107,7 +3114,7 @@ function Compare-TcpCounters {
         }
 
         $details = @(
-            "Sample duration: $sampleSeconds seconds (configured minimum: $configuredSeconds)",
+            $durationLine,
             "Sent TCP segment delta: $sentDelta",
             "Retransmitted segment delta: $retransDelta",
             "Approximate retransmission rate: $rate%",
@@ -3124,6 +3131,9 @@ function Compare-TcpCounters {
 
         foreach ($line in $evidenceLines) {
             $details += [Environment]::NewLine + $line
+        }
+        if ($windowNote -ne "") {
+            $details += [Environment]::NewLine + "The deltas above are still this protocol's own counts over the window shown."
         }
 
         if ($sentDelta -eq 0 -and $retransDelta -eq 0) {

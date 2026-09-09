@@ -81,7 +81,7 @@ Under the verdict, the report has a section called **What to tell IT**: a title 
 | **Some checks could not run** | No failure was found, but some steps could not be completed on this computer. Send the report as it is; the reasons are recorded in the details. |
 | **Warnings to review** | No required check failed, but some checks raised warnings; see the highlighted rows. Send the report as it is. |
 
-The first three problem titles name things you can check yourself before calling — a cable, the Wi-Fi signal, whether another device on the same network has the same trouble. The rest is for IT. And the tool prints *Everything passed* whenever every required check passed: an optional or added ping, TCP or HTTP target that did not answer is still in the table as an Information row (an optional DNS name that does not resolve is a Warning instead). Since 1.2.8 the summary says so itself — *All required checks passed*, with the targets that did not answer named on the line below — and the rows are still worth reading.
+The first three problem titles name things you can check yourself before calling — a cable, the Wi-Fi signal, whether another device on the same network has the same trouble. The rest is for IT. And the tool prints *Everything passed* whenever every required check passed: an optional or added ping, TCP or HTTP target that did not answer is still in the table as an Information row (an optional DNS name that does not resolve is a Warning instead). The summary says so itself — *All required checks passed*, with the targets that did not answer named on the line below — and the rows are still worth reading.
 
 ### The rest of the report
 
