@@ -277,7 +277,6 @@ function Test-ResultSet {
     if ($null -eq $tcpBefore) { $tcpBefore = @{ TCPv4 = $true; TCPv6 = $true } }
     $tcpAfter = $MachineAfter.TcpCounters
     if ($null -eq $tcpAfter) { $tcpAfter = $tcpBefore }
-    $tcpBothUnreadable = (-not [bool]$tcpBefore.TCPv4) -and (-not [bool]$tcpBefore.TCPv6)   # then the baseline step throws
     $tcpRows = 0
     foreach ($protocol in @('TCPv4', 'TCPv6')) {
         $tcpRows += $(if ([bool]$tcpBefore.$protocol -and [bool]$tcpAfter.$protocol) { 1 } elseif ((-not [bool]$tcpBefore.$protocol) -and (-not [bool]$tcpAfter.$protocol)) { 2 } else { 1 })
@@ -305,13 +304,14 @@ function Test-ResultSet {
         'tcp' = (Get-Count $Config.Tests.TcpTargets) + (Get-Count $o.ExtraTargets.Tcp)
         'http' = (Get-Count $Config.Tests.HttpTargets) + (Get-Count $o.ExtraTargets.Http)
         'connectivity-group' = $groups.Count
-        # Per class as computed above; with neither class readable at the baseline the step fails (a step-error row) and
-        # the analysis writes one generic row.
-        'tcp-retransmissions' = $(if ($tcpBothUnreadable) { 1 } else { $tcpRows })
-        # Step failures the machine facts explain: the TCP baseline without a readable counter class, both
-        # adapter-statistics samples without the cmdlet (or one of them when a sample failed on its own - see below), and
-        # the network snapshot when its fallback failed too. Any other step-error row is unexpected.
-        'step-error' = $(if ($tcpBothUnreadable) { 1 } else { 0 }) + $(if ($statsReadable) { 0 } else { 2 }) + $(if ([bool]$Machine.SnapshotStepFailed) { 1 } else { 0 })
+        # Per class as computed above, and that formula now covers every case: since 1.2.8 a baseline where neither
+        # class could be read is returned rather than thrown away, so the analysis writes one row per read that failed
+        # instead of a step-error row and one generic row (backlog #38, PR #40 rounds 5 and 9).
+        'tcp-retransmissions' = $tcpRows
+        # Step failures the machine facts explain: both adapter-statistics samples without the cmdlet (or one of them
+        # when a sample failed on its own - see below) and the network snapshot when its fallback failed too. The TCP
+        # baseline is no longer among them, whatever its counters do. Any other step-error row is unexpected.
+        'step-error' = $(if ($statsReadable) { 0 } else { 2 }) + $(if ([bool]$Machine.SnapshotStepFailed) { 1 } else { 0 })
     }
     # The IT diagnostics to expect come from the configuration and the launch switches (-NoWifi / -NoTraceroute as
     # Expect['NoWifi'] / Expect['NoTraceroute']), never from the report under test; the report's own ChecksEnabled must
@@ -374,10 +374,10 @@ function Test-ResultSet {
         foreach ($a in $named) { if ($gateways -notcontains $a) { $bad += ('ping-gateway row for {0}, which is not a default gateway of this machine ({1})' -f $a, ($gateways -join ', ')) } }
         if (@($named | Sort-Object -Unique).Count -ne $named.Count) { $bad += 'duplicate ping-gateway rows' }
     }
-    if (-not $tcpBothUnreadable) {
-        foreach ($protocol in @('TCPv4', 'TCPv6')) {
-            if (@($rows | Where-Object { $_.Tag -eq 'tcp-retransmissions' -and (([string]$_.Check) -like ('*' + $protocol + '*')) }).Count -eq 0) { $bad += ('no tcp-retransmissions row for {0}' -f $protocol) }
-        }
+    # Both protocols are named whatever happened to their counters: a class that could not be read has an error row
+    # of its own, per sample, rather than a generic row for the pair (backlog #38).
+    foreach ($protocol in @('TCPv4', 'TCPv6')) {
+        if (@($rows | Where-Object { $_.Tag -eq 'tcp-retransmissions' -and (([string]$_.Check) -like ('*' + $protocol + '*')) }).Count -eq 0) { $bad += ('no tcp-retransmissions row for {0}' -f $protocol) }
     }
     foreach ($pair in @(@('ExtraPing', 'ping-target'), @('ExtraTcp', 'tcp'))) {
         if (-not $Expect.ContainsKey($pair[0])) { continue }
