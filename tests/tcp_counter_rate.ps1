@@ -101,13 +101,18 @@ function Start-LoadJobs {
             # failed copies is not load (PR #40, round 17). The destination is counted against the source before the
             # flag is written, and a worker that cannot copy never signals at all, which the parent's wait reports as
             # fewer jobs copying than were asked for.
-            $expected = @(Get-ChildItem -LiteralPath $from -File -ErrorAction SilentlyContinue).Count
+            $sourceFiles = @(Get-ChildItem -LiteralPath $from -File -ErrorAction SilentlyContinue)
+            $expectedBytes = [int64](@($sourceFiles) | Measure-Object -Property Length -Sum).Sum
             while ($true) {
                 Remove-Item -LiteralPath $to -Recurse -Force -ErrorAction SilentlyContinue
                 Copy-Item -LiteralPath $from -Destination $to -Recurse -Force -ErrorAction SilentlyContinue
                 if (-not (Test-Path -LiteralPath $flag)) {
-                    $copied = @(Get-ChildItem -LiteralPath $to -File -Recurse -ErrorAction SilentlyContinue).Count
-                    if ($expected -gt 0 -and $copied -ge $expected) { New-Item -ItemType File -Path $flag -Force | Out-Null }
+                    # Bytes, not entries: a copy that runs out of space while writing its last file leaves every
+                    # expected name in place with that file truncated, and a count would call that a complete tree
+                    # (PR #40, round 18). The comparison is the total length of what was written against the total
+                    # length of the source.
+                    $copiedBytes = [int64](@(Get-ChildItem -LiteralPath $to -File -Recurse -ErrorAction SilentlyContinue) | Measure-Object -Property Length -Sum).Sum
+                    if ($expectedBytes -gt 0 -and $copiedBytes -ge $expectedBytes) { New-Item -ItemType File -Path $flag -Force | Out-Null }
                 }
             }
         } -ArgumentList $source, $target, $flag
