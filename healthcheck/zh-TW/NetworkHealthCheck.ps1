@@ -3589,6 +3589,9 @@ function Update-OverallUi {
 function Run-AllChecks {
     $script:IsRunning = $true
     $script:Results.Clear()
+    # 跟著結果一起清掉，而不是只在行程啟動時設定一次：視窗會被重複使用，否則某一次算出的比例，會被拿去解釋之後
+    # 那次「重新檢測」的報告 —— 即使那一次的計數器根本讀失敗（PR #35 第 1 輪）。
+    $script:RetransmissionRateComputed = $false
     $script:LastHtmlReport = $null
     $script:LastTextReport = $null
     $script:LastJsonReport = $null
@@ -3908,7 +3911,11 @@ function Initialize-Gui {
     }
     $bottomY = $formHeight - 116
     $form.Size = New-Object System.Drawing.Size(940, $formHeight)
-    $form.MinimumSize = New-Object System.Drawing.Size(780, [math]::Min(560 + $offset, $formHeight))
+    # IT 面板是一個寬 880 px 的固定格線，視窗不能被縮得比它所承載的格線還窄：面板向左右錨定，縮小視窗會把第三欄
+    # 推出面板邊緣，而那裡是捲不到的地方（PR #35 第 1 輪）。使用者視窗沒有這個面板，維持原本的最小寬度。
+    $minWidth = 780
+    if ($script:Interactive) { $minWidth = 940 }
+    $form.MinimumSize = New-Object System.Drawing.Size($minWidth, [math]::Min(560 + $offset, $formHeight))
     $form.MaximizeBox = $true
     $form.FormBorderStyle = "Sizable"
 

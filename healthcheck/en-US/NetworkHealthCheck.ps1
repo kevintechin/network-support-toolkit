@@ -3612,6 +3612,9 @@ function Update-OverallUi {
 function Run-AllChecks {
     $script:IsRunning = $true
     $script:Results.Clear()
+    # Cleared with the results, not at process start: the window is reused, so a rate computed by one run would
+    # otherwise still be explained in the report of a later Run Again whose counters failed (PR #35, round 1).
+    $script:RetransmissionRateComputed = $false
     $script:LastHtmlReport = $null
     $script:LastTextReport = $null
     $script:LastJsonReport = $null
@@ -3934,7 +3937,12 @@ function Initialize-Gui {
     }
     $bottomY = $formHeight - 116
     $form.Size = New-Object System.Drawing.Size(940, $formHeight)
-    $form.MinimumSize = New-Object System.Drawing.Size(780, [math]::Min(560 + $offset, $formHeight))
+    # The IT panel is a fixed grid 880 px wide, and the window may not be made narrower than the grid it carries:
+    # the panel is anchored left and right, so shrinking the form slid the third column off its edge, where no
+    # amount of scrolling reaches it (PR #35, round 1). The user window carries no panel and keeps its old minimum.
+    $minWidth = 780
+    if ($script:Interactive) { $minWidth = 940 }
+    $form.MinimumSize = New-Object System.Drawing.Size($minWidth, [math]::Min(560 + $offset, $formHeight))
     $form.MaximizeBox = $true
     $form.FormBorderStyle = "Sizable"
 

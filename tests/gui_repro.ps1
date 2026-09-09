@@ -51,7 +51,23 @@ try {
     }
     $line = "$label`: Initialize-Gui body OK (script lines $startLine-$($big.Body.Extent.EndLineNumber)); form '" + $script:Form.Text + "' " + $script:Form.Size.Width + "x" + $script:Form.Size.Height
     if ($null -ne $script:OptionsPanel) { $line += "; panel PingCount=" + $script:OptionsPanel["PingCount"].Value + "/max " + $script:OptionsPanel["PingCount"].Maximum + ", SampleSeconds=" + $script:OptionsPanel["SampleSeconds"].Value + "/max " + $script:OptionsPanel["SampleSeconds"].Maximum }
+    # A control that fits its own box is still unreachable if the window can be made narrower than the grid it sits
+    # in: the options panel is anchored left and right, so its width shrinks with the form's. The narrowest form the
+    # user is allowed must still show the panel's rightmost control (PR #35, round 1).
+    $panel = $null
+    if ($null -ne $script:OptionsPanel) { $panel = $script:OptionsPanel["PingTarget"].Parent }
+    if ($null -ne $panel) {
+        $rightmost = 0
+        foreach ($c in $panel.Controls) { if (($c.Left + $c.Width) -gt $rightmost) { $rightmost = $c.Left + $c.Width } }
+        $panelAtMinimum = $panel.Width - ($script:Form.Width - $script:Form.MinimumSize.Width)
+        if ($rightmost -gt $panelAtMinimum) {
+            "$label`: the panel is " + $panelAtMinimum + " px wide at the window's minimum width and its rightmost control ends at " + $rightmost + " px, so it cannot be reached there"
+            if ($null -ne $script:Form) { $script:Form.Dispose() }
+            exit 1
+        }
+    }
     $line += "; " + $fixed.Count + " fixed-size controls fit their boxes"
+    if ($null -ne $panel) { $line += "; the panel is " + $panelAtMinimum + " px at the minimum window width against a grid " + $rightmost + " px wide" }
     $line
     if ($null -ne $script:Form) { $script:Form.Dispose() }
     exit 0
