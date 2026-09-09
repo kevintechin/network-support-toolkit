@@ -67,7 +67,7 @@ $missing = @($wanted | Where-Object { $loaded -notcontains $_ })
 if ($missing.Count -gt 0) { throw ("These functions are not in {0}: {1}" -f $ScriptPath, ($missing -join ', ')) }
 
 function Start-LoadJobs {
-    param([string]$Root, [int]$Count, [int]$FileKb, [int]$JobCount)
+    param([string]$Root, [int]$Count, [int]$FileKb, [int]$JobCount, [int]$StartTimeoutSeconds = 60)
 
     # A tree written here and then copied over and over: the load is this script's own, so the reading is repeatable
     # on a machine with no sync client and no antivirus exclusion to arrange.
@@ -81,15 +81,37 @@ function Start-LoadJobs {
     $jobs = @()
     for ($j = 1; $j -le $JobCount; $j++) {
         $target = Join-Path $Root ("copy_$j")
+        $flag = Join-Path $Root ("started_$j.flag")
         $jobs += Start-Job -ScriptBlock {
-            param($from, $to)
+            param($from, $to, $flag)
+            # The flag is written after the first copy completes, so it signals real I/O rather than a job that has
+            # merely been created.
+            Copy-Item -LiteralPath $from -Destination $to -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType File -Path $flag -Force | Out-Null
             while ($true) {
-                Copy-Item -LiteralPath $from -Destination $to -Recurse -Force -ErrorAction SilentlyContinue
                 Remove-Item -LiteralPath $to -Recurse -Force -ErrorAction SilentlyContinue
+                Copy-Item -LiteralPath $from -Destination $to -Recurse -Force -ErrorAction SilentlyContinue
             }
-        } -ArgumentList $source, $target
+        } -ArgumentList $source, $target, $flag
     }
-    return $jobs
+    # A job that has not begun copying is not load. Start-Job spawns a child PowerShell, which takes seconds to reach
+    # the first copy, and a sample taken meanwhile is an idle reading wearing the load label - which would bias the
+    # comparison the whole script exists to make, most of all with few iterations and fast reads (PR #40, round 14).
+    # So wait for every worker's first completed copy, and say plainly what was running if the wait ran out.
+    $waitStarted = Get-Date
+    while (((Get-Date) - $waitStarted).TotalSeconds -lt $StartTimeoutSeconds) {
+        if (@(Get-ChildItem -LiteralPath $Root -Filter 'started_*.flag' -ErrorAction SilentlyContinue).Count -ge $JobCount) { break }
+        Start-Sleep -Milliseconds 200
+    }
+    # The jobs travel back in a record with what the wait saw, rather than beside lines of text: a function that
+    # returns objects must not write to the success stream as well, or its caller receives both (backlog #53 is this
+    # project's own instance of that, one directory over).
+    return [pscustomobject]@{
+        Jobs      = @($jobs)
+        Requested = $JobCount
+        Running   = @(Get-ChildItem -LiteralPath $Root -Filter 'started_*.flag' -ErrorAction SilentlyContinue).Count
+        Waited    = [math]::Round(((Get-Date) - $waitStarted).TotalSeconds, 1)
+    }
 }
 
 function Measure-Condition {
@@ -154,7 +176,12 @@ if ($Conditions -eq 'load' -or $Conditions -eq 'both') {
     $loadJobs = @()
     try {
         Write-Output ("Writing {0} x {1} KB into {2} and copying it in {3} background job(s)..." -f $LoadFileCount, $LoadFileKb, $WorkDir, $Jobs)
-        $loadJobs = Start-LoadJobs -Root $WorkDir -Count $LoadFileCount -FileKb $LoadFileKb -JobCount $Jobs
+        $load = Start-LoadJobs -Root $WorkDir -Count $LoadFileCount -FileKb $LoadFileKb -JobCount $Jobs
+        $loadJobs = @($load.Jobs)
+        Write-Output ("{0} of {1} load job(s) were copying after {2} s; measuring now" -f $load.Running, $load.Requested, $load.Waited)
+        if ($load.Running -lt $load.Requested) {
+            Write-Output "  Fewer jobs than asked for reached their first copy: the reading below is under less load than it says, and should be quoted that way."
+        }
         $results['load'] = Measure-Condition -Name 'load' -Count $Iterations
     }
     finally {
