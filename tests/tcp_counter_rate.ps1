@@ -89,7 +89,13 @@ function Start-LoadJobs {
     for ($i = 0; $i -lt $Count; $i++) {
         [System.IO.File]::WriteAllBytes((Join-Path $source ("load_{0:d4}.bin" -f $i)), $block)
     }
+    # Everything from the first Start-Job to the readiness wait runs under one catch: a Start-Job that throws part of
+    # the way through - job or process resources exhausted - would otherwise leave this function without returning,
+    # and the workers it had already started would run their copy loops forever, unreachable by the caller's cleanup
+    # and racing it for the load folder (PR #40, round 19). Whatever fails, the jobs started so far are stopped before
+    # the failure travels on.
     $jobs = @()
+    try {
     for ($j = 1; $j -le $JobCount; $j++) {
         $target = Join-Path $Root ("copy_$j")
         $flag = Join-Path $Root ("started_$j.flag")
@@ -134,6 +140,14 @@ function Start-LoadJobs {
         Requested = $JobCount
         Running   = @(Get-ChildItem -LiteralPath $Root -Filter 'started_*.flag' -ErrorAction SilentlyContinue).Count
         Waited    = [math]::Round(((Get-Date) - $waitStarted).TotalSeconds, 1)
+    }
+    }
+    catch {
+        foreach ($job in $jobs) {
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        }
+        throw
     }
 }
 
