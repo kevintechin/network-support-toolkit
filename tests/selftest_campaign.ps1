@@ -14,6 +14,8 @@ param([string]$WorkDir, [switch]$Full)
 $ErrorActionPreference = 'Stop'
 $passes = 0
 $fails = 0
+$capturedLines = 0    # what the driver said, counted where it is captured
+$forwardedLines = 0   # what reached the host, counted inside the loop that forwards it - so deleting the loop cannot leave the count intact (backlog #53)
 function Assert-True($name, $condition, $detail) {
     if ($condition) { $script:passes++; Write-Output "[PASS] $name" }
     else { $script:fails++; Write-Output "[FAIL] $name -> $detail" }
@@ -58,7 +60,8 @@ function Invoke-Campaign([string]$Name, [string[]]$Arguments, [string]$AnswersTe
     $out = @(& $psExe @argList 2>&1 | ForEach-Object { [string]$_ })
     $code = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
-    foreach ($l in $out) { Write-Host ('    | ' + $l) }
+    $script:capturedLines += $out.Count
+    foreach ($l in $out) { Write-Host ('    | ' + $l); $script:forwardedLines++ }
     return @{ Output = $out; ExitCode = $code; State = $state }
 }
 function Read-State([string]$State) { Get-Content -LiteralPath (Join-Path $State 'campaign.json') -Raw -Encoding UTF8 | ConvertFrom-Json }
@@ -696,6 +699,15 @@ $unassigned35 = @($calls35 | Where-Object {
     $null -eq $p
 })
 Assert-True '35. every call to it is assigned, which is the reason for the rule above' (($calls35.Count -gt 0) -and ($unassigned35.Count -eq 0)) (('calls: ' + $calls35.Count + ', unassigned: ' + $unassigned35.Count) + $(if ($unassigned35.Count) { ' -> ' + (($unassigned35 | ForEach-Object { $_.Extent.Text }) -join ' / ') } else { '' }))
+# Absence is not enough: the loop could be deleted outright, or replaced by an expression that emits implicitly,
+# and the two assertions above would still pass with the log empty again. So the shape is asserted positively, and
+# the behaviour is counted.
+$hostWrites35 = @()
+if ($fn35.Count -eq 1) {
+    $hostWrites35 = @($fn35[0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Write-Host' -and $n.Extent.Text -match '\$l' }, $true))
+}
+Assert-True '35. it still forwards the captured lines to the host' ($hostWrites35.Count -ge 1) ('Write-Host calls over the captured line: ' + $hostWrites35.Count)
+Assert-True '35. and every line it captured reached the host, counted where each happens' (($capturedLines -gt 0) -and ($forwardedLines -eq $capturedLines)) ('captured ' + $capturedLines + ', forwarded ' + $forwardedLines)
 
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
