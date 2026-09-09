@@ -417,6 +417,15 @@ Assert-Equal '#38 warm-up: the run takes two snapshots' $snapshotCalls.Count 2
 Assert-Equal '#38 warm-up: exactly one of them warms the provider' (@($snapshotCalls | Where-Object { $_.Extent.Text -match '-WarmUp' }).Count) 1
 Assert-Equal '#38 warm-up: it is the baseline, the first of the two' ((@($snapshotCalls | Sort-Object { $_.Extent.StartOffset })[0].Extent.Text -match '-WarmUp')) True
 
+# PR #40, round 10: the chain's own fact probe (tests\Invoke-ValidationChain.ps1, Get-MachineFacts) mirrors the
+# measured read - two attempts, and these two fields - so that it never calls a class unreadable that the run reads on
+# its retry, which would make Test-ResultSet reject a correct report. The mirror is only safe while the shipped call
+# says what the probe assumes, and this is where that is checked.
+$counterReads = @($scriptAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-CimOrWmiInstance' -and $n.Extent.Text -match '-Attempts' }, $true))
+Assert-Equal '#38 probe: one counter read asks for more than a single attempt' $counterReads.Count 1
+Assert-Equal '#38 probe: it asks for two of them' ($counterReads[0].Extent.Text -match '-Attempts 2') True
+Assert-Equal '#38 probe: and requires the two fields the probe looks for' ((($counterReads[0].Extent.Text -match 'SegmentsSentPersec') -and ($counterReads[0].Extent.Text -match 'SegmentsRetransmittedPersec'))) True
+
 # The duration a row reports comes from that protocol's own two stamps. The fixture is the shape of the failure the
 # walk found: the ending TCPv4 read waits out its limit twice (8 seconds each) and TCPv6, read after it, is stamped
 # 24.5 seconds after its own baseline stamp - while the snapshots enclosing the pair are 26 seconds apart, which is

@@ -178,14 +178,23 @@ function Get-MachineFacts {
     # row - CIM counts every IP-enabled Win32_NetworkAdapterConfiguration and keeps its IPv4 default gateways.
     $facts = @{ ConnectedAdapters = 0; Gateways = @(); DnsServers = @(); Source = 'NetCmdlets'; DataSourceRow = $false; SnapshotStepFailed = $false; TcpCounters = @{ TCPv4 = $false; TCPv6 = $false } }
     # Which TCP performance-counter classes can be read, the way Get-TcpCounterSnapshot reads them: an instance with the
-    # SegmentsSentPersec and SegmentsRetransmittedPersec fields. An unreadable class yields an error row from each of the
-    # two samples instead of a result row.
+    # SegmentsSentPersec and SegmentsRetransmittedPersec fields, and - since 1.2.8 - a second attempt when the first one
+    # fails, throwing or returning nothing or returning something without those fields (backlog #38). The probe must
+    # give up no sooner than the product does: one that stopped after a single failure would call a class unreadable
+    # that the run reads on its retry, and Test-ResultSet would then reject a correct report (PR #40, round 10).
+    # unit_tests.ps1 asserts that the shipped read still asks for two attempts and for these two fields, so this mirror
+    # cannot drift out of step unnoticed. An unreadable class yields an error row from each of the two samples.
     foreach ($protocol in @('TCPv4', 'TCPv6')) {
-        try {
-            $counter = @(Get-CimOrWmiInstance ('Win32_PerfRawData_Tcpip_' + $protocol) | Select-Object -First 1)[0]
-            if ($null -ne $counter -and $null -ne $counter.PSObject.Properties['SegmentsSentPersec'] -and $null -ne $counter.PSObject.Properties['SegmentsRetransmittedPersec']) { $facts.TcpCounters[$protocol] = $true }
+        foreach ($attempt in 1..2) {
+            try {
+                $counter = @(Get-CimOrWmiInstance ('Win32_PerfRawData_Tcpip_' + $protocol) | Select-Object -First 1)[0]
+                if ($null -ne $counter -and $null -ne $counter.PSObject.Properties['SegmentsSentPersec'] -and $null -ne $counter.PSObject.Properties['SegmentsRetransmittedPersec']) {
+                    $facts.TcpCounters[$protocol] = $true
+                    break
+                }
+            }
+            catch { }
         }
-        catch { }
     }
     # How many wireless interfaces `netsh wlan show interfaces` reports as connected - the output Add-WifiRfResult parses,
     # which writes one wifi row per connected interface. Only a connected interface carries an SSID line, and that label
