@@ -676,6 +676,18 @@ $r34d = Invoke-Campaign 'm8facts' @('-Resume', '-Scenarios', 'M8') "M8/revert=do
 $out34d = $r34d.Output -join "`n"
 Assert-True '34. the data comes back as recorded, whatever it says, and a REG_MULTI_SZ comes back as one (Codex round 4)' (($out34d -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_SZ /d "absent" /f') -and ($out34d -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v EnableScripts /t REG_MULTI_SZ /d "a\\0b" /f')) (($r34d.Output | Where-Object { $_ -match 'reg add|reg delete' }) -join ' / ')
 
+# -------------------- 6. the baseline for real --------------------
+if ($Full) {
+    Write-Output ''
+    Write-Output '6. A1 for real (-SkipGui): PASS'
+    $r6 = Invoke-Campaign 'full' @('-Zip', $zip, '-Scenarios', 'A1', '-SkipGui') ""
+    $s6 = Read-State $r6.State
+    Assert-True '6. exit code 0' ($r6.ExitCode -eq 0) ('exit code ' + $r6.ExitCode)
+    Assert-True '6. A1 PASS with the acceptance summary' ($s6.Scenarios.A1.Result -eq 'PASS' -and $s6.Scenarios.A1.Detail -match 'Summary: \d+ passed, 0 failed') ($s6.Scenarios.A1.Result + ' / ' + $s6.Scenarios.A1.Detail)
+    Assert-True '6. the acceptance bundle is in the scenario folder' (@(Get-ChildItem -LiteralPath (Join-Path $r6.State 'A1') -Filter 'nhc-acceptance_*.zip').Count -eq 1) 'bundle count'
+}
+
+
 # -------------------- 35. the driver's own lines cannot go back to the success stream --------------------
 # Backlog #53: every call to Invoke-Campaign is assigned, so anything it writes to the success stream lands in the
 # caller's variable instead of the log, while member-access enumeration keeps $rN.ExitCode answering so that nothing
@@ -725,19 +737,16 @@ $ast36 = [System.Management.Automation.Language.Parser]::ParseFile($PSCommandPat
 $asserts36 = @($ast36.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Assert-True' }, $true))
 $malformed36 = @($asserts36 | Where-Object { $_.CommandElements.Count -ne 4 })
 Assert-True '36. this file has assertions to check' ($asserts36.Count -gt 100) ('Assert-True calls: ' + $asserts36.Count)
-Assert-True '36. every one of them binds name, condition and detail' ($malformed36.Count -eq 0) (($malformed36 | ForEach-Object { 'line ' + $_.Extent.StartLineNumber + ': ' + $_.CommandElements.Count + ' elements' }) -join '; ')
-
-# -------------------- 6. the baseline for real --------------------
-if ($Full) {
-    Write-Output ''
-    Write-Output '6. A1 for real (-SkipGui): PASS'
-    $r6 = Invoke-Campaign 'full' @('-Zip', $zip, '-Scenarios', 'A1', '-SkipGui') ""
-    $s6 = Read-State $r6.State
-    Assert-True '6. exit code 0' ($r6.ExitCode -eq 0) ('exit code ' + $r6.ExitCode)
-    Assert-True '6. A1 PASS with the acceptance summary' ($s6.Scenarios.A1.Result -eq 'PASS' -and $s6.Scenarios.A1.Detail -match 'Summary: \d+ passed, 0 failed') ($s6.Scenarios.A1.Result + ' / ' + $s6.Scenarios.A1.Detail)
-    Assert-True '6. the acceptance bundle is in the scenario folder' (@(Get-ChildItem -LiteralPath (Join-Path $r6.State 'A1') -Filter 'nhc-acceptance_*.zip').Count -eq 1) 'bundle count'
+# This one reports without Assert-True on purpose: a quoting mistake in the call that reports quoting mistakes would
+# bind a truthy bareword as its own condition and announce PASS, which is the defect it exists to catch (PR #39 round
+# 3). An if over a counter cannot be talked out of failing by how its message is written.
+if ($malformed36.Count -eq 0) {
+    $script:passes++
+    Write-Output '[PASS] 36. every one of them binds name, condition and detail'
+} else {
+    $script:fails++
+    Write-Output ('[FAIL] 36. every one of them binds name, condition and detail -> ' + (($malformed36 | ForEach-Object { 'line ' + $_.Extent.StartLineNumber + ': ' + $_.CommandElements.Count + ' elements' }) -join '; '))
 }
-
 Write-Output ''
 Write-Output ('Summary: {0} passed, {1} failed' -f $passes, $fails)
 if ($fails -eq 0) { Write-Output 'ALL SELF-TESTS OK'; exit 0 }
