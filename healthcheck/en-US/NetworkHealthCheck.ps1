@@ -840,11 +840,13 @@ function Set-RunOptions {
     $raw = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
 
     # An added target carries its value in the row title, so two of the same kind are told apart in the table and
-    # in the summary that names the ones which did not answer (PR #35, round 2).
+    # in the summary that names the ones which did not answer (PR #35, round 2). The ping row is the exception and
+    # keeps the plain name: Test-PingTargets already writes the title as "<name>: <target>", so adding the address
+    # here would print it twice (round 3).
     foreach ($value in @(@($Overrides["PingTarget"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $raw.Ping += [string]$value
-        $config.Tests.PingTargets = @($config.Tests.PingTargets) + [pscustomobject][ordered]@{ Name = ("Extra ping " + [string]$value); Address = [string]$value; Required = $false }
+        $config.Tests.PingTargets = @($config.Tests.PingTargets) + [pscustomobject][ordered]@{ Name = "Extra ping"; Address = [string]$value; Required = $false }
         $extra.Ping += [string]$value
     }
     foreach ($value in @(@($Overrides["DnsName"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {

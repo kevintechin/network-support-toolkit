@@ -823,11 +823,12 @@ function Set-RunOptions {
     $raw = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
 
     # 額外目標的列標題帶著它自己的值，於是同一種的兩個目標在表格裡、以及在點名沒有回應者的結語裡，都分得出來
-    #（PR #35 第 2 輪）。
+    #（PR #35 第 2 輪）。Ping 那一列是例外，維持原本的名稱：Test-PingTargets 本來就把標題寫成「<名稱>：<目標>」，
+    # 在這裡再加一次位址會印兩遍（第 3 輪）。
     foreach ($value in @(@($Overrides["PingTarget"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $raw.Ping += [string]$value
-        $config.Tests.PingTargets = @($config.Tests.PingTargets) + [pscustomobject][ordered]@{ Name = ("額外 Ping " + [string]$value); Address = [string]$value; Required = $false }
+        $config.Tests.PingTargets = @($config.Tests.PingTargets) + [pscustomobject][ordered]@{ Name = "額外 Ping"; Address = [string]$value; Required = $false }
         $extra.Ping += [string]$value
     }
     foreach ($value in @(@($Overrides["DnsName"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {

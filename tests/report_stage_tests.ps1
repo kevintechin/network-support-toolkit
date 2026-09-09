@@ -298,8 +298,19 @@ $script:RunOptionMessages = New-Object System.Collections.ArrayList
 Set-RunOptions -Overrides @{ EntryPoint = "IT"; TcpTarget = @("8.8.8.8") } | Out-Null
 Assert-Equal 'J: the run drops exactly what the panel would have refused' ((@($script:RunOptionMessages) -join " ") -match '(expected host:port|格式應為 host:port)') True
 # The accepted half of the same rule, after the message assertion because Set-RunOptions starts a new message list.
-Set-RunOptions -Overrides @{ EntryPoint = "IT"; TcpTarget = @("fileserver:445") } | Out-Null
-Assert-Equal 'J: an accepted target carries its value in the row title' (@(@($script:Config.Tests.TcpTargets) | Where-Object { [string]$_.Name -match 'fileserver:445' }).Count) 1
+# Every added target is named here once and only once: the ping rows get their address from Test-PingTargets, which
+# writes the title as "<name>: <target>", so the ping entry keeps the plain name and the other three carry the value
+# themselves (PR #35, rounds 2 and 3).
+Set-RunOptions -Overrides @{ EntryPoint = "IT"; PingTarget = @("10.0.0.1"); DnsName = @("a.example"); TcpTarget = @("fileserver:445"); HttpUrl = @("https://a.example/") } | Out-Null
+$added = @{}
+foreach ($t in @($script:Config.Tests.PingTargets)) { if ([string]$t.Address -eq '10.0.0.1') { $added['ping'] = [string]$t.Name } }
+foreach ($t in @($script:Config.Tests.DnsNames)) { if ([string]$t.Host -eq 'a.example') { $added['dns'] = [string]$t.Name } }
+foreach ($t in @($script:Config.Tests.TcpTargets)) { if ([string]$t.Host -eq 'fileserver') { $added['tcp'] = [string]$t.Name } }
+foreach ($t in @($script:Config.Tests.HttpTargets)) { if ([string]$t.Url -eq 'https://a.example/') { $added['http'] = [string]$t.Name } }
+Assert-Equal 'J: the added ping keeps the plain name, because the row adds the target itself' ($added['ping'] -match '^(Extra ping|額外 Ping)$') True
+Assert-Equal 'J: the added DNS name carries its value' ($added['dns'] -match 'a\.example$') True
+Assert-Equal 'J: the added TCP target carries its value' ($added['tcp'] -match 'fileserver:445$') True
+Assert-Equal 'J: the added URL carries its value' ($added['http'] -match 'https://a\.example/$') True
 $ruleCalls = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq "Test-TcpTargetSyntax" }, $true))
 Assert-Equal 'J: one rule, called by both the run and the panel' ($ruleCalls.Count -ge 2) True
 $script:OptionsPanel = $null
