@@ -241,5 +241,62 @@ Assert-Equal 'I: a CLI -PingCount 25 above the default range is shown, not clamp
 Assert-Equal 'I: traceroute hops keep the shared 1-10 rule' $script:OptionsPanel["TracerouteHops"].Maximum 10
 $script:OptionsPanel = $null
 
+
+# --- Scenario J: the claim, the explanation, the file to send, and the field checked before the run ---
+# Backlog #35, #40, #46 and #45. Every assertion is written for both languages, because both scripts ship the same
+# behaviour with their own strings.
+
+# A healthy run with one optional target that did not answer, and no counter read at all.
+$script:Results = New-Object System.Collections.ArrayList
+$script:RetransmissionRateComputed = $false
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+Add-CheckResult -Category "Test" -Check "Extra ping" -Status "INFO" -Message "no reply" -Details "" -Tag "ping-target" | Out-Null
+$summary = Get-FingerprintSummary
+Assert-Equal 'J: an optional target that did not answer leaves the verdict healthy' $summary.Key "healthy"
+Assert-Equal 'J: the summary claims required, not all (#35)' (@($summary.Lines)[0] -match '(All required checks passed|必要檢查都通過)') True
+Assert-Equal 'J: and names the target that did not answer' (@($summary.Lines)[1] -match '(Extra ping|額外 Ping)') True
+Assert-Equal 'J: the last line names one file (#46)' ((@($summary.Lines)[-1] -match '(Send this file|把這個檔案)')) True
+Assert-Equal 'J: and no longer offers a choice of two' ((@($summary.Lines)[-1] -match '(or the JSON|或 JSON)')) False
+$flags = Get-ReportNoticeFlags
+Assert-Equal 'J: no Unable to Check row -> no badge half (#40)' $flags.Unable False
+Assert-Equal 'J: no rate computed -> no rate half (#40)' $flags.Rate False
+$r = Complete-ReportStage -SaveResult (Save-Reports)
+$html = Get-Content -LiteralPath $r.Html -Raw
+$txt = Get-Content -LiteralPath $r.Text -Raw
+# The IT block carries a notice div of its own, so the assertion is about the sentences and not the class.
+Assert-Equal 'J: a healthy report explains no badge it does not carry' ($html -match '(Unable to Check" means|「無法檢查」表示)') False
+Assert-Equal 'J: and qualifies no rate it never computed' ($html -match '(retransmission rate is an approximate|重傳比例為本機)') False
+Assert-Equal 'J: and no Note line' ($txt -match '(?m)^(Note:|注意：)') False
+Assert-Equal 'J: the window quotes the file the report stage calls primary' ((Get-SendToItLine $r.PrimaryReport) -match [regex]::Escape($r.Html)) True
+
+# The other shape: a row that could not be checked, and a rate that was computed.
+$script:Results = New-Object System.Collections.ArrayList
+$script:RetransmissionRateComputed = $true
+Add-CheckResult -Category "Test" -Check "Counters" -Status "ERROR" -Message "could not read" -Details "" -Tag "tcp-retransmissions" | Out-Null
+$flags = Get-ReportNoticeFlags
+Assert-Equal 'J: an Unable to Check row brings the badge half back' $flags.Unable True
+Assert-Equal 'J: a computed rate brings the rate half back' $flags.Rate True
+$r = Complete-ReportStage -SaveResult (Save-Reports)
+$html = Get-Content -LiteralPath $r.Html -Raw
+$txt = Get-Content -LiteralPath $r.Text -Raw
+Assert-Equal 'J: the notice is back in the HTML' ($html -match '(Unable to Check" means|「無法檢查」表示)') True
+Assert-Equal 'J: with both halves' (($html -match '(Unable to Check|無法檢查)') -and ($html -match '(retransmission rate|重傳比例)')) True
+Assert-Equal 'J: and back in the text report' ($txt -match '(Note:|注意：)') True
+
+# The panel checks with the rule the run itself uses (#45).
+$script:OptionsPanel = New-PanelControls
+$script:OptionsPanel["TcpTarget"].Text = "8.8.8.8"
+$rejected = @(Get-RejectedPanelValues)
+Assert-Equal 'J: the panel rejects a target with no port before the run starts' $rejected.Count 1
+Assert-Equal 'J: and names an example value, not the notation' ($rejected[0].Problem -match '8\.8\.8\.8:443') True
+$script:OptionsPanel["TcpTarget"].Text = "8.8.8.8:443"
+Assert-Equal 'J: a well-formed target is accepted' (@(Get-RejectedPanelValues).Count) 0
+$script:RunOptionMessages = New-Object System.Collections.ArrayList
+Set-RunOptions -Overrides @{ EntryPoint = "IT"; TcpTarget = @("8.8.8.8") } | Out-Null
+Assert-Equal 'J: the run drops exactly what the panel would have refused' ((@($script:RunOptionMessages) -join " ") -match '(expected host:port|格式應為 host:port)') True
+$ruleCalls = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq "Test-TcpTargetSyntax" }, $true))
+Assert-Equal 'J: one rule, called by both the run and the panel' ($ruleCalls.Count -ge 2) True
+$script:OptionsPanel = $null
+
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

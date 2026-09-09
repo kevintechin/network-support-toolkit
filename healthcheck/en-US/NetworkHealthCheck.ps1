@@ -1,4 +1,8 @@
-﻿[CmdletBinding()]
+﻿# PositionalBinding is off, so a value that no switch claimed is refused by PowerShell before the script starts
+# rather than binding to -ConfigPath: "-PingTarget a b" used to test a, record "Configuration file not found: b"
+# as an Unable to Check row, run on the built-in defaults and end Test Incomplete, losing the second target in
+# silence (backlog #36).
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [switch]$ConsoleOnly,
     [string]$ConfigPath = "",
@@ -45,7 +49,7 @@ param(
 # - Traceability: exception type, message, and inner exceptions are stored in every
 #   report; script location and call stack go to the JSON report only (Diagnostics).
 
-$script:ToolVersion = "1.2.6"
+$script:ToolVersion = "1.2.7"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -160,6 +164,9 @@ $script:UsingFallbackOutputDirectory = $false
 $script:BaseConfig = $null
 $script:RunOptions = $null
 $script:RunOptionMessages = New-Object System.Collections.ArrayList
+$script:RetransmissionRateComputed = $false
+$script:PanelWarned = $false
+$script:PanelHints = $null
 # Script-scope variables share the script's top-level scope with the bound parameters: never reset a parameter's
 # name to a literal here (v1.2.0 wrote $false and the IT launcher opened the user layout; fixed in v1.2.1).
 $script:Interactive = [bool]$Interactive
@@ -806,6 +813,20 @@ function Load-Configuration {
     }
 }
 
+# The one syntax rule any of the four free-text fields has, in one place. Set-RunOptions rejects with it after
+# the run has started; the IT panel checks with it before, on Start, so a panel that disagreed with the run is
+# not possible. The other three fields are deliberately left without a rule: a name or an address the resolver
+# refuses is a result and not a typing mistake, and an extra URL that is not a URL fails later as a test
+# (backlog #45).
+function Test-TcpTargetSyntax {
+    param([string]$Value)
+    $parts = ([string]$Value).Split(":")
+    if ($parts.Count -ne 2) { return $false }
+    if ([string]::IsNullOrWhiteSpace($parts[0])) { return $false }
+    $port = ConvertTo-IntSafe $parts[1] 0
+    return (($port -ge 1) -and ($port -le 65535))
+}
+
 # v1.2: run options come from the entry point (launcher switches) or the IT options panel; the JSON config file is never written.
 function Set-RunOptions {
     param([hashtable]$Overrides)
@@ -836,7 +857,7 @@ function Set-RunOptions {
         $parts = ([string]$value).Split(':')
         $port = 0
         if ($parts.Count -eq 2) { $port = ConvertTo-IntSafe $parts[1] 0 }
-        if ($parts.Count -ne 2 -or $port -lt 1 -or $port -gt 65535 -or [string]::IsNullOrWhiteSpace($parts[0])) {
+        if (-not (Test-TcpTargetSyntax $value)) {
             [void]$script:RunOptionMessages.Add("Ignored extra TCP target '$value': expected host:port.")
             continue
         }
@@ -2896,6 +2917,7 @@ function Compare-TcpCounters {
         $rate = 0.0
         if ($sentDelta -gt 0) {
             $rate = [math]::Round(($retransDelta * 100.0 / $sentDelta), 3)
+            $script:RetransmissionRateComputed = $true
         }
 
         $sampleSeconds = [math]::Round((New-TimeSpan -Start $Before.Timestamp -End $After.Timestamp).TotalSeconds, 1)
@@ -3015,6 +3037,27 @@ function Get-SummaryCounts {
 # Reporting: generate HTML, text, and JSON; preserve detailed exceptions on write failures.
 # -----------------------------------------------------------------------------
 # v1.2: language-neutral fingerprint over result tags; feeds the "What to tell IT" section and the wizard.
+# The report explained the "Unable to Check" badge and qualified a retransmission rate whether or not the run had
+# produced either (backlog #40): a healthy report opened by explaining a badge nowhere on the page, which primes
+# exactly the doubt it is meant to settle. Each half is now asked for separately, and the rate half turns on a
+# rate having been computed rather than on a tagged row existing - a run whose counter reads both failed emits
+# tagged ERROR rows and never obtains a rate.
+function Get-ReportNoticeFlags {
+    return [pscustomobject][ordered]@{
+        Unable = (@($script:Results | Where-Object { [string]$_.Status -eq "ERROR" }).Count -gt 0)
+        Rate   = [bool]$script:RetransmissionRateComputed
+    }
+}
+
+# The one file to send, named once and quoted by both surfaces (backlog #46): the window and the console say the
+# same thing about the same file - the one Open Report opens, which is the HTML unless it could not be written.
+# What this replaces is three files in a folder and a person who did not know which of them goes to IT.
+function Get-SendToItLine {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+    return ("Send this file to IT: {0}" -f $Path)
+}
+
 function Get-FingerprintSummary {
     $results = @($script:Results)
     $overall = Get-OverallStatus
@@ -3053,9 +3096,25 @@ function Get-FingerprintSummary {
         "mixed" { $title = "A required check failed"; $lines = @("At least one required check failed; see the failed rows below.", "Send the report to IT as it is.") }
         "incomplete" { $title = "Some checks could not run"; $lines = @("No failure was found, but some steps could not be completed on this computer.", "Send the report to IT as it is; the reasons are recorded in the details.") }
         "attention" { $title = "Warnings to review"; $lines = @("No required check failed, but some checks raised warnings; see the highlighted rows.", "Send the report to IT as it is.") }
-        default { $title = "Everything passed"; $lines = @("All checks passed during this run.", "If the problem persists, it is likely on the application or server side, or it comes and goes; run the tool again while it is happening.") }
+        default {
+            $title = "Everything passed"
+            # "All checks passed" was said whatever the Information rows held, so a run in which an optional target
+            # failed outright - an INFO row by design - read as if nothing had failed, a few lines above the row
+            # that did (backlog #35). The claim is now the one the verdict actually makes, and the targets that did
+            # not answer are named where the reader is looking.
+            $quietOptional = @($results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "INFO" -and (@("ping-target", "tcp", "http") -contains [string]$_.Tag) })
+            if ($quietOptional.Count -gt 0) {
+                $quietNames = @(@($quietOptional | ForEach-Object { [string]$_.Check }) | Select-Object -Unique)
+                $lines = @("All required checks passed during this run.", ("These optional targets did not answer, which does not change the result: {0}." -f ($quietNames -join ", ")), "If the problem persists, it is likely on the application or server side, or it comes and goes; run the tool again while it is happening.")
+            }
+            else {
+                $lines = @("All checks passed during this run.", "If the problem persists, it is likely on the application or server side, or it comes and goes; run the tool again while it is happening.")
+            }
+        }
     }
-    $lines += "Send the HTML report (or the JSON file) to IT. It contains the computer name, user name, adapter MAC addresses and the Wi-Fi network name."
+    # One file, not a choice between two: the window names the same file by its path, and this line names the
+    # one in the reader's hand (backlog #46).
+    $lines += "Send this file to IT as it is. It contains the computer name, user name, adapter MAC addresses and the Wi-Fi network name."
 
     return [pscustomobject][ordered]@{
         Key   = $key
@@ -3071,6 +3130,13 @@ function New-HtmlReportContent {
         [object]$Counts
     )
 
+    # Each half of the notice only when the run produced the thing it explains (backlog #40).
+    $noticeFlags = Get-ReportNoticeFlags
+    $noticeSentences = @()
+    if ($noticeFlags.Unable) { $noticeSentences += '"Unable to Check" means the step could not be completed because of permissions, missing system components, company policy, or an execution error. It does not necessarily mean the network is faulty.' }
+    if ($noticeFlags.Rate) { $noticeSentences += "The TCP retransmission rate is an approximate system-wide value for this sampling period." }
+    $noticeHtml = ""
+    if ($noticeSentences.Count -gt 0) { $noticeHtml = '    <div class="notice">' + ($noticeSentences -join " ") + '</div>' }
     $organization = ConvertTo-SafeString $script:Config.OrganizationName
     if ([string]::IsNullOrWhiteSpace($organization)) {
         $organization = "Organization Not Specified"
@@ -3223,7 +3289,7 @@ $fingerprintItems
   <section>
     <h2>Test Results</h2>
     <div class="tools"><button type="button" onclick="nhcToggle(true)">Expand all</button> <button type="button" onclick="nhcToggle(false)">Collapse all</button></div>
-    <div class="notice">"Unable to Check" means the step could not be completed because of permissions, missing system components, company policy, or an execution error. It does not necessarily mean the network is faulty. The TCP retransmission rate is an approximate system-wide value for this sampling period.</div>
+$noticeHtml
     <div style="overflow-x:auto; margin-top:14px;">
       <table>
         <thead><tr><th>Time</th><th>Category</th><th>Check</th><th>Result</th><th>Description</th></tr></thead>
@@ -3307,7 +3373,12 @@ function New-TextReportContent {
         [void]$builder.AppendLine("")
     }
 
-    [void]$builder.AppendLine("Note: 'Unable to Check' means the step was not completed; it does not necessarily mean the network is faulty. TCP retransmissions are approximate system-wide statistics for this sampling period.")
+    # The same two halves as the HTML notice, each on the same condition (backlog #40).
+    $noticeFlags = Get-ReportNoticeFlags
+    $noticeSentences = @()
+    if ($noticeFlags.Unable) { $noticeSentences += "'Unable to Check' means the step was not completed; it does not necessarily mean the network is faulty." }
+    if ($noticeFlags.Rate) { $noticeSentences += "TCP retransmissions are approximate system-wide statistics for this sampling period." }
+    if ($noticeSentences.Count -gt 0) { [void]$builder.AppendLine("Note: " + ($noticeSentences -join " ")) }
     return $builder.ToString()
 }
 
@@ -3419,7 +3490,7 @@ function Complete-ReportStage {
         Write-UiLog -Status "WARN" -Text ("Report generated, but {0} format(s) could not be written ({1}). Primary report: {2}" -f $failedFormats.Count, ($failedFormats -join ", "), $primary)
         Update-OverallUi -Overall $SaveResult.Overall
         if ($script:GuiAvailable) {
-            $script:ReportPathLabel.Text = "Report: $primary"
+            $script:ReportPathLabel.Text = Get-SendToItLine $primary
             $script:OpenReportButton.Enabled = $true
             $script:OpenJsonButton.Enabled = (-not [string]::IsNullOrWhiteSpace([string]$SaveResult.Json))
             $script:OpenFolderButton.Enabled = $true
@@ -3431,7 +3502,7 @@ function Complete-ReportStage {
         Write-UiLog -Status "PASS" -Text ("Report generated: {0}" -f $primary)
         Update-OverallUi -Overall $SaveResult.Overall
         if ($script:GuiAvailable) {
-            $script:ReportPathLabel.Text = "Report: $primary"
+            $script:ReportPathLabel.Text = Get-SendToItLine $primary
             $script:OpenReportButton.Enabled = $true
             $script:OpenJsonButton.Enabled = (-not [string]::IsNullOrWhiteSpace([string]$SaveResult.Json))
             $script:OpenFolderButton.Enabled = $true
@@ -3723,6 +3794,9 @@ function Start-ConsoleMode {
         Write-Host ("HTML report: {0}" -f (ConvertTo-DisplayString $report.Html "(not written)"))
         Write-Host ("Text report: {0}" -f (ConvertTo-DisplayString $report.Text "(not written)"))
         Write-Host ("JSON report: {0}" -f (ConvertTo-DisplayString $report.Json "(not written)"))
+        # The same sentence the window shows, about the same file: HTML unless it could not be written.
+        $sendLine = Get-SendToItLine ([string]@(@($report.Html, $report.Text, $report.Json) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })[0])
+        if (-not [string]::IsNullOrWhiteSpace($sendLine)) { Write-Host $sendLine }
         if (@($report.FailedFormats).Count -gt 0) {
             Write-Host ("Report formats not written: {0}" -f (@($report.FailedFormats) -join ", ")) -ForegroundColor Yellow
         }
@@ -3774,6 +3848,37 @@ function Set-OptionsPanelValues {
     $controls["DriverInfo"].Checked = [bool]$options.ChecksEnabled.DriverInfo
     $controls["Traceroute"].Checked = [bool]$options.ChecksEnabled.Traceroute
     $controls["ExpandDetails"].Checked = [bool]$options.ExpandDetails
+}
+
+# The panel's four free-text fields against the rules the run itself uses, before the run starts. Only the extra
+# TCP target has a syntax rule; the other three are read and left alone. What a rejected value costs if it is not
+# caught here was measured twice: a fifteen-second run, a report carrying a warning, a verdict of Attention
+# Required on a network where every check passed, and a summary telling the person to send that report to IT.
+function Get-RejectedPanelValues {
+    $rejected = New-Object System.Collections.ArrayList
+    $controls = $script:OptionsPanel
+    if ($null -eq $controls) { return @() }
+    foreach ($item in @(([string]$controls["TcpTarget"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        if (-not (Test-TcpTargetSyntax $item)) {
+            [void]$rejected.Add([pscustomobject][ordered]@{ Key = "TcpTarget"; Value = [string]$item; Problem = "Extra TCP: '" + $item + "' is not host:port - for example 8.8.8.8:443." })
+        }
+    }
+    return @($rejected)
+}
+
+# Nothing blocks and nothing is refused: the field is marked, the problem is named with an example of the value
+# the field wants, and the person is told the second choice this tool always offers - press Start again and the
+# run goes ahead without that target, exactly as it did before this check existed, Startup Notice and all.
+function Show-PanelRejection {
+    param([object[]]$Rejected)
+    $controls = $script:OptionsPanel
+    foreach ($item in @($Rejected)) {
+        $control = $controls[[string]$item.Key]
+        if ($null -ne $control) { $control.BackColor = [System.Drawing.Color]::MistyRose }
+    }
+    $text = ((@($Rejected | ForEach-Object { [string]$_.Problem }) -join " ") + " " + 'Correct it, or press Start Test again to run without it.')
+    Set-UiProgress -Percent 0 -Text $text
+    Write-UiLog -Status "INFO" -Text $text
 }
 
 function Get-RunOptionsFromPanel {
@@ -3863,28 +3968,45 @@ function Initialize-Gui {
         $form.Controls.Add($panel)
 
         $controls = @{}
+        # One width for six labels is what clipped the longest of them: "Extra TCP (host:port)" needs 136 px in
+        # the 100 the loop used to give it, and the zh-TW label 147, so both wrapped into a 22 px box and lost
+        # their second line - the format was in the source and not on the screen (backlog #49). Each label now
+        # carries the width its own text needs, and the two columns beside it move right to make room; the panel
+        # is 880 wide and the last control ends at 875. The gui-headless step measures every control against its
+        # box in both languages, so a translation that outgrows one fails the chain instead of a walk.
         foreach ($item in @(
-            @{ Text = "Extra ping"; X = 12; Y = 26 },
-            @{ Text = "Extra DNS"; X = 320; Y = 26 },
-            @{ Text = "Ping count"; X = 630; Y = 26 },
-            @{ Text = "Extra TCP (host:port)"; X = 12; Y = 58 },
-            @{ Text = "Extra URL"; X = 320; Y = 58 },
-            @{ Text = "Sample seconds"; X = 630; Y = 58 }
+            @{ Text = "Extra ping"; X = 12; Y = 26; W = 150 },
+            @{ Text = "Extra DNS"; X = 375; Y = 26; W = 100 },
+            @{ Text = "Ping count"; X = 690; Y = 26; W = 110 },
+            @{ Text = "Extra TCP (host:port)"; X = 12; Y = 58; W = 150 },
+            @{ Text = "Extra URL"; X = 375; Y = 58; W = 100 },
+            @{ Text = "Sample seconds"; X = 690; Y = 58; W = 110 }
         )) {
             $label = New-Object System.Windows.Forms.Label
             $label.Text = $item.Text
             $label.Location = New-Object System.Drawing.Point($item.X, $item.Y)
-            $label.Size = New-Object System.Drawing.Size(100, 22)
+            $label.Size = New-Object System.Drawing.Size($item.W, 22)
             $panel.Controls.Add($label)
         }
-        foreach ($item in @(@{ Key = "PingTarget"; X = 115; Y = 23 }, @{ Key = "DnsName"; X = 423; Y = 23 }, @{ Key = "TcpTarget"; X = 115; Y = 55 }, @{ Key = "HttpUrl"; X = 423; Y = 55 })) {
+        foreach ($item in @(@{ Key = "PingTarget"; X = 165; Y = 23 }, @{ Key = "DnsName"; X = 478; Y = 23 }, @{ Key = "TcpTarget"; X = 165; Y = 55 }, @{ Key = "HttpUrl"; X = 478; Y = 55 })) {
             $box = New-Object System.Windows.Forms.TextBox
             $box.Location = New-Object System.Drawing.Point($item.X, $item.Y)
             $box.Size = New-Object System.Drawing.Size(195, 24)
             $panel.Controls.Add($box)
             $controls[$item.Key] = $box
         }
-        foreach ($item in @(@{ Key = "PingCount"; X = 735; Y = 23; Min = 1; Max = 20 }, @{ Key = "SampleSeconds"; X = 735; Y = 55; Min = 1; Max = 120 })) {
+        # The format lives in the control the person is typing into, as an example value rather than a notation:
+        # host:port is a developer's shorthand for a shape, 8.8.8.8:443 is the thing they are about to type.
+        $hints = New-Object System.Windows.Forms.ToolTip
+        $script:PanelHints = $hints
+        $hints.SetToolTip($controls["PingTarget"], "For example 1.1.1.1")
+        $hints.SetToolTip($controls["DnsName"], "For example www.example.com")
+        $hints.SetToolTip($controls["TcpTarget"], "For example 8.8.8.8:443 - a host or address, a colon, then the port")
+        $hints.SetToolTip($controls["HttpUrl"], "For example https://www.example.com/")
+        foreach ($key in @("PingTarget", "DnsName", "TcpTarget", "HttpUrl")) {
+            $controls[$key].Add_TextChanged({ $script:PanelWarned = $false; $this.BackColor = [System.Drawing.SystemColors]::Window })
+        }
+        foreach ($item in @(@{ Key = "PingCount"; X = 805; Y = 23; Min = 1; Max = 20 }, @{ Key = "SampleSeconds"; X = 805; Y = 55; Min = 1; Max = 120 })) {
             $spinner = New-Object System.Windows.Forms.NumericUpDown
             $spinner.Location = New-Object System.Drawing.Point($item.X, $item.Y)
             $spinner.Size = New-Object System.Drawing.Size(70, 24)
@@ -4047,6 +4169,17 @@ function Initialize-Gui {
     $startButton.Add_Click({
         try {
             if ($script:Interactive -and $null -ne $script:OptionsPanel) {
+                # Every value the panel can reject is checked before the run rather than after it (backlog #45).
+                # Nothing blocks: the first press names the problem and marks the field, and a second press runs
+                # without that target - which is what the run did before this check existed.
+                if (-not $script:PanelWarned) {
+                    $rejected = @(Get-RejectedPanelValues)
+                    if ($rejected.Count -gt 0) {
+                        Show-PanelRejection -Rejected $rejected
+                        $script:PanelWarned = $true
+                        return
+                    }
+                }
                 Set-RunOptions -Overrides (Get-RunOptionsFromPanel) | Out-Null
             }
             [void](Run-AllChecks)
