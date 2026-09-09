@@ -53,6 +53,15 @@ if ([string]::IsNullOrWhiteSpace($ScriptPath)) {
     $ScriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'healthcheck\en-US\NetworkHealthCheck.ps1'
 }
 if ($Iterations -lt 1) { throw 'Iterations must be at least 1.' }
+# The parameters that make the load are checked before anything is measured, and for the same reason the readiness
+# wait exists: a load condition with no workers, no files or no bytes produces idle samples under a load label, and
+# the wait cannot catch it because zero flags trivially satisfy a request for zero jobs (PR #40, round 15). A reading
+# this script prints has to be quotable, so an invocation that cannot produce load is refused rather than labelled.
+if ($Conditions -ne 'idle') {
+    if ($Jobs -lt 1) { throw 'Jobs must be at least 1: a load condition with no workers would report idle samples as load.' }
+    if ($LoadFileCount -lt 1) { throw 'LoadFileCount must be at least 1: a load condition with no files to copy would report idle samples as load.' }
+    if ($LoadFileKb -lt 1) { throw 'LoadFileKb must be at least 1: a load condition copying empty files would report idle samples as load.' }
+}
 if (-not (Test-Path -LiteralPath $ScriptPath)) { throw "Script not found: $ScriptPath" }
 
 # The functions under measurement are the shipped ones, read off the AST of the package being measured, so that this
