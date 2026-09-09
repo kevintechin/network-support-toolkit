@@ -42,6 +42,8 @@ param(
     [int]$Jobs = 2,
     [int]$LoadFileCount = 400,
     [int]$LoadFileKb = 256,
+    # Where the load tree goes. This run writes a folder of its own inside it and removes that folder only; nothing
+    # else in -WorkDir is touched, so an existing directory is safe to name here.
     [string]$WorkDir = (Join-Path $env:TEMP ('nhc-counter-rate-' + [guid]::NewGuid().ToString('N').Substring(0, 8)))
 )
 
@@ -181,11 +183,18 @@ if ($Conditions -eq 'idle' -or $Conditions -eq 'both') {
     $results['idle'] = Measure-Condition -Name 'idle' -Count $Iterations
 }
 if ($Conditions -eq 'load' -or $Conditions -eq 'both') {
-    New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+    # The load tree goes in a folder of this run's own inside -WorkDir, and only that folder is deleted afterwards.
+    # -WorkDir may be a directory the caller already keeps things in - a scratch folder, a project folder - and
+    # removing it whole, which is what this did until now, would take those things with it on every run and on every
+    # exception (PR #40, round 16). The enclosing folder is removed only when this run created it, and then only if
+    # nothing else was put there.
+    $workRootExisted = Test-Path -LiteralPath $WorkDir
+    $loadRoot = Join-Path $WorkDir ('load-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Force -Path $loadRoot | Out-Null
     $loadJobs = @()
     try {
-        Write-Output ("Writing {0} x {1} KB into {2} and copying it in {3} background job(s)..." -f $LoadFileCount, $LoadFileKb, $WorkDir, $Jobs)
-        $load = Start-LoadJobs -Root $WorkDir -Count $LoadFileCount -FileKb $LoadFileKb -JobCount $Jobs
+        Write-Output ("Writing {0} x {1} KB into {2} and copying it in {3} background job(s)..." -f $LoadFileCount, $LoadFileKb, $loadRoot, $Jobs)
+        $load = Start-LoadJobs -Root $loadRoot -Count $LoadFileCount -FileKb $LoadFileKb -JobCount $Jobs
         $loadJobs = @($load.Jobs)
         Write-Output ("{0} of {1} load job(s) were copying after {2} s; measuring now" -f $load.Running, $load.Requested, $load.Waited)
         if ($load.Running -lt $load.Requested) {
@@ -198,7 +207,8 @@ if ($Conditions -eq 'load' -or $Conditions -eq 'both') {
             Stop-Job -Job $job -ErrorAction SilentlyContinue
             Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
         }
-        Remove-Item -LiteralPath $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $loadRoot -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not $workRootExisted) { Remove-Item -LiteralPath $WorkDir -Force -ErrorAction SilentlyContinue }
     }
 }
 
