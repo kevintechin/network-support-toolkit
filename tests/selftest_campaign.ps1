@@ -210,7 +210,8 @@ $ErrorActionPreference = 'Continue'
 $out12 = @(& $psExe -NoProfile -ExecutionPolicy Bypass -Command $command 2>&1 | ForEach-Object { [string]$_ })
 $code12 = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
-foreach ($l in $out12) { Write-Host ('    | ' + $l) }   # driver lines go to the host here too, so every one of them travels the same way (#53)
+$capturedLines += $out12.Count   # this invocation bypasses Invoke-Campaign, so it counts itself into the same totals (#53)
+foreach ($l in $out12) { Write-Host ('    | ' + $l); $forwardedLines++ }   # driver lines go to the host here too, so every one of them travels the same way
 Assert-True '12. exit code 3' ($code12 -eq 3) ('exit code ' + $code12)
 Assert-True '12. the output names ConstrainedLanguage and RECOVER.txt, and no New-Object error' ((@($out12 | Where-Object { $_ -match 'ConstrainedLanguage' -and $_ -match 'cannot run or resume' }).Count -ge 1) -and (@($out12 | Where-Object { $_ -match 'RECOVER\.txt' }).Count -ge 1) -and (@($out12 | Where-Object { $_ -match 'New-Object' }).Count -eq 0)) ($out12 -join ' / ')
 
@@ -701,13 +702,30 @@ $unassigned35 = @($calls35 | Where-Object {
 Assert-True '35. every call to it is assigned, which is the reason for the rule above' (($calls35.Count -gt 0) -and ($unassigned35.Count -eq 0)) (('calls: ' + $calls35.Count + ', unassigned: ' + $unassigned35.Count) + $(if ($unassigned35.Count) { ' -> ' + (($unassigned35 | ForEach-Object { $_.Extent.Text }) -join ' / ') } else { '' }))
 # Absence is not enough: the loop could be deleted outright, or replaced by an expression that emits implicitly,
 # and the two assertions above would still pass with the log empty again. So the shape is asserted positively, and
-# the behaviour is counted.
+# the behaviour is counted - over every driver line this file captures, the helper's and case 12's direct one alike,
+# since the acceptance asks for every invocation's output and not only the helper's.
 $hostWrites35 = @()
 if ($fn35.Count -eq 1) {
     $hostWrites35 = @($fn35[0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Write-Host' -and $n.Extent.Text -match '\$l' }, $true))
 }
 Assert-True '35. it still forwards the captured lines to the host' ($hostWrites35.Count -ge 1) ('Write-Host calls over the captured line: ' + $hostWrites35.Count)
-Assert-True '35. and every line it captured reached the host, counted where each happens' (($capturedLines -gt 0) -and ($forwardedLines -eq $capturedLines)) ('captured ' + $capturedLines + ', forwarded ' + $forwardedLines)
+Assert-True "35. and every driver line this file captured reached the host - the helper's and case 12's alike, counted where each happens" (($capturedLines -gt 0) -and ($forwardedLines -eq $capturedLines)) ('captured ' + $capturedLines + ', forwarded ' + $forwardedLines)
+
+# -------------------- 36. no assertion in this file can be vacuous --------------------
+# Backlog #53, PR #39 round 2: case 35's own third assertion was written with an apostrophe inside a single-quoted
+# name, so the string closed early and PowerShell bound the rest as positional arguments - the condition became the
+# bareword 's', which is truthy, and the assertion passed while the counters it compared differed by two. It reported
+# PASS against a mutant it was written to catch. Every Assert-True call must therefore carry exactly its three
+# arguments, checked on the AST of this file: name, condition, detail.
+Write-Output ''
+Write-Output '36. every Assert-True call in this file takes exactly its three arguments, so none of them can pass on a bareword'
+$tokens36 = $null
+$errors36 = $null
+$ast36 = [System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$tokens36, [ref]$errors36)
+$asserts36 = @($ast36.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Assert-True' }, $true))
+$malformed36 = @($asserts36 | Where-Object { $_.CommandElements.Count -ne 4 })
+Assert-True '36. this file has assertions to check' ($asserts36.Count -gt 100) ('Assert-True calls: ' + $asserts36.Count)
+Assert-True '36. every one of them binds name, condition and detail' ($malformed36.Count -eq 0) (($malformed36 | ForEach-Object { 'line ' + $_.Extent.StartLineNumber + ': ' + $_.CommandElements.Count + ' elements' }) -join '; ')
 
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
