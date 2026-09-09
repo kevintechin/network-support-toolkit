@@ -34,6 +34,7 @@ It is in the repository and not in the package, like [`application-control.md`](
 | 47 | The evidence for a failure that writes no report depends on the person retyping what they saw | tool |
 | 48 | The walk asks a person to capture what a script could capture | tests |
 | 50 | The zh-TW console launcher's last line reaches the screen as a command | tool / measurement |
+| 51 | A quality verdict can rest on a single packet, because the threshold is finer than the sample | tool |
 
 The table is an index; each item's own paragraph below is the statement.
 
@@ -186,6 +187,30 @@ On `DESKTOP-CO7QIMR` (Windows 10 22H2, zh-TW display) the console launcher ended
 **The candidate fixes, so the measurement knows what it is choosing between.** Make the final line ASCII, as en-US's already is; drop it altogether, since the console has already printed 整體結果 and the three report paths; or fold the code into the completion sentence. All three are small; which is right depends on what the measurement says, and on whether any other Chinese echo in the six launchers shares the shape.
 
 Acceptance: the failure is reproduced on the machine that produced it with a minimal file, and one variable is shown to carry it; a successful zh-TW console run then ends with no error text on the screen, on that machine and on the reference machine; `tests/launcher_check.ps1` covers the success path of the six launchers so the change cannot silently alter what a working run prints. — *found by the zh-TW user-manual walk, 2026-09-09; the harness's own console capture is stdout only, so the two error lines exist as evidence solely because the screenshot beside it caught them, which is [#48](#48--the-walk-asks-a-person-to-capture-what-a-script-could-capture)'s to fix.*
+
+### 51 — A quality verdict can rest on a single packet, because the threshold is finer than the sample
+
+The two chain runs of 2026-09-09 each failed one case on this project's own reference machine, and a third came out of an acceptance run the same hour. All three are quality rows, and the numbers are the item:
+
+| Where | Sample | Events | Result |
+|---|---|---|---|
+| `gui zh-TW IT` | 125 s, **2906** sent segments | 251 retransmissions | 8.637 % → `FAIL` |
+| acceptance, `-SampleSeconds 2` | 2 s, **84** sent segments | **2** retransmissions | 2.381 % → `WARN` |
+| `package en-US IT` | **4** pings | **1** lost | 25 % → `WARN` (the public-IP target is optional) |
+
+The first is not a sampling artefact: 251 events out of 2906 is a link that was really retransmitting, and a longer window would have said the same thing. **The other two hang on one packet each**, and that is what this item is about.
+
+**The arithmetic, which is the defect stated exactly.** *Retransmissions:* `MinimumTcpSegmentsForRate` is 50 and `TcpRetransmissionWarningPercent` is 2, so at the smallest sample the tool will rate, **one retransmission is 2.0 % — the warning threshold itself**. The guard that exists to stop the tool rating a sample too small permits precisely the least informative case it could. At the 84 segments measured above, one retransmission is 1.19 % and two are 2.38 %: the verdict changed on a single packet. For one retransmission to be worth half the warning threshold the sample needs ≥ 100 segments; a quarter, ≥ 200. *Packet loss:* `PingCount` is 4, so the loss figure can only be 0, 25, 50, 75 or 100 %, against thresholds of 5 % (warning) and 20 % (critical). **One lost packet out of four is already past the critical threshold**, and the tool has no way to express "a little loss" at that count. One lost packet is a warning rather than critical from six pings, and stops being a warning at all only from twenty-one.
+
+**What the project already says about this, and does not do.** The repository README's principles include *"A failed ping is a suspect, not a conviction — corroborate before acting"*, and the user manual tells the person to run the tool again while the problem is happening. The quality rows convict on one sample.
+
+**Four candidate changes, cheapest first, so that whoever takes this is choosing rather than inventing.** *(1) A count floor on the warning path.* The critical path already has one — `TcpRetransmissionCriticalCount` = 50 — while the warning path looks only at the rate: requiring the rate **and** a small number of retransmissions (five, say) turns the 2-of-84 case into `INFO` with its numbers, and leaves 251-of-2906 exactly as it is. *(2) Tie `MinimumTcpSegmentsForRate` to the threshold instead of fixing it at 50* — `sent ≥ 100 / warningPercent` makes one retransmission worth half the threshold, which is 100 segments at the shipped 2 %. *(3) The same for loss:* raise the default `PingCount`, or refuse to classify a single lost packet as critical below some count and say so in the row. The cost is not symmetric and belongs in the decision: against a **reachable** target ten pings cost milliseconds, while against an unreachable one they cost ten times the ping timeout — in the run the manual promises will take about ten seconds. *(4) Corroborate before concluding:* when a quality row would cross a threshold, take one more sample and require the crossing twice. It costs time only when something looked wrong, which is the case where time is worth spending, and it is what the manual already asks the person to do by hand.
+
+**What this is not.** It is not [#38](#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it), which is the counter failing to be read at all, and not [#39](#39--a-measurement-that-could-not-be-taken-outranks-a-measurement-that-failed), which is about how the rows that exist are weighed against each other. This one is a row that was measured, and measured on too small a sample for the threshold applied to it. It composes with both: #39's *Test Incomplete* and this item's false warning are the two ways a healthy machine ends up telling its owner to send a report to IT.
+
+**What the evidence does and does not support.** Three cases, one machine, one day; the 8.637 % and the 25 % may well be real network events, and the tool reporting them is the tool working. What is not defensible is that a single packet can produce the same sentence.
+
+Acceptance: a run whose sample is too coarse for the threshold applied to it reports the numbers without changing the verdict — proved by a test that feeds the counter comparison a small sample with one and with several retransmissions and asserts the two outcomes differ in status, not only in wording; the thresholds and any new floor live in the configuration file with the others and are validated with them; the loss rule is decided and documented with its cost in run time; and the manuals' description of the quality rows matches what ships. Whichever of the four is chosen, the row must keep saying what it measured: this item removes a verdict, never a number. — *raised by the owner on 2026-09-09, reading the two chain runs of the 1.2.7 release, each of which failed one case on this machine's own network.*
 
 ## Closed items
 
