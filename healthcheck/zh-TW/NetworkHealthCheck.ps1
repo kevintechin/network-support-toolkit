@@ -1,4 +1,8 @@
-﻿[CmdletBinding()]
+﻿# PositionalBinding is off, so a value that no switch claimed is refused by PowerShell before the script starts
+# rather than binding to -ConfigPath: "-PingTarget a b" used to test a, record "Configuration file not found: b"
+# as an Unable to Check row, run on the built-in defaults and end Test Incomplete, losing the second target in
+# silence (backlog #36).
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [switch]$ConsoleOnly,
     [string]$ConfigPath = "",
@@ -38,7 +42,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：報告保存例外類型、訊息與內部例外；腳本位置與呼叫堆疊只寫入 JSON 報告（Diagnostics）。
 
-$script:ToolVersion = "1.2.6"
+$script:ToolVersion = "1.2.7"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -149,6 +153,9 @@ $script:UsingFallbackOutputDirectory = $false
 $script:BaseConfig = $null
 $script:RunOptions = $null
 $script:RunOptionMessages = New-Object System.Collections.ArrayList
+$script:RetransmissionRateComputed = $false
+$script:PanelWarned = $false
+$script:PanelHints = $null
 # 腳本層級變數與已繫結的參數同屬頂層作用域：這裡絕不能把參數同名變數重設為常值（v1.2.0 寫成 $false，IT 入口因此開成使用者版面；v1.2.1 修正）。
 $script:Interactive = [bool]$Interactive
 $script:OptionsPanel = $null
@@ -791,6 +798,18 @@ function Load-Configuration {
     }
 }
 
+# 四個自由輸入欄位裡唯一一條格式規則，只寫在這一個地方。Set-RunOptions 在執行開始之後用它退回；IT 面板在按下
+# 「開始檢測」時、執行開始之前也用它檢查，所以面板不可能和實際執行的判斷不一致。另外三個欄位刻意沒有規則：
+# 解析不出來的名稱或位址是一種結果，不是打錯字；不是網址的額外 URL 會在後面以測試失敗的形式出現（待辦 #45）。
+function Test-TcpTargetSyntax {
+    param([string]$Value)
+    $parts = ([string]$Value).Split(":")
+    if ($parts.Count -ne 2) { return $false }
+    if ([string]::IsNullOrWhiteSpace($parts[0])) { return $false }
+    $port = ConvertTo-IntSafe $parts[1] 0
+    return (($port -ge 1) -and ($port -le 65535))
+}
+
 # v1.2：執行選項來自入口（啟動器參數）或 IT 選項面板；JSON 設定檔永遠不會被寫入。
 function Set-RunOptions {
     param([hashtable]$Overrides)
@@ -803,6 +822,9 @@ function Set-RunOptions {
     $extra = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
     $raw = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
 
+    # 額外目標的列標題帶著它自己的值，於是同一種的兩個目標在表格裡、以及在點名沒有回應者的結語裡，都分得出來
+    #（PR #35 第 2 輪）。Ping 那一列是例外，維持原本的名稱：Test-PingTargets 本來就把標題寫成「<名稱>：<目標>」，
+    # 在這裡再加一次位址會印兩遍（第 3 輪）。
     foreach ($value in @(@($Overrides["PingTarget"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $raw.Ping += [string]$value
@@ -812,7 +834,7 @@ function Set-RunOptions {
     foreach ($value in @(@($Overrides["DnsName"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $raw.Dns += [string]$value
-        $config.Tests.DnsNames = @($config.Tests.DnsNames) + [pscustomobject][ordered]@{ Name = "額外 DNS"; Host = [string]$value; Required = $false }
+        $config.Tests.DnsNames = @($config.Tests.DnsNames) + [pscustomobject][ordered]@{ Name = ("額外 DNS " + [string]$value); Host = [string]$value; Required = $false }
         $extra.Dns += [string]$value
     }
     foreach ($value in @(@($Overrides["TcpTarget"]) | ForEach-Object { ([string]$_) -split '[,;\s]+' } | ForEach-Object { ([string]$_).Trim() })) {
@@ -821,17 +843,17 @@ function Set-RunOptions {
         $parts = ([string]$value).Split(':')
         $port = 0
         if ($parts.Count -eq 2) { $port = ConvertTo-IntSafe $parts[1] 0 }
-        if ($parts.Count -ne 2 -or $port -lt 1 -or $port -gt 65535 -or [string]::IsNullOrWhiteSpace($parts[0])) {
+        if (-not (Test-TcpTargetSyntax $value)) {
             [void]$script:RunOptionMessages.Add("已忽略額外 TCP 目標「$value」：格式應為 host:port。")
             continue
         }
-        $config.Tests.TcpTargets = @($config.Tests.TcpTargets) + [pscustomobject][ordered]@{ Name = "額外 TCP"; Host = $parts[0]; Port = $port; Required = $false; Group = "" }
+        $config.Tests.TcpTargets = @($config.Tests.TcpTargets) + [pscustomobject][ordered]@{ Name = ("額外 TCP " + [string]$value); Host = $parts[0]; Port = $port; Required = $false; Group = "" }
         $extra.Tcp += [string]$value
     }
     foreach ($value in @(@($Overrides["HttpUrl"]) | ForEach-Object { ([string]$_) -split '\s+' } | ForEach-Object { ([string]$_).Trim() })) {
         if ([string]::IsNullOrWhiteSpace([string]$value)) { continue }
         $raw.Http += [string]$value
-        $config.Tests.HttpTargets = @($config.Tests.HttpTargets) + [pscustomobject][ordered]@{ Name = "額外 URL"; Url = [string]$value; Required = $false; Group = "" }
+        $config.Tests.HttpTargets = @($config.Tests.HttpTargets) + [pscustomobject][ordered]@{ Name = ("額外 URL " + [string]$value); Url = [string]$value; Required = $false; Group = "" }
         $extra.Http += [string]$value
     }
 
@@ -2880,6 +2902,7 @@ function Compare-TcpCounters {
         $rate = 0.0
         if ($sentDelta -gt 0) {
             $rate = [math]::Round(($retransDelta * 100.0 / $sentDelta), 3)
+            $script:RetransmissionRateComputed = $true
         }
 
         $sampleSeconds = [math]::Round((New-TimeSpan -Start $Before.Timestamp -End $After.Timestamp).TotalSeconds, 1)
@@ -2999,6 +3022,24 @@ function Get-SummaryCounts {
 # 報告輸出：產生 HTML、TXT、JSON；任一寫入錯誤都會留下詳細例外。
 # -----------------------------------------------------------------------------
 # v1.2：以結果標籤判定的語言中立指紋；供「要告訴 IT 的話」區段與精靈使用。
+# 不論這次執行有沒有產生，報告都會解釋「無法檢查」徽章、也都會替重傳比例加註（待辦 #40）：一份健康的報告，
+# 開頭就在解釋一個整頁都找不到的徽章，正好挑起它本來要消除的懷疑。現在兩半各自判斷，而且比例那一半看的是
+# 「有沒有真的算出比例」，不是「有沒有那個標籤的列」—— 計數器兩邊都讀失敗的執行，同樣會留下標籤列，卻從來沒有比例。
+function Get-ReportNoticeFlags {
+    return [pscustomobject][ordered]@{
+        Unable = (@($script:Results | Where-Object { [string]$_.Status -eq "ERROR" }).Count -gt 0)
+        Rate   = [bool]$script:RetransmissionRateComputed
+    }
+}
+
+# 要交出去的那一個檔案，只寫一次，兩個介面都引用它（待辦 #46）：視窗和文字模式說的是同一個檔案 —— 也就是「開啟報告」
+# 打開的那一個，除非它寫不出來，否則就是 HTML。這句話取代的，是資料夾裡三個檔案、而人不知道該送哪一個。
+function Get-SendToItLine {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+    return ("把這個檔案交給 IT：{0}" -f $Path)
+}
+
 function Get-FingerprintSummary {
     $results = @($script:Results)
     $overall = Get-OverallStatus
@@ -3037,9 +3078,23 @@ function Get-FingerprintSummary {
         "mixed" { $title = "有必要檢查未通過"; $lines = @("至少一項必要檢查未通過，請看下方失敗的項目。", "把報告原樣交給 IT。") }
         "incomplete" { $title = "部分檢查無法執行"; $lines = @("沒有發現故障，但部分步驟在這台電腦上無法完成。", "把報告原樣交給 IT，原因記錄在詳細資料中。") }
         "attention" { $title = "有需要注意的警告"; $lines = @("沒有必要檢查失敗，但有檢查提出警告，請看標示的項目。", "把報告原樣交給 IT。") }
-        default { $title = "全部通過"; $lines = @("本次執行的所有檢查都通過。", "若問題仍然存在，可能在應用程式或伺服器端，或是時好時壞；問題發生時再跑一次。") }
+        default {
+            $title = "全部通過"
+            # 不論「資訊」列裡寫了什麼，這裡都說「所有檢查都通過」，於是一個選用目標明明失敗了（依設計是 INFO 列），
+            # 結語讀起來卻像什麼都沒發生，而那一列就在幾行之下（待辦 #35）。現在說的是判定真正做過的宣稱，
+            # 沒有回應的選用目標也直接寫在讀者眼前。
+            $quietOptional = @($results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "INFO" -and (@("ping-target", "tcp", "http") -contains [string]$_.Tag) })
+            if ($quietOptional.Count -gt 0) {
+                $quietNames = @(@($quietOptional | ForEach-Object { [string]$_.Check }) | Select-Object -Unique)
+                $lines = @("本次執行的所有必要檢查都通過。", ("下列選用目標沒有回應，這不影響整體結果：{0}。" -f ($quietNames -join "、")), "若問題仍然存在，可能在應用程式或伺服器端，或是時好時壞；問題發生時再跑一次。")
+            }
+            else {
+                $lines = @("本次執行的所有檢查都通過。", "若問題仍然存在，可能在應用程式或伺服器端，或是時好時壞；問題發生時再跑一次。")
+            }
+        }
     }
-    $lines += "把 HTML 報告（或 JSON 檔）交給 IT。報告內含電腦名稱、使用者名稱、網卡 MAC 位址與 Wi-Fi 網路名稱。"
+    # 一個檔案，而不是兩者之一：視窗用路徑指出同一個檔案，這一行指的是讀者手上的這一份（待辦 #46）。
+    $lines += "把這個檔案原樣交給 IT。報告內含電腦名稱、使用者名稱、網卡 MAC 位址與 Wi-Fi 網路名稱。"
 
     return [pscustomobject][ordered]@{
         Key   = $key
@@ -3055,6 +3110,13 @@ function New-HtmlReportContent {
         [object]$Counts
     )
 
+    # 這段說明的每一半，只在這次執行真的產生了它要解釋的東西時才出現（待辦 #40）。
+    $noticeFlags = Get-ReportNoticeFlags
+    $noticeSentences = @()
+    if ($noticeFlags.Unable) { $noticeSentences += "「無法檢查」表示該步驟因權限、系統元件、公司政策或執行錯誤而沒有完成，不等同於網路本身一定異常。" }
+    if ($noticeFlags.Rate) { $noticeSentences += "TCP 重傳比例為本機在本次取樣期間的系統級近似值。" }
+    $noticeHtml = ""
+    if ($noticeSentences.Count -gt 0) { $noticeHtml = '    <div class="notice">' + ($noticeSentences -join "") + '</div>' }
     $organization = ConvertTo-SafeString $script:Config.OrganizationName
     if ([string]::IsNullOrWhiteSpace($organization)) {
         $organization = "未指定單位"
@@ -3207,7 +3269,7 @@ $fingerprintItems
   <section>
     <h2>檢測結果</h2>
     <div class="tools"><button type="button" onclick="nhcToggle(true)">全部展開</button> <button type="button" onclick="nhcToggle(false)">全部收合</button></div>
-    <div class="notice">「無法檢查」表示該步驟因權限、系統元件、公司政策或執行錯誤而沒有完成，不等同於網路本身一定異常。TCP 重傳比例為本機在本次取樣期間的系統級近似值。</div>
+$noticeHtml
     <div style="overflow-x:auto; margin-top:14px;">
       <table>
         <thead><tr><th>時間</th><th>分類</th><th>檢查項目</th><th>結果</th><th>說明</th></tr></thead>
@@ -3291,7 +3353,12 @@ function New-TextReportContent {
         [void]$builder.AppendLine("")
     }
 
-    [void]$builder.AppendLine("注意：『無法檢查』表示該步驟沒有完成，不等同於網路一定異常。TCP 重傳為整台電腦在本次取樣期間的系統級近似統計。")
+    # 和 HTML 那段說明的兩半相同，條件也相同（待辦 #40）。
+    $noticeFlags = Get-ReportNoticeFlags
+    $noticeSentences = @()
+    if ($noticeFlags.Unable) { $noticeSentences += "「無法檢查」表示該步驟沒有完成，不等同於網路本身一定異常。" }
+    if ($noticeFlags.Rate) { $noticeSentences += "TCP 重傳為本機在本次取樣期間的系統級近似統計。" }
+    if ($noticeSentences.Count -gt 0) { [void]$builder.AppendLine("注意：" + ($noticeSentences -join "")) }
     return $builder.ToString()
 }
 
@@ -3403,7 +3470,7 @@ function Complete-ReportStage {
         Write-UiLog -Status "WARN" -Text ("報告已產生，但有 {0} 種格式無法寫入（{1}）。主要報告：{2}" -f $failedFormats.Count, ($failedFormats -join ", "), $primary)
         Update-OverallUi -Overall $SaveResult.Overall
         if ($script:GuiAvailable) {
-            $script:ReportPathLabel.Text = "報告：$primary"
+            $script:ReportPathLabel.Text = Get-SendToItLine $primary
             $script:OpenReportButton.Enabled = $true
             $script:OpenJsonButton.Enabled = (-not [string]::IsNullOrWhiteSpace([string]$SaveResult.Json))
             $script:OpenFolderButton.Enabled = $true
@@ -3415,7 +3482,7 @@ function Complete-ReportStage {
         Write-UiLog -Status "PASS" -Text ("報告已產生：{0}" -f $primary)
         Update-OverallUi -Overall $SaveResult.Overall
         if ($script:GuiAvailable) {
-            $script:ReportPathLabel.Text = "報告：$primary"
+            $script:ReportPathLabel.Text = Get-SendToItLine $primary
             $script:OpenReportButton.Enabled = $true
             $script:OpenJsonButton.Enabled = (-not [string]::IsNullOrWhiteSpace([string]$SaveResult.Json))
             $script:OpenFolderButton.Enabled = $true
@@ -3525,6 +3592,9 @@ function Update-OverallUi {
 function Run-AllChecks {
     $script:IsRunning = $true
     $script:Results.Clear()
+    # 跟著結果一起清掉，而不是只在行程啟動時設定一次：視窗會被重複使用，否則某一次算出的比例，會被拿去解釋之後
+    # 那次「重新檢測」的報告 —— 即使那一次的計數器根本讀失敗（PR #35 第 1 輪）。
+    $script:RetransmissionRateComputed = $false
     $script:LastHtmlReport = $null
     $script:LastTextReport = $null
     $script:LastJsonReport = $null
@@ -3707,6 +3777,9 @@ function Start-ConsoleMode {
         Write-Host ("HTML 報告：{0}" -f (ConvertTo-DisplayString $report.Html "（未寫入）"))
         Write-Host ("文字報告：{0}" -f (ConvertTo-DisplayString $report.Text "（未寫入）"))
         Write-Host ("JSON 報告：{0}" -f (ConvertTo-DisplayString $report.Json "（未寫入）"))
+        # 和視窗上那一行同一句話、同一個檔案：除非 HTML 寫不出來，否則就是 HTML。
+        $sendLine = Get-SendToItLine ([string]@(@($report.Html, $report.Text, $report.Json) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })[0])
+        if (-not [string]::IsNullOrWhiteSpace($sendLine)) { Write-Host $sendLine }
         if (@($report.FailedFormats).Count -gt 0) {
             Write-Host ("未寫入的報告格式：{0}" -f (@($report.FailedFormats) -join ", ")) -ForegroundColor Yellow
         }
@@ -3757,6 +3830,35 @@ function Set-OptionsPanelValues {
     $controls["DriverInfo"].Checked = [bool]$options.ChecksEnabled.DriverInfo
     $controls["Traceroute"].Checked = [bool]$options.ChecksEnabled.Traceroute
     $controls["ExpandDetails"].Checked = [bool]$options.ExpandDetails
+}
+
+# 在執行開始之前，用實際執行所用的規則檢查面板的四個自由輸入欄位。只有額外 TCP 目標有格式規則，另外三個讀過就
+# 放行。沒有在這裡攔下來的代價量過兩次：一次十五秒的執行、一份帶警告的報告、在每項檢查都通過的網路上得到
+# 「需要注意」，以及一段叫人把那份報告交給 IT 的結語。
+function Get-RejectedPanelValues {
+    $rejected = New-Object System.Collections.ArrayList
+    $controls = $script:OptionsPanel
+    if ($null -eq $controls) { return @() }
+    foreach ($item in @(([string]$controls["TcpTarget"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        if (-not (Test-TcpTargetSyntax $item)) {
+            [void]$rejected.Add([pscustomobject][ordered]@{ Key = "TcpTarget"; Value = [string]$item; Problem = "額外 TCP：「" + $item + "」不是 host:port 格式 —— 例如 8.8.8.8:443。" })
+        }
+    }
+    return @($rejected)
+}
+
+# 不擋、也不拒絕：標記欄位、說出問題，並給出這個欄位要的那種值當範例，同時告訴對方這個工具一向提供的第二個
+# 選擇 —— 再按一次「開始檢測」就照樣執行，只是不帶那個目標，跟這個檢查存在之前一模一樣，啟動提示照舊。
+function Show-PanelRejection {
+    param([object[]]$Rejected)
+    $controls = $script:OptionsPanel
+    foreach ($item in @($Rejected)) {
+        $control = $controls[[string]$item.Key]
+        if ($null -ne $control) { $control.BackColor = [System.Drawing.Color]::MistyRose }
+    }
+    $text = ((@($Rejected | ForEach-Object { [string]$_.Problem }) -join " ") + " " + '請修正，或再按一次「開始檢測」，不帶這個目標直接執行。')
+    Set-UiProgress -Percent 0 -Text $text
+    Write-UiLog -Status "INFO" -Text $text
 }
 
 function Get-RunOptionsFromPanel {
@@ -3812,7 +3914,11 @@ function Initialize-Gui {
     }
     $bottomY = $formHeight - 116
     $form.Size = New-Object System.Drawing.Size(940, $formHeight)
-    $form.MinimumSize = New-Object System.Drawing.Size(780, [math]::Min(560 + $offset, $formHeight))
+    # IT 面板是一個寬 880 px 的固定格線，視窗不能被縮得比它所承載的格線還窄：面板向左右錨定，縮小視窗會把第三欄
+    # 推出面板邊緣，而那裡是捲不到的地方（PR #35 第 1 輪）。使用者視窗沒有這個面板，維持原本的最小寬度。
+    $minWidth = 780
+    if ($script:Interactive) { $minWidth = 940 }
+    $form.MinimumSize = New-Object System.Drawing.Size($minWidth, [math]::Min(560 + $offset, $formHeight))
     $form.MaximizeBox = $true
     $form.FormBorderStyle = "Sizable"
 
@@ -3846,28 +3952,43 @@ function Initialize-Gui {
         $form.Controls.Add($panel)
 
         $controls = @{}
+        # 六個標籤共用一個寬度，正是最長的那個被裁掉的原因：「額外 TCP（host:port）」在 100 px 的框裡需要 147 px
+        # （英文標籤 136 px），於是換行、第二行在 22 px 高的框裡被切掉 —— 格式在原始碼裡，不在螢幕上（待辦 #49）。
+        # 現在每個標籤帶著自己需要的寬度，旁邊兩欄跟著右移；面板寬 880，最後一個控制項結束在 875。
+        # gui-headless 步驟會在兩種語言下量每個控制項與它的框，翻譯長出框會讓鏈失敗，而不是等下一次走查。
         foreach ($item in @(
-            @{ Text = "額外 Ping"; X = 12; Y = 26 },
-            @{ Text = "額外 DNS"; X = 320; Y = 26 },
-            @{ Text = "Ping 次數"; X = 630; Y = 26 },
-            @{ Text = "額外 TCP（host:port）"; X = 12; Y = 58 },
-            @{ Text = "額外 URL"; X = 320; Y = 58 },
-            @{ Text = "取樣秒數"; X = 630; Y = 58 }
+            @{ Text = "額外 Ping"; X = 12; Y = 26; W = 150 },
+            @{ Text = "額外 DNS"; X = 375; Y = 26; W = 100 },
+            @{ Text = "Ping 次數"; X = 690; Y = 26; W = 110 },
+            @{ Text = "額外 TCP（host:port）"; X = 12; Y = 58; W = 150 },
+            @{ Text = "額外 URL"; X = 375; Y = 58; W = 100 },
+            @{ Text = "取樣秒數"; X = 690; Y = 58; W = 110 }
         )) {
             $label = New-Object System.Windows.Forms.Label
             $label.Text = $item.Text
             $label.Location = New-Object System.Drawing.Point($item.X, $item.Y)
-            $label.Size = New-Object System.Drawing.Size(100, 22)
+            $label.Size = New-Object System.Drawing.Size($item.W, 22)
             $panel.Controls.Add($label)
         }
-        foreach ($item in @(@{ Key = "PingTarget"; X = 115; Y = 23 }, @{ Key = "DnsName"; X = 423; Y = 23 }, @{ Key = "TcpTarget"; X = 115; Y = 55 }, @{ Key = "HttpUrl"; X = 423; Y = 55 })) {
+        foreach ($item in @(@{ Key = "PingTarget"; X = 165; Y = 23 }, @{ Key = "DnsName"; X = 478; Y = 23 }, @{ Key = "TcpTarget"; X = 165; Y = 55 }, @{ Key = "HttpUrl"; X = 478; Y = 55 })) {
             $box = New-Object System.Windows.Forms.TextBox
             $box.Location = New-Object System.Drawing.Point($item.X, $item.Y)
             $box.Size = New-Object System.Drawing.Size(195, 24)
             $panel.Controls.Add($box)
             $controls[$item.Key] = $box
         }
-        foreach ($item in @(@{ Key = "PingCount"; X = 735; Y = 23; Min = 1; Max = 20 }, @{ Key = "SampleSeconds"; X = 735; Y = 55; Min = 1; Max = 120 })) {
+        # 格式寫在人正在打字的那個控制項上，而且是範例值而不是記法：host:port 是開發者用來描述形狀的簡寫，
+        # 8.8.8.8:443 才是對方接下來要打的那種東西。
+        $hints = New-Object System.Windows.Forms.ToolTip
+        $script:PanelHints = $hints
+        $hints.SetToolTip($controls["PingTarget"], "例如 1.1.1.1")
+        $hints.SetToolTip($controls["DnsName"], "例如 www.example.com")
+        $hints.SetToolTip($controls["TcpTarget"], "例如 8.8.8.8:443 —— 主機或位址、冒號、連接埠")
+        $hints.SetToolTip($controls["HttpUrl"], "例如 https://www.example.com/")
+        foreach ($key in @("PingTarget", "DnsName", "TcpTarget", "HttpUrl")) {
+            $controls[$key].Add_TextChanged({ $script:PanelWarned = $false; $this.BackColor = [System.Drawing.SystemColors]::Window })
+        }
+        foreach ($item in @(@{ Key = "PingCount"; X = 805; Y = 23; Min = 1; Max = 20 }, @{ Key = "SampleSeconds"; X = 805; Y = 55; Min = 1; Max = 120 })) {
             $spinner = New-Object System.Windows.Forms.NumericUpDown
             $spinner.Location = New-Object System.Drawing.Point($item.X, $item.Y)
             $spinner.Size = New-Object System.Drawing.Size(70, 24)
@@ -4030,6 +4151,16 @@ function Initialize-Gui {
     $startButton.Add_Click({
         try {
             if ($script:Interactive -and $null -ne $script:OptionsPanel) {
+                # 面板攔得下來的值，在執行開始之前就檢查，而不是之後（待辦 #45）。不擋任何事：第一次按會說出問題
+                # 並標記欄位，再按一次就不帶那個目標執行 —— 也就是這個檢查存在之前的行為。
+                if (-not $script:PanelWarned) {
+                    $rejected = @(Get-RejectedPanelValues)
+                    if ($rejected.Count -gt 0) {
+                        Show-PanelRejection -Rejected $rejected
+                        $script:PanelWarned = $true
+                        return
+                    }
+                }
                 Set-RunOptions -Overrides (Get-RunOptionsFromPanel) | Out-Null
             }
             [void](Run-AllChecks)

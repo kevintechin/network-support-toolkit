@@ -1,4 +1,4 @@
-﻿# Network Health Check 1.2.6 — User Manual
+﻿# Network Health Check 1.2.7 — User Manual
 
 **For the person who runs the check.** One double-click, a window that runs by itself, and a report you send to IT.
 
@@ -34,7 +34,7 @@ Network Health Check looks at the network from this computer's point of view and
 1. Open the extracted folder and double-click **`Start-English.cmd`**. The ZIP carries a folder of its own, so the folder Windows extracted often holds a single thing — another folder of the same name; open that one and the launcher is inside. Neither the extra level nor the folder's name matters, as long as the whole tree stays together. (Opening the `en-US` folder and double-clicking `Start-NetworkCheck.cmd` does the same thing.)
 2. If Windows shows **Open File - Security Warning**, choose **Run**. That is the download mark from step 2 above; the tool is the same either way. The same dialog says *The publisher could not be verified* and gives the publisher as **Unknown Publisher**: that is expected — this tool is not digitally signed. What IT has instead of a signature is a digest: they compare the SHA-256 of the ZIP they received with the one published with the release (the IT deployment manual, section 6). The `SHA256SUMS.txt` inside the package is a different check: it shows that the files in the package match each other, not where the package came from. If IT sent you the ZIP, **Run** is the answer; if you are not sure where the file came from, ask before you run it. Leaving **Always ask before opening this file** ticked costs one click per run; clearing it removes Windows' mark from that one file for good, which is what unblocking in section 2 does for the whole ZIP.
 3. A black text window opens first and stays in the background until the check finishes. Leave it alone.
-4. The window **Network Health Check Tool 1.2.6** opens and **starts by itself** within a second. You will see:
+4. The window **Network Health Check Tool 1.2.7** opens and **starts by itself** within a second. You will see:
 
    | On screen | What it means |
    |---|---|
@@ -43,7 +43,7 @@ Network Health Check looks at the network from this computer's point of view and
    | The log | One line per step and per finding, in the order they happen |
    | The buttons | **Start Test** is greyed out while the check runs; **Open Report**, **Open Report Folder** and **Open JSON** switch on when it is done; **Close** does nothing until then |
 
-5. **Wait for it to finish.** The line above the progress bar reads **Test Complete**, the Result line shows the verdict in colour, and the last log line names the report: *Report generated: …*. The same path appears under the buttons as *Report: …*, and **Start Test** now reads **Run Again**.
+5. **Wait for it to finish.** The line above the progress bar reads **Test Complete**, the Result line shows the verdict in colour, and the last log line names the report: *Report generated: …*. Under the buttons the window names the one file to send — *Send this file to IT: …* — and **Start Test** now reads **Run Again**.
 6. Click **Open Report**. The report opens in your web browser. It is a file on this computer, not a web page on the internet.
 
 **Run it while the problem is happening.** The tool measures one moment on one computer. If the trouble comes and goes, a run made while everything works proves little; a run made during the trouble is the evidence IT needs. Keep using the network the way you normally do while it runs — for a few seconds it measures the computer's own traffic, and a computer doing nothing gives it nothing to measure.
@@ -71,7 +71,7 @@ Under the verdict, the report has a section called **What to tell IT**: a title 
 
 | Title | What it says |
 |---|---|
-| **Everything passed** | All checks passed during this run. If the problem persists, it is likely on the application or server side, or it comes and goes; run the tool again while it is happening. |
+| **Everything passed** | All required checks passed during this run — and when an optional target did not answer, the next line names it and says it does not change the result. If the problem persists, it is likely on the application or server side, or it comes and goes; run the tool again while it is happening. |
 | **Local link problem** | No working network adapter or no default gateway was found. The fault is on this computer or its link: cable, Wi-Fi association, adapter disabled, or DHCP not answering. Try another device on the same network to see whether only this computer is affected. |
 | **Gateway does not answer** | The default gateway is configured but does not answer pings. The fault is between this computer and the router: link, Wi-Fi, switch, or the router itself. Check the link light or Wi-Fi signal and whether other devices reach the router. |
 | **Gateway answers, internet does not** | The router answers, but connections beyond it fail. The fault is at or beyond the router: WAN link, ISP, or an upstream firewall. Check the router's WAN status and whether other devices lose the internet too. |
@@ -81,7 +81,7 @@ Under the verdict, the report has a section called **What to tell IT**: a title 
 | **Some checks could not run** | No failure was found, but some steps could not be completed on this computer. Send the report as it is; the reasons are recorded in the details. |
 | **Warnings to review** | No required check failed, but some checks raised warnings; see the highlighted rows. Send the report as it is. |
 
-The first three problem titles name things you can check yourself before calling — a cable, the Wi-Fi signal, whether another device on the same network has the same trouble. The rest is for IT. And the tool prints *Everything passed* whenever every required check passed: an optional or added ping, TCP or HTTP target that did not answer is still in the table as an Information row (an optional DNS name that does not resolve is a Warning instead), so read those rows before you conclude that nothing failed.
+The first three problem titles name things you can check yourself before calling — a cable, the Wi-Fi signal, whether another device on the same network has the same trouble. The rest is for IT. And the tool prints *Everything passed* whenever every required check passed: an optional or added ping, TCP or HTTP target that did not answer is still in the table as an Information row (an optional DNS name that does not resolve is a Warning instead). Since 1.2.7 the summary says so itself — *All required checks passed*, with the targets that did not answer named on the line below — and the rows are still worth reading.
 
 ### The rest of the report
 
@@ -105,7 +105,7 @@ The **TXT** and **JSON** files written beside the HTML carry the same findings �
 
 ## 5 · Sending the report to IT
 
-**Which file.** The one **Open Report** opens — usually the `.html` file. If IT asks for the JSON as well, **Open JSON** shows it and **Open Report Folder** takes you to all three files. If the HTML could not be written (rare — the window says so), Open Report opens the text or JSON file instead, and that is the report too: send that.
+**Which file.** The window names it under the buttons — *Send this file to IT: …* — and it is the one **Open Report** opens, usually the `.html` file. If IT asks for the JSON as well, **Open JSON** shows it and **Open Report Folder** takes you to all three files. If the HTML could not be written (rare — the window says so), Open Report opens the text or JSON file instead, and that is the report too: send that.
 
 **Where the files are.** Click **Open Report Folder**. By default the reports go into a `Reports` folder next to the program — `en-US\Reports` — and each run writes three files named:
 
@@ -153,7 +153,7 @@ A Startup Notice row is a warning, so on its own it turns the verdict to **Atten
 
 `Start-NetworkCheck-IT.cmd` in the `en-US` folder opens the same tool with a **Run options (IT)** panel at the top, and it does **not** start by itself — the line above the progress bar reads *Ready - adjust the options, then select Start Test*. IT may ask you to type an address into **Extra ping**, a host and port into **Extra TCP (host:port)**, a name into **Extra DNS** or a web address into **Extra URL**, perhaps to change **Ping count** or **Sample seconds**, and then to click **Start Test**. When you open the report afterwards, every detail is already expanded. Whatever is typed there applies to that run only; it never changes the configuration file. **Reset to config** puts the panel back to the configured values.
 
-**The label on that field is cut short.** *Extra TCP (host:port)* is wider than the space the panel gives it, so its second line is clipped and the format cannot be read on the screen: type the host and the port together, like `8.8.8.8:443`. A value typed without a port is ignored - the report says so, and the result becomes *Attention Required* even when every check passed.
+**That field wants a host and a port together.** The label says the format — *Extra TCP (host:port)* — and hovering over the box shows an example: `8.8.8.8:443`. If what you typed is not a host and a port, **Start Test** does not start: the field is marked and the window says what is wrong, with an example. Correct it, or press **Start Test** again to run without that target — the report then says the target was dropped, and the result becomes *Attention Required* even though every check passed.
 
 ---
 
@@ -205,4 +205,4 @@ A Startup Notice row is a warning, so on its own it turns the verdict to **Atten
 
 ---
 
-*NetworkHealthCheck 1.2.6. This manual describes the tool as shipped; what your IT department changed in the configuration file — targets, thresholds, the report folder — shows up in the report's rows and in its Computer and Run Information section.*
+*NetworkHealthCheck 1.2.7. This manual describes the tool as shipped; what your IT department changed in the configuration file — targets, thresholds, the report folder — shows up in the report's rows and in its Computer and Run Information section.*
