@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Compare-TcpCounters'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -465,6 +465,52 @@ Assert-Equal '#38 clean run: no row is about an unreadable counter' (@($script:T
 Assert-Equal '#38 clean run: the window is the protocol''s own' ($cleanV4[0].Details -match '10\.5') True
 Assert-Equal '#38 clean run: nothing is said about attempts that did not fail' ($cleanV4[0].Details -match '#') False
 Assert-Equal '#38 clean run: and nothing about a window that did not run long' (@(Get-TcpReadFailureLines -Snapshot $cleanBefore -Protocol 'TCPv4').Count) 0
+
+# PR #40, round 1: a baseline read that stalls delays every stamp taken after it, so it lands inside the window of
+# each protocol read *before* it - the first draft of this change called every baseline failure harmless, which is
+# true only of the protocol read first. Here TCPv6's pre-window read and its first measured attempt fail (7.3 s and
+# 8.9 s, 16.2 together): TCPv6's own window opens after them and is untouched, while TCPv4's window opened before
+# them and carries all 16.2 of those seconds inside it.
+$baselineDelayBefore = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(17.0)
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $fixtureStart 1000 10); 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(16.5) 1000 10) }
+    Errors    = @()
+    FailedAttempts = @([pscustomobject]@{ Protocol = 'TCPv6'; Phase = 'read'; Attempt = 1; Seconds = 8.9; Error = 'Timed out' })
+    WarmUpFailures = @([pscustomobject]@{ Protocol = 'TCPv6'; Phase = 'warm-up'; Attempt = 1; Seconds = 7.3; Error = 'Timed out' })
+}
+$baselineDelayAfter = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(26.0)
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $fixtureStart.AddSeconds(25.0) 1100 11); 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(25.5) 1100 11) }
+    Errors    = @(); FailedAttempts = @(); WarmUpFailures = @()
+}
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $baselineDelayBefore -After $baselineDelayAfter
+$delayV4 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv4' })[0]
+$delayV6 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv6' })[0]
+Assert-Equal '#38 baseline delay: the earlier protocol reports the window it really measured' ($delayV4.Details -match '(?<![\d.])25(?![\d.])') True
+Assert-Equal '#38 baseline delay: and says the later protocol''s failed reads are inside it' ($delayV4.Details -match '16\.2') True
+Assert-Equal '#38 baseline delay: naming both of them, the pre-window read included' (([regex]::Matches($delayV4.Details, 'TCPv6 #1')).Count) 2
+Assert-Equal '#38 baseline delay: the pre-window read is marked as one' ($delayV4.Details -match 'TCPv6 #1 \(the discarded|TCPv6 #1（窗前捨棄') True
+Assert-Equal '#38 baseline delay: the later protocol''s own window opened after them' ($delayV6.Details -match '(?<![\d.])9(?![\d.])') True
+Assert-Equal '#38 baseline delay: so its row names them once, as its own reads, and not as its window''s' (([regex]::Matches($delayV6.Details, 'TCPv6 #1')).Count) 2
+Assert-Equal '#38 baseline delay: neither reading is disturbed' (("{0}/{1}" -f $delayV4.Status, $delayV6.Status)) 'PASS/PASS'
+
+# A baseline read of the protocol read *first* stalls: it pushes its own stamp, the other protocol's and the sample
+# start alike, so it lengthens no window at all and no row mentions it except as TCPv4's own failed read.
+$firstDelayBefore = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(9.0)
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $fixtureStart.AddSeconds(8.0) 1000 10); 'TCPv6' = (New-CounterFixture 'TCPv6' $fixtureStart.AddSeconds(8.5) 1000 10) }
+    Errors    = @()
+    FailedAttempts = @([pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 1; Seconds = 8.0; Error = 'Timed out' })
+    WarmUpFailures = @()
+}
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $firstDelayBefore -After $cleanAfter
+$firstV4 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv4' })[0]
+$firstV6 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv6' })[0]
+Assert-Equal '#38 first-read delay: it is named once, as TCPv4''s own failed read' (([regex]::Matches($firstV4.Details, 'TCPv4 #1')).Count) 1
+Assert-Equal '#38 first-read delay: and not against the other protocol''s window' ($firstV6.Details -match 'TCPv4 #1') False
+Assert-Equal '#38 first-read delay: the windows are the ones the stamps give' ((("{0}|{1}" -f ($firstV4.Details -match '(?<![\d.])2\.5(?![\d.])'), ($firstV6.Details -match '(?<![\d.])2\.5(?![\d.])')))) 'True|True'
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

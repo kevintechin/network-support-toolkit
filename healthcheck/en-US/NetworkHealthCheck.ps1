@@ -2893,6 +2893,7 @@ function Get-TcpCounterSnapshot {
             foreach ($item in $warmUpAttempts) {
                 [void]$warmUpFailures.Add([pscustomobject][ordered]@{
                     Protocol = $protocol
+                    Phase    = "warm-up"
                     Attempt  = $item.Attempt
                     Seconds  = $item.Seconds
                     Error    = $item.Error
@@ -2931,6 +2932,7 @@ function Get-TcpCounterSnapshot {
         foreach ($item in $readAttempts) {
             [void]$failedAttempts.Add([pscustomobject][ordered]@{
                 Protocol = $protocol
+                Phase    = "read"
                 Attempt  = $item.Attempt
                 Seconds  = $item.Seconds
                 Error    = $item.Error
@@ -2950,6 +2952,25 @@ function Get-TcpCounterSnapshot {
     }
 }
 
+function Format-TcpAttemptList {
+    param([object[]]$Attempts)
+
+    # One place for the way a failed read is named, because three rows quote it: the row of a counter that could not
+    # be read, the row of a protocol whose window carried the failure, and the line listing a protocol's own. A read
+    # taken before the window says so wherever it appears, so that its seconds are never taken for a window's.
+    return ((@($Attempts) | ForEach-Object {
+        if ([string]$_.Phase -eq "warm-up") { "{0} #{1} (the discarded read before the window)" -f $_.Protocol, $_.Attempt }
+        else { "{0} #{1}" -f $_.Protocol, $_.Attempt }
+    }) -join ", ")
+}
+
+function Get-TcpAttemptSeconds {
+    param([object[]]$Attempts)
+
+    if (@($Attempts).Count -eq 0) { return 0 }
+    return [math]::Round(((@($Attempts) | Measure-Object -Property Seconds -Sum).Sum), 1)
+}
+
 function Get-TcpReadFailureLines {
     param(
         [object]$Snapshot,
@@ -2957,17 +2978,17 @@ function Get-TcpReadFailureLines {
     )
 
     # What a row says about the counter reads of its own protocol that failed in one snapshot, whether or not a later
-    # attempt worked (backlog #38). Until 1.2.8 a read that timed out and then succeeded would have handed back a
-    # clean counter and no record of the seconds it spent, and the row could not have explained its own window.
-    # Nothing is said about a read that behaved: a row explains what happened, not what did not (backlog #40).
+    # attempt worked (backlog #38): one line, the pre-window read first because it was taken first. Until 1.2.8 a read
+    # that timed out and then succeeded handed back a clean counter and no record of the seconds it spent, and the row
+    # could not explain its own window. Which of these seconds fell inside that window is a different question, and
+    # the note below answers it; this line is about this counter, not about this window. Nothing is said about a read
+    # that behaved: a row explains what happened, not what did not (backlog #40).
     $lines = @()
-    $failed = @(@(Get-PropertyValue $Snapshot "FailedAttempts" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
-    if ($failed.Count -gt 0) {
-        $lines += ("Counter reads that failed: {0} ({1} seconds in total)." -f (($failed | ForEach-Object { "{0} #{1}" -f $_.Protocol, $_.Attempt }) -join ", "), [math]::Round((($failed | Measure-Object -Property Seconds -Sum).Sum), 1))
-    }
-    $warmUp = @(@(Get-PropertyValue $Snapshot "WarmUpFailures" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
-    if ($warmUp.Count -gt 0) {
-        $lines += ("The read taken before the sample window, whose reading is discarded, failed as well: {0} ({1} seconds in total)." -f (($warmUp | ForEach-Object { "{0} #{1}" -f $_.Protocol, $_.Attempt }) -join ", "), [math]::Round((($warmUp | Measure-Object -Property Seconds -Sum).Sum), 1))
+    $failed = @()
+    $failed += @(@(Get-PropertyValue $Snapshot "WarmUpFailures" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
+    $failed += @(@(Get-PropertyValue $Snapshot "FailedAttempts" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
+    if (@($failed).Count -gt 0) {
+        $lines += ("Counter reads of this protocol that failed: {0} ({1} seconds in total)." -f (Format-TcpAttemptList $failed), (Get-TcpAttemptSeconds $failed))
     }
     return $lines
 }
@@ -3000,10 +3021,13 @@ function Compare-TcpCounters {
     $criticalCount = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalCount" 50) 50)
     $minimumSegments = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
     # The order Get-TcpCounterSnapshot reads the two protocols in, which is what decides whose window a failed read
-    # lands in (backlog #38): the reads are serial and each stamp is taken when its own read returns, so an attempt
-    # that failed sits inside the window of its own protocol and of every protocol read after it. The baseline
-    # snapshot's failures lengthen no window - they push both of its stamps and the sample start along with them -
-    # so only the ending snapshot's attempts are counted against a window below.
+    # lands in (backlog #38). The reads are serial and each protocol's stamp is taken when its own read returns, so a
+    # window is lengthened by a read that delayed the stamp closing it without delaying the stamp opening it. In the
+    # ending snapshot that is every read at or before this protocol; in the baseline snapshot it is every read
+    # *after* it - a stalled TCPv6 baseline read pushes TCPv6's opening stamp and the rest of the run alike, but not
+    # TCPv4's, so it lands squarely inside TCPv4's window (PR #40, round 1: the first draft called every baseline
+    # failure harmless, which is true only of the protocol read first). The pre-window reads of those later
+    # protocols count the same way, for the same reason.
     $readOrder = @("TCPv4", "TCPv6")
     $configuredSeconds = [math]::Max(1, (ConvertTo-IntSafe (Get-PropertyValue $script:RunOptions "SampleSeconds" 8) 8))
 
@@ -3054,9 +3078,13 @@ function Compare-TcpCounters {
         foreach ($line in @(Get-TcpReadFailureLines -Snapshot $Before -Protocol $protocol)) {
             $details += [Environment]::NewLine + $line
         }
-        $windowAttempts = @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $readOrder.IndexOf($protocol) })
-        if ($windowAttempts.Count -gt 0) {
-            $details += [Environment]::NewLine + ("Note: {1} of these {0} seconds went on counter reads that failed inside the window ({2}); the configured minimum is {3} seconds. The deltas above are still this protocol's own counts over the window shown." -f $sampleSeconds, [math]::Round((($windowAttempts | Measure-Object -Property Seconds -Sum).Sum), 1), (($windowAttempts | ForEach-Object { "{0} #{1}" -f $_.Protocol, $_.Attempt }) -join ", "), $configuredSeconds)
+        $selfIndex = $readOrder.IndexOf($protocol)
+        $windowAttempts = @()
+        $windowAttempts += @(@(Get-PropertyValue $Before "WarmUpFailures" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -gt $selfIndex })
+        $windowAttempts += @(@(Get-PropertyValue $Before "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -gt $selfIndex })
+        $windowAttempts += @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $selfIndex })
+        if (@($windowAttempts).Count -gt 0) {
+            $details += [Environment]::NewLine + ("Note: {1} of these {0} seconds went on counter reads that failed inside the window ({2}); the configured minimum is {3} seconds. The deltas above are still this protocol's own counts over the window shown." -f $sampleSeconds, (Get-TcpAttemptSeconds $windowAttempts), (Format-TcpAttemptList $windowAttempts), $configuredSeconds)
         }
 
         if ($sentDelta -eq 0 -and $retransDelta -eq 0) {

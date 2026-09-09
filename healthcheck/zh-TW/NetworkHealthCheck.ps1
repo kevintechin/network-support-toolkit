@@ -2870,6 +2870,7 @@ function Get-TcpCounterSnapshot {
             foreach ($item in $warmUpAttempts) {
                 [void]$warmUpFailures.Add([pscustomobject][ordered]@{
                     Protocol = $protocol
+                    Phase    = "warm-up"
                     Attempt  = $item.Attempt
                     Seconds  = $item.Seconds
                     Error    = $item.Error
@@ -2908,6 +2909,7 @@ function Get-TcpCounterSnapshot {
         foreach ($item in $readAttempts) {
             [void]$failedAttempts.Add([pscustomobject][ordered]@{
                 Protocol = $protocol
+                Phase    = "read"
                 Attempt  = $item.Attempt
                 Seconds  = $item.Seconds
                 Error    = $item.Error
@@ -2927,23 +2929,41 @@ function Get-TcpCounterSnapshot {
     }
 }
 
+function Format-TcpAttemptList {
+    param([object[]]$Attempts)
+
+    # 失敗讀取要怎麼稱呼，只有這一個地方決定，因為有三種列會引用它：讀不到的計數器那一列、窗內承受了該失敗的通訊
+    # 協定那一列，以及列出某個通訊協定自己失敗讀取的那一行。窗前的讀取不論出現在哪裡都會標明，這樣它的秒數就不會
+    # 被當成某個窗裡的秒數。
+    return ((@($Attempts) | ForEach-Object {
+        if ([string]$_.Phase -eq "warm-up") { "{0} #{1}（窗前捨棄的讀取）" -f $_.Protocol, $_.Attempt }
+        else { "{0} #{1}" -f $_.Protocol, $_.Attempt }
+    }) -join ", ")
+}
+
+function Get-TcpAttemptSeconds {
+    param([object[]]$Attempts)
+
+    if (@($Attempts).Count -eq 0) { return 0 }
+    return [math]::Round(((@($Attempts) | Measure-Object -Property Seconds -Sum).Sum), 1)
+}
+
 function Get-TcpReadFailureLines {
     param(
         [object]$Snapshot,
         [string]$Protocol
     )
 
-    # 一列在單一快照中，對於自己這個通訊協定失敗的計數器讀取所要說的話——不論後續嘗試是否成功（backlog #38）。
-    # 1.2.8 之前，逾時後才成功的讀取會交回乾淨的計數器、卻不留下它花掉幾秒的紀錄，該列也就無法解釋自己的取樣窗。
-    # 讀取正常時什麼都不說：一列只解釋發生過的事，不解釋沒發生的事（backlog #40）。
+    # 一列在單一快照中，對於自己這個通訊協定失敗的計數器讀取所要說的話——不論後續嘗試是否成功（backlog #38）：
+    # 寫成一行，窗前的讀取排在最前面，因為它最先發生。1.2.8 之前，逾時後才成功的讀取會交回乾淨的計數器、卻不留下
+    # 它花掉幾秒的紀錄，該列也就無法解釋自己的取樣窗。這些秒數有哪些落在窗內是另一個問題，由下面那句補充回答；
+    # 這一行講的是這個計數器，不是這個窗。讀取正常時什麼都不說：一列只解釋發生過的事，不解釋沒發生的事（backlog #40）。
     $lines = @()
-    $failed = @(@(Get-PropertyValue $Snapshot "FailedAttempts" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
-    if ($failed.Count -gt 0) {
-        $lines += ("讀取失敗的計數器嘗試：{0}（合計 {1} 秒）。" -f (($failed | ForEach-Object { "{0} #{1}" -f $_.Protocol, $_.Attempt }) -join ", "), [math]::Round((($failed | Measure-Object -Property Seconds -Sum).Sum), 1))
-    }
-    $warmUp = @(@(Get-PropertyValue $Snapshot "WarmUpFailures" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
-    if ($warmUp.Count -gt 0) {
-        $lines += ("取樣窗之前那次（讀數會丟棄）的讀取也失敗了：{0}（合計 {1} 秒）。" -f (($warmUp | ForEach-Object { "{0} #{1}" -f $_.Protocol, $_.Attempt }) -join ", "), [math]::Round((($warmUp | Measure-Object -Property Seconds -Sum).Sum), 1))
+    $failed = @()
+    $failed += @(@(Get-PropertyValue $Snapshot "WarmUpFailures" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
+    $failed += @(@(Get-PropertyValue $Snapshot "FailedAttempts" @()) | Where-Object { [string]$_.Protocol -eq $Protocol })
+    if (@($failed).Count -gt 0) {
+        $lines += ("這個通訊協定讀取失敗的嘗試：{0}（合計 {1} 秒）。" -f (Format-TcpAttemptList $failed), (Get-TcpAttemptSeconds $failed))
     }
     return $lines
 }
@@ -2973,9 +2993,12 @@ function Compare-TcpCounters {
     $criticalPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalPercent" 5) 5
     $criticalCount = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalCount" 50) 50)
     $minimumSegments = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
-    # Get-TcpCounterSnapshot 讀取兩個通訊協定的順序，決定失敗的讀取落在誰的窗裡（backlog #38）：讀取是循序的，每個
-    # 時間戳都在自己的讀取回來時取得，因此失敗的嘗試會落在它自己這個通訊協定、以及排在它後面每個通訊協定的窗內。
-    # 基準快照的失敗不會拉長任何窗——它把兩個時間戳連同取樣起點一起往後推——所以下面只把結束快照的嘗試算進窗裡。
+    # Get-TcpCounterSnapshot 讀取兩個通訊協定的順序，決定失敗的讀取落在誰的窗裡（backlog #38）。讀取是循序的，每個
+    # 通訊協定的時間戳都在它自己的讀取回來時取得，因此會拉長某個窗的，是那些延後了它的結束時間戳、卻沒有延後它的
+    # 起始時間戳的讀取。在結束快照裡，那是排在這個通訊協定之前（含自己）的每次讀取；在基準快照裡，則是排在它*之後*
+    # 的每次讀取——卡住的 TCPv6 基準讀取會把 TCPv6 的起始時間戳連同後面整段執行一起往後推，卻推不動 TCPv4 的，
+    # 於是它正好落在 TCPv4 的窗內（PR #40 第 1 輪：初稿說基準快照的失敗一律無害，那只對最先讀取的通訊協定成立）。
+    # 那些較後面通訊協定的窗前讀取，基於同樣的理由，也一樣要算。
     $readOrder = @("TCPv4", "TCPv6")
     $configuredSeconds = [math]::Max(1, (ConvertTo-IntSafe (Get-PropertyValue $script:RunOptions "SampleSeconds" 8) 8))
 
@@ -3025,9 +3048,13 @@ function Compare-TcpCounters {
         foreach ($line in @(Get-TcpReadFailureLines -Snapshot $Before -Protocol $protocol)) {
             $details += [Environment]::NewLine + $line
         }
-        $windowAttempts = @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $readOrder.IndexOf($protocol) })
-        if ($windowAttempts.Count -gt 0) {
-            $details += [Environment]::NewLine + ("補充：這 {0} 秒當中有 {1} 秒花在取樣窗內失敗的計數器讀取（{2}）；設定的最短時間是 {3} 秒。上面的增量仍然是這個通訊協定在所示窗內自己的計數。" -f $sampleSeconds, [math]::Round((($windowAttempts | Measure-Object -Property Seconds -Sum).Sum), 1), (($windowAttempts | ForEach-Object { "{0} #{1}" -f $_.Protocol, $_.Attempt }) -join ", "), $configuredSeconds)
+        $selfIndex = $readOrder.IndexOf($protocol)
+        $windowAttempts = @()
+        $windowAttempts += @(@(Get-PropertyValue $Before "WarmUpFailures" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -gt $selfIndex })
+        $windowAttempts += @(@(Get-PropertyValue $Before "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -gt $selfIndex })
+        $windowAttempts += @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $selfIndex })
+        if (@($windowAttempts).Count -gt 0) {
+            $details += [Environment]::NewLine + ("補充：這 {0} 秒當中有 {1} 秒花在取樣窗內失敗的計數器讀取（{2}）；設定的最短時間是 {3} 秒。上面的增量仍然是這個通訊協定在所示窗內自己的計數。" -f $sampleSeconds, (Get-TcpAttemptSeconds $windowAttempts), (Format-TcpAttemptList $windowAttempts), $configuredSeconds)
         }
 
         if ($sentDelta -eq 0 -and $retransDelta -eq 0) {
