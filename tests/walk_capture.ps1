@@ -77,6 +77,9 @@ public static class WalkCaptureWin32 {
     // working area before the picture is taken. Nothing about the run changes; only what the camera can see.
     [DllImport("user32.dll", SetLastError = true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    // A dialog this script asked to close is looked at again rather than assumed gone: the walk of 2026-09-09
+    // left one on the screen while the manifest said it had been cancelled.
+    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
 }
 "@
 $AE = [System.Windows.Automation.AutomationElement]
@@ -221,11 +224,95 @@ function Find-ByName($Window, [string]$Name) {
 function Send-Click($Element) {
     [void][WalkCaptureWin32]::PostMessage([IntPtr]$Element.Current.NativeWindowHandle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
 }
+function Test-WindowGone([IntPtr]$Hwnd, [int]$Seconds = 3) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not [WalkCaptureWin32]::IsWindow($Hwnd)) { return $true }
+        Start-Sleep -Milliseconds 300
+    }
+    return (-not [WalkCaptureWin32]::IsWindow($Hwnd))
+}
+function Close-Dialog($Dialog) {
+    # Windows' own dialogs are not this script's to answer, but the ones it opened are its to close. A posted
+    # BM_CLICK was all this did, and on a shell dialog it does not always land: the walk of 2026-09-09 left a
+    # security warning on the screen under a manifest line that said it had been cancelled. Three ways are tried
+    # in order - Cancel through UI Automation, a posted click on it, then WM_CLOSE on the dialog itself, which
+    # needs no button and no language - and each is followed by a look at the window. The caller is told which
+    # one worked, or that the dialog is still there, and says so in the row's note.
+    $hwnd = [IntPtr]$Dialog.Current.NativeWindowHandle
+    $tried = New-Object System.Collections.Generic.List[string]
+    $cancel = @($Dialog.FindAll($SCOPE::Descendants, (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button))) |
+            Where-Object { $_.Current.AutomationId -eq '2' })[0]
+    if ($null -ne $cancel) {
+        $invoked = $false
+        try {
+            $cancel.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            $invoked = $true
+        }
+        catch { }
+        $tried.Add($(if ($invoked) { 'Cancel invoked through UI Automation' } else { 'Cancel would not take an Invoke' }))
+        if ($invoked -and (Test-WindowGone $hwnd)) { return [pscustomobject]@{ Closed = $true; How = ($tried -join ', ') } }
+        Send-Click $cancel
+        $tried.Add('BM_CLICK posted to Cancel')
+        if (Test-WindowGone $hwnd) { return [pscustomobject]@{ Closed = $true; How = ($tried -join ', ') } }
+    }
+    else { $tried.Add('the dialog carries no Cancel button (AutomationId 2)') }
+    [void][WalkCaptureWin32]::PostMessage($hwnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_CLOSE
+    $tried.Add('WM_CLOSE posted to the dialog')
+    return [pscustomobject]@{ Closed = (Test-WindowGone $hwnd); How = ($tried -join ', ') }
+}
+function Start-ShellVerb([string]$Path, [string]$Verb) {
+    # ShellExecute does not return until a dialog it raised has been answered, and the security warning is raised
+    # inside the call: a script that invokes the verb on its own thread is blocked for exactly as long as the
+    # dialog it is waiting to photograph is on the screen. The walk of 2026-09-09 recorded W5 as not produced with
+    # the dialog standing there. The verb runs on a background STA runspace instead - shell COM needs an STA -
+    # and the caller polls the desktop while it is still open.
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.ApartmentState = 'STA'
+    $rs.ThreadOptions = 'ReuseThread'
+    $rs.Open()
+    $ps = [powershell]::Create()
+    $ps.Runspace = $rs
+    [void]$ps.AddScript({
+            param($folder, $leaf, $verb)
+            (New-Object -ComObject Shell.Application).Namespace($folder).ParseName($leaf).InvokeVerb($verb)
+        }).AddArgument((Split-Path -Parent $Path)).AddArgument((Split-Path -Leaf $Path)).AddArgument($Verb)
+    return [pscustomobject]@{ Shell = $ps; Runspace = $rs; Handle = $ps.BeginInvoke() }
+}
+function Stop-ShellVerb($Opener) {
+    # What became of the call, because the handle reports completion whether ShellExecute returned or the invocation
+    # threw - a folder that is not there, an item the shell will not parse, a verb it refuses - and a row that read
+    # completion as success would say the launcher was started when nothing was launched at all. Three answers:
+    # 'returned' - it ran and Windows raised no question; 'failed' - it never got that far, with the error; and
+    # 'blocked' - it is still holding, which is what a dialog nobody answered looks like. A call that has finished
+    # is cleaned up; one still blocked is left alone, because disposing its runspace would take the dialog with it
+    # and the row has already said it is on the screen.
+    if ($null -eq $Opener) { return [pscustomobject]@{ State = 'not started'; Detail = '' } }
+    $deadline = (Get-Date).AddSeconds(3)
+    while (-not $Opener.Handle.IsCompleted -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
+    if (-not $Opener.Handle.IsCompleted) { return [pscustomobject]@{ State = 'blocked'; Detail = '' } }
+    $detail = ''
+    try { [void]$Opener.Shell.EndInvoke($Opener.Handle) } catch { $detail = $_.Exception.Message }
+    if (-not $detail -and $Opener.Shell.HadErrors) { $detail = [string]@($Opener.Shell.Streams.Error)[0] }
+    try { $Opener.Shell.Dispose(); $Opener.Runspace.Dispose() } catch { }
+    if ($detail) { return [pscustomobject]@{ State = 'failed'; Detail = $detail } }
+    return [pscustomobject]@{ State = 'returned'; Detail = '' }
+}
 function New-EmptyStdin {
     # cmd.exe reads a launcher's trailing `pause` from standard input; an empty file ends it without a keypress.
     $path = Join-Path $script:Bundle 'stdin.empty'
     if (-not (Test-Path -LiteralPath $path)) { [IO.File]::WriteAllText($path, '') }
     return $path
+}
+function Save-Stderr([string]$Path) {
+    # A launcher can fail on the one line that says the run succeeded and say so on standard error and nowhere
+    # else: the zh-TW walk of 2026-09-09 lost exactly that, because only standard output was redirected, and the
+    # evidence survived only in a screenshot taken beside it. An empty file is deleted rather than kept, so the
+    # bundle never carries an artefact that says nothing.
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    if ((Get-Item -LiteralPath $Path).Length -gt 0) { return $true }
+    Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    return $false
 }
 function Get-ChildProcesses([int]$ParentId) {
     $filter = "ParentProcessId = $ParentId"
@@ -391,6 +478,8 @@ if (Owns 'W1') {
         $dialogsBefore = @($AE::RootElement.FindAll($SCOPE::Children, $dialogCondition) | ForEach-Object { [int64]$_.Current.NativeWindowHandle })
         $shell = New-Object -ComObject Shell.Application
         $item = $shell.Namespace((Split-Path -Parent $zipFull)).ParseName((Split-Path -Leaf $zipFull))
+        # Properties opens a modeless sheet and this call returns at once, which is why it is made on this thread
+        # and the open verb below is not: that one does not return while the dialog it raised is on the screen.
         $item.InvokeVerb('Properties')
         # Wait for the sheet this script opened before photographing anything: a screenshot taken on a timer
         # would otherwise be the desktop, answered as the ZIP's properties.
@@ -406,11 +495,10 @@ if (Owns 'W1') {
         else {
         Start-Sleep -Seconds 1
         $shot = Save-Screen 'W1-zip-properties.png'
-        Add-Answer 'W1' 'captured' (Split-Path -Leaf $shot) ('with W1-zone-identifier.txt; the ZIP carries ' + $zipZoneW1 + ', so ' + $(if ($zipMarkedW1) { 'the Unblock box must be in the picture' } else { 'there must be no Unblock box' }))
-        # The property sheet is modal to Explorer, not to this script: close the one this script opened, and only it.
-        $cancel = @($props.FindAll($SCOPE::Descendants, (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button))) |
-                Where-Object { $_.Current.AutomationId -eq '2' })[0]
-        if ($null -ne $cancel) { Send-Click $cancel; Start-Sleep -Seconds 1 }
+        # The property sheet is modal to Explorer, not to this script: close the one this script opened, and only
+        # it - and look at the window afterwards, because a click that did not land was recorded here as one that did.
+        $closedW1 = Close-Dialog $props
+        Add-Answer 'W1' 'captured' (Split-Path -Leaf $shot) ('with W1-zone-identifier.txt; the ZIP carries ' + $zipZoneW1 + ', so ' + $(if ($zipMarkedW1) { 'the Unblock box must be in the picture' } else { 'there must be no Unblock box' }) + $(if ($closedW1.Closed) { '' } else { '. The property sheet did not close (' + $closedW1.How + '), so it is still on the screen: close it by hand' }))
         }
     }
 }
@@ -802,7 +890,11 @@ if (Owns 'W31') {
         # its own window, nothing redirected - and it is captured while it sits at the pause with the report paths
         # above it, which is what the row is about.
         $out = Join-Path $script:Bundle 'W31-console.txt'
-        $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList @('/c', ('"' + $console + '"')) -WorkingDirectory $PackageDir -RedirectStandardOutput $out -RedirectStandardInput (New-EmptyStdin) -NoNewWindow -PassThru -Wait
+        $errOut = Join-Path $script:Bundle 'W31-console-stderr.txt'
+        $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList @('/c', ('"' + $console + '"')) -WorkingDirectory $PackageDir -RedirectStandardOutput $out -RedirectStandardError $errOut -RedirectStandardInput (New-EmptyStdin) -NoNewWindow -PassThru -Wait
+        $keptErr = Save-Stderr $errOut
+        $errArtefact = if ($keptErr) { ', W31-console-stderr.txt' } else { '' }
+        $errNote = if ($keptErr) { '; the run also printed on standard error, which is in W31-console-stderr.txt' } else { '; it printed nothing on standard error' }
         $reportDir = Join-Path $PackageDir 'Reports'
         $pauseFrom = Get-Date
         $p2 = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList @('/c', ('"' + $console + '"')) -WorkingDirectory $PackageDir -PassThru
@@ -827,13 +919,13 @@ if (Owns 'W31') {
         }
         if (-not $p2.HasExited) { $p2.Kill() }
         if ($paused -and $null -ne $second) {
-            Add-Answer 'W31' 'captured' ('W31-console.txt, ' + (Split-Path -Leaf $shot)) ('the text-mode run as it printed (exit code ' + $p.ExitCode + '); the second run had written its report and had still not exited when the picture was taken, which is the pause the row is about, and the window was fitted to the working area first so its last lines are in the picture')
+            Add-Answer 'W31' 'captured' ('W31-console.txt' + $errArtefact + ', ' + (Split-Path -Leaf $shot)) ('the text-mode run as it printed (exit code ' + $p.ExitCode + ')' + $errNote + '; the second run had written its report and had still not exited when the picture was taken, which is the pause the row is about, and the window was fitted to the working area first so its last lines are in the picture')
         }
         elseif ($null -eq $second) {
-            Add-Answer 'W31' 'not produced' 'W31-console.txt' 'the interactive run wrote no report within the timeout, so the paused window could not be captured; the redirected run''s text is in the bundle'
+            Add-Answer 'W31' 'not produced' ('W31-console.txt' + $errArtefact) ('the interactive run wrote no report within the timeout, so the paused window could not be captured; the redirected run''s text is in the bundle' + $errNote)
         }
         else {
-            Add-Answer 'W31' 'not produced' 'W31-console.txt' 'the interactive run ended without waiting, so no paused window was there to capture; the redirected run''s text is in the bundle'
+            Add-Answer 'W31' 'not produced' ('W31-console.txt' + $errArtefact) ('the interactive run ended without waiting, so no paused window was there to capture; the redirected run''s text is in the bundle' + $errNote)
         }
     }
 }
@@ -847,15 +939,20 @@ if ((Owns 'W28') -or (Owns 'W29')) {
     Rename-Item -LiteralPath $programFile -NewName (Split-Path -Leaf $stashed)
     try {
         $out = Join-Path $script:Bundle 'W28-launcher-window.txt'
+        $errOut = Join-Path $script:Bundle 'W28-launcher-window-stderr.txt'
         $launcher = Join-Path $PackageDir 'Start-NetworkCheck.cmd'
-        $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList @('/c', ('"' + $launcher + '"')) -WorkingDirectory $PackageDir -RedirectStandardOutput $out -RedirectStandardInput (New-EmptyStdin) -NoNewWindow -PassThru -Wait
+        $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList @('/c', ('"' + $launcher + '"')) -WorkingDirectory $PackageDir -RedirectStandardOutput $out -RedirectStandardError $errOut -RedirectStandardInput (New-EmptyStdin) -NoNewWindow -PassThru -Wait
+        # The window this row is about is the one the person sees, and PowerShell writes its own failures to the
+        # error stream: a launcher that stops for a reason of its own would otherwise leave half of it unrecorded.
+        $keptErr28 = Save-Stderr $errOut
+        $errArtefact28 = if ($keptErr28) { ', W28-launcher-window-stderr.txt' } else { '' }
         # The file is the evidence of both rows - W28 names it appearing, W29 reads its fields - and the finally below
         # deletes the original, so it is copied whenever either row is owned.
         $errCopied = $false
         if (Test-Path -LiteralPath $errFile) { [void](Copy-Into $errFile 'W29-LauncherError.txt'); $errCopied = $true }
         if (Owns 'W28') {
-            if ($errCopied) { Add-Answer 'W28' 'captured' 'W28-launcher-window.txt, W29-LauncherError.txt' ('what the black window said (exit code ' + $p.ExitCode + '), and the error report it named') }
-            else { Add-Answer 'W28' 'not produced' 'W28-launcher-window.txt' ('the window''s text is here (exit code ' + $p.ExitCode + '), but no LauncherError.txt appeared beside the launcher, which is half of what the row asks for') }
+            if ($errCopied) { Add-Answer 'W28' 'captured' ('W28-launcher-window.txt' + $errArtefact28 + ', W29-LauncherError.txt') ('what the black window said (exit code ' + $p.ExitCode + ')' + $(if ($keptErr28) { ', what it printed on standard error' } else { '' }) + ', and the error report it named') }
+            else { Add-Answer 'W28' 'not produced' ('W28-launcher-window.txt' + $errArtefact28) ('the window''s text is here (exit code ' + $p.ExitCode + ')' + $(if ($keptErr28) { ', with what it printed on standard error beside it' } else { '' }) + ', but no LauncherError.txt appeared beside the launcher, which is half of what the row asks for') }
         }
         if (Owns 'W29') {
             if ($errCopied) { Add-Answer 'W29' 'captured' 'W29-LauncherError.txt' 'the file as the launcher wrote it, fields and all, for reading against section 6''s description' }
@@ -900,15 +997,14 @@ if ((Owns 'W5') -or (Owns 'W5b')) {
         else {
             # ShellExecute the marked launcher: Windows raises its own dialog, which is what the row is about. The
             # dialog is captured and then cancelled - whether to run a file the machine is warning about is the
-            # person's decision, not this script's.
-            $shell = New-Object -ComObject Shell.Application
-            $item = $shell.Namespace((Split-Path -Parent $launcher)).ParseName((Split-Path -Leaf $launcher))
+            # person's decision, not this script's. The call is made off this thread, because it does not return
+            # while the dialog it raised is on the screen: see Start-ShellVerb.
             # Only a dialog that was not there before and that names the file just launched: any other top-level
             # #32770 - a save box, an update prompt, something the person left open - would otherwise be captured,
             # cancelled and recorded as this launcher's security warning.
             $dialogCondition = New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, '#32770')
             $before = @($AE::RootElement.FindAll($SCOPE::Children, $dialogCondition) | ForEach-Object { [int64]$_.Current.NativeWindowHandle })
-            $item.InvokeVerb('open')
+            $opener = Start-ShellVerb $launcher 'open'
             $launcherLeaf = Split-Path -Leaf $launcher
             $dialog = $null; $stray = $null; $deadline = (Get-Date).AddSeconds(15)
             while ($null -eq $dialog -and (Get-Date) -lt $deadline) {
@@ -921,16 +1017,29 @@ if ((Owns 'W5') -or (Owns 'W5b')) {
             }
             if ($null -eq $dialog) {
                 $strayNote = if ($null -ne $stray) { " A new dialog did appear ('" + $stray.Current.Name + "') without naming the launcher, so it was left alone." } else { '' }
-                Add-NotProduced 'W5' ('the marked launcher raised no dialog naming ' + $launcherLeaf + ' within 15 s on this machine; the run may have started instead, which the sheet asks the person to note.' + $strayNote)
+                # The call itself is evidence now that it no longer blocks - but only once it is asked what became
+                # of it: a call that threw has completed too, and reading completion as success would put a launch
+                # in the manifest that never happened.
+                $outcome = Stop-ShellVerb $opener
+                $returned = switch ($outcome.State) {
+                    'returned' { ' ShellExecute returned without raising one, so the launcher was started.' }
+                    'failed' { ' ShellExecute did not get that far - it failed with: ' + $outcome.Detail + ' - so nothing was launched and no dialog was ever going to appear.' }
+                    default { ' ShellExecute has not returned, so something is still holding it.' }
+                }
+                Add-NotProduced 'W5' ('the marked launcher raised no dialog naming ' + $launcherLeaf + ' within 15 s on this machine; the run may have started instead, which the sheet asks the person to note.' + $returned + $strayNote)
             }
             else {
+                # The dialog's own title is read while it is still on the screen: every property of a window that
+                # has been closed comes back empty, and the row would name a dialog with no name.
+                $dialogName = $dialog.Current.Name
                 $shot = Save-Screen 'W5-security-warning.png'
-                [void](Save-Text 'W5-security-warning.txt' ("dialog title: " + $dialog.Current.Name + "`r`n`r`n" + (Get-WindowText $dialog)))
-                $cancel = @($dialog.FindAll($SCOPE::Descendants, [System.Windows.Automation.Condition]::TrueCondition) | Where-Object { $_.Current.AutomationId -eq '2' })[0]
-                if ($null -ne $cancel) { Send-Click $cancel }
-                Start-Sleep -Seconds 1
-                # One answer per row, whatever happened to the dialog afterwards.
-                Add-Answer 'W5' 'captured' (Split-Path -Leaf $shot) ("dialog '" + $dialog.Current.Name + "' raised by " + (Split-Path -Leaf $launcher) + "; every line of it is in W5-security-warning.txt, which is what a manual quotes" + $(if ($null -eq $cancel) { ' - its Cancel button was not found, so the dialog may still be on screen: close it by hand' } else { ', and the dialog was cancelled rather than answered' }))
+                [void](Save-Text 'W5-security-warning.txt' ("dialog title: " + $dialogName + "`r`n`r`n" + (Get-WindowText $dialog)))
+                # Cancelled and not answered: whether to run a file the machine is warning about is the person's
+                # decision. What the row records is what actually happened to the dialog, not what was attempted.
+                $closedW5 = Close-Dialog $dialog
+                Add-Answer 'W5' 'captured' (Split-Path -Leaf $shot) ("dialog '" + $dialogName + "' raised by " + (Split-Path -Leaf $launcher) + "; every line of it is in W5-security-warning.txt, which is what a manual quotes" + $(if ($closedW5.Closed) { ', and the dialog was cancelled rather than answered (' + $closedW5.How + ')' } else { '. It would not close (' + $closedW5.How + '), so it is still on the screen: cancel it by hand' }))
+                # Cancelling the dialog lets ShellExecute return; the runspace is cleaned up behind it.
+                [void](Stop-ShellVerb $opener)
             }
         }
     }
