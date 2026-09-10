@@ -862,6 +862,14 @@ Assert-Equal '#39 idn: a Chinese name is usable' (Test-HostNameSyntax $twName) T
 Assert-Equal '#39 idn: so is a label with an umlaut' (Test-HostNameSyntax $umlautName) True
 Assert-Equal '#39 idn: 58 accented letters fit here and not on the wire' (Test-HostNameSyntax $longIdn) False
 Assert-Equal '#39 idn: and its label really is 58 characters' (($longIdn -split '\.')[0].Length) 58
+# Round 19: the separators IDNA turns into an ASCII dot. A name written with one of these carries no ASCII dot on
+# the way in and a trailing one on the way out, which is why the root dot is taken off after the conversion.
+$twBase = [string][char]0x53F0 + [string][char]0x7063
+Assert-Equal '#39 idn: an ideographic full stop as the root dot' (Test-HostNameSyntax ($twBase + [string][char]0x3002)) True
+Assert-Equal '#39 idn: a fullwidth full stop' (Test-HostNameSyntax ($twBase + [string][char]0xFF0E)) True
+Assert-Equal '#39 idn: a halfwidth ideographic full stop' (Test-HostNameSyntax ($twBase + [string][char]0xFF61)) True
+Assert-Equal '#39 idn: and one used as a separator, not as the root' (Test-HostNameSyntax ($twBase + [string][char]0x3002 + 'tw')) True
+Assert-Equal '#39 idn: a separator on its own is still nothing' (Test-HostNameSyntax ([string][char]0x3002)) False
 
 # What concludes follows the weights; what describes the page follows the rows on the page. Round 8 of PR #37 found
 # the first draft of that sentence saying "every predicate that reads the result set", which would have taken the

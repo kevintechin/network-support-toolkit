@@ -884,7 +884,6 @@ function Test-HostNameSyntax {
         $parsedAddress = $null
         return [System.Net.IPAddress]::TryParse($name, [ref]$parsedAddress)
     }
-    if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
     if ([string]::IsNullOrEmpty($name)) { return $false }
     # A label's limit belongs to the form that goes on the wire, not to the characters as typed: 58 accented
     # letters are 58 characters here and longer than 63 once IDNA has encoded them, so the resolver refused a
@@ -897,7 +896,12 @@ function Test-HostNameSyntax {
         try { $name = (New-Object System.Globalization.IdnMapping).GetAscii($name) }
         catch { return $false }
     }
-    if ($name.Length -gt 253) { return $false }
+    # The root dot is taken off after that conversion, not before: IDNA maps an ideographic or full-width
+    # separator to an ASCII one, so a name that arrives carrying no ASCII dot at all can leave the conversion
+    # with a trailing one - and the label test below would then see an empty last label and refuse a name that
+    # is perfectly usable (PR #41, round 19).
+    if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
+    if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
     foreach ($label in $name.Split(".")) {
         if ($label.Length -lt 1 -or $label.Length -gt 63) { return $false }
         if ($label.StartsWith("-") -or $label.EndsWith("-")) { return $false }

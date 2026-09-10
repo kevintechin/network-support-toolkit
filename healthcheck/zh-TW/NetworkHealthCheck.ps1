@@ -859,7 +859,6 @@ function Test-HostNameSyntax {
         $parsedAddress = $null
         return [System.Net.IPAddress]::TryParse($name, [ref]$parsedAddress)
     }
-    if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
     if ([string]::IsNullOrEmpty($name)) { return $false }
     # 標籤的長度上限算的是送上線路的那個形式，不是你打出來的字元：58 個帶重音的字母在這裡是
     # 58 個字元，經 IDNA 編碼後却超過 63，於是解析器拒絕了這條規則剛宣布可用的名稱，而那個拒絕又被當成量測
@@ -870,7 +869,11 @@ function Test-HostNameSyntax {
         try { $name = (New-Object System.Globalization.IdnMapping).GetAscii($name) }
         catch { return $false }
     }
-    if ($name.Length -gt 253) { return $false }
+    # 根點是在轉換之後才拿掉的，不是之前：IDNA 會把表意或全形的句號對應成 ASCII 的點，所以一個進來時
+    # 根本沒有 ASCII 點的名稱，離開轉換時可能就帶著一個尾點 —— 下方的標籤檢查會看到空的最後一段，
+    # 把一個完全可用的名稱退回（PR #41，第 19 輪）。
+    if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
+    if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
     foreach ($label in $name.Split(".")) {
         if ($label.Length -lt 1 -or $label.Length -gt 63) { return $false }
         if ($label.StartsWith("-") -or $label.EndsWith("-")) { return $false }
