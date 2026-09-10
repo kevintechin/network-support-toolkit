@@ -872,6 +872,22 @@ function Test-PingTargetSyntax {
     if ($text.Contains(":")) {
         $parsedAddress = $null
         if (-not [System.Net.IPAddress]::TryParse($text, [ref]$parsedAddress)) { return $false }
+        return $true
+    }
+
+    # A name no resolver can accept is the same kind of input problem as a URL: an empty label such as
+    # foo..bar, a label of more than 63 characters, a whole name of more than 253, or a label that starts or
+    # ends with a hyphen. Ping.Send throws before any packet exists, and the catch around it records that as a
+    # lost reply - so a required target spelled this way was reported as a measured 100% loss, which is the
+    # confusion this helper exists to prevent (PR #41, round 5). Structure is all that is tested here. The
+    # characters are left alone, because a well-formed name that does not resolve is the opposite case - it was
+    # asked, and it was answered - and because an internationalised name has to stay usable.
+    $name = $text
+    if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
+    if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
+    foreach ($label in $name.Split(".")) {
+        if ($label.Length -lt 1 -or $label.Length -gt 63) { return $false }
+        if ($label.StartsWith("-") -or $label.EndsWith("-")) { return $false }
     }
     return $true
 }

@@ -849,6 +849,20 @@ function Test-PingTargetSyntax {
     if ($text.Contains(":")) {
         $parsedAddress = $null
         if (-not [System.Net.IPAddress]::TryParse($text, [ref]$parsedAddress)) { return $false }
+        return $true
+    }
+
+    # 解析器根本無法接受的名稱，跟網址一樣屬於輸入問題：foo..bar 這種空標籤、超過 63 個字元的
+    # 標籤、超過 253 個字元的完整名稱，或以連字號開頭或結尾的標籤。Ping.Send 會在封包產生之前就擲回例外，
+    # 而包在外層的 catch 會把它記成一次遺失的回覆 - 因此這樣拼寫的必要目標會被報成量測到的 100% 遺失，
+    # 而這正是這個函式要防止的混淆（PR #41，第 5 輪）。這裡只檢查結構，不限制字元：格式正確但無法解析的
+    # 名稱屬於相反的情況 - 問過也得到答覆了 - 而國際化名稱也必須維持可用。
+    $name = $text
+    if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
+    if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
+    foreach ($label in $name.Split(".")) {
+        if ($label.Length -lt 1 -or $label.Length -gt 63) { return $false }
+        if ($label.StartsWith("-") -or $label.EndsWith("-")) { return $false }
     }
     return $true
 }

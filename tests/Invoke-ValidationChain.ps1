@@ -454,7 +454,9 @@ function Test-ResultSet {
     if ($null -eq $MachineAfter) { $MachineAfter = $Machine }   # facts read after the run, for what the ending sample saw
     $bad = @()
     $o = $Report.RunOptions
-    $pingTargets = @($Config.Tests.PingTargets)
+    # An explicit null entry is skipped by the run and by the configuration check, so it is not a row here
+    # either - which the DNS, TCP and HTTP helpers already knew (PR #41, round 5).
+    $pingTargets = @($Config.Tests.PingTargets | Where-Object { $null -ne $_ })
     $gatewayTargets = @($pingTargets | Where-Object { [string]$_.Address -eq 'AUTO_GATEWAY' }).Count
     $dnsTargets = @($pingTargets | Where-Object { [string]$_.Address -eq 'AUTO_DNS' }).Count
     $gateways = @($Machine.Gateways)

@@ -719,6 +719,15 @@ Assert-Equal '#39 ping syntax: blank' (Test-PingTargetSyntax '') False
 Assert-Equal '#39 ping syntax: whitespace only' (Test-PingTargetSyntax '   ') False
 Assert-Equal '#39 ping syntax: a URL' (Test-PingTargetSyntax 'http://example.com') False
 Assert-Equal '#39 ping syntax: a host and port' (Test-PingTargetSyntax '8.8.8.8:443') False
+Assert-Equal '#39 ping syntax: an empty label (round 5)' (Test-PingTargetSyntax 'foo..bar') False
+Assert-Equal '#39 ping syntax: nothing but a dot' (Test-PingTargetSyntax '.') False
+Assert-Equal '#39 ping syntax: a trailing root dot is still a name' (Test-PingTargetSyntax 'www.example.com.') True
+Assert-Equal '#39 ping syntax: a label starting with a hyphen' (Test-PingTargetSyntax '-foo.example.com') False
+Assert-Equal '#39 ping syntax: a label ending with a hyphen' (Test-PingTargetSyntax 'foo-.example.com') False
+Assert-Equal '#39 ping syntax: a label of 64 characters' (Test-PingTargetSyntax (('a' * 64) + '.example.com')) False
+Assert-Equal '#39 ping syntax: a name of more than 253 characters' (Test-PingTargetSyntax ((('a' * 63 + '.') * 4) + 'abc')) False
+Assert-Equal '#39 ping syntax: an internationalised name in its wire form stays usable' (Test-PingTargetSyntax 'xn--kpry57d.tw') True
+Assert-Equal '#39 ping syntax: an underscore is left alone, because structure is what is tested' (Test-PingTargetSyntax 'my_host.example.com') True
 Assert-Equal '#39 ping syntax: two values in one' (Test-PingTargetSyntax '1.1.1.1 8.8.8.8') False
 Assert-Equal '#39 ping syntax: a path' (Test-PingTargetSyntax 'example.com/health') False
 # A name that is well formed and does not resolve is the opposite case: it is tested, the resolver answers, and that
