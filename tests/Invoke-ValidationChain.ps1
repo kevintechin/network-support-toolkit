@@ -953,7 +953,26 @@ try {
             }
             $r = Invoke-TestScript 'selftest_resultset.ps1' @('-ReportPath', $report, '-ConfigDir', $stage) 'resultset'
             $s = Get-SummaryLine $r.Output
-            @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
+            $ok = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s))
+            $detail = [string]$s
+            # The number README.md advertises for this step has gone stale three times in PR #41 - rounds 4, 10
+            # and 15 - and every time a reader found it rather than a test. The only honest source for it is the
+            # run that just happened, so it is checked here: the last N / N on the resultset row of that table
+            # must be what this run reported.
+            $ran = [regex]::Match($detail, 'Summary: (\d+) passed')
+            $row = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'README.md') | Where-Object { $_ -match '^\|\s*`resultset`' }) -join ' '
+            # Two groups rather than a backreference, and the pair must agree: the cell reads 'N / N'.
+            $counts = @([regex]::Matches($row, '(\d+)\s*/\s*(\d+)'))
+            $documented = ''
+            if ($counts.Count -gt 0) {
+                $last = $counts[$counts.Count - 1]
+                if ($last.Groups[1].Value -eq $last.Groups[2].Value) { $documented = $last.Groups[1].Value }
+            }
+            if ($ok -and ($documented -ne $ran.Groups[1].Value)) {
+                $ok = $false
+                $detail = ('{0}; README.md advertises {1}' -f $detail, $(if ($documented) { $documented + ' / ' + $documented } else { 'no count on its resultset row' }))
+            }
+            @{ Passed = $ok; Detail = $detail }
         }
     }
     if ($selected -contains 'package') {
