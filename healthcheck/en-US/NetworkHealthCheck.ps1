@@ -828,11 +828,11 @@ function Load-Configuration {
     }
 }
 
-# The one syntax rule any of the four free-text fields has, in one place. Set-RunOptions rejects with it after
-# the run has started; the IT panel checks with it before, on Start, so a panel that disagreed with the run is
-# not possible. The other three fields are deliberately left without a rule: a name or an address the resolver
-# refuses is a result and not a typing mistake, and an extra URL that is not a URL fails later as a test
-# (backlog #45).
+# The syntax rules the four free-text fields have, in one place. Test-TcpTargetSyntax is the one that rejects:
+# Set-RunOptions drops the target after the run has started, and the IT panel checks with it before, on Start,
+# so a panel that disagreed with the run is not possible. The other three do not drop anything - a value they
+# refuse keeps its row and is reported as a fact about this run's input (backlog #39). What they refuse is only
+# what could never be sent: not a name the resolver rejects, which is an answer and stays a measurement.
 function Test-TcpTargetSyntax {
     param([string]$Value)
     $parts = ([string]$Value).Split(":")
@@ -854,6 +854,26 @@ function Test-HttpTargetSyntax {
     $uri = $null
     if (-not [System.Uri]::TryCreate([string]$Value, [System.UriKind]::Absolute, [ref]$uri)) { return $false }
     return ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")
+}
+
+function Test-HostNameSyntax {
+    param([string]$Value)
+
+    # Could a resolver be asked this name at all? An empty label such as foo..bar, a label of more than 63
+    # characters, a whole name of more than 253, or a label that starts or ends with a hyphen cannot be asked:
+    # the call throws before a query exists, and the catch around it would record the throw as an answer
+    # (PR #41, rounds 5 and 6 - the ping family first, then DNS, which is the same rule and now the same code).
+    # Structure is all this tests. The characters are left alone, because a well-formed name that does not
+    # resolve was asked and answered - that is a measurement - and because an internationalised name has to stay
+    # usable.
+    $name = ([string]$Value).Trim()
+    if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
+    if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
+    foreach ($label in $name.Split(".")) {
+        if ($label.Length -lt 1 -or $label.Length -gt 63) { return $false }
+        if ($label.StartsWith("-") -or $label.EndsWith("-")) { return $false }
+    }
+    return $true
 }
 
 function Test-PingTargetSyntax {
@@ -882,14 +902,7 @@ function Test-PingTargetSyntax {
     # confusion this helper exists to prevent (PR #41, round 5). Structure is all that is tested here. The
     # characters are left alone, because a well-formed name that does not resolve is the opposite case - it was
     # asked, and it was answered - and because an internationalised name has to stay usable.
-    $name = $text
-    if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
-    if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
-    foreach ($label in $name.Split(".")) {
-        if ($label.Length -lt 1 -or $label.Length -gt 63) { return $false }
-        if ($label.StartsWith("-") -or $label.EndsWith("-")) { return $false }
-    }
-    return $true
+    return (Test-HostNameSyntax $text)
 }
 
 # v1.2: run options come from the entry point (launcher switches) or the IT options panel; the JSON config file is never written.
@@ -1601,6 +1614,9 @@ function Test-ConfigurationSemantics {
         if ([string]::IsNullOrWhiteSpace($hostName)) {
             [void]$inputErrors.Add("DnsNames contains a blank Host value.")
         }
+        elseif (-not (Test-HostNameSyntax $hostName)) {
+            [void]$inputErrors.Add("DnsNames contains a host name that cannot be used as a DNS target: $hostName")
+        }
     }
 
     foreach ($setting in @(
@@ -2133,6 +2149,16 @@ function Test-DnsNames {
         # required or not, so the reader saw a section with no trace of a check somebody had configured. A required
         # target adds the weighted row that says the measurement did not happen.
             Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "The configured host name is blank." -Details "" -Tag "dns" -Weightless | Out-Null
+            if ($required) {
+                Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details "" -Tag "dns" | Out-Null
+            }
+            continue
+        }
+        if (-not (Test-HostNameSyntax $hostName)) {
+        # A name no resolver can be asked is the same fact about this run's input as a blank one, and until
+        # this round it was the opposite: the lookup threw, the catch below turned the throw into a weighted
+        # FAIL, and a typo became Problem Detected (PR #41, round 6).
+            Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "The configured host name cannot be used as a DNS target." -Details ("Configured value: $hostName") -Tag "dns" -Weightless | Out-Null
             if ($required) {
                 Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details "" -Tag "dns" | Out-Null
             }

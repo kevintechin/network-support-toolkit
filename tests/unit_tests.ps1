@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -728,6 +728,15 @@ Assert-Equal '#39 ping syntax: a label of 64 characters' (Test-PingTargetSyntax 
 Assert-Equal '#39 ping syntax: a name of more than 253 characters' (Test-PingTargetSyntax ((('a' * 63 + '.') * 4) + 'abc')) False
 Assert-Equal '#39 ping syntax: an internationalised name in its wire form stays usable' (Test-PingTargetSyntax 'xn--kpry57d.tw') True
 Assert-Equal '#39 ping syntax: an underscore is left alone, because structure is what is tested' (Test-PingTargetSyntax 'my_host.example.com') True
+# Round 6: the same rule, now a function of its own, because the DNS family needs it too.
+Assert-Equal '#39 host syntax: a name' (Test-HostNameSyntax 'www.example.com') True
+Assert-Equal '#39 host syntax: a single label' (Test-HostNameSyntax 'router') True
+Assert-Equal '#39 host syntax: an IPv4 literal reads as labels' (Test-HostNameSyntax '8.8.8.8') True
+Assert-Equal '#39 host syntax: an empty label' (Test-HostNameSyntax 'foo..bar') False
+Assert-Equal '#39 host syntax: a leading dot' (Test-HostNameSyntax '.example.com') False
+Assert-Equal '#39 host syntax: blank' (Test-HostNameSyntax '') False
+Assert-Equal '#39 host syntax: a 64-character label' (Test-HostNameSyntax (('a' * 64) + '.example.com')) False
+Assert-Equal '#39 host syntax: a hyphen at the edge' (Test-HostNameSyntax '-foo.example.com') False
 Assert-Equal '#39 ping syntax: two values in one' (Test-PingTargetSyntax '1.1.1.1 8.8.8.8') False
 Assert-Equal '#39 ping syntax: a path' (Test-PingTargetSyntax 'example.com/health') False
 # A name that is well formed and does not resolve is the opposite case: it is tested, the resolver answers, and that

@@ -193,9 +193,11 @@ function Get-UnusablePingExtraRows($Config) {
 }
 function Test-ConfiguredDnsTarget($Target) {
     # A bare string is the documented short form and is treated as required; an object carries its name under Host.
-    # Asking a string for a Host property called every one of them unusable (PR #41, round 2).
-    if ($Target -is [string]) { return (-not [string]::IsNullOrWhiteSpace([string]$Target)) }
-    return (-not [string]::IsNullOrWhiteSpace([string](Get-Value $Target 'Host')))
+    # Asking a string for a Host property called every one of them unusable (PR #41, round 2). Since round 6 the
+    # name must also be one a resolver could be asked, which is the tool's own rule.
+    $hostName = if ($Target -is [string]) { [string]$Target } else { [string](Get-Value $Target 'Host') }
+    if ([string]::IsNullOrWhiteSpace($hostName)) { return $false }
+    return (Test-HostNameSyntax $hostName)
 }
 function Test-ConfiguredDnsRequired($Target) {
     if ($Target -is [string]) { return $true }
@@ -250,7 +252,7 @@ function Get-ConfigConverterSource([string]$ScriptPath) {
     # languages.
     $tokens = $null; $errors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path -LiteralPath $ScriptPath).Path, [ref]$tokens, [ref]$errors)
-    $wanted = 'ConvertTo-DoubleSafe', 'ConvertTo-IntSafe', 'Test-IsNumericValue', 'Test-IsWholeNumber', 'Test-IsValidIPv4Address', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax'
+    $wanted = 'ConvertTo-DoubleSafe', 'ConvertTo-IntSafe', 'Test-IsNumericValue', 'Test-IsWholeNumber', 'Test-IsValidIPv4Address', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax'
     $found = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true))
     $loaded = @($found | ForEach-Object { $_.Name })
     $missing = @($wanted | Where-Object { $loaded -notcontains $_ })
@@ -261,7 +263,7 @@ function Test-UsableIPAddress([string]$Value) {
     $parsed = $null
     return [System.Net.IPAddress]::TryParse([string]$Value, [ref]$parsed)
 }
-function Get-ConfigRowCount($Config) {
+function Get-ConfigRowCount($Config, $Options) {
     # Test-ConfigurationSemantics writes up to four rows out of four lists, and the PASS row appears only when all
     # four are empty (backlog #39, PR #41 round 1): a configuration whose only problem is an invalid target has no
     # validation row at all, and threshold and option problems together produce two rows rather than one. The four
@@ -329,6 +331,16 @@ function Get-ConfigRowCount($Config) {
     foreach ($target in @($Config.Tests.HttpTargets)) { if ($null -ne $target -and -not (Test-ConfiguredHttpTarget $target)) { $badTargets += 1 } }
     foreach ($target in @($Config.Tests.DnsNames)) { if ($null -ne $target -and -not (Test-ConfiguredDnsTarget $target)) { $badTargets += 1 } }
     foreach ($target in @($Config.Tests.PingTargets)) { if ($null -ne $target -and -not (Test-ConfiguredPingAddress ([string](Get-Value $target 'Address')))) { $badTargets += 1 } }
+    # Set-RunOptions appends the switch targets to the effective configuration before Test-ConfigurationSemantics
+    # reads it, so an unusable -PingTarget, -DnsName or -HttpUrl is a Configured Targets row exactly as a
+    # configured one is; this oracle read the file on disk and saw none of them (PR #41, round 6). A -TcpTarget is
+    # not here because Set-RunOptions drops a malformed one before the configuration ever sees it.
+    if ($null -ne $Options) {
+        $extra = Get-Value $Options 'ExtraTargets'
+        foreach ($value in @(Get-Value $extra 'Ping')) { if (-not (Test-ConfiguredPingAddress ([string]$value))) { $badTargets += 1 } }
+        foreach ($value in @(Get-Value $extra 'Dns')) { if (-not (Test-HostNameSyntax ([string]$value))) { $badTargets += 1 } }
+        foreach ($value in @(Get-Value $extra 'Http')) { if (-not (Test-HttpTargetSyntax ([string]$value))) { $badTargets += 1 } }
+    }
 
     $options = 0
     foreach ($flag in @('WifiRf', 'RouteTable', 'GatewayNeighbor', 'ProxySettings', 'Traceroute', 'DriverInfo')) {
@@ -489,7 +501,7 @@ function Test-ResultSet {
         # config is one row on a configuration the tool can use as written, and up to four when it cannot: the
         # validation and threshold rows keep their weight, while the targets and options rows that name this run's
         # own input do not (backlog #39). The packaged configuration is valid, so the chain's own runs see one.
-        'config-file' = 1; 'config' = (Get-ConfigRowCount $Config); 'environment' = 1; 'system' = 1; 'adapters' = 1
+        'config-file' = 1; 'config' = (Get-ConfigRowCount $Config $o); 'environment' = 1; 'system' = 1; 'adapters' = 1
         'data-source' = $(if ([bool]$Machine.DataSourceRow) { 1 } else { 0 })   # the CIM fallback's warning row, only when the cmdlets threw
         # Without a connected adapter the snapshot writes the aggregate adapters row only: no gateway or DNS settings rows.
         'gateway-config' = $(if ($connected -gt 0) { 1 } else { 0 })

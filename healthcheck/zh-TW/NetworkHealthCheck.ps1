@@ -810,9 +810,10 @@ function Load-Configuration {
     }
 }
 
-# 四個自由輸入欄位裡唯一一條格式規則，只寫在這一個地方。Set-RunOptions 在執行開始之後用它退回；IT 面板在按下
-# 「開始檢測」時、執行開始之前也用它檢查，所以面板不可能和實際執行的判斷不一致。另外三個欄位刻意沒有規則：
-# 解析不出來的名稱或位址是一種結果，不是打錯字；不是網址的額外 URL 會在後面以測試失敗的形式出現（待辦 #45）。
+# 四個自由輸入欄位的格式規則，只寫在這一個地方。會退回目標的只有 Test-TcpTargetSyntax：Set-RunOptions 在執行
+# 開始之後用它丟掉目標，IT 面板在按下「開始檢測」時、執行開始之前也用它檢查，所以面板不可能和實際執行的
+# 判斷不一致。另外三條規則不丟掉任何東西——被它們退回的值仍然保留自己的列，並以「本次執行輸入」的事實報出
+# （backlog #39）。它們只退回根本送不出去的值：不包括解析器不接受的名稱，那是一個答案，仍然是量測。
 function Test-TcpTargetSyntax {
     param([string]$Value)
     $parts = ([string]$Value).Split(":")
@@ -832,6 +833,24 @@ function Test-HttpTargetSyntax {
     $uri = $null
     if (-not [System.Uri]::TryCreate([string]$Value, [System.UriKind]::Absolute, [ref]$uri)) { return $false }
     return ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")
+}
+
+function Test-HostNameSyntax {
+    param([string]$Value)
+
+    # 這個名稱能不能拿去問解析器？foo..bar 這種空標籤、超過 63 個字元的標籤、超過 253 個字元的完整
+    # 名稱，或以連字號開頭或結尾的標籤，都問不出去：呼叫會在查詢成形之前就擲回例外，而包在外層的 catch
+    # 會把這個例外記成一個答案（PR #41 第 5、6 輪：先是 ping，接著是 DNS，同一條規則，現在也是同一段程式碼）。
+    # 這裡只檢查結構，不限制字元：格式正確但解析不出來的名稱是問過也得到答覆的——那是量測——而國際化
+    # 名稱也必須維持可用。
+    $name = ([string]$Value).Trim()
+    if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
+    if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
+    foreach ($label in $name.Split(".")) {
+        if ($label.Length -lt 1 -or $label.Length -gt 63) { return $false }
+        if ($label.StartsWith("-") -or $label.EndsWith("-")) { return $false }
+    }
+    return $true
 }
 
 function Test-PingTargetSyntax {
@@ -857,14 +876,7 @@ function Test-PingTargetSyntax {
     # 而包在外層的 catch 會把它記成一次遺失的回覆 - 因此這樣拼寫的必要目標會被報成量測到的 100% 遺失，
     # 而這正是這個函式要防止的混淆（PR #41，第 5 輪）。這裡只檢查結構，不限制字元：格式正確但無法解析的
     # 名稱屬於相反的情況 - 問過也得到答覆了 - 而國際化名稱也必須維持可用。
-    $name = $text
-    if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
-    if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
-    foreach ($label in $name.Split(".")) {
-        if ($label.Length -lt 1 -or $label.Length -gt 63) { return $false }
-        if ($label.StartsWith("-") -or $label.EndsWith("-")) { return $false }
-    }
-    return $true
+    return (Test-HostNameSyntax $text)
 }
 
 # v1.2：執行選項來自入口（啟動器參數）或 IT 選項面板；JSON 設定檔永遠不會被寫入。
@@ -1573,6 +1585,9 @@ function Test-ConfigurationSemantics {
         if ([string]::IsNullOrWhiteSpace($hostName)) {
             [void]$inputErrors.Add("DnsNames 含有空白的 Host。")
         }
+        elseif (-not (Test-HostNameSyntax $hostName)) {
+            [void]$inputErrors.Add("DnsNames 含有無法當成 DNS 目標的主機名稱：$hostName")
+        }
     }
 
     foreach ($setting in @(
@@ -2103,6 +2118,16 @@ function Test-DnsNames {
         # 地方留下一列——1.2.8 之前，空白的 DNS 名稱不論必要與否都什麼都不寫，讀者在那個區段看不到任何痕跡，儘管
         # 有人設定過這項檢查。必要目標再加上那列「量測沒有發生」的有權重列。
             Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "設定的主機名稱是空白的。" -Details "" -Tag "dns" -Weightless | Out-Null
+            if ($required) {
+                Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標無法檢測。" -Details "" -Tag "dns" | Out-Null
+            }
+            continue
+        }
+        if (-not (Test-HostNameSyntax $hostName)) {
+        # 根本問不出去的名稱，跟空白名稱一樣是關於本次執行輸入的事實；而在這一輪之前它是相反的：
+        # 查詢擲回例外，下方的 catch 把例外變成有權重的 FAIL，一個錯字就成了「發現問題」
+        # （PR #41，第 6 輪）。
+            Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "設定的主機名稱無法當成 DNS 目標。" -Details ("設定值：$hostName") -Tag "dns" -Weightless | Out-Null
             if ($required) {
                 Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標無法檢測。" -Details "" -Tag "dns" | Out-Null
             }

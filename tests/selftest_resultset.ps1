@@ -230,5 +230,17 @@ Assert-Case 'tcp target: 443.0 is a usable port, because that is how the tool pa
 $c = New-BrokenConfig; $c.Thresholds.PacketLossCriticalPercent = '2,5'; $c.Tests.TcpTargets[0].Port = 0
 Assert-Case 'config rows: a comma decimal is not a number to the tool, so the thresholds row is written' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
 
+# PR #41, round 6: a DNS name no resolver can be asked, and the targets a switch adds to the configuration.
+$c = New-BrokenConfig; $c.Tests.DnsNames = @('foo..bar')
+Assert-Case 'dns rows: a malformed name is not a usable target' @($(if (-not (Test-ConfiguredDnsTarget 'foo..bar')) { @() } else { @('the oracle called foo..bar usable') })) $true ''
+Assert-Case 'config rows: and it is a configured-targets row' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+$c = New-BrokenConfig
+$o = [pscustomobject]@{ ExtraTargets = [pscustomobject]@{ Ping = @('http://example.com'); Dns = @(); Tcp = @(); Http = @() } }
+Assert-Case 'config rows: an unusable -PingTarget is a row the file on disk cannot show' @($(if ((Get-ConfigRowCount $c $o) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $o), expected 1") })) $true ''
+$o = [pscustomobject]@{ ExtraTargets = [pscustomobject]@{ Ping = @(); Dns = @('foo..bar'); Tcp = @(); Http = @('ftp://host') } }
+Assert-Case 'config rows: an unusable -DnsName and -HttpUrl are the same one row' @($(if ((Get-ConfigRowCount $c $o) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $o), expected 1") })) $true ''
+$o = [pscustomobject]@{ ExtraTargets = [pscustomobject]@{ Ping = @('8.8.8.8'); Dns = @('www.example.com'); Tcp = @(); Http = @('https://example.com') } }
+Assert-Case 'config rows: usable switch targets leave the PASS row alone' @($(if ((Get-ConfigRowCount $c $o) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $o), expected 1") })) $true ''
+
 "Summary: $passes passed, $fails failed"
 exit $fails
