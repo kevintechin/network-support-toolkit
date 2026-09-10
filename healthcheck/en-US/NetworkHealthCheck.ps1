@@ -864,19 +864,27 @@ function Test-HttpTargetSyntax {
 function Test-HostNameSyntax {
     param([string]$Value)
 
-    # Could a resolver be asked this name at all? An empty label such as foo..bar, a label of more than 63
-    # characters, a whole name of more than 253, or a label that starts or ends with a hyphen cannot be asked:
-    # the call throws before a query exists, and the catch around it would record the throw as an answer
-    # (PR #41, rounds 5 and 6 - the ping family first, then DNS, which is the same rule and now the same code).
-    # Structure is all this tests. The characters are left alone, because a well-formed name that does not
-    # resolve was asked and answered - that is a measurement - and because an internationalised name has to stay
-    # usable.
+    # Could a resolver be asked this name at all? A delimiter that belongs to a URI, an empty label such as
+    # foo..bar, a label of more than 63 characters, a whole name of more than 253, or a label that starts or
+    # ends with a hyphen cannot be asked: the call throws before a query exists, and the catch around it
+    # would record the throw as an answer (PR #41, rounds 5 and 6 - the ping family first, then DNS, which
+    # is the same rule and now the same code; round 7 brought the delimiters here too).
     $name = ([string]$Value).Trim()
     if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+    # Everything below judges the form that would go on the wire, which is why the conversion comes first.
+    # Two rounds were spent learning that. A label's limit is counted in encoded characters and not typed
+    # ones - 58 accented letters are 58 here and more than 63 once encoded (round 18). And IDNA maps a
+    # compatibility character to its ASCII equivalent: a full-width solidus becomes '/', a full-width colon
+    # ':', an ideographic space a space - so a check made before the conversion is a check made on a string
+    # this tool will never send, and 'foo<U+FF0F>bar' walked past the delimiter rules straight into the
+    # resolver (round 20). GetAscii is the conversion the resolver itself would do, so what it refuses could
+    # never have been asked; a plain ASCII name needs none of this and is left exactly as it was.
+    if ($name -match '[^\x00-\x7F]') {
+        try { $name = (New-Object System.Globalization.IdnMapping).GetAscii($name) }
+        catch { return $false }
+    }
     # A delimiter belongs to a URI, not to a name: 'http://example.com' has labels of a legal length and no
-    # hyphen at an edge, so the structural rules below say yes to it (PR #41, round 7). The ping family caught
-    # this because these three lines used to live there; the DNS family did not, and the value went to the
-    # resolver. Now the whole rule is here and both families ask the same question. A colon is allowed only
+    # hyphen at an edge, so the structural rules below would say yes to it (round 7). A colon is allowed only
     # when the value is an IP address, which is how fe80::1 stays a target and host:80 does not.
     if ($name -match '\s') { return $false }
     if ($name -match '[/\\?#@]') { return $false }
@@ -884,22 +892,9 @@ function Test-HostNameSyntax {
         $parsedAddress = $null
         return [System.Net.IPAddress]::TryParse($name, [ref]$parsedAddress)
     }
-    if ([string]::IsNullOrEmpty($name)) { return $false }
-    # A label's limit belongs to the form that goes on the wire, not to the characters as typed: 58 accented
-    # letters are 58 characters here and longer than 63 once IDNA has encoded them, so the resolver refused a
-    # name this rule had just called usable and the refusal came back as a measurement (PR #41, round 18).
-    # GetAscii is the conversion the resolver itself would do, so what it refuses could never have been asked;
-    # only a name carrying non-ASCII needs it, because a plain one already is its own wire form. An
-    # internationalised name that does fit stays usable - the Traditional Chinese for Taiwan becomes
-    # xn--kpry57d.tw and is tested like any other.
-    if ($name -match '[^\x00-\x7F]') {
-        try { $name = (New-Object System.Globalization.IdnMapping).GetAscii($name) }
-        catch { return $false }
-    }
-    # The root dot is taken off after that conversion, not before: IDNA maps an ideographic or full-width
-    # separator to an ASCII one, so a name that arrives carrying no ASCII dot at all can leave the conversion
-    # with a trailing one - and the label test below would then see an empty last label and refuse a name that
-    # is perfectly usable (PR #41, round 19).
+    # The root dot is taken off here rather than before the conversion, because IDNA is what can create it: a
+    # name written with an ideographic full stop carries no ASCII dot on the way in and a trailing one on the
+    # way out, and the label test would then see an empty last label (round 19).
     if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
     if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
     foreach ($label in $name.Split(".")) {

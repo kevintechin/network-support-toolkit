@@ -870,6 +870,13 @@ Assert-Equal '#39 idn: a fullwidth full stop' (Test-HostNameSyntax ($twBase + [s
 Assert-Equal '#39 idn: a halfwidth ideographic full stop' (Test-HostNameSyntax ($twBase + [string][char]0xFF61)) True
 Assert-Equal '#39 idn: and one used as a separator, not as the root' (Test-HostNameSyntax ($twBase + [string][char]0x3002 + 'tw')) True
 Assert-Equal '#39 idn: a separator on its own is still nothing' (Test-HostNameSyntax ([string][char]0x3002)) False
+# Round 20: the compatibility characters IDNA turns into delimiters. Each of these passes the delimiter rules as
+# typed and fails them as sent, which is why the conversion runs before them.
+Assert-Equal '#39 idn: a fullwidth solidus becomes a path separator' (Test-HostNameSyntax ('foo' + [string][char]0xFF0F + 'bar')) False
+Assert-Equal '#39 idn: a fullwidth colon becomes a port separator' (Test-HostNameSyntax ('foo' + [string][char]0xFF1A + '80')) False
+Assert-Equal '#39 idn: an ideographic space becomes a space' (Test-HostNameSyntax ('foo' + [string][char]0x3000 + 'bar')) False
+Assert-Equal '#39 idn: a fullwidth at sign becomes a user separator' (Test-HostNameSyntax ('user' + [string][char]0xFF20 + 'example.com')) False
+Assert-Equal '#39 idn: a fullwidth question mark becomes a query separator' (Test-HostNameSyntax ('foo' + [string][char]0xFF1F + 'bar')) False
 
 # What concludes follows the weights; what describes the page follows the rows on the page. Round 8 of PR #37 found
 # the first draft of that sentence saying "every predicate that reads the result set", which would have taken the

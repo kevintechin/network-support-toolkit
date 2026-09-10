@@ -842,36 +842,33 @@ function Test-HttpTargetSyntax {
 function Test-HostNameSyntax {
     param([string]$Value)
 
-    # 這個名稱能不能拿去問解析器？foo..bar 這種空標籤、超過 63 個字元的標籤、超過 253 個字元的完整
-    # 名稱，或以連字號開頭或結尾的標籤，都問不出去：呼叫會在查詢成形之前就擲回例外，而包在外層的 catch
-    # 會把這個例外記成一個答案（PR #41 第 5、6 輪：先是 ping，接著是 DNS，同一條規則，現在也是同一段程式碼）。
-    # 這裡只檢查結構，不限制字元：格式正確但解析不出來的名稱是問過也得到答覆的——那是量測——而國際化
-    # 名稱也必須維持可用。
+    # 這個名稱能不能拿去問解析器？屬於 URI 的分隔符號、foo..bar 這種空標籤、超過 63 個字元的標籤、
+    # 超過 253 個字元的完整名稱，或以連字號開頭或結尾的標籤，都問不出去：呼叫會在查詢成形之前就擲回
+    # 例外，而包在外層的 catch 會把這個例外記成一個答案（PR #41 第 5、6 輪：先是 ping，接著是 DNS，
+    # 同一條規則，現在也是同一段程式碼；第 7 輪把分隔符號也搬了進來）。
     $name = ([string]$Value).Trim()
     if ([string]::IsNullOrWhiteSpace($name)) { return $false }
-    # 分隔符號屬於 URI，不屬於名稱：'http://example.com' 的標籤長度合法、邊緣也沒有連字號，下方的結構
-    # 規則會讓它通過（PR #41，第 7 輪）。ping 那邊拦得住，是因為這三行本來就寫在那裡；DNS 那邊沒有，
-    # 值就送到解析器去了。現在整條規則都在這裡，兩邊問的是同一個問題。冒號只有在值是 IP 位址時才允許，
-    # fe80::1 因此仍是目標，而 host:80 不是。
+    # 下面每一項檢查判的都是「真正送上線路的那個形式」，所以轉換先做。這件事花了兩輪才學會：標籤長度
+    # 算的是編碼後的字元而不是打出來的字元 —— 58 個帶重音的字母在這裡是 58，編碼後超過 63（第 18 輪）；
+    # 而 IDNA 會把相容字元對應成 ASCII：全形斜線變成 '/'、全形冒號變成 ':'、表意空白變成空白 —— 所以
+    # 在轉換之前做的檢查，檢的是一個這個工具永遠不會送出去的字串，'foo<U+FF0F>bar' 就這樣繞過分隔符號
+    # 規則直接進了解析器（第 20 輪）。GetAscii 做的就是解析器自己會做的轉換，所以它拒絕的名稱本來就
+    # 問不出去；純 ASCII 的名稱不需要這一步，也完全不被動到。
+    if ($name -match '[^\x00-\x7F]') {
+        try { $name = (New-Object System.Globalization.IdnMapping).GetAscii($name) }
+        catch { return $false }
+    }
+    # 分隔符號屬於 URI，不屬於名稱：'http://example.com' 的標籤長度合法、邊緣也沒有連字號，下方的
+    # 結構規則會讓它通過（第 7 輪）。冒號只有在值是 IP 位址時才允許，fe80::1 因此仍是目標，
+    # 而 host:80 不是。
     if ($name -match '\s') { return $false }
     if ($name -match '[/\\?#@]') { return $false }
     if ($name.Contains(":")) {
         $parsedAddress = $null
         return [System.Net.IPAddress]::TryParse($name, [ref]$parsedAddress)
     }
-    if ([string]::IsNullOrEmpty($name)) { return $false }
-    # 標籤的長度上限算的是送上線路的那個形式，不是你打出來的字元：58 個帶重音的字母在這裡是
-    # 58 個字元，經 IDNA 編碼後却超過 63，於是解析器拒絕了這條規則剛宣布可用的名稱，而那個拒絕又被當成量測
-    # （PR #41，第 18 輪）。GetAscii 做的就是解析器自己會做的轉換，所以它拒絕的名稱本來就問不出去；只有含非
-    # ASCII 的名稱需要轉，純 ASCII 的名稱本身就是它的線路形式。長度沒超的國際化名稱仍然可用：「台灣」
-    # 會變成 xn--kpry57d.tw，跟其他名稱一樣被測試。
-    if ($name -match '[^\x00-\x7F]') {
-        try { $name = (New-Object System.Globalization.IdnMapping).GetAscii($name) }
-        catch { return $false }
-    }
-    # 根點是在轉換之後才拿掉的，不是之前：IDNA 會把表意或全形的句號對應成 ASCII 的點，所以一個進來時
-    # 根本沒有 ASCII 點的名稱，離開轉換時可能就帶著一個尾點 —— 下方的標籤檢查會看到空的最後一段，
-    # 把一個完全可用的名稱退回（PR #41，第 19 輪）。
+    # 根點在這裡才拿掉，而不是轉換之前，因為那個點可能就是 IDNA 造出來的：用表意句號寫的名稱，
+    # 進來時沒有 ASCII 點、出去時帶著一個尾點，下方的標籤檢查會看到空的最後一段（第 19 輪）。
     if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
     if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
     foreach ($label in $name.Split(".")) {
