@@ -65,7 +65,10 @@ for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1','zh-TW
     # arrives as the character it names - '\x00' written by a tool that ate its own backslashes - leaves a real
     # NUL in the file. That happened in PR #41 round 21, and every test still passed, because a character class
     # written with the characters is the same class: only grep calling the file binary gave it away.
-    stray=sorted({c for c in b if c<9 or 10<c<13 or 13<c<32 or c==127})
+    # A carriage return counts only as half of a line ending: exempting every 0x0D would let a collapsed \r
+    # escape ship, because the CRLF check above looks for an unpaired 0x0A and never for an unpaired 0x0D
+    # (PR #41 round 22, on the guard round 21 had just added).
+    stray=sorted({c for i,c in enumerate(b) if c<9 or 10<c<13 or 13<c<32 or c==127 or (c==13 and b[i+1:i+2]!=b'\n')})
     ok('no stray control bytes '+rel,not stray,', '.join('0x%02X'%c for c in stray))
 for rel in ['zh-TW/Start-NetworkCheck.cmd','en-US/Start-NetworkCheck.cmd','zh-TW/Start-NetworkCheck-Console.cmd','en-US/Start-NetworkCheck-Console.cmd','zh-TW/Start-NetworkCheck-IT.cmd','en-US/Start-NetworkCheck-IT.cmd']:
     b=(ROOT/rel).read_bytes(); ok('CMD CRLF '+rel,b'\r\n' in b and b'\n' not in b.replace(b'\r\n',b'')); ok('CMD script reference '+rel,b'NetworkHealthCheck.ps1' in b)

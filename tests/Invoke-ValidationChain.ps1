@@ -809,7 +809,15 @@ try {
             $bad = @()
             foreach ($file in @(Get-ChildItem -LiteralPath $PSScriptRoot -File -Recurse -Include *.ps1, *.py, *.md, *.cmd)) {
                 $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
-                $found = @($bytes | Where-Object { $_ -lt 9 -or ($_ -gt 10 -and $_ -lt 13) -or ($_ -gt 13 -and $_ -lt 32) -or $_ -eq 127 } | Sort-Object -Unique)
+                # Position matters for one of them: 0x0D is half a line ending, so it is stray unless 0x0A follows
+                # it - the same blind spot the package validator had in round 22.
+                $found = New-Object System.Collections.ArrayList
+                for ($i = 0; $i -lt $bytes.Length; $i++) {
+                    $byte = $bytes[$i]
+                    if ($byte -lt 9 -or ($byte -gt 10 -and $byte -lt 13) -or ($byte -gt 13 -and $byte -lt 32) -or $byte -eq 127) { [void]$found.Add($byte); continue }
+                    if ($byte -eq 13 -and (($i + 1) -ge $bytes.Length -or $bytes[$i + 1] -ne 10)) { [void]$found.Add($byte) }
+                }
+                $found = @($found | Sort-Object -Unique)
                 if ($found.Count -gt 0) { $bad += ('{0}: {1}' -f $file.Name, (($found | ForEach-Object { '0x{0:X2}' -f $_ }) -join ', ')) }
             }
             @{ Passed = ($bad.Count -eq 0); Detail = $(if ($bad.Count -eq 0) { 'none' } else { $bad -join '; ' }) }
