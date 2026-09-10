@@ -350,15 +350,15 @@ function Get-ConfigRowCount($Config, $Options, [hashtable]$Overrides) {
     foreach ($target in @($Config.Tests.PingTargets)) { if ($null -ne $target -and -not (Test-ConfiguredPingAddress ([string](Get-Value $target 'Address')))) { $badTargets += 1 } }
     # Set-RunOptions appends the switch targets to the effective configuration before Test-ConfigurationSemantics
     # reads it, so an unusable -PingTarget, -DnsName or -HttpUrl is a Configured Targets row exactly as a
-    # configured one is; this oracle read the file on disk and saw none of them (PR #41, round 6). A -TcpTarget
-    # whose shape is wrong is dropped before the configuration sees it, but one shaped host:port with a host that
-    # is not a name reaches it, and since round 8 that is an input problem too.
+    # configured one is; this oracle read the file on disk and saw none of them (PR #41, round 6). A -TcpTarget is
+    # not among them: since round 10 Test-TcpTargetSyntax judges the host as well as the shape, so the panel and
+    # Set-RunOptions refuse the same values and an unusable one never reaches the configuration at all - it is a
+    # dropped target, which has a row of its own elsewhere in this table.
     if ($null -ne $Options) {
         $extra = Get-Value $Options 'ExtraTargets'
         foreach ($value in @(Get-Value $extra 'Ping')) { if (-not (Test-ConfiguredPingAddress ([string]$value))) { $badTargets += 1 } }
         foreach ($value in @(Get-Value $extra 'Dns')) { if (-not (Test-HostNameSyntax ([string]$value))) { $badTargets += 1 } }
         foreach ($value in @(Get-Value $extra 'Http')) { if (-not (Test-HttpTargetSyntax ([string]$value))) { $badTargets += 1 } }
-        foreach ($value in @(Get-Value $extra 'Tcp')) { if (-not (Test-HostNameSyntax (([string]$value).Split(':')[0]))) { $badTargets += 1 } }
     }
 
     $options = 0

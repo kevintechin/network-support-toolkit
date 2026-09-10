@@ -837,7 +837,7 @@ function Test-TcpTargetSyntax {
     param([string]$Value)
     $parts = ([string]$Value).Split(":")
     if ($parts.Count -ne 2) { return $false }
-    if ([string]::IsNullOrWhiteSpace($parts[0])) { return $false }
+    if (-not (Test-HostNameSyntax $parts[0])) { return $false }
     $port = ConvertTo-IntSafe $parts[1] 0
     return (($port -ge 1) -and ($port -le 65535))
 }
@@ -953,7 +953,7 @@ function Set-RunOptions {
             # The notice says what happened; the record is what puts a row where the result belonged (backlog #39).
             # A dropped target that leaves only a notice under Program Environment shows the reader an empty TCP
             # section, which reads as a check nobody configured rather than one that was thrown away.
-            [void]$script:RunOptionMessages.Add("Ignored extra TCP target '$value': expected host:port.")
+            [void]$script:RunOptionMessages.Add("Ignored extra TCP target '$value': expected host:port with a host that can be used.")
             [void]$script:DroppedTargets.Add([pscustomobject][ordered]@{ Kind = "Tcp"; Value = [string]$value })
             continue
         }
@@ -4273,7 +4273,7 @@ function Get-RejectedPanelValues {
     if ($null -eq $controls) { return @() }
     foreach ($item in @(([string]$controls["TcpTarget"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
         if (-not (Test-TcpTargetSyntax $item)) {
-            [void]$rejected.Add([pscustomobject][ordered]@{ Key = "TcpTarget"; Value = [string]$item; Problem = "Extra TCP: '" + $item + "' is not host:port - for example 8.8.8.8:443." })
+            [void]$rejected.Add([pscustomobject][ordered]@{ Key = "TcpTarget"; Value = [string]$item; Problem = "Extra TCP: '" + $item + "' is not host:port with a host that can be used - for example 8.8.8.8:443." })
         }
     }
     return @($rejected)

@@ -258,11 +258,10 @@ Assert-Case 'config rows: and it is the configured-targets row' @($(if ((Get-Con
 $c = New-BrokenConfig; $c.Checks.WifiRf = 'bad'; $c.Tests.TcpTargets[0].Port = 0
 Assert-Case 'config rows: an invalid check flag warns, so two rows' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
 Assert-Case 'config rows: and -NoWifi replaces it before validation, leaving one' @($(if ((Get-ConfigRowCount $c $null @{ NoWifi = $true }) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $null @{ NoWifi = $true }), expected 1") })) $true ''
-$c = New-BrokenConfig
-$o = [pscustomobject]@{ ExtraTargets = [pscustomobject]@{ Ping = @(); Dns = @(); Tcp = @('foo..bar:443'); Http = @() } }
-Assert-Case 'config rows: a -TcpTarget shaped right with a host that is not a name' @($(if ((Get-ConfigRowCount $c $o) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $o), expected 1") })) $true ''
-$o = [pscustomobject]@{ ExtraTargets = [pscustomobject]@{ Ping = @(); Dns = @(); Tcp = @('1.1.1.1:53'); Http = @() } }
-Assert-Case 'config rows: and a usable one leaves the PASS row alone' @($(if ((Get-ConfigRowCount $c $o) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $o), expected 1") })) $true ''
+# Round 8 put two cases here for an unusable -TcpTarget, and round 10 found that both expected 1 - a clean
+# configuration with one bad target and a clean configuration with none produce one row either way, for opposite
+# reasons. They could not fail, so they are gone; Test-TcpTargetSyntax is asserted directly in unit_tests.ps1,
+# where the value it rejects is the point.
 
 # PR #41, round 9: a URL whose host is not a name, and the panel's six check boxes.
 $c = New-BrokenConfig; $c.Tests.HttpTargets[0].Url = 'http://foo..bar/'

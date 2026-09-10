@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
@@ -258,7 +258,7 @@ NetworkHealthCheck_&lt;日期&gt;_&lt;時間&gt;_&lt;電腦名稱&gt;.json</pre>
   <h2><span class="num">7</span> IT 請你用 IT 入口的時候</h2>
   <div class="card">
     <p><code>zh-TW</code> 資料夾裡的 <code>Start-NetworkCheck-IT.cmd</code> 開的是同一支工具，上方多了一個 <b>執行選項（IT）</b> 面板，而且<b>不會</b>自己開始：進度列上方那一行寫著 <i>就緒，調整選項後按「開始檢測」</i>。IT 可能請你在 <b>額外 Ping</b> 填一個位址、在 <b>額外 TCP（host:port）</b> 填主機和連接埠、在 <b>額外 DNS</b> 填名稱、在 <b>額外 URL</b> 填網址，或改一下 <b>Ping 次數</b>、<b>取樣秒數</b>，然後按 <kbd>開始檢測</kbd>。之後打開報告時，每個項目的詳細資料都已經展開。這裡填的東西只對那一次執行有效，永遠不會改到設定檔。<kbd>還原設定檔</kbd> 會把面板放回設定檔的值。</p>
-    <p style="margin-top:.8rem"><b>那個欄位要的是主機和連接埠一起打。</b> 標籤上寫著格式 &mdash;「額外 TCP（host:port）」&mdash; 滑鼠移到輸入框上還會出現範例：<code>8.8.8.8:443</code>。如果你打的不是主機加連接埠，<b>開始檢測</b> 不會開始：欄位會被標記，視窗會說哪裡不對，並給出範例。修正它，或再按一次 <b>開始檢測</b>，不帶那個目標直接執行 &mdash; 報告裡會寫這個目標被丟掉，整體結果也會變成「需要注意」，即使每一項檢查都通過。</p>
+    <p style="margin-top:.8rem"><b>那個欄位要的是主機和連接埠一起打。</b> 標籤上寫著格式 &mdash;「額外 TCP（host:port）」&mdash; 滑鼠移到輸入框上還會出現範例：<code>8.8.8.8:443</code>。如果你打的不是主機加連接埠，<b>開始檢測</b> 不會開始：欄位會被標記，視窗會說哪裡不對，並給出範例。修正它，或再按一次 <b>開始檢測</b>，不帶那個目標直接執行 &mdash; 報告裡會寫這個目標被丟掉，而這則提示不會改變整體結果 —— 被丟掉的目標會在結果本該出現的地方留下一列，讓你看得到哪一項沒有測。</p>
   </div>
 </section>
 

@@ -2,10 +2,30 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
+
+# Two guards over this file itself. A case that calls a function nobody loaded is a statement-terminating error:
+# PowerShell prints it, carries on with the next line, and the summary counts only the assertions that ran - so
+# six new cases of PR #41 round 10 reported nothing at all and the step still passed. Counting the Assert-Equal
+# calls in this file would not catch that, because several of them run inside loops.
+# The first guard is for a name the script no longer defines - the list below asks for something that is gone.
+# The trap is for the other direction, and it is the one that catches the round-10 bug: a call to anything not
+# loaded, whether the name was left out of the list or misspelled in the case. Both were checked against a
+# mutant of this file before being trusted.
+$missing = @($wanted | Where-Object { $loaded = @($funcs | ForEach-Object { $_.Name }); $loaded -notcontains $_ })
+if ($missing.Count -gt 0) {
+    Write-Output ("[FAIL] harness: the script does not define {0}" -f ($missing -join ", "))
+    Write-Output ("Summary: 0 passed, {0} failed" -f $missing.Count)
+    exit $missing.Count
+}
+trap [System.Management.Automation.CommandNotFoundException] {
+    Write-Output ("[FAIL] harness: an assertion called something that is not loaded - {0}" -f $_.Exception.Message)
+    Write-Output "Summary: 0 passed, 1 failed"
+    exit 1
+}
 
 $fails = 0; $passes = 0
 function Assert-Equal($name, $actual, $expected) {
@@ -750,6 +770,13 @@ Assert-Equal '#39 url syntax: a name with a path and a query' (Test-HttpTargetSy
 Assert-Equal '#39 url syntax: a port is not part of the host' (Test-HttpTargetSyntax 'https://example.com:8443/') True
 Assert-Equal '#39 url syntax: an IPv6 literal in brackets' (Test-HttpTargetSyntax 'http://[fe80::1]/') True
 Assert-Equal '#39 url syntax: a user in the URL is not part of the host' (Test-HttpTargetSyntax 'https://user@example.com/') True
+# Round 10: the panel's pre-check and the run's rule are the same rule, so neither can refuse what the other takes.
+Assert-Equal '#39 tcp syntax: a host and port' (Test-TcpTargetSyntax '8.8.8.8:443') True
+Assert-Equal '#39 tcp syntax: a name and port' (Test-TcpTargetSyntax 'example.com:443') True
+Assert-Equal '#39 tcp syntax: an empty label in the host' (Test-TcpTargetSyntax 'foo..bar:443') False
+Assert-Equal '#39 tcp syntax: a hyphen at the edge of the host' (Test-TcpTargetSyntax '-foo.example.com:443') False
+Assert-Equal '#39 tcp syntax: a blank host' (Test-TcpTargetSyntax ':443') False
+Assert-Equal '#39 tcp syntax: a port out of range' (Test-TcpTargetSyntax 'example.com:70000') False
 Assert-Equal '#39 ping syntax: two values in one' (Test-PingTargetSyntax '1.1.1.1 8.8.8.8') False
 Assert-Equal '#39 ping syntax: a path' (Test-PingTargetSyntax 'example.com/health') False
 # A name that is well formed and does not resolve is the opposite case: it is tested, the resolver answers, and that

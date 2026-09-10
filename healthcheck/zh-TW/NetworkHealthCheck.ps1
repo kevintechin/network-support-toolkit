@@ -818,7 +818,7 @@ function Test-TcpTargetSyntax {
     param([string]$Value)
     $parts = ([string]$Value).Split(":")
     if ($parts.Count -ne 2) { return $false }
-    if ([string]::IsNullOrWhiteSpace($parts[0])) { return $false }
+    if (-not (Test-HostNameSyntax $parts[0])) { return $false }
     $port = ConvertTo-IntSafe $parts[1] 0
     return (($port -ge 1) -and ($port -le 65535))
 }
@@ -924,7 +924,7 @@ function Set-RunOptions {
             # 提示說明發生了什麼事；這筆紀錄則是為了在「結果本該出現的地方」留下一列（backlog #39）。被丟棄的
             # 目標若只留下程式環境區的一則提示，讀者看到的是空的 TCP 區段，那讀起來像沒有人設定過這項檢查，而
             # 不是它被丟掉了。
-            [void]$script:RunOptionMessages.Add("已忽略額外 TCP 目標「$value」：格式應為 host:port。")
+            [void]$script:RunOptionMessages.Add("已忽略額外 TCP 目標「$value」：格式應為 host:port，且主機名稱必須可以使用。")
             [void]$script:DroppedTargets.Add([pscustomobject][ordered]@{ Kind = "Tcp"; Value = [string]$value })
             continue
         }
@@ -4205,7 +4205,7 @@ function Get-RejectedPanelValues {
     if ($null -eq $controls) { return @() }
     foreach ($item in @(([string]$controls["TcpTarget"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
         if (-not (Test-TcpTargetSyntax $item)) {
-            [void]$rejected.Add([pscustomobject][ordered]@{ Key = "TcpTarget"; Value = [string]$item; Problem = "額外 TCP：「" + $item + "」不是 host:port 格式 —— 例如 8.8.8.8:443。" })
+            [void]$rejected.Add([pscustomobject][ordered]@{ Key = "TcpTarget"; Value = [string]$item; Problem = "額外 TCP：「" + $item + "」不是 host:port 格式，或主機名稱無法使用 —— 例如 8.8.8.8:443。" })
         }
     }
     return @($rejected)
