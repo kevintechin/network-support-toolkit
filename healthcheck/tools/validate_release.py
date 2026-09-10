@@ -61,6 +61,12 @@ for rel in ['zh-TW/NetworkHealthCheck.config.json','en-US/NetworkHealthCheck.con
     except Exception as e: ok('JSON parse '+rel,False,str(e))
 for rel in ['zh-TW/NetworkHealthCheck.ps1','en-US/NetworkHealthCheck.ps1','zh-TW/NetworkHealthCheck.config.json','en-US/NetworkHealthCheck.config.json']:
     b=(ROOT/rel).read_bytes(); ok('UTF-8 BOM '+rel,b.startswith(b'\xef\xbb\xbf')); ok('CRLF '+rel,b'\r\n' in b and b'\n' not in b.replace(b'\r\n',b''))
+    # No control byte other than the line ending and a tab. A shipped script is text, and a regex escape that
+    # arrives as the character it names - '\x00' written by a tool that ate its own backslashes - leaves a real
+    # NUL in the file. That happened in PR #41 round 21, and every test still passed, because a character class
+    # written with the characters is the same class: only grep calling the file binary gave it away.
+    stray=sorted({c for c in b if c<9 or 10<c<13 or 13<c<32 or c==127})
+    ok('no stray control bytes '+rel,not stray,', '.join('0x%02X'%c for c in stray))
 for rel in ['zh-TW/Start-NetworkCheck.cmd','en-US/Start-NetworkCheck.cmd','zh-TW/Start-NetworkCheck-Console.cmd','en-US/Start-NetworkCheck-Console.cmd','zh-TW/Start-NetworkCheck-IT.cmd','en-US/Start-NetworkCheck-IT.cmd']:
     b=(ROOT/rel).read_bytes(); ok('CMD CRLF '+rel,b'\r\n' in b and b'\n' not in b.replace(b'\r\n',b'')); ok('CMD script reference '+rel,b'NetworkHealthCheck.ps1' in b)
 zh=read_text(ROOT/'zh-TW/NetworkHealthCheck.ps1'); en=read_text(ROOT/'en-US/NetworkHealthCheck.ps1')

@@ -877,6 +877,12 @@ Assert-Equal '#39 idn: a fullwidth colon becomes a port separator' (Test-HostNam
 Assert-Equal '#39 idn: an ideographic space becomes a space' (Test-HostNameSyntax ('foo' + [string][char]0x3000 + 'bar')) False
 Assert-Equal '#39 idn: a fullwidth at sign becomes a user separator' (Test-HostNameSyntax ('user' + [string][char]0xFF20 + 'example.com')) False
 Assert-Equal '#39 idn: a fullwidth question mark becomes a query separator' (Test-HostNameSyntax ('foo' + [string][char]0xFF1F + 'bar')) False
+# Round 21: control characters, which are neither delimiters nor whitespace. A JSON   reached Dns.Send and
+# came back as a SocketException - the same exception an unresolvable name gives, so it was measured, not reported.
+Assert-Equal '#39 controls: an embedded NUL' (Test-HostNameSyntax ('foo' + [string][char]0 + 'bar')) False
+Assert-Equal '#39 controls: a start-of-heading' (Test-HostNameSyntax ('foo' + [string][char]1 + 'bar')) False
+Assert-Equal '#39 controls: a delete' (Test-HostNameSyntax ('foo' + [string][char]0x7F + 'bar')) False
+Assert-Equal '#39 controls: a tab, which the whitespace rule already refused' (Test-HostNameSyntax ('foo' + [string][char]9 + 'bar')) False
 
 # What concludes follows the weights; what describes the page follows the rows on the page. Round 8 of PR #37 found
 # the first draft of that sentence saying "every predicate that reads the result set", which would have taken the

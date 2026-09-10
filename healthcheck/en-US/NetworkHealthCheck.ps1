@@ -886,6 +886,11 @@ function Test-HostNameSyntax {
     # A delimiter belongs to a URI, not to a name: 'http://example.com' has labels of a legal length and no
     # hyphen at an edge, so the structural rules below would say yes to it (round 7). A colon is allowed only
     # when the value is an IP address, which is how fe80::1 stays a target and host:80 does not.
+    # A control character is not a delimiter and not whitespace, so nothing above or below catches it: an
+    # embedded NUL from a JSON \u0000 reached Dns.GetHostAddressesAsync and Ping.Send, and both came back with
+    # a SocketException - the same exception a name that genuinely does not resolve produces, so the run
+    # recorded it as a measurement (PR #41, round 21). No host name has ever contained one.
+    if ($name -match '[\x00-\x1F\x7F]') { return $false }
     if ($name -match '\s') { return $false }
     if ($name -match '[/\\?#@]') { return $false }
     if ($name.Contains(":")) {

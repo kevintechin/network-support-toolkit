@@ -861,6 +861,10 @@ function Test-HostNameSyntax {
     # 分隔符號屬於 URI，不屬於名稱：'http://example.com' 的標籤長度合法、邊緣也沒有連字號，下方的
     # 結構規則會讓它通過（第 7 輪）。冒號只有在值是 IP 位址時才允許，fe80::1 因此仍是目標，
     # 而 host:80 不是。
+    # 控制字元不是分隔符號，也不是空白，所以上下都沒有人會攔它：JSON 的 \u0000 寫進來的 NUL
+    # 會一路送到 Dns.GetHostAddressesAsync 與 Ping.Send，兩者都回一個 SocketException —— 跟真的解析不到
+    # 的名稱同一種例外，於是執行把它記成了量測（PR #41，第 21 輪）。主機名稱從來不會含有控制字元。
+    if ($name -match '[\x00-\x1F\x7F]') { return $false }
     if ($name -match '\s') { return $false }
     if ($name -match '[/\\?#@]') { return $false }
     if ($name.Contains(":")) {
