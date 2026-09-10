@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -899,6 +899,101 @@ Assert-Equal '#39 notice: Get-ReportNoticeFlags does too, so a badge keeps its e
 # The marking is opt-in, and that is a property of Add-CheckResult itself: a switch, defaulting to unmarked.
 Assert-Equal '#39 marking: the row carries the field' ((Get-FunctionBody 'Add-CheckResult') -match 'Weightless  = \[bool\]\$Weightless') True
 Assert-Equal '#39 marking: and it is a switch, so a row is weighted unless it is named' ((Get-FunctionBody 'Add-CheckResult') -match '\[switch\]\$Weightless') True
+
+
+# backlog #59: the route selection a ping row names. The stub stands where Find-NetRoute stands, so what runs above
+# it is the shipped selector and the shipped formatter. Every assertion here is language-independent by design - the
+# selector returns data rather than sentences, and the formatter is checked on the values it interpolates and on the
+# shape it produces, which is the same rule the error-cause cases above follow.
+$script:RoutePlan = @()
+$script:RouteCalls = 0
+function Find-NetRoute {
+    [CmdletBinding()]
+    param([string]$RemoteIPAddress)
+    $index = $script:RouteCalls
+    $script:RouteCalls++
+    $outcome = ''
+    if ($index -lt $script:RoutePlan.Count) { $outcome = [string]$script:RoutePlan[$index] }
+    if ($outcome -eq 'throw') { throw "route lookup failed" }
+    if ($outcome -eq 'none') { return @() }
+    # Two objects come back and only one of them carries an address. The order here is deliberately the OPPOSITE of
+    # the reference machine's, so a selector that trusted the first object instead of the one with an IPAddress
+    # fails this case rather than passing it by luck.
+    $parts = $outcome.Split('|')
+    return @(
+        [pscustomobject]@{ IPAddress = ''; InterfaceAlias = $parts[1]; NextHop = '192.168.1.1'; DestinationPrefix = '0.0.0.0/0' },
+        [pscustomobject]@{ IPAddress = $parts[0]; InterfaceAlias = $parts[1] }
+    )
+}
+function Reset-RouteStub($plan) { $script:RoutePlan = @($plan); $script:RouteCalls = 0 }
+
+Reset-RouteStub @('192.168.1.106|Wi-Fi')
+$routeResolved = Get-RouteSelection -Target '1.1.1.1'
+Assert-Equal 'route #59: resolved' $routeResolved.Resolved True
+Assert-Equal 'route #59: source is read from the object that has one, not the first' $routeResolved.SourceAddress '192.168.1.106'
+Assert-Equal 'route #59: interface' $routeResolved.InterfaceAlias 'Wi-Fi'
+Assert-Equal 'route #59: resolved carries no reason' $routeResolved.Reason ''
+
+Reset-RouteStub @('none')
+$routeNone = Get-RouteSelection -Target '169.254.99.99'
+Assert-Equal 'route #59: no route -> unresolved' $routeNone.Resolved False
+Assert-Equal 'route #59: no route -> reason' $routeNone.Reason 'noroute'
+Assert-Equal 'route #59: no route -> no source' $routeNone.SourceAddress ''
+
+Reset-RouteStub @('throw')
+$routeError = Get-RouteSelection -Target '1.1.1.1'
+Assert-Equal 'route #59: lookup throws -> unresolved, not a failed row' $routeError.Resolved False
+Assert-Equal 'route #59: lookup throws -> reason' $routeError.Reason 'error'
+
+# The fourth shape: the cmdlet is absent. Get-Command is what the selector asks, so that is what is stubbed - and it
+# is removed immediately afterwards, because two other loaded helpers ask Get-Command for their own names.
+function Get-Command {
+    [CmdletBinding()]
+    param([Parameter(Position = 0)][string]$Name)
+    if ($Name -eq 'Find-NetRoute') { return $null }
+    return [pscustomobject]@{ Name = $Name }
+}
+$routeAbsent = Get-RouteSelection -Target '1.1.1.1'
+Remove-Item function:Get-Command -ErrorAction SilentlyContinue
+Assert-Equal 'route #59: cmdlet absent -> unresolved' $routeAbsent.Resolved False
+Assert-Equal 'route #59: cmdlet absent -> reason' $routeAbsent.Reason 'cmdlet'
+Assert-Equal 'route #59: Get-Command stub removed' ([bool](Get-Command Get-RouteSelection -ErrorAction SilentlyContinue)) True
+
+# The formatter. Values first, because they are the same in both languages.
+$selA = [pscustomobject]@{ Resolved = $true; Reason = ''; SourceAddress = '192.168.1.106'; InterfaceAlias = 'Wi-Fi' }
+$selB = [pscustomobject]@{ Resolved = $true; Reason = ''; SourceAddress = '10.0.0.5'; InterfaceAlias = 'Ethernet' }
+$selNone = [pscustomobject]@{ Resolved = $false; Reason = 'noroute'; SourceAddress = ''; InterfaceAlias = '' }
+$selCmdlet = [pscustomobject]@{ Resolved = $false; Reason = 'cmdlet'; SourceAddress = ''; InterfaceAlias = '' }
+$selErr = [pscustomobject]@{ Resolved = $false; Reason = 'error'; SourceAddress = ''; InterfaceAlias = '' }
+
+$sameText = Format-RouteSelection -Before $selA -After $selA
+Assert-Equal 'route #59: unchanged names the source' ($sameText -match '192\.168\.1\.106') True
+Assert-Equal 'route #59: unchanged names the interface' ($sameText -match 'Wi-Fi') True
+Assert-Equal 'route #59: unchanged does not name a second interface' ($sameText -match 'Ethernet') False
+
+$changedText = Format-RouteSelection -Before $selA -After $selB
+Assert-Equal 'route #59: changed names the address before' ($changedText -match '192\.168\.1\.106') True
+Assert-Equal 'route #59: changed names the address after' ($changedText -match '10\.0\.0\.5') True
+Assert-Equal 'route #59: changed names both interfaces' (($changedText -match 'Wi-Fi') -and ($changedText -match 'Ethernet')) True
+Assert-Equal 'route #59: changed is not the unchanged sentence' ($changedText -eq $sameText) False
+
+# A disagreement includes one side resolving where the other did not: that is still a change of which adapter was in
+# play, and the row has to say so rather than picking one of the two readings.
+$halfText = Format-RouteSelection -Before $selA -After $selNone
+$noneText = Format-RouteSelection -Before $selNone -After $selNone
+Assert-Equal 'route #59: resolved then unresolved is reported as a change' ($halfText -eq $noneText) False
+Assert-Equal 'route #59: resolved then unresolved still names the address it did get' ($halfText -match '192\.168\.1\.106') True
+# The rule this pins is the one #59's acceptance states and the code invents the shape for: a disagreement includes
+# one side resolving where the other did not, so the sentence has to carry BOTH readings rather than the first.
+Assert-Equal 'route #59: resolved then unresolved names both readings' (($halfText -match '192\.168\.1\.106') -and ($halfText.Contains((Get-RouteSelectionText $selNone)))) True
+Assert-Equal 'route #59: two identical failures are one sentence, not a change' ($noneText -match '192\.168\.1\.106') False
+
+# Each unavailable reason says which one it is, and the cmdlet case names the cmdlet in both languages because the
+# name is not translated.
+Assert-Equal 'route #59: cmdlet-absent text names Find-NetRoute' ((Format-RouteSelection -Before $selCmdlet -After $selCmdlet) -match 'Find-NetRoute') True
+$reasonTexts = @((Get-RouteSelectionText $selNone), (Get-RouteSelectionText $selCmdlet), (Get-RouteSelectionText $selErr), (Get-RouteSelectionText $null))
+Assert-Equal 'route #59: four unavailable reasons, four distinct sentences' (@($reasonTexts | Select-Object -Unique).Count) 4
+Assert-Equal 'route #59: a resolved side is not an unavailable sentence' ((Get-RouteSelectionText $selA) -eq (Get-RouteSelectionText $selNone)) False
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

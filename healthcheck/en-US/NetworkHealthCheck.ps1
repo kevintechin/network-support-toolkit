@@ -49,7 +49,7 @@ param(
 # - Traceability: exception type, message, and inner exceptions are stored in every
 #   report; script location and call stack go to the JSON report only (Diagnostics).
 
-$script:ToolVersion = "1.2.8"
+$script:ToolVersion = "1.2.9"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -1949,6 +1949,81 @@ function Test-ExpectedNetworkConfiguration {
 # -----------------------------------------------------------------------------
 # Active connectivity tests: ping, DNS, TCP, and HTTP/HTTPS with timeouts and fault isolation.
 # -----------------------------------------------------------------------------
+function Get-RouteSelection {
+    param([string]$Target)
+
+    # backlog #59: which adapter a ping left by. Find-NetRoute answers what the route table would choose at the
+    # moment it is asked, and Invoke-PingMeasurement then sends its probes unbound - so what this returns is a
+    # selection and never a record of the path the replies took. Test-PingTargets asks twice, before and after a
+    # target's probes, so that a route which changed during the test is reported rather than guessed; that is the
+    # before-and-after shape the adapter counters already use. Two objects come back, measured on the reference
+    # machine: the local address, which carries the source and the interface, and the route, which carries the next
+    # hop. The source is read from whichever object has an IPAddress rather than from the first, because the order
+    # is the cmdlet's to choose and not this tool's to rely on. Cost, measured: about 13 ms once the CIM subsystem
+    # is warm, and by the time a run reaches the ping checks the adapter checks have already paid the warm-up.
+    # Absence and failure are the datum being unavailable, never the row failing - closed item #5's shape.
+    if (-not (Get-Command Find-NetRoute -ErrorAction SilentlyContinue)) {
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "cmdlet"; SourceAddress = ""; InterfaceAlias = "" }
+    }
+
+    $found = @()
+    try {
+        $found = @(Find-NetRoute -RemoteIPAddress ([string]$Target) -ErrorAction SilentlyContinue)
+    }
+    catch {
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "error"; SourceAddress = ""; InterfaceAlias = "" }
+    }
+
+    $localAddress = @($found | Where-Object { -not [string]::IsNullOrWhiteSpace((ConvertTo-SafeString $_.IPAddress)) } | Select-Object -First 1)
+    if ($localAddress.Count -eq 0) {
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "noroute"; SourceAddress = ""; InterfaceAlias = "" }
+    }
+
+    return [pscustomobject][ordered]@{
+        Resolved       = $true
+        Reason         = ""
+        SourceAddress  = ConvertTo-SafeString $localAddress[0].IPAddress
+        InterfaceAlias = ConvertTo-SafeString $localAddress[0].InterfaceAlias
+    }
+}
+
+function Get-RouteSelectionText {
+    param([object]$Selection)
+
+    # One side of the pair, as the row says it. Every unavailable case names its own reason, because "unavailable"
+    # without one is the kind of field a reader has to guess at.
+    if ($null -eq $Selection) { return "unavailable (the route selection was not read)" }
+    if ($Selection.Resolved) { return ("source {0} via {1}" -f $Selection.SourceAddress, $Selection.InterfaceAlias) }
+    switch ([string]$Selection.Reason) {
+        "cmdlet"  { return "unavailable (Find-NetRoute is not available on this system)" }
+        "noroute" { return "unavailable (the route table returned no route for this target)" }
+        "error"   { return "unavailable (the route lookup failed)" }
+    }
+    return "unavailable (the route selection was not read)"
+}
+
+function Format-RouteSelection {
+    param([object]$Before, [object]$After)
+
+    # Three shapes out of the two lookups. Both resolved and equal is the ordinary line. Any disagreement between
+    # them is reported as a change - including one resolving where the other did not, because that is a disagreement
+    # about which adapter was in play and is exactly what this row exists to make visible. Two identical failures
+    # say why, once.
+    $beforeText = Get-RouteSelectionText $Before
+    $afterText = Get-RouteSelectionText $After
+
+    if ($null -ne $Before -and $null -ne $After -and $Before.Resolved -and $After.Resolved -and
+        $Before.SourceAddress -eq $After.SourceAddress -and $Before.InterfaceAlias -eq $After.InterfaceAlias) {
+        return ("Route selection: {0} - the route the table chooses for this target, looked up before and after the probes. The probes are not bound to it, so this is what was selected and not the path the replies took." -f $beforeText)
+    }
+
+    if ($beforeText -eq $afterText) {
+        return ("Route selection: {0}. This row cannot say which adapter the probes left by." -f $beforeText)
+    }
+
+    return ("Route selection changed during this test: {0} before the probes, {1} after them. The probes are not bound to either, so this row cannot say which of them carried them." -f $beforeText, $afterText)
+}
+
 function Invoke-PingMeasurement {
     param(
         [string]$Target,
@@ -2085,7 +2160,9 @@ function Test-PingTargets {
 
         foreach ($target in $targets) {
             try {
+                $routeBefore = Get-RouteSelection -Target ([string]$target)
                 $measurement = Invoke-PingMeasurement -Target ([string]$target) -Count $count -TimeoutMs $timeout
+                $routeAfter = Get-RouteSelection -Target ([string]$target)
                 $status = "PASS"
 
                 if ($measurement.Received -eq 0) {
@@ -2111,7 +2188,7 @@ function Test-PingTargets {
                 }
 
                 $message = "Target {0}: {1}% loss ({2}/{3} successful), {4}." -f $target, $measurement.LossPercent, $measurement.Received, $measurement.Sent, $latencyText
-                $details = (@($measurement.AttemptDetails) + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms." -f $count, $timeout) + ("Manual check: ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
+                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter) + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms; the route selection comes from Find-NetRoute -RemoteIPAddress {2}, read before and after the probes." -f $count, $timeout, $target) + ("Manual check: ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
                 if ($status -eq "INFO") {
                     $details += [Environment]::NewLine + "Informational: this optional target may simply block ICMP - see the Connectivity group for the authoritative internet verdict."
                 }

@@ -1,8 +1,8 @@
-﻿# NetworkHealthCheck Portable 1.2.8: Features, Design, Validation, and Limitations
+﻿# NetworkHealthCheck Portable 1.2.9: Features, Design, Validation, and Limitations
 
 ## 1. Purpose
 
-This document describes the features, architecture, decision rules, error handling, validation approach, known limitations, and source-comment strategy of the portable `NetworkHealthCheck` tool. It applies to version **1.2.8** and to both the Traditional Chinese and English packages. The executable logic is the same; user-visible text, default test names, and comment language are localized separately.
+This document describes the features, architecture, decision rules, error handling, validation approach, known limitations, and source-comment strategy of the portable `NetworkHealthCheck` tool. It applies to version **1.2.9** and to both the Traditional Chinese and English packages. The executable logic is the same; user-visible text, default test names, and comment language are localized separately.
 
 ## 2. Product scope
 
@@ -72,6 +72,8 @@ packet loss = (sent - received) / sent × 100%
 Average, minimum, and maximum latency use successful replies. The decision order is: no replies, critical loss, warning loss, critical average latency, then warning average latency. A severe condition on `Required=true` becomes `FAIL`. A completely silent optional target is normally `INFO`, because ICMP may be blocked.
 
 The default is four probes. With the default 20% critical-loss threshold, one lost reply equals 25% and is severe. Organizations that consider this too sensitive should increase `PingCount` or change thresholds.
+
+**Which adapter the probes left by (1.2.9, backlog #59).** Each ping row's details name the source address and the interface the route table selects for that target, read with `Find-NetRoute -RemoteIPAddress <target>` before and after that target's probes. It is a **selection, not an observation**: the lookup answers what the system would choose at the moment it is asked, and the probes are then sent unbound, so on a multi-homed machine — a dock, a Wi-Fi roam, a VPN coming up — the route can change between the two. The row therefore never claims the echoes used what the lookup returned. When the two lookups disagree — including one resolving where the other did not — the row reports the change and states that it cannot say which of them carried the probes. Where `Find-NetRoute` is absent, returns no route, or fails, the datum is reported as unavailable with its reason and the ping measurement is unaffected, which is the treatment every other NetTCPIP call in this tool gets. Binding a source, which is what would make this an observation rather than a selection, needs `ping.exe -S` and is deliberately not done.
 
 ### 4.5 DNS
 
