@@ -37,6 +37,7 @@ It is in the repository and not in the package, like [`application-control.md`](
 | 51 | A quality verdict can rest on a single packet, because the threshold is finer than the sample | tool |
 | 52 | The retransmission statistic cannot say whose traffic it measured | tool |
 | 53 | The campaign self-test keeps no record of what the driver did | tests |
+| 54 | The host-name predicate's character space is closed by example rather than by rule | tool / tests |
 
 The table is an index; each item's own paragraph below is the statement.
 
