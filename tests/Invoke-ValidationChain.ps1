@@ -799,6 +799,21 @@ try {
     Write-Host ('  steps: {0}; work dir: {1}' -f ($selected -join ', '), $WorkDir)
 
     if ($selected -contains 'parse') {
+        # Before anything is parsed: no file in tests\ carries a control byte other than its line ending or a
+        # tab. A regex escape that arrives as the character it names leaves a real one behind, every test still
+        # passes because the class means the same thing, and git then treats the file as binary and stops
+        # normalising it - which is how one line of PR #41 round 21 rewrote all 902 (round 21 again, after the
+        # same mistake had already been fixed once in the package). validate_release.py guards the package; this
+        # guards the harness.
+        Invoke-Case 'parse' 'no stray control bytes in tests\' {
+            $bad = @()
+            foreach ($file in @(Get-ChildItem -LiteralPath $PSScriptRoot -File -Recurse -Include *.ps1, *.py, *.md, *.cmd)) {
+                $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+                $found = @($bytes | Where-Object { $_ -lt 9 -or ($_ -gt 10 -and $_ -lt 13) -or ($_ -gt 13 -and $_ -lt 32) -or $_ -eq 127 } | Sort-Object -Unique)
+                if ($found.Count -gt 0) { $bad += ('{0}: {1}' -f $file.Name, (($found | ForEach-Object { '0x{0:X2}' -f $_ }) -join ', ')) }
+            }
+            @{ Passed = ($bad.Count -eq 0); Detail = $(if ($bad.Count -eq 0) { 'none' } else { $bad -join '; ' }) }
+        }
         foreach ($lang in $Languages) {
             Invoke-Case 'parse' $lang {
                 $r = Invoke-TestScript 'parse_check.ps1' @('-Path', (Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1'))) ('parse_' + $lang)

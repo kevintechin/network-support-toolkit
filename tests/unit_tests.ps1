@@ -877,7 +877,7 @@ Assert-Equal '#39 idn: a fullwidth colon becomes a port separator' (Test-HostNam
 Assert-Equal '#39 idn: an ideographic space becomes a space' (Test-HostNameSyntax ('foo' + [string][char]0x3000 + 'bar')) False
 Assert-Equal '#39 idn: a fullwidth at sign becomes a user separator' (Test-HostNameSyntax ('user' + [string][char]0xFF20 + 'example.com')) False
 Assert-Equal '#39 idn: a fullwidth question mark becomes a query separator' (Test-HostNameSyntax ('foo' + [string][char]0xFF1F + 'bar')) False
-# Round 21: control characters, which are neither delimiters nor whitespace. A JSON   reached Dns.Send and
+# Round 21: control characters, which are neither delimiters nor whitespace. A JSON \u0000 reached Dns.Send and
 # came back as a SocketException - the same exception an unresolvable name gives, so it was measured, not reported.
 Assert-Equal '#39 controls: an embedded NUL' (Test-HostNameSyntax ('foo' + [string][char]0 + 'bar')) False
 Assert-Equal '#39 controls: a start-of-heading' (Test-HostNameSyntax ('foo' + [string][char]1 + 'bar')) False
