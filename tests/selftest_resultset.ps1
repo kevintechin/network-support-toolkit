@@ -21,7 +21,7 @@ $ErrorActionPreference = 'Stop'
 $runner = Join-Path $PSScriptRoot 'Invoke-ValidationChain.ps1'
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($runner, [ref]$tokens, [ref]$errors)
-foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Read-Config', 'Get-Count', 'Test-TrueFlag', 'Get-CimOrWmiInstance', 'Add-PrimaryFacts', 'Get-MachineFacts', 'Get-StandardRuleCount', 'Test-ResultSet', 'ConvertTo-FactsKey', 'Test-ResultSetForRun', 'Get-Value', 'Get-ConfigRowCount', 'Get-TargetRowCount', 'Test-ConfiguredTcpTarget', 'Test-ConfiguredHttpTarget', 'Test-ConfiguredPingAddress', 'Test-UsableIPv4', 'Test-UsableIPAddress', 'Test-UsableCidr', 'Test-WholeNumberInRange') }, $true)) { Invoke-Expression $f.Extent.Text }
+foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Read-Config', 'Get-Count', 'Test-TrueFlag', 'Get-CimOrWmiInstance', 'Add-PrimaryFacts', 'Get-MachineFacts', 'Get-StandardRuleCount', 'Test-ResultSet', 'ConvertTo-FactsKey', 'Test-ResultSetForRun', 'Get-Value', 'Get-ConfigRowCount', 'Get-TargetRowCount', 'Test-ConfiguredTcpTarget', 'Test-ConfiguredHttpTarget', 'Test-ConfiguredPingAddress', 'Test-UsableIPv4', 'Test-UsableIPAddress', 'Test-UsableCidr', 'Test-WholeNumberInRange', 'Test-ConfiguredDnsTarget', 'Test-ConfiguredDnsRequired', 'Get-UnusablePingExtraRows') }, $true)) { Invoke-Expression $f.Extent.Text }
 $machine = Get-MachineFacts
 "machine: $($machine.ConnectedAdapters) connected adapter(s) with an address, gateway(s) $(@($machine.Gateways) -join ', '), source $($machine.Source), TCP counters v4=$($machine.TcpCounters.TCPv4) v6=$($machine.TcpCounters.TCPv6)"
 $cfg = Read-Config $ConfigDir
@@ -180,5 +180,32 @@ if ($run.Note -ne '') { $script:fails++; "[FAIL] the pre-launch match must carry
 $run = Test-ResultSetForRun (ConvertTo-TwoAdapters (New-Fixture)) $cfg @{} $facts $twoAdapters; Assert-Case 'an adapter dropped during the run, report from after the drop' @($run.Mismatches) $true ''
 if ($run.Note -like '*matches the post-run facts*') { $script:passes++; "[PASS] the post-run match is noted -> '$($run.Note)'" } else { $script:fails++; "[FAIL] the post-run match must be noted -> '$($run.Note)'" }
 $run = Test-ResultSetForRun (ConvertTo-TwoAdapters (New-Fixture)) $cfg @{} $facts $facts; Assert-Case 'two adapter rows with three adapters throughout' @($run.Mismatches) $false 'adapter: 2 row(s), expected one per connected adapter with an address (3)'
+
+# PR #41, round 2: the row-count oracle's own predicates, on configurations the packaged one does not have. Each case
+# states what the product would write and asks the oracle for the same number; the packaged configuration exercises
+# none of these paths, so passing 42 cases against it proved nothing about them.
+function New-BrokenConfig { return (Read-Config $ConfigDir) }
+$c = New-BrokenConfig; $c.Expected.AllowedIPv4Addresses = @('not-an-ip')
+Assert-Case 'config rows: an invalid standard alone is the validation row' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+$c = New-BrokenConfig; $c.Expected.AllowedIPv4Addresses = @('not-an-ip'); $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: a standard and a target are two rows' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+$c = New-BrokenConfig; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: a target alone suppresses the PASS row, leaving one' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+$c = New-BrokenConfig; $c.Thresholds.AdapterErrorWarningDelta = 'bad'; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: an adapter threshold and a target are two rows' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+$c = New-BrokenConfig; $c.Thresholds.LatencyWarningMs = 900; $c.Thresholds.LatencyCriticalMs = 100; $c.Checks.WifiRf = 'yes'
+# Two rows, not three: with no invalid standard the validation row is not written at all, because the PASS branch is
+# suppressed by any input problem. The first draft of this case expected three and the oracle was right.
+Assert-Case 'config rows: thresholds and options are two rows, with no validation row between them' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+# A bare string in DnsNames is the documented short form: one lookup row, not a notice and a did-not-run row.
+$c = New-BrokenConfig; $c.Tests.DnsNames = @('www.example.com')
+Assert-Case 'dns rows: a bare string is a usable target' @($(if ((Get-TargetRowCount $c.Tests.DnsNames { param($t) Test-ConfiguredDnsTarget $t } $true) -eq 1) { @() } else { @('dns rows wrong') })) $true ''
+Assert-Case 'config rows: and it is not counted as unusable' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+# A required ping address that cannot be used adds the weighted row beside its notice.
+$c = New-BrokenConfig; $c.Tests.PingTargets = @([pscustomobject]@{ Name = 'Broken'; Address = 'http://example.com'; Required = $true })
+Assert-Case 'ping rows: a required unusable address adds its second row' @($(if ((Get-UnusablePingExtraRows $c) -eq 1) { @() } else { @('ping extra rows wrong') })) $true ''
+$c.Tests.PingTargets = @([pscustomobject]@{ Name = 'Broken'; Address = 'http://example.com'; Required = $false })
+Assert-Case 'ping rows: an optional one does not' @($(if ((Get-UnusablePingExtraRows $c) -eq 0) { @() } else { @('ping extra rows wrong') })) $true ''
+
 "Summary: $passes passed, $fails failed"
 exit $fails

@@ -176,6 +176,33 @@ function Test-ConfiguredTcpTarget($Target) {
     [void][int]::TryParse([string](Get-Value $Target 'Port'), [ref]$port)
     return (-not [string]::IsNullOrWhiteSpace($hostName)) -and $port -ge 1 -and $port -le 65535
 }
+function Get-UnusablePingExtraRows($Config) {
+    # The second row a required, unusable ping address adds. The address itself is already counted once by the
+    # expression above, which counts every configured entry.
+    $rows = 0
+    foreach ($target in @($Config.Tests.PingTargets)) {
+        if ($null -eq $target) { continue }
+        $address = [string](Get-Value $target 'Address')
+        if (Test-ConfiguredPingAddress $address) { continue }
+        $required = $false
+        $value = Get-Value $target 'Required'
+        if ($null -ne $value) { $required = [bool]$value }
+        if ($required) { $rows += 1 }
+    }
+    return $rows
+}
+function Test-ConfiguredDnsTarget($Target) {
+    # A bare string is the documented short form and is treated as required; an object carries its name under Host.
+    # Asking a string for a Host property called every one of them unusable (PR #41, round 2).
+    if ($Target -is [string]) { return (-not [string]::IsNullOrWhiteSpace([string]$Target)) }
+    return (-not [string]::IsNullOrWhiteSpace([string](Get-Value $Target 'Host')))
+}
+function Test-ConfiguredDnsRequired($Target) {
+    if ($Target -is [string]) { return $true }
+    $value = Get-Value $Target 'Required'
+    if ($null -eq $value) { return $true }
+    return [bool]$value
+}
 function Test-ConfiguredHttpTarget($Target) {
     # An absolute http:// or https:// address, which is what the check now requires before it sends anything.
     $uri = $null
@@ -203,8 +230,13 @@ function Get-TargetRowCount($Targets, [scriptblock]$IsUsable, [bool]$RequiredByD
         $rows += 1
         if (-not (& $IsUsable $target)) {
             $required = $RequiredByDefault
-            $value = Get-Value $target 'Required'
-            if ($null -ne $value) { $required = [bool]$value }
+            if ($target -is [string]) {
+                $required = $RequiredByDefault
+            }
+            else {
+                $value = Get-Value $target 'Required'
+                if ($null -ne $value) { $required = [bool]$value }
+            }
             if ($required) { $rows += 1 }
         }
     }
@@ -245,7 +277,7 @@ function Get-ConfigRowCount($Config) {
     # validation row at all, and threshold and option problems together produce two rows rather than one. The four
     # predicates are reproduced here in the order the script applies them.
     $standards = 0
-    $expected = $Config.ExpectedNetwork
+    $expected = $Config.Expected
     foreach ($ip in @(Get-Value $expected 'AllowedIPv4Addresses')) { if (-not (Test-UsableIPv4 $ip)) { $standards += 1 } }
     foreach ($cidr in @(Get-Value $expected 'AllowedIPv4Cidrs')) { if (-not (Test-UsableCidr $cidr)) { $standards += 1 } }
     foreach ($prefix in @(Get-Value $expected 'AllowedPrefixLengths')) { if (-not (Test-WholeNumberInRange $prefix 0 32)) { $standards += 1 } }
@@ -254,30 +286,36 @@ function Get-ConfigRowCount($Config) {
     $dhcp = Get-Value $expected 'DhcpEnabled'
     if ($null -ne $dhcp -and -not ($dhcp -is [bool])) { $standards += 1 }
 
+    # Every threshold the script validates, with the two rules it applies: a value that is not a number, and a count
+    # threshold that is not a whole number. The adapter deltas are thresholds too, and the first draft of this oracle
+    # left all four out (PR #41, round 2).
     $thresholds = 0
     foreach ($name in @('PingCount', 'PingTimeoutMs', 'DnsTimeoutMs', 'TcpTimeoutMs', 'HttpTimeoutMs', 'RetransmissionSampleSeconds')) {
         $value = Get-Value $Config.Tests $name
         if ($null -ne $value -and -not (Test-WholeNumberInRange $value 1 600000)) { $thresholds += 1 }
     }
     $limits = $Config.Thresholds
-    foreach ($name in @('PacketLossWarningPercent', 'PacketLossCriticalPercent', 'LatencyWarningMs', 'LatencyCriticalMs', 'TcpRetransmissionWarningPercent', 'TcpRetransmissionCriticalPercent', 'TcpRetransmissionCriticalCount', 'MinimumTcpSegmentsForRate')) {
+    $countThresholds = @('TcpRetransmissionCriticalCount', 'MinimumTcpSegmentsForRate', 'AdapterErrorWarningDelta', 'AdapterErrorCriticalDelta', 'AdapterDiscardWarningDelta', 'AdapterDiscardCriticalDelta')
+    foreach ($name in @('PacketLossWarningPercent', 'PacketLossCriticalPercent', 'LatencyWarningMs', 'LatencyCriticalMs', 'TcpRetransmissionWarningPercent', 'TcpRetransmissionCriticalPercent') + $countThresholds) {
         $value = Get-Value $limits $name
         if ($null -eq $value) { continue }
-        if ($value -is [bool]) { $thresholds += 1; continue }
         $number = 0.0
-        if (-not [double]::TryParse([string]$value, [ref]$number)) { $thresholds += 1 }
+        if ($value -is [bool] -or -not [double]::TryParse([string]$value, [ref]$number)) { $thresholds += 1; continue }
+        if (($countThresholds -contains $name) -and [math]::Floor($number) -ne $number) { $thresholds += 1 }
     }
-    foreach ($pair in @(@('PacketLossWarningPercent', 'PacketLossCriticalPercent'), @('LatencyWarningMs', 'LatencyCriticalMs'), @('TcpRetransmissionWarningPercent', 'TcpRetransmissionCriticalPercent'))) {
-        $warning = 0.0; $critical = 0.0
-        if ([double]::TryParse([string](Get-Value $limits $pair[0]), [ref]$warning) -and [double]::TryParse([string](Get-Value $limits $pair[1]), [ref]$critical)) {
-            if ($warning -gt $critical) { $thresholds += 1 }
-        }
+    # A warning threshold below zero, or a critical one below its warning, is one row per pair.
+    foreach ($pair in @(@('PacketLossWarningPercent', 'PacketLossCriticalPercent', 5, 20), @('LatencyWarningMs', 'LatencyCriticalMs', 100, 250), @('TcpRetransmissionWarningPercent', 'TcpRetransmissionCriticalPercent', 2, 5))) {
+        $warning = [double]$pair[2]; $critical = [double]$pair[3]
+        $parsed = 0.0
+        if ([double]::TryParse([string](Get-Value $limits $pair[0]), [ref]$parsed)) { $warning = $parsed }
+        if ([double]::TryParse([string](Get-Value $limits $pair[1]), [ref]$parsed)) { $critical = $parsed }
+        if ($warning -lt 0 -or $critical -lt $warning) { $thresholds += 1 }
     }
 
     $badTargets = 0
     foreach ($target in @($Config.Tests.TcpTargets)) { if ($null -ne $target -and -not (Test-ConfiguredTcpTarget $target)) { $badTargets += 1 } }
     foreach ($target in @($Config.Tests.HttpTargets)) { if ($null -ne $target -and -not (Test-ConfiguredHttpTarget $target)) { $badTargets += 1 } }
-    foreach ($target in @($Config.Tests.DnsNames)) { if ($null -ne $target -and [string]::IsNullOrWhiteSpace([string](Get-Value $target 'Host'))) { $badTargets += 1 } }
+    foreach ($target in @($Config.Tests.DnsNames)) { if ($null -ne $target -and -not (Test-ConfiguredDnsTarget $target)) { $badTargets += 1 } }
     foreach ($target in @($Config.Tests.PingTargets)) { if ($null -ne $target -and -not (Test-ConfiguredPingAddress ([string](Get-Value $target 'Address')))) { $badTargets += 1 } }
 
     $options = 0
@@ -420,7 +458,11 @@ function Test-ResultSet {
     # One connectivity-group row per group named on a TCP or HTTP target or listed in RequiredConnectivityGroups (a
     # required group without targets gets its own "no executable items" row), the way Test-ConnectivityTargets writes them.
     $groupKeys = @{}
-    foreach ($t in @(@($Config.Tests.TcpTargets) + @($Config.Tests.HttpTargets))) { $g = [string]$t.Group; if (-not [string]::IsNullOrWhiteSpace($g)) { $groupKeys[$g] = $true } }
+    # Only a target the run can test joins its group: one refused before the request is sent leaves no group result,
+    # so a group named by nothing else has no row at all (PR #41, round 2). A group listed in
+    # RequiredConnectivityGroups still gets its own row, which the line below adds.
+    foreach ($t in @($Config.Tests.TcpTargets)) { if ($null -ne $t -and (Test-ConfiguredTcpTarget $t)) { $g = [string]$t.Group; if (-not [string]::IsNullOrWhiteSpace($g)) { $groupKeys[$g] = $true } } }
+    foreach ($t in @($Config.Tests.HttpTargets)) { if ($null -ne $t -and (Test-ConfiguredHttpTarget $t)) { $g = [string]$t.Group; if (-not [string]::IsNullOrWhiteSpace($g)) { $groupKeys[$g] = $true } } }
     $requiredGroups = @(@($Config.Tests.RequiredConnectivityGroups) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
     $groups = @(@(@($groupKeys.Keys) + $requiredGroups) | Select-Object -Unique)
     $rules = Get-StandardRuleCount $Config
@@ -437,11 +479,13 @@ function Test-ResultSet {
         'expected-standard' = $(if ($rules -eq 0 -or $connected -eq 0) { 1 } else { $rules })
         'ping-gateway' = $gatewayTargets * [math]::Max(1, $gateways.Count)   # one row per resolved gateway, or one "no target" row
         # A literal target is one row; AUTO_DNS is one row per DNS server of the primary adapters, or one "no target" row.
-        'ping-target' = ($pingTargets.Count - $gatewayTargets - $dnsTargets) + $dnsTargets * [math]::Max(1, $dnsServerCount) + (Get-Count $o.ExtraTargets.Ping)
+        # A ping target that cannot be used costs the same two rows as the other families when it is required
+        # (PR #41, round 2): the weightless notice, and the weighted row saying the check did not run.
+        'ping-target' = ($pingTargets.Count - $gatewayTargets - $dnsTargets) + $dnsTargets * [math]::Max(1, $dnsServerCount) + (Get-Count $o.ExtraTargets.Ping) + (Get-UnusablePingExtraRows $Config)
         # A target the run cannot test is reported where its result belonged instead of vanishing, and a required one
         # adds the weighted row saying the check did not run (backlog #39); a dropped extra target - one the parser
         # refused, so it is in RawTargets and not in ExtraTargets - leaves a row of its own in the same section.
-        'dns' = (Get-TargetRowCount $Config.Tests.DnsNames { param($t) -not [string]::IsNullOrWhiteSpace([string](Get-Value $t 'Host')) } $true) + (Get-Count $o.ExtraTargets.Dns)
+        'dns' = (Get-TargetRowCount $Config.Tests.DnsNames { param($t) Test-ConfiguredDnsTarget $t } $true) + (Get-Count $o.ExtraTargets.Dns)
         'tcp' = (Get-TargetRowCount $Config.Tests.TcpTargets { param($t) Test-ConfiguredTcpTarget $t } $false) + (Get-Count $o.ExtraTargets.Tcp) + ((Get-Count $o.RawTargets.Tcp) - (Get-Count $o.ExtraTargets.Tcp))
         'http' = (Get-TargetRowCount $Config.Tests.HttpTargets { param($t) Test-ConfiguredHttpTarget $t } $false) + (Get-Count $o.ExtraTargets.Http)
         'connectivity-group' = $groups.Count
