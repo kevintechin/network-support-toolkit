@@ -836,6 +836,22 @@ Assert-Equal '#39 dropped rows: exactly once' (@($mainBody.FindAll({ param($n) $
 # And not inside a step's action, where a throw in the step would take the row with it.
 Assert-Equal '#39 dropped rows: not inside a check step' (@($stepCalls | Where-Object { $_.Extent.Text -match 'Add-DroppedTargetResults' }).Count) 0
 
+# Test-HostNameSyntax trims before it judges, so ' example.com ' is a usable name - and until PR #41 round 13 the
+# checks then handed the untrimmed value to Ping.Send, GetHostAddressesAsync and TcpClient.BeginConnect, which
+# reject it. The rule and the run have to see the same string, or the classification this release is about is
+# decided on one value and carried out on another. The HTTP family needs nothing: Uri.TryCreate and
+# HttpWebRequest.Create both trim, so its two sides already agree.
+$scriptText = $scriptAst.Extent.Text
+$hostReads = @([regex]::Matches($scriptText, 'ConvertTo-SafeString \(Get-PropertyValue \$\w+ "(?:Host|Address)" ""\)'))
+$trimmedReads = @([regex]::Matches($scriptText, '\(ConvertTo-SafeString \(Get-PropertyValue \$\w+ "(?:Host|Address)" ""\)\)\.Trim\(\)'))
+# Seven, not six: the count is asserted so that a new read site has to be looked at rather than quietly joining
+# the untrimmed ones - which is how the traceroute target was found, a site the review did not name.
+Assert-Equal '#39 host values: the script reads seven of them' $hostReads.Count 7
+Assert-Equal '#39 host values: and every one is trimmed' $trimmedReads.Count $hostReads.Count
+Assert-Equal '#39 host values: the bare-string DNS form too' (@([regex]::Matches($scriptText, '\$hostName = \(\[string\]\$dns\w+\)\.Trim\(\)')).Count) 2
+Assert-Equal '#39 host values: and none of it is read raw' ($scriptText -match '\$hostName = \[string\]\$dns') False
+Assert-Equal '#39 host values: a padded name is usable, which is why the run must trim it' (Test-HostNameSyntax ' example.com ') True
+
 # What concludes follows the weights; what describes the page follows the rows on the page. Round 8 of PR #37 found
 # the first draft of that sentence saying "every predicate that reads the result set", which would have taken the
 # Unable flag with it - the flag whose only job is to explain a badge the weightless row still carries.

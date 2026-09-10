@@ -1556,7 +1556,7 @@ function Test-ConfigurationSemantics {
     foreach ($target in @($tests.TcpTargets)) {
         if ($null -eq $target) { continue }
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "TCP target")
-        $hostName = ConvertTo-SafeString (Get-PropertyValue $target "Host" "")
+        $hostName = (ConvertTo-SafeString (Get-PropertyValue $target "Host" "")).Trim()
         $port = ConvertTo-IntSafe (Get-PropertyValue $target "Port" 0) 0
         if (-not (Test-HostNameSyntax $hostName) -or $port -lt 1 -or $port -gt 65535) {
             [void]$inputErrors.Add("TcpTargets 的「$name」主機或連接埠無效：Host=$hostName, Port=$port")
@@ -1575,7 +1575,7 @@ function Test-ConfigurationSemantics {
     foreach ($target in @($tests.PingTargets)) {
         if ($null -eq $target) { continue }
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "Ping 目標")
-        $address = ConvertTo-SafeString (Get-PropertyValue $target "Address" "")
+        $address = (ConvertTo-SafeString (Get-PropertyValue $target "Address" "")).Trim()
         if (-not (Test-PingTargetSyntax $address)) {
             [void]$inputErrors.Add("PingTargets「$name」的位址無法當成 ping 目標：$address")
         }
@@ -1584,10 +1584,10 @@ function Test-ConfigurationSemantics {
     foreach ($dnsTarget in @($tests.DnsNames)) {
         if ($null -eq $dnsTarget) { continue }
         if ($dnsTarget -is [string]) {
-            $hostName = [string]$dnsTarget
+            $hostName = ([string]$dnsTarget).Trim()
         }
         else {
-            $hostName = ConvertTo-SafeString (Get-PropertyValue $dnsTarget "Host" "")
+            $hostName = (ConvertTo-SafeString (Get-PropertyValue $dnsTarget "Host" "")).Trim()
         }
         if ([string]::IsNullOrWhiteSpace($hostName)) {
             [void]$inputErrors.Add("DnsNames 含有空白的 Host。")
@@ -2009,7 +2009,7 @@ function Test-PingTargets {
         if ($null -eq $targetConfig) { continue }
 
         $name = ConvertTo-SafeString (Get-PropertyValue $targetConfig "Name" "Ping")
-        $address = ConvertTo-SafeString (Get-PropertyValue $targetConfig "Address" "")
+        $address = (ConvertTo-SafeString (Get-PropertyValue $targetConfig "Address" "")).Trim()
         $pingTag = "ping-target"
         if ($address -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
         $required = [bool](Get-PropertyValue $targetConfig "Required" $false)
@@ -2111,12 +2111,12 @@ function Test-DnsNames {
 
         if ($dnsConfig -is [string]) {
             $name = "DNS 名稱解析"
-            $hostName = [string]$dnsConfig
+            $hostName = ([string]$dnsConfig).Trim()
             $required = $true
         }
         else {
             $name = ConvertTo-SafeString (Get-PropertyValue $dnsConfig "Name" "DNS 名稱解析")
-            $hostName = ConvertTo-SafeString (Get-PropertyValue $dnsConfig "Host" "")
+            $hostName = (ConvertTo-SafeString (Get-PropertyValue $dnsConfig "Host" "")).Trim()
             $required = [bool](Get-PropertyValue $dnsConfig "Required" $true)
         }
 
@@ -2337,7 +2337,7 @@ function Test-ConnectivityTargets {
         if ($null -eq $target) { continue }
 
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "TCP 連線")
-        $hostName = ConvertTo-SafeString (Get-PropertyValue $target "Host" "")
+        $hostName = (ConvertTo-SafeString (Get-PropertyValue $target "Host" "")).Trim()
         $port = ConvertTo-IntSafe (Get-PropertyValue $target "Port" 0) 0
         $required = [bool](Get-PropertyValue $target "Required" $false)
         $group = ConvertTo-SafeString (Get-PropertyValue $target "Group" "")
@@ -2899,7 +2899,7 @@ function Add-TracerouteResult {
     if ($maxHops -lt 1 -or $maxHops -gt 10) { $maxHops = 3 }
     $target = "1.1.1.1"
     foreach ($candidate in @($script:Config.Tests.PingTargets)) {
-        $address = ConvertTo-SafeString (Get-PropertyValue $candidate "Address" "")
+        $address = (ConvertTo-SafeString (Get-PropertyValue $candidate "Address" "")).Trim()
         if (-not [string]::IsNullOrWhiteSpace($address) -and $address -ne "AUTO_GATEWAY" -and $address -ne "AUTO_DNS") { $target = $address; break }
     }
 

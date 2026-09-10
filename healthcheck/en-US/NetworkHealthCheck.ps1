@@ -1587,7 +1587,7 @@ function Test-ConfigurationSemantics {
     foreach ($target in @($tests.TcpTargets)) {
         if ($null -eq $target) { continue }
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "TCP target")
-        $hostName = ConvertTo-SafeString (Get-PropertyValue $target "Host" "")
+        $hostName = (ConvertTo-SafeString (Get-PropertyValue $target "Host" "")).Trim()
         $port = ConvertTo-IntSafe (Get-PropertyValue $target "Port" 0) 0
         if (-not (Test-HostNameSyntax $hostName) -or $port -lt 1 -or $port -gt 65535) {
             [void]$inputErrors.Add("The host or port for TcpTargets '$name' is invalid: Host=$hostName, Port=$port")
@@ -1606,7 +1606,7 @@ function Test-ConfigurationSemantics {
     foreach ($target in @($tests.PingTargets)) {
         if ($null -eq $target) { continue }
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "Ping target")
-        $address = ConvertTo-SafeString (Get-PropertyValue $target "Address" "")
+        $address = (ConvertTo-SafeString (Get-PropertyValue $target "Address" "")).Trim()
         if (-not (Test-PingTargetSyntax $address)) {
             [void]$inputErrors.Add("The address for PingTargets '$name' cannot be used as a ping target: $address")
         }
@@ -1615,10 +1615,10 @@ function Test-ConfigurationSemantics {
     foreach ($dnsTarget in @($tests.DnsNames)) {
         if ($null -eq $dnsTarget) { continue }
         if ($dnsTarget -is [string]) {
-            $hostName = [string]$dnsTarget
+            $hostName = ([string]$dnsTarget).Trim()
         }
         else {
-            $hostName = ConvertTo-SafeString (Get-PropertyValue $dnsTarget "Host" "")
+            $hostName = (ConvertTo-SafeString (Get-PropertyValue $dnsTarget "Host" "")).Trim()
         }
         if ([string]::IsNullOrWhiteSpace($hostName)) {
             [void]$inputErrors.Add("DnsNames contains a blank Host value.")
@@ -2040,7 +2040,7 @@ function Test-PingTargets {
         if ($null -eq $targetConfig) { continue }
 
         $name = ConvertTo-SafeString (Get-PropertyValue $targetConfig "Name" "Ping")
-        $address = ConvertTo-SafeString (Get-PropertyValue $targetConfig "Address" "")
+        $address = (ConvertTo-SafeString (Get-PropertyValue $targetConfig "Address" "")).Trim()
         $pingTag = "ping-target"
         if ($address -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
         $required = [bool](Get-PropertyValue $targetConfig "Required" $false)
@@ -2143,12 +2143,12 @@ function Test-DnsNames {
 
         if ($dnsConfig -is [string]) {
             $name = "DNS Name Resolution"
-            $hostName = [string]$dnsConfig
+            $hostName = ([string]$dnsConfig).Trim()
             $required = $true
         }
         else {
             $name = ConvertTo-SafeString (Get-PropertyValue $dnsConfig "Name" "DNS Name Resolution")
-            $hostName = ConvertTo-SafeString (Get-PropertyValue $dnsConfig "Host" "")
+            $hostName = (ConvertTo-SafeString (Get-PropertyValue $dnsConfig "Host" "")).Trim()
             $required = [bool](Get-PropertyValue $dnsConfig "Required" $true)
         }
 
@@ -2370,7 +2370,7 @@ function Test-ConnectivityTargets {
         if ($null -eq $target) { continue }
 
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "TCP Connection")
-        $hostName = ConvertTo-SafeString (Get-PropertyValue $target "Host" "")
+        $hostName = (ConvertTo-SafeString (Get-PropertyValue $target "Host" "")).Trim()
         $port = ConvertTo-IntSafe (Get-PropertyValue $target "Port" 0) 0
         $required = [bool](Get-PropertyValue $target "Required" $false)
         $group = ConvertTo-SafeString (Get-PropertyValue $target "Group" "")
@@ -2935,7 +2935,7 @@ function Add-TracerouteResult {
     if ($maxHops -lt 1 -or $maxHops -gt 10) { $maxHops = 3 }
     $target = "1.1.1.1"
     foreach ($candidate in @($script:Config.Tests.PingTargets)) {
-        $address = ConvertTo-SafeString (Get-PropertyValue $candidate "Address" "")
+        $address = (ConvertTo-SafeString (Get-PropertyValue $candidate "Address" "")).Trim()
         if (-not [string]::IsNullOrWhiteSpace($address) -and $address -ne "AUTO_GATEWAY" -and $address -ne "AUTO_DNS") { $target = $address; break }
     }
 
