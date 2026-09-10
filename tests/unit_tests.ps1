@@ -915,6 +915,12 @@ function Find-NetRoute {
     $outcome = ''
     if ($index -lt $script:RoutePlan.Count) { $outcome = [string]$script:RoutePlan[$index] }
     if ($outcome -eq 'throw') { throw "route lookup failed" }
+    # The cmdlet reports both 'no route' and 'that is not an address' as NON-terminating errors, so the stub emits
+    # them the way it does - a Write-Error whose id the selector reads. Measured ids, 2026-09-11: 1231 for an
+    # unroutable address, 87 for a name. 'none' is the fourth way out: nothing back and nothing said.
+    if ($outcome -eq 'err1231') { Write-Error -Message 'The network location cannot be reached.' -ErrorId 'Windows System Error 1231'; return @() }
+    if ($outcome -eq 'err87') { Write-Error -Message 'The parameter is incorrect.' -ErrorId 'Windows System Error 87'; return @() }
+    if ($outcome -eq 'errother') { Write-Error -Message 'The CIM provider fell over.' -ErrorId 'Windows System Error 1722'; return @() }
     if ($outcome -eq 'none') { return @() }
     # Two objects come back and only one of them carries an address. The order here is deliberately the OPPOSITE of
     # the reference machine's, so a selector that trusted the first object instead of the one with an IPAddress
@@ -994,6 +1000,34 @@ Assert-Equal 'route #59: cmdlet-absent text names Find-NetRoute' ((Format-RouteS
 $reasonTexts = @((Get-RouteSelectionText $selNone), (Get-RouteSelectionText $selCmdlet), (Get-RouteSelectionText $selErr), (Get-RouteSelectionText $null))
 Assert-Equal 'route #59: four unavailable reasons, four distinct sentences' (@($reasonTexts | Select-Object -Unique).Count) 4
 Assert-Equal 'route #59: a resolved side is not an unavailable sentence' ((Get-RouteSelectionText $selA) -eq (Get-RouteSelectionText $selNone)) False
+
+
+# PR #45 round 1: an empty result is four different outcomes, and calling them all 'no route' publishes a sentence
+# that is false three times out of four. The id is the discriminator because the message follows the locale, which
+# is backlog #27's rule applied where it applies again.
+Reset-RouteStub @('err1231')
+Assert-Equal 'route #59: error 1231 is no route' (Get-RouteSelection -Target '169.254.99.99').Reason 'noroute'
+Reset-RouteStub @('err87')
+Assert-Equal 'route #59: error 87 is not-an-address, not no-route' (Get-RouteSelection -Target 'a-name').Reason 'notaddress'
+Reset-RouteStub @('errother')
+Assert-Equal 'route #59: any other error id is a failed lookup' (Get-RouteSelection -Target '1.1.1.1').Reason 'error'
+Reset-RouteStub @('none')
+Assert-Equal 'route #59: nothing back and nothing said stays no route' (Get-RouteSelection -Target '1.1.1.1').Reason 'noroute'
+
+# A target given as a name: no address exists to ask about until something replies, so there is no pair. $null on the
+# before side is what says that, and the sentence has to name the address that WAS looked up.
+$selName = [pscustomobject]@{ Resolved = $true; Reason = ''; SourceAddress = '192.168.1.106'; InterfaceAlias = 'Wi-Fi' }
+$nameText = Format-RouteSelection -Before $null -After $selName -LookupAddress '93.184.216.34'
+Assert-Equal 'route #59: a name target names the address that was looked up' ($nameText -match '93\.184\.216\.34') True
+Assert-Equal 'route #59: a name target still names the interface' ($nameText -match 'Wi-Fi') True
+Assert-Equal 'route #59: a name target is not the ordinary two-lookup sentence' ($nameText -eq (Format-RouteSelection -Before $selName -After $selName)) False
+
+$selNoReply = [pscustomobject]@{ Resolved = $false; Reason = 'noreply'; SourceAddress = ''; InterfaceAlias = '' }
+$noReplyText = Format-RouteSelection -Before $null -After $selNoReply -LookupAddress ''
+Assert-Equal 'route #59: a name that never answered names no address' ($noReplyText -match '\d+\.\d+\.\d+\.\d+') False
+$selNotAddress = [pscustomobject]@{ Resolved = $false; Reason = 'notaddress'; SourceAddress = ''; InterfaceAlias = '' }
+$reasonTexts2 = @((Get-RouteSelectionText $selNoReply), (Get-RouteSelectionText $selNotAddress), (Get-RouteSelectionText $selNone), (Get-RouteSelectionText $selCmdlet), (Get-RouteSelectionText $selErr), (Get-RouteSelectionText $null))
+Assert-Equal 'route #59: six unavailable reasons, six distinct sentences' (@($reasonTexts2 | Select-Object -Unique).Count) 6
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

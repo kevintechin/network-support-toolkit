@@ -1966,9 +1966,17 @@ function Get-RouteSelection {
         return [pscustomobject][ordered]@{ Resolved = $false; Reason = "cmdlet"; SourceAddress = ""; InterfaceAlias = "" }
     }
 
+    # An empty result is not one outcome, and round 1 of PR #45 was right that calling it 'no route' publishes a
+    # false sentence. The cmdlet reports both by a non-terminating error, so -ErrorVariable carries the answer and
+    # the id is the discriminator, not the message - the same rule backlog #27 settled for CIM errors, and for the
+    # same reason: the message follows the machine's locale while the id does not. Measured on the reference machine
+    # on 2026-09-11: an unroutable address gives Windows System Error 1231 (the network location cannot be reached)
+    # and a name gives 87 (invalid parameter), because RemoteIPAddress is documented as an address. Anything else is
+    # a failure of the lookup itself and says so rather than borrowing either meaning.
     $found = @()
+    $lookupErrors = $null
     try {
-        $found = @(Find-NetRoute -RemoteIPAddress ([string]$Target) -ErrorAction SilentlyContinue)
+        $found = @(Find-NetRoute -RemoteIPAddress ([string]$Target) -ErrorAction SilentlyContinue -ErrorVariable lookupErrors)
     }
     catch {
         return [pscustomobject][ordered]@{ Resolved = $false; Reason = "error"; SourceAddress = ""; InterfaceAlias = "" }
@@ -1976,7 +1984,14 @@ function Get-RouteSelection {
 
     $localAddress = @($found | Where-Object { -not [string]::IsNullOrWhiteSpace((ConvertTo-SafeString $_.IPAddress)) } | Select-Object -First 1)
     if ($localAddress.Count -eq 0) {
-        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "noroute"; SourceAddress = ""; InterfaceAlias = "" }
+        $reason = "error"
+        $firstError = @($lookupErrors) | Select-Object -First 1
+        $errorId = ""
+        if ($null -ne $firstError) { $errorId = ConvertTo-SafeString $firstError.FullyQualifiedErrorId }
+        if ($errorId -match 'Error 1231') { $reason = "noroute" }
+        elseif ($errorId -match 'Error 87') { $reason = "notaddress" }
+        elseif ([string]::IsNullOrWhiteSpace($errorId)) { $reason = "noroute" }
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = $reason; SourceAddress = ""; InterfaceAlias = "" }
     }
 
     return [pscustomobject][ordered]@{
@@ -1995,15 +2010,17 @@ function Get-RouteSelectionText {
     if ($null -eq $Selection) { return "unavailable (the route selection was not read)" }
     if ($Selection.Resolved) { return ("source {0} via {1}" -f $Selection.SourceAddress, $Selection.InterfaceAlias) }
     switch ([string]$Selection.Reason) {
-        "cmdlet"  { return "unavailable (Find-NetRoute is not available on this system)" }
-        "noroute" { return "unavailable (the route table returned no route for this target)" }
-        "error"   { return "unavailable (the route lookup failed)" }
+        "cmdlet"     { return "unavailable (Find-NetRoute is not available on this system)" }
+        "noroute"    { return "unavailable (the route table returned no route for this target)" }
+        "notaddress" { return "unavailable (the route table is asked by address, and no address was available for this target)" }
+        "noreply"    { return "unavailable (this target is a name and nothing replied, so no address was available to look up)" }
+        "error"      { return "unavailable (the route lookup failed)" }
     }
     return "unavailable (the route selection was not read)"
 }
 
 function Format-RouteSelection {
-    param([object]$Before, [object]$After)
+    param([object]$Before, [object]$After, [string]$LookupAddress = "")
 
     # Three shapes out of the two lookups. Both resolved and equal is the ordinary line. Any disagreement between
     # them is reported as a change - including one resolving where the other did not, because that is a disagreement
@@ -2011,6 +2028,16 @@ function Format-RouteSelection {
     # say why, once.
     $beforeText = Get-RouteSelectionText $Before
     $afterText = Get-RouteSelectionText $After
+
+    # A target given as a name has no address to ask the route table about until something replies, so no pair can be
+    # taken and the row says so rather than implying one (PR #45, round 1). The tool does not resolve the name itself:
+    # that would put the ping check behind the resolver, on a machine whose resolver is often what is being diagnosed.
+    if ($null -eq $Before) {
+        if ($null -ne $After -and $After.Resolved) {
+            return ("Route selection: {0}, looked up for {1} after the probes - this target is a name, so there was no address to ask about before them and no before-and-after pair was taken. The probes are not bound to it." -f $afterText, $LookupAddress)
+        }
+        return ("Route selection: {0}. This row cannot say which adapter the probes left by." -f $afterText)
+    }
 
     if ($null -ne $Before -and $null -ne $After -and $Before.Resolved -and $After.Resolved -and
         $Before.SourceAddress -eq $After.SourceAddress -and $Before.InterfaceAlias -eq $After.InterfaceAlias) {
@@ -2033,6 +2060,7 @@ function Invoke-PingMeasurement {
 
     $successes = New-Object System.Collections.ArrayList
     $attemptDetails = New-Object System.Collections.ArrayList
+    $repliedAddress = ""
     $ping = New-Object System.Net.NetworkInformation.Ping
 
     try {
@@ -2040,6 +2068,9 @@ function Invoke-PingMeasurement {
             try {
                 $reply = $ping.Send($Target, $TimeoutMs)
                 if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
+                    # backlog #59: the address the echoes actually reached, kept because a target given as a name is
+                    # not something the route table can be asked about - this is the address that can be.
+                    if ([string]::IsNullOrWhiteSpace($repliedAddress)) { $repliedAddress = [string]$reply.Address }
                     [void]$successes.Add([double]$reply.RoundtripTime)
                     [void]$attemptDetails.Add(("Attempt {0}: success, {1} ms, reply from {2}" -f $i, $reply.RoundtripTime, $reply.Address))
                 }
@@ -2084,6 +2115,7 @@ function Invoke-PingMeasurement {
         AverageMs      = $average
         MinimumMs      = $minimum
         MaximumMs      = $maximum
+        RepliedAddress = $repliedAddress
         AttemptDetails = @($attemptDetails)
     }
 }
@@ -2160,9 +2192,22 @@ function Test-PingTargets {
 
         foreach ($target in $targets) {
             try {
-                $routeBefore = Get-RouteSelection -Target ([string]$target)
+                # Only an address can be asked of the route table, so a target given as a name is looked up by the
+                # address its replies came from, after the probes - and where nothing replied there is no address at
+                # all, which the row says instead of naming a route nobody took (PR #45, round 1).
+                $parsedTarget = $null
+                $targetIsAddress = [System.Net.IPAddress]::TryParse([string]$target, [ref]$parsedTarget)
+                $routeBefore = $null
+                if ($targetIsAddress) { $routeBefore = Get-RouteSelection -Target ([string]$target) }
                 $measurement = Invoke-PingMeasurement -Target ([string]$target) -Count $count -TimeoutMs $timeout
-                $routeAfter = Get-RouteSelection -Target ([string]$target)
+                $lookupAddress = [string]$target
+                if (-not $targetIsAddress) { $lookupAddress = ConvertTo-SafeString $measurement.RepliedAddress }
+                if ([string]::IsNullOrWhiteSpace($lookupAddress)) {
+                    $routeAfter = [pscustomobject][ordered]@{ Resolved = $false; Reason = "noreply"; SourceAddress = ""; InterfaceAlias = "" }
+                }
+                else {
+                    $routeAfter = Get-RouteSelection -Target $lookupAddress
+                }
                 $status = "PASS"
 
                 if ($measurement.Received -eq 0) {
@@ -2188,7 +2233,7 @@ function Test-PingTargets {
                 }
 
                 $message = "Target {0}: {1}% loss ({2}/{3} successful), {4}." -f $target, $measurement.LossPercent, $measurement.Received, $measurement.Sent, $latencyText
-                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter) + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms; the route selection comes from Find-NetRoute -RemoteIPAddress {2}, read before and after the probes." -f $count, $timeout, $target) + ("Manual check: ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
+                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter -LookupAddress $lookupAddress) + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms; the route selection comes from Find-NetRoute -RemoteIPAddress {2}, read before and after the probes." -f $count, $timeout, $target) + ("Manual check: ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
                 if ($status -eq "INFO") {
                     $details += [Environment]::NewLine + "Informational: this optional target may simply block ICMP - see the Connectivity group for the authoritative internet verdict."
                 }

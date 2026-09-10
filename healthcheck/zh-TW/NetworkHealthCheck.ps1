@@ -1930,9 +1930,17 @@ function Get-RouteSelection {
         return [pscustomobject][ordered]@{ Resolved = $false; Reason = "cmdlet"; SourceAddress = ""; InterfaceAlias = "" }
     }
 
+    # An empty result is not one outcome, and round 1 of PR #45 was right that calling it 'no route' publishes a
+    # false sentence. The cmdlet reports both by a non-terminating error, so -ErrorVariable carries the answer and
+    # the id is the discriminator, not the message - the same rule backlog #27 settled for CIM errors, and for the
+    # same reason: the message follows the machine's locale while the id does not. Measured on the reference machine
+    # on 2026-09-11: an unroutable address gives Windows System Error 1231 (the network location cannot be reached)
+    # and a name gives 87 (invalid parameter), because RemoteIPAddress is documented as an address. Anything else is
+    # a failure of the lookup itself and says so rather than borrowing either meaning.
     $found = @()
+    $lookupErrors = $null
     try {
-        $found = @(Find-NetRoute -RemoteIPAddress ([string]$Target) -ErrorAction SilentlyContinue)
+        $found = @(Find-NetRoute -RemoteIPAddress ([string]$Target) -ErrorAction SilentlyContinue -ErrorVariable lookupErrors)
     }
     catch {
         return [pscustomobject][ordered]@{ Resolved = $false; Reason = "error"; SourceAddress = ""; InterfaceAlias = "" }
@@ -1940,7 +1948,14 @@ function Get-RouteSelection {
 
     $localAddress = @($found | Where-Object { -not [string]::IsNullOrWhiteSpace((ConvertTo-SafeString $_.IPAddress)) } | Select-Object -First 1)
     if ($localAddress.Count -eq 0) {
-        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "noroute"; SourceAddress = ""; InterfaceAlias = "" }
+        $reason = "error"
+        $firstError = @($lookupErrors) | Select-Object -First 1
+        $errorId = ""
+        if ($null -ne $firstError) { $errorId = ConvertTo-SafeString $firstError.FullyQualifiedErrorId }
+        if ($errorId -match 'Error 1231') { $reason = "noroute" }
+        elseif ($errorId -match 'Error 87') { $reason = "notaddress" }
+        elseif ([string]::IsNullOrWhiteSpace($errorId)) { $reason = "noroute" }
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = $reason; SourceAddress = ""; InterfaceAlias = "" }
     }
 
     return [pscustomobject][ordered]@{
@@ -1959,21 +1974,33 @@ function Get-RouteSelectionText {
     if ($null -eq $Selection) { return "無法取得（沒有讀取路由選擇）" }
     if ($Selection.Resolved) { return ("來源 {0}，經由 {1}" -f $Selection.SourceAddress, $Selection.InterfaceAlias) }
     switch ([string]$Selection.Reason) {
-        "cmdlet"  { return "無法取得（這個系統沒有 Find-NetRoute）" }
-        "noroute" { return "無法取得（路由表對這個目標沒有回傳路由）" }
-        "error"   { return "無法取得（路由查詢失敗）" }
+        "cmdlet"     { return "無法取得（這個系統沒有 Find-NetRoute）" }
+        "noroute"    { return "無法取得（路由表對這個目標沒有回傳路由）" }
+        "notaddress" { return "無法取得（路由表是用位址問的，而這個目標沒有可用的位址）" }
+        "noreply"    { return "無法取得（這個目標是名稱，而且沒有任何回應，所以沒有可以查的位址）" }
+        "error"      { return "無法取得（路由查詢失敗）" }
     }
     return "無法取得（沒有讀取路由選擇）"
 }
 
 function Format-RouteSelection {
-    param([object]$Before, [object]$After)
+    param([object]$Before, [object]$After, [string]$LookupAddress = "")
 
     # 兩次查詢會產生三種句子。兩次都查到而且相同，是一般情況的那一句。兩者只要不一致就報告為「改變」——
     # 包含一次查到、另一次沒查到，因為那同樣是對「當時是哪一張網路卡」的不一致，也正是這一列存在的理由。
     # 兩次都失敗而且原因相同時，原因只說一次。
     $beforeText = Get-RouteSelectionText $Before
     $afterText = Get-RouteSelectionText $After
+
+    # 以名稱給定的目標，在有回應之前沒有任何位址可以拿去問路由表，所以根本組不成一對，
+    # 這一列就直接說出來而不是暗示有一對（PR #45 第 1 輪）。工具不自己去解析名稱：那會讓 ping
+    # 檢查變成依賴解析器，而正在被診斷的機器往往就是解析器壞掉的那一台。
+    if ($null -eq $Before) {
+        if ($null -ne $After -and $After.Resolved) {
+            return ("路由選擇：{0}，是在探測之後針對 {1} 查的 —— 這個目標是名稱，探測之前沒有位址可以問，因此沒有取得前後兩次的對照。探測本身沒有綁定它。" -f $afterText, $LookupAddress)
+        }
+        return ("路由選擇：{0}。這一列無法說出這些探測是從哪一張網路卡送出的。" -f $afterText)
+    }
 
     if ($null -ne $Before -and $null -ne $After -and $Before.Resolved -and $After.Resolved -and
         $Before.SourceAddress -eq $After.SourceAddress -and $Before.InterfaceAlias -eq $After.InterfaceAlias) {
@@ -1996,6 +2023,7 @@ function Invoke-PingMeasurement {
 
     $successes = New-Object System.Collections.ArrayList
     $attemptDetails = New-Object System.Collections.ArrayList
+    $repliedAddress = ""
     $ping = New-Object System.Net.NetworkInformation.Ping
 
     try {
@@ -2003,6 +2031,9 @@ function Invoke-PingMeasurement {
             try {
                 $reply = $ping.Send($Target, $TimeoutMs)
                 if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
+                    # backlog #59: the address the echoes actually reached, kept because a target given as a name is
+                    # not something the route table can be asked about - this is the address that can be.
+                    if ([string]::IsNullOrWhiteSpace($repliedAddress)) { $repliedAddress = [string]$reply.Address }
                     [void]$successes.Add([double]$reply.RoundtripTime)
                     [void]$attemptDetails.Add(("第 {0} 次：成功，{1} ms，回覆 {2}" -f $i, $reply.RoundtripTime, $reply.Address))
                 }
@@ -2047,6 +2078,7 @@ function Invoke-PingMeasurement {
         AverageMs      = $average
         MinimumMs      = $minimum
         MaximumMs      = $maximum
+        RepliedAddress = $repliedAddress
         AttemptDetails = @($attemptDetails)
     }
 }
@@ -2122,9 +2154,22 @@ function Test-PingTargets {
 
         foreach ($target in $targets) {
             try {
-                $routeBefore = Get-RouteSelection -Target ([string]$target)
+                # Only an address can be asked of the route table, so a target given as a name is looked up by the
+                # address its replies came from, after the probes - and where nothing replied there is no address at
+                # all, which the row says instead of naming a route nobody took (PR #45, round 1).
+                $parsedTarget = $null
+                $targetIsAddress = [System.Net.IPAddress]::TryParse([string]$target, [ref]$parsedTarget)
+                $routeBefore = $null
+                if ($targetIsAddress) { $routeBefore = Get-RouteSelection -Target ([string]$target) }
                 $measurement = Invoke-PingMeasurement -Target ([string]$target) -Count $count -TimeoutMs $timeout
-                $routeAfter = Get-RouteSelection -Target ([string]$target)
+                $lookupAddress = [string]$target
+                if (-not $targetIsAddress) { $lookupAddress = ConvertTo-SafeString $measurement.RepliedAddress }
+                if ([string]::IsNullOrWhiteSpace($lookupAddress)) {
+                    $routeAfter = [pscustomobject][ordered]@{ Resolved = $false; Reason = "noreply"; SourceAddress = ""; InterfaceAlias = "" }
+                }
+                else {
+                    $routeAfter = Get-RouteSelection -Target $lookupAddress
+                }
                 $status = "PASS"
 
                 if ($measurement.Received -eq 0) {
@@ -2150,7 +2195,7 @@ function Test-PingTargets {
                 }
 
                 $message = "目標 {0}：遺失 {1}%（{2}/{3} 成功），{4}。" -f $target, $measurement.LossPercent, $measurement.Received, $measurement.Sent, $latencyText
-                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter) + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms；路由選擇來自 Find-NetRoute -RemoteIPAddress {2}，在探測前後各讀一次。" -f $count, $timeout, $target) + ("手動驗證：ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
+                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter -LookupAddress $lookupAddress) + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms；路由選擇來自 Find-NetRoute -RemoteIPAddress {2}，在探測前後各讀一次。" -f $count, $timeout, $target) + ("手動驗證：ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
                 if ($status -eq "INFO") {
                     $details += [Environment]::NewLine + "補充說明：此為非必要目標，可能單純封鎖 ICMP——網際網路的權威判定請看「連線能力」群組。"
                 }
