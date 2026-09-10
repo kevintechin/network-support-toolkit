@@ -1554,7 +1554,7 @@ function Test-ConfigurationSemantics {
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "TCP target")
         $hostName = ConvertTo-SafeString (Get-PropertyValue $target "Host" "")
         $port = ConvertTo-IntSafe (Get-PropertyValue $target "Port" 0) 0
-        if ([string]::IsNullOrWhiteSpace($hostName) -or $port -lt 1 -or $port -gt 65535) {
+        if (-not (Test-HostNameSyntax $hostName) -or $port -lt 1 -or $port -gt 65535) {
             [void]$inputErrors.Add("TcpTargets 的「$name」主機或連接埠無效：Host=$hostName, Port=$port")
         }
     }
@@ -2338,7 +2338,7 @@ function Test-ConnectivityTargets {
         $required = [bool](Get-PropertyValue $target "Required" $false)
         $group = ConvertTo-SafeString (Get-PropertyValue $target "Group" "")
 
-        if ([string]::IsNullOrWhiteSpace($hostName) -or $port -lt 1 -or $port -gt 65535) {
+        if (-not (Test-HostNameSyntax $hostName) -or $port -lt 1 -or $port -gt 65535) {
             # 兩列，因為一列會同時承載兩個主張（backlog #39）：這個值設定錯了——規則說它不能左右判定；以及，當
             # 該目標是必要的，本來該發生的量測沒有發生——那必須保有權重。提示列在結果本該出現的區段寫出輸入的原
             # 值，讓沒被檢測的選用目標看得見、而不是整段消失；第二列則是避免「必要檢查從未執行，卻顯示整體正常」。

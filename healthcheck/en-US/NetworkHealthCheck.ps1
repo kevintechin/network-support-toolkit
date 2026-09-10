@@ -1584,7 +1584,7 @@ function Test-ConfigurationSemantics {
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "TCP target")
         $hostName = ConvertTo-SafeString (Get-PropertyValue $target "Host" "")
         $port = ConvertTo-IntSafe (Get-PropertyValue $target "Port" 0) 0
-        if ([string]::IsNullOrWhiteSpace($hostName) -or $port -lt 1 -or $port -gt 65535) {
+        if (-not (Test-HostNameSyntax $hostName) -or $port -lt 1 -or $port -gt 65535) {
             [void]$inputErrors.Add("The host or port for TcpTargets '$name' is invalid: Host=$hostName, Port=$port")
         }
     }
@@ -2370,7 +2370,7 @@ function Test-ConnectivityTargets {
         $required = [bool](Get-PropertyValue $target "Required" $false)
         $group = ConvertTo-SafeString (Get-PropertyValue $target "Group" "")
 
-        if ([string]::IsNullOrWhiteSpace($hostName) -or $port -lt 1 -or $port -gt 65535) {
+        if (-not (Test-HostNameSyntax $hostName) -or $port -lt 1 -or $port -gt 65535) {
             # Two rows, because one row would carry two claims (backlog #39): this was configured wrongly, which the
             # rule says cannot move the verdict, and - when the target is required - a measurement that had to happen
             # did not, which has to keep its weight. The notice names the value as it was given, in the section where

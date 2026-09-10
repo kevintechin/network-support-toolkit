@@ -251,5 +251,18 @@ $c = New-BrokenConfig; $c.Checks.TracerouteHops = 99; $c.Tests.TcpTargets[0].Por
 Assert-Case 'config rows: a file hop count out of range warns, so two rows' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
 Assert-Case 'config rows: and -TracerouteHops 4 replaces it, leaving one' @($(if ((Get-ConfigRowCount $c $null @{ TracerouteHops = 4 }) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $null @{ TracerouteHops = 4 }), expected 1") })) $true ''
 
+# PR #41, round 8: a TCP host that is not a name, and the boolean switches that replace an invalid file value.
+$c = New-BrokenConfig; $c.Tests.TcpTargets[0].Host = 'http://example.com'
+Assert-Case 'tcp target: a URL in Host is not a usable target' @($(if (-not (Test-ConfiguredTcpTarget $c.Tests.TcpTargets[0])) { @() } else { @('the oracle called a URL a usable TCP host') })) $true ''
+Assert-Case 'config rows: and it is the configured-targets row' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+$c = New-BrokenConfig; $c.Checks.WifiRf = 'bad'; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: an invalid check flag warns, so two rows' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+Assert-Case 'config rows: and -NoWifi replaces it before validation, leaving one' @($(if ((Get-ConfigRowCount $c $null @{ NoWifi = $true }) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $null @{ NoWifi = $true }), expected 1") })) $true ''
+$c = New-BrokenConfig
+$o = [pscustomobject]@{ ExtraTargets = [pscustomobject]@{ Ping = @(); Dns = @(); Tcp = @('foo..bar:443'); Http = @() } }
+Assert-Case 'config rows: a -TcpTarget shaped right with a host that is not a name' @($(if ((Get-ConfigRowCount $c $o) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $o), expected 1") })) $true ''
+$o = [pscustomobject]@{ ExtraTargets = [pscustomobject]@{ Ping = @(); Dns = @(); Tcp = @('1.1.1.1:53'); Http = @() } }
+Assert-Case 'config rows: and a usable one leaves the PASS row alone' @($(if ((Get-ConfigRowCount $c $o) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $o), expected 1") })) $true ''
+
 "Summary: $passes passed, $fails failed"
 exit $fails

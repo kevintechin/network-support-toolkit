@@ -171,8 +171,10 @@ function Add-PrimaryFacts([hashtable]$Facts, [object[]]$Adapters) {
     $Facts.DnsServers = @(@($primary | ForEach-Object { @($_.Dns) }) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
 }
 function Test-ConfiguredTcpTarget($Target) {
+    # The host is a name like any other since round 8: a valid port with 'http://example.com' beside it used to
+    # reach TcpClient.BeginConnect and be recorded as a failed connection.
     $hostName = [string](Get-Value $Target 'Host')
-    if ([string]::IsNullOrWhiteSpace($hostName)) { return $false }
+    if (-not (Test-HostNameSyntax $hostName)) { return $false }
     $port = ConvertTo-IntSafe (Get-Value $Target 'Port') 0
     return ($port -ge 1 -and $port -le 65535)
 }
@@ -346,17 +348,28 @@ function Get-ConfigRowCount($Config, $Options, [hashtable]$Overrides) {
     foreach ($target in @($Config.Tests.PingTargets)) { if ($null -ne $target -and -not (Test-ConfiguredPingAddress ([string](Get-Value $target 'Address')))) { $badTargets += 1 } }
     # Set-RunOptions appends the switch targets to the effective configuration before Test-ConfigurationSemantics
     # reads it, so an unusable -PingTarget, -DnsName or -HttpUrl is a Configured Targets row exactly as a
-    # configured one is; this oracle read the file on disk and saw none of them (PR #41, round 6). A -TcpTarget is
-    # not here because Set-RunOptions drops a malformed one before the configuration ever sees it.
+    # configured one is; this oracle read the file on disk and saw none of them (PR #41, round 6). A -TcpTarget
+    # whose shape is wrong is dropped before the configuration sees it, but one shaped host:port with a host that
+    # is not a name reaches it, and since round 8 that is an input problem too.
     if ($null -ne $Options) {
         $extra = Get-Value $Options 'ExtraTargets'
         foreach ($value in @(Get-Value $extra 'Ping')) { if (-not (Test-ConfiguredPingAddress ([string]$value))) { $badTargets += 1 } }
         foreach ($value in @(Get-Value $extra 'Dns')) { if (-not (Test-HostNameSyntax ([string]$value))) { $badTargets += 1 } }
         foreach ($value in @(Get-Value $extra 'Http')) { if (-not (Test-HttpTargetSyntax ([string]$value))) { $badTargets += 1 } }
+        foreach ($value in @(Get-Value $extra 'Tcp')) { if (-not (Test-HostNameSyntax (([string]$value).Split(':')[0]))) { $badTargets += 1 } }
     }
 
     $options = 0
+    # -NoWifi and -NoTraceroute write a real boolean into the effective configuration before it is validated, so
+    # they silence a warning about an invalid file value rather than adding one (PR #41, round 8 - round 7 said
+    # these needed nothing, which was true only when the file value was already valid).
+    $flagOverridden = @{}
+    if ($null -ne $Overrides) {
+        if ($Overrides['NoWifi'] -eq $true) { $flagOverridden['WifiRf'] = $true }
+        if ($Overrides['NoTraceroute'] -eq $true) { $flagOverridden['Traceroute'] = $true }
+    }
     foreach ($flag in @('WifiRf', 'RouteTable', 'GatewayNeighbor', 'ProxySettings', 'Traceroute', 'DriverInfo')) {
+        if ($flagOverridden.ContainsKey($flag)) { continue }
         $value = Get-Value $Config.Checks $flag
         if ($null -ne $value -and -not ($value -is [bool])) { $options += 1 }
     }
