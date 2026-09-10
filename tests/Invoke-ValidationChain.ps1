@@ -99,6 +99,30 @@ function Invoke-TestScript {
     param([string]$Name, [string[]]$ArgumentList, [string]$LogName)
     Invoke-Native -FilePath $PsExe -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot $Name)) + $ArgumentList) -LogName $LogName
 }
+function Test-DocumentedTotal([string]$Summary, [string]$RowPattern, [string]$ValuePattern) {
+    # A step's own row in README.md advertises how many cases it runs, and in this pull request alone those
+    # numbers went stale four times - the result-set one in rounds 4, 10 and 15, the unit one in round 17 - and a
+    # reader found every one of them. The only honest source is the run that just happened, so each step that
+    # reports a total compares it here and fails when the two disagree. Returns '' when they agree, or the
+    # sentence that says how they differ.
+    # -Encoding UTF8, because README.md has no byte-order mark and Windows PowerShell 5.1 would otherwise read it
+    # in the machine's ANSI codepage - where the multiplication sign in '353 x 2' is two characters and the
+    # pattern below silently matches nothing. The first draft of this guard failed for exactly that reason, which
+    # looks like a stale total and is not one.
+    $row = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Encoding UTF8 | Where-Object { $_ -match $RowPattern }) -join ' '
+    $all = @([regex]::Matches($row, $ValuePattern))
+    if ($all.Count -eq 0) { return ('README.md has no total on the row matching {0}' -f $RowPattern) }
+    $m = $all[$all.Count - 1]
+    $documented = $m.Groups[1].Value
+    # A pair, where the pattern asks for one: 'N / N' has to be the same number twice.
+    if ($m.Groups.Count -gt 2 -and $m.Groups[2].Success -and $m.Groups[2].Value -ne $documented) {
+        return ('README.md advertises {0}, which is not one number twice' -f $m.Value)
+    }
+    $ran = [regex]::Match([string]$Summary, 'Summary: (\d+) passed')
+    if (-not $ran.Success) { return 'this run reported no total to compare with README.md' }
+    if ($documented -ne $ran.Groups[1].Value) { return ('README.md advertises {0}' -f $m.Value) }
+    return ''
+}
 function Invoke-Case {
     # Runs one case of a step, records PASS / FAIL with its detail and duration, and prints the line.
     param([string]$Step, [string]$Case, [scriptblock]$Body)
@@ -818,7 +842,10 @@ try {
             Invoke-Case 'unit' $lang {
                 $r = Invoke-TestScript 'unit_tests.ps1' @('-ScriptPath', (Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1'))) ('unit_' + $lang)
                 $s = Get-SummaryLine $r.Output
-                @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
+                $ok = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s))
+                $drift = Test-DocumentedTotal $s '^\|\s*`unit`' '(\d+)\s*×\s*2'
+                if ($ok -and $drift) { $ok = $false }
+                @{ Passed = $ok; Detail = $(if ($drift) { '{0}; {1}' -f $s, $drift } else { $s }) }
             }
         }
     }
@@ -829,7 +856,10 @@ try {
                 New-Item -ItemType Directory -Force -Path $dir | Out-Null
                 $r = Invoke-TestScript 'report_stage_tests.ps1' @('-ScriptPath', (Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1')), '-WorkDir', $dir) ('report_' + $lang)
                 $s = Get-SummaryLine $r.Output
-                @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
+                $ok = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s))
+                $drift = Test-DocumentedTotal $s '^\|\s*`report`' '(\d+)\s*×\s*2'
+                if ($ok -and $drift) { $ok = $false }
+                @{ Passed = $ok; Detail = $(if ($drift) { '{0}; {1}' -f $s, $drift } else { $s }) }
             }
         }
     }
@@ -838,7 +868,10 @@ try {
             Invoke-Case 'envguard' $lang {
                 $r = Invoke-TestScript 'env_guard_check.ps1' @('-ScriptPath', (Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1')), '-WorkDir', $WorkDir) ('envguard_' + $lang)
                 $s = Get-SummaryLine $r.Output
-                @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
+                $ok = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s))
+                $drift = Test-DocumentedTotal $s '^\|\s*`envguard`' '(\d+)\s*×\s*2'
+                if ($ok -and $drift) { $ok = $false }
+                @{ Passed = $ok; Detail = $(if ($drift) { '{0}; {1}' -f $s, $drift } else { $s }) }
             }
         }
     }
@@ -959,19 +992,11 @@ try {
             # and 15 - and every time a reader found it rather than a test. The only honest source for it is the
             # run that just happened, so it is checked here: the last N / N on the resultset row of that table
             # must be what this run reported.
-            $ran = [regex]::Match($detail, 'Summary: (\d+) passed')
-            $row = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'README.md') | Where-Object { $_ -match '^\|\s*`resultset`' }) -join ' '
-            # Two groups rather than a backreference, and the pair must agree: the cell reads 'N / N'.
-            $counts = @([regex]::Matches($row, '(\d+)\s*/\s*(\d+)'))
-            $documented = ''
-            if ($counts.Count -gt 0) {
-                $last = $counts[$counts.Count - 1]
-                if ($last.Groups[1].Value -eq $last.Groups[2].Value) { $documented = $last.Groups[1].Value }
-            }
-            if ($ok -and ($documented -ne $ran.Groups[1].Value)) {
-                $ok = $false
-                $detail = ('{0}; README.md advertises {1}' -f $detail, $(if ($documented) { $documented + ' / ' + $documented } else { 'no count on its resultset row' }))
-            }
+            # Two groups rather than a backreference, because the cell reads 'N / N' and \1 written through a
+            # heredoc arrives as chr(1) - the pattern then matches nothing and the guard fails for the wrong
+            # reason (PR #41, round 15).
+            $drift = Test-DocumentedTotal $detail '^\|\s*`resultset`' '(\d+)\s*/\s*(\d+)'
+            if ($ok -and $drift) { $ok = $false; $detail = '{0}; {1}' -f $detail, $drift }
             @{ Passed = $ok; Detail = $detail }
         }
     }
