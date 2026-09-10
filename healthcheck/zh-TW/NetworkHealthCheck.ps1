@@ -3987,6 +3987,12 @@ function Run-AllChecks {
         Add-CheckResult -Category "程式環境" -Check "啟動提示" -Status "WARN" -Message $startupMessage -Details "" -Tag "startup" -Weightless | Out-Null
     }
 
+    # 就寫在它所屬的提示旁邊，也在任何 return 之前：執行如果在下方的作業系統或 PowerShell 分支結束，也仍然會
+    # 寫出報告；而在 PR #41 第 12 輪之前，那份報告只有被丟掉目標的提示，結果本該出現的地方卻沒有列 ——
+    # 而這正是這次改版承諾不會發生的事。它原本還寫在連線步驟的 action 裡，那個步驟一擲回例外就會把這列一起帶走。
+    # 這裡不依賴任何執行結果：目標是在讀取執行選項時就被丟掉的，這也是這一列應該排在表格這個位置的原因。
+    Add-DroppedTargetResults
+
     Invoke-CheckStep -Category "程式設定" -Name "驗證設定值" -Progress 4 -Action {
         Test-ConfigurationSemantics
     } | Out-Null
@@ -4056,7 +4062,6 @@ function Run-AllChecks {
 
     Invoke-CheckStep -Category "連線能力" -Name "測試 TCP 與 HTTP/HTTPS 連線" -Progress 70 -Action {
         Test-ConnectivityTargets
-        Add-DroppedTargetResults
     } | Out-Null
 
     Invoke-CheckStep -Category "IT 診斷資料" -Name "收集 IT 診斷資料（Wi-Fi、路由、閘道鄰居、Proxy、traceroute、驅動程式）" -Progress 74 -Scope "IT" -Action {

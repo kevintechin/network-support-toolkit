@@ -4052,6 +4052,14 @@ function Run-AllChecks {
         Add-CheckResult -Category "Program Environment" -Check "Startup Notice" -Status "WARN" -Message $startupMessage -Details "" -Tag "startup" -Weightless | Out-Null
     }
 
+    # Beside the notice it belongs to, and before anything can return: a run that ends at the unsupported
+    # operating system or PowerShell branch below still writes a report, and until PR #41 round 12 that report
+    # carried the notice about the dropped target with no row where its result belonged - which is the one
+    # thing this release promises not to do. It was also inside the connectivity step's action, so a throw
+    # inside that step took the row with it. Nothing here depends on the run: the targets were dropped while
+    # the options were read, which is also why this row belongs at this point in the table.
+    Add-DroppedTargetResults
+
     Invoke-CheckStep -Category "Program Configuration" -Name "Validate Configuration" -Progress 4 -Action {
         Test-ConfigurationSemantics
     } | Out-Null
@@ -4122,7 +4130,6 @@ function Run-AllChecks {
 
     Invoke-CheckStep -Category "Connectivity" -Name "Test TCP and HTTP/HTTPS Connectivity" -Progress 70 -Action {
         Test-ConnectivityTargets
-        Add-DroppedTargetResults
     } | Out-Null
 
     Invoke-CheckStep -Category "IT Diagnostics" -Name "Collect IT diagnostics (Wi-Fi, routes, gateway neighbor, proxy, traceroute, drivers)" -Progress 74 -Scope "IT" -Action {

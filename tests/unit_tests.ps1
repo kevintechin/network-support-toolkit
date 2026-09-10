@@ -823,6 +823,19 @@ Assert-Equal '#39 steps: four of them declare the marking' $weightlessSteps.Coun
 Assert-Equal '#39 steps: and they are the collectors, by their progress points' ((@($weightlessSteps | ForEach-Object { Get-StepProgress $_ } | Sort-Object) -join ',')) '10,13,82,89'
 Assert-Equal '#39 steps: the analysis steps beside them keep their weight' (@($stepCalls | Where-Object { (Get-StepProgress $_) -in @(85, 92) -and (Get-StepParameter $_ 'Weightless').Count -gt 0 }).Count) 0
 
+# The dropped-target rows must exist in every report this tool writes, including the two that end early - the
+# unsupported operating system and the unsupported PowerShell - because a notice about a target with no row where
+# its result belonged is exactly the absence backlog #39 set out to remove. Read off the AST by position, because
+# proving it by running needs a machine this tool refuses to run on (PR #41, round 12).
+$mainBody = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Run-AllChecks' }, $true)
+$droppedCall = $mainBody.Find({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Add-DroppedTargetResults' }, $true)
+$platformCall = $mainBody.Find({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Test-IsWindowsPlatform' }, $true)
+Assert-Equal '#39 dropped rows: the run writes them' ($null -ne $droppedCall) True
+Assert-Equal '#39 dropped rows: and before the branch that can return early' ($droppedCall.Extent.StartOffset -lt $platformCall.Extent.StartOffset) True
+Assert-Equal '#39 dropped rows: exactly once' (@($mainBody.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Add-DroppedTargetResults' }, $true)).Count) 1
+# And not inside a step's action, where a throw in the step would take the row with it.
+Assert-Equal '#39 dropped rows: not inside a check step' (@($stepCalls | Where-Object { $_.Extent.Text -match 'Add-DroppedTargetResults' }).Count) 0
+
 # What concludes follows the weights; what describes the page follows the rows on the page. Round 8 of PR #37 found
 # the first draft of that sentence saying "every predicate that reads the result set", which would have taken the
 # Unable flag with it - the flag whose only job is to explain a badge the weightless row still carries.
