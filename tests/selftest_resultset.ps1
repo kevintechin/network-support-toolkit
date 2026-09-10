@@ -21,9 +21,10 @@ $ErrorActionPreference = 'Stop'
 $runner = Join-Path $PSScriptRoot 'Invoke-ValidationChain.ps1'
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($runner, [ref]$tokens, [ref]$errors)
-foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Read-Config', 'Get-Count', 'Test-TrueFlag', 'Get-CimOrWmiInstance', 'Add-PrimaryFacts', 'Get-MachineFacts', 'Get-StandardRuleCount', 'Test-ResultSet', 'ConvertTo-FactsKey', 'Test-ResultSetForRun', 'Get-Value', 'Get-ConfigRowCount', 'Get-TargetRowCount', 'Test-ConfiguredTcpTarget', 'Test-ConfiguredHttpTarget', 'Test-ConfiguredPingAddress', 'Test-UsableIPv4', 'Test-UsableIPAddress', 'Test-UsableCidr', 'Test-WholeNumberInRange', 'Test-ConfiguredDnsTarget', 'Test-ConfiguredDnsRequired', 'Get-UnusablePingExtraRows') }, $true)) { Invoke-Expression $f.Extent.Text }
+foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Read-Config', 'Get-Count', 'Test-TrueFlag', 'Get-CimOrWmiInstance', 'Add-PrimaryFacts', 'Get-MachineFacts', 'Get-StandardRuleCount', 'Test-ResultSet', 'ConvertTo-FactsKey', 'Test-ResultSetForRun', 'Get-Value', 'Get-ConfigRowCount', 'Get-TargetRowCount', 'Test-ConfiguredTcpTarget', 'Test-ConfiguredHttpTarget', 'Test-ConfiguredPingAddress', 'Test-UsableIPAddress', 'Test-ConfiguredDnsTarget', 'Test-ConfiguredDnsRequired', 'Get-UnusablePingExtraRows', 'Get-ConfigConverterSource') }, $true)) { Invoke-Expression $f.Extent.Text }
 $machine = Get-MachineFacts
 "machine: $($machine.ConnectedAdapters) connected adapter(s) with an address, gateway(s) $(@($machine.Gateways) -join ', '), source $($machine.Source), TCP counters v4=$($machine.TcpCounters.TCPv4) v6=$($machine.TcpCounters.TCPv6)"
+foreach ($converterSource in (Get-ConfigConverterSource (Join-Path $ConfigDir 'NetworkHealthCheck.ps1'))) { Invoke-Expression $converterSource }
 $cfg = Read-Config $ConfigDir
 if ($ReportPath) { $json = Get-Item -LiteralPath $ReportPath }
 else {
@@ -206,6 +207,23 @@ $c = New-BrokenConfig; $c.Tests.PingTargets = @([pscustomobject]@{ Name = 'Broke
 Assert-Case 'ping rows: a required unusable address adds its second row' @($(if ((Get-UnusablePingExtraRows $c) -eq 1) { @() } else { @('ping extra rows wrong') })) $true ''
 $c.Tests.PingTargets = @([pscustomobject]@{ Name = 'Broken'; Address = 'http://example.com'; Required = $false })
 Assert-Case 'ping rows: an optional one does not' @($(if ((Get-UnusablePingExtraRows $c) -eq 0) { @() } else { @('ping extra rows wrong') })) $true ''
+
+# PR #41, round 3: five findings with one cause - the oracle read configuration values with Int32.TryParse and its
+# own range checks, where the product reads them through ConvertTo-IntSafe and Test-IsWholeNumber. It now loads those
+# converters from the package under test; these are the five configurations the reviewer named, each paired with an
+# invalid TCP target so the count distinguishes 'one row' from 'two'.
+$c = New-BrokenConfig; $c.Expected.AllowedIPv4Addresses = @(''); $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: a blank standard entry is skipped, exactly as the product skips it' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+$c = New-BrokenConfig; $c.Tests.PingCount = '4.0'; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: 4.0 as a string is a whole number to the tool, so no threshold row' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+# An explicit null does not skip the setting: it falls to the second branch, where ConvertTo-IntSafe makes it 0.
+$c = New-BrokenConfig; $c.Tests.PingCount = $null; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: an explicit null test setting warns, adding the thresholds row' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+# Whole-valued, but outside Int32 - which Test-IsWholeNumber rejects and a floor-equality check alone would not.
+$c = New-BrokenConfig; $c.Thresholds.TcpRetransmissionCriticalCount = 2147483648; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: a count threshold beyond Int32 is not a whole number' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+$c = New-BrokenConfig; $c.Tests.TcpTargets[0].Port = '443.0'
+Assert-Case 'tcp target: 443.0 is a usable port, because that is how the tool parses it' @($(if (Test-ConfiguredTcpTarget $c.Tests.TcpTargets[0]) { @() } else { @('the oracle called a port the tool accepts unusable') })) $true ''
 
 "Summary: $passes passed, $fails failed"
 exit $fails

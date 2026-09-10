@@ -172,9 +172,9 @@ function Add-PrimaryFacts([hashtable]$Facts, [object[]]$Adapters) {
 }
 function Test-ConfiguredTcpTarget($Target) {
     $hostName = [string](Get-Value $Target 'Host')
-    $port = 0
-    [void][int]::TryParse([string](Get-Value $Target 'Port'), [ref]$port)
-    return (-not [string]::IsNullOrWhiteSpace($hostName)) -and $port -ge 1 -and $port -le 65535
+    if ([string]::IsNullOrWhiteSpace($hostName)) { return $false }
+    $port = ConvertTo-IntSafe (Get-Value $Target 'Port') 0
+    return ($port -ge 1 -and $port -le 65535)
 }
 function Get-UnusablePingExtraRows($Config) {
     # The second row a required, unusable ping address adds. The address itself is already counted once by the
@@ -204,22 +204,13 @@ function Test-ConfiguredDnsRequired($Target) {
     return [bool]$value
 }
 function Test-ConfiguredHttpTarget($Target) {
-    # An absolute http:// or https:// address, which is what the check now requires before it sends anything.
-    $uri = $null
-    if (-not [System.Uri]::TryCreate([string](Get-Value $Target 'Url'), [System.UriKind]::Absolute, [ref]$uri)) { return $false }
-    return ($uri.Scheme -eq 'http' -or $uri.Scheme -eq 'https')
+    # The tool's own rule, on the URL this target carries.
+    return (Test-HttpTargetSyntax ([string](Get-Value $Target 'Url')))
 }
 function Test-ConfiguredPingAddress([string]$Address) {
-    $text = ([string]$Address).Trim()
-    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
-    if ($text -eq 'AUTO_GATEWAY' -or $text -eq 'AUTO_DNS') { return $true }
-    if ($text -match '\s') { return $false }
-    if ($text -match '[/\\?#@]') { return $false }
-    if ($text.Contains(':')) {
-        $parsed = $null
-        if (-not [System.Net.IPAddress]::TryParse($text, [ref]$parsed)) { return $false }
-    }
-    return $true
+    # The tool's own rule. This was a character-for-character copy of it until PR #41 round 3, which is a copy that
+    # would have kept agreeing with the old rule after the tool's changed.
+    return (Test-PingTargetSyntax $Address)
 }
 function Get-TargetRowCount($Targets, [scriptblock]$IsUsable, [bool]$RequiredByDefault) {
     # One row per target, as before - and two for a target the run cannot test that was required: the input notice
@@ -248,41 +239,57 @@ function Get-Value($Object, [string]$Name) {
     if ($null -eq $property) { return $null }
     return $property.Value
 }
-function Test-UsableIPv4([string]$Value) {
-    $parsed = $null
-    if (-not [System.Net.IPAddress]::TryParse([string]$Value, [ref]$parsed)) { return $false }
-    return ($parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork)
+function Get-ConfigConverterSource([string]$ScriptPath) {
+    # Five findings of PR #41 round 3 were one cause: this oracle re-implemented the tool's value conversion by hand,
+    # and "4.0" is a whole number to the tool but not to Int32.TryParse, an explicit null becomes 0 rather than being
+    # skipped, and a whole-valued double outside Int32 is not a whole number at all. The predicates below - which rows
+    # a configuration produces - stay this file's own; how a value is *read* now comes from the package being tested.
+    # The source is returned rather than run here: Invoke-Expression inside a function defines those functions in that
+    # function's own scope, where they vanish on return, so the caller evaluates them at its scope instead. They are
+    # not marking their own homework - unit_tests.ps1 asserts every one of them directly, on fixed inputs, in both
+    # languages.
+    $tokens = $null; $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path -LiteralPath $ScriptPath).Path, [ref]$tokens, [ref]$errors)
+    $wanted = 'ConvertTo-DoubleSafe', 'ConvertTo-IntSafe', 'Test-IsNumericValue', 'Test-IsWholeNumber', 'Test-IsValidIPv4Address', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax'
+    $found = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true))
+    $loaded = @($found | ForEach-Object { $_.Name })
+    $missing = @($wanted | Where-Object { $loaded -notcontains $_ })
+    if ($missing.Count -gt 0) { throw ("The package at {0} is missing: {1}" -f $ScriptPath, ($missing -join ', ')) }
+    return @($found | ForEach-Object { $_.Extent.Text })
 }
 function Test-UsableIPAddress([string]$Value) {
     $parsed = $null
     return [System.Net.IPAddress]::TryParse([string]$Value, [ref]$parsed)
-}
-function Test-UsableCidr([string]$Value) {
-    $parts = ([string]$Value).Split('/')
-    if ($parts.Count -ne 2) { return $false }
-    if (-not (Test-UsableIPv4 $parts[0])) { return $false }
-    $bits = 0
-    if (-not [int]::TryParse($parts[1], [ref]$bits)) { return $false }
-    return ($bits -ge 0 -and $bits -le 32)
-}
-function Test-WholeNumberInRange($Value, [int]$Minimum, [int]$Maximum) {
-    if ($null -eq $Value -or $Value -is [bool]) { return $false }
-    $number = 0
-    if (-not [int]::TryParse([string]$Value, [ref]$number)) { return $false }
-    return ($number -ge $Minimum -and $number -le $Maximum)
 }
 function Get-ConfigRowCount($Config) {
     # Test-ConfigurationSemantics writes up to four rows out of four lists, and the PASS row appears only when all
     # four are empty (backlog #39, PR #41 round 1): a configuration whose only problem is an invalid target has no
     # validation row at all, and threshold and option problems together produce two rows rather than one. The four
     # predicates are reproduced here in the order the script applies them.
+    # Blank entries are skipped by the product in three of these loops, and prefix lengths are read through
+    # ConvertTo-IntSafe with -1 as the default, so a blank one is invalid there (PR #41, round 3).
     $standards = 0
     $expected = $Config.Expected
-    foreach ($ip in @(Get-Value $expected 'AllowedIPv4Addresses')) { if (-not (Test-UsableIPv4 $ip)) { $standards += 1 } }
-    foreach ($cidr in @(Get-Value $expected 'AllowedIPv4Cidrs')) { if (-not (Test-UsableCidr $cidr)) { $standards += 1 } }
-    foreach ($prefix in @(Get-Value $expected 'AllowedPrefixLengths')) { if (-not (Test-WholeNumberInRange $prefix 0 32)) { $standards += 1 } }
-    foreach ($gateway in @(Get-Value $expected 'AllowedDefaultGateways')) { if (-not (Test-UsableIPv4 $gateway)) { $standards += 1 } }
-    foreach ($dns in @(Get-Value $expected 'RequiredDnsServers')) { if (-not (Test-UsableIPAddress $dns)) { $standards += 1 } }
+    foreach ($ip in @(Get-Value $expected 'AllowedIPv4Addresses')) { if (-not [string]::IsNullOrWhiteSpace([string]$ip) -and -not (Test-IsValidIPv4Address ([string]$ip))) { $standards += 1 } }
+    foreach ($cidr in @(Get-Value $expected 'AllowedIPv4Cidrs')) {
+        if ([string]::IsNullOrWhiteSpace([string]$cidr)) { continue }
+        $parts = ([string]$cidr).Split('/')
+        $valid = ($parts.Count -eq 2) -and (Test-IsValidIPv4Address $parts[0])
+        if ($valid) {
+            $prefix = ConvertTo-IntSafe $parts[1] -1
+            $valid = ($prefix -ge 0 -and $prefix -le 32)
+        }
+        if (-not $valid) { $standards += 1 }
+    }
+    foreach ($prefixValue in @(Get-Value $expected 'AllowedPrefixLengths')) {
+        $prefix = ConvertTo-IntSafe $prefixValue -1
+        if ($prefix -lt 0 -or $prefix -gt 32) { $standards += 1 }
+    }
+    foreach ($gateway in @(Get-Value $expected 'AllowedDefaultGateways')) { if (-not [string]::IsNullOrWhiteSpace([string]$gateway) -and -not (Test-IsValidIPv4Address ([string]$gateway))) { $standards += 1 } }
+    foreach ($dns in @(Get-Value $expected 'RequiredDnsServers')) {
+        if ([string]::IsNullOrWhiteSpace([string]$dns)) { continue }
+        if (-not (Test-UsableIPAddress $dns)) { $standards += 1 }
+    }
     $dhcp = Get-Value $expected 'DhcpEnabled'
     if ($null -ne $dhcp -and -not ($dhcp -is [bool])) { $standards += 1 }
 
@@ -292,7 +299,10 @@ function Get-ConfigRowCount($Config) {
     $thresholds = 0
     foreach ($name in @('PingCount', 'PingTimeoutMs', 'DnsTimeoutMs', 'TcpTimeoutMs', 'HttpTimeoutMs', 'RetransmissionSampleSeconds')) {
         $value = Get-Value $Config.Tests $name
-        if ($null -ne $value -and -not (Test-WholeNumberInRange $value 1 600000)) { $thresholds += 1 }
+        # The product's two branches, in its order: a present value that is not a whole number, or - and this is the
+        # branch an explicit null reaches, because ConvertTo-IntSafe hands back 0 - a value of zero or less.
+        if ($null -ne $value -and -not (Test-IsWholeNumber $value)) { $thresholds += 1 }
+        elseif ((ConvertTo-IntSafe $value 0) -le 0) { $thresholds += 1 }
     }
     $limits = $Config.Thresholds
     $countThresholds = @('TcpRetransmissionCriticalCount', 'MinimumTcpSegmentsForRate', 'AdapterErrorWarningDelta', 'AdapterErrorCriticalDelta', 'AdapterDiscardWarningDelta', 'AdapterDiscardCriticalDelta')
@@ -301,7 +311,7 @@ function Get-ConfigRowCount($Config) {
         if ($null -eq $value) { continue }
         $number = 0.0
         if ($value -is [bool] -or -not [double]::TryParse([string]$value, [ref]$number)) { $thresholds += 1; continue }
-        if (($countThresholds -contains $name) -and [math]::Floor($number) -ne $number) { $thresholds += 1 }
+        if (($countThresholds -contains $name) -and -not (Test-IsWholeNumber $value)) { $thresholds += 1 }
     }
     # A warning threshold below zero, or a critical one below its warning, is one row per pair.
     foreach ($pair in @(@('PacketLossWarningPercent', 'PacketLossCriticalPercent', 5, 20), @('LatencyWarningMs', 'LatencyCriticalMs', 100, 250), @('TcpRetransmissionWarningPercent', 'TcpRetransmissionCriticalPercent', 2, 5))) {
@@ -324,7 +334,7 @@ function Get-ConfigRowCount($Config) {
         if ($null -ne $value -and -not ($value -is [bool])) { $options += 1 }
     }
     $hops = Get-Value $Config.Checks 'TracerouteHops'
-    if ($null -ne $hops -and -not (Test-WholeNumberInRange $hops 1 10)) { $options += 1 }
+    if ($null -ne $hops -and (-not (Test-IsWholeNumber $hops) -or (ConvertTo-IntSafe $hops 0) -lt 1 -or (ConvertTo-IntSafe $hops 0) -gt 10)) { $options += 1 }
 
     $rows = 0
     if ($standards -gt 0) { $rows += 1 }
@@ -424,6 +434,11 @@ function Get-StandardRuleCount($Config) {
     if ($e.DhcpEnabled -is [bool]) { $n++ }
     return $n
 }
+# The row-count oracle reads configuration values through the package's own converters, loaded here from the
+# package under test: how a value is read comes from the tool, while which rows it produces stays this file's own
+# judgement (PR #41, round 3).
+foreach ($converterSource in (Get-ConfigConverterSource (Join-Path (Join-Path $PackageDir 'en-US') 'NetworkHealthCheck.ps1'))) { Invoke-Expression $converterSource }
+
 function Test-ResultSet {
     # The report must carry every row the configuration and the run options call for, and nothing else: one row per
     # configured or extra target, one per enabled IT diagnostic, the fixed rows (configuration, environment, system,
