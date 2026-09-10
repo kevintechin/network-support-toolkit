@@ -1983,6 +1983,21 @@ function Get-RouteSelectionText {
     return "無法取得（沒有讀取路由選擇）"
 }
 
+function Get-RouteMethodText {
+    param([string]$Target, [string]$LookupAddress, [bool]$TargetIsAddress)
+
+    # 這一行必須描述「實際做了的查詢」，而不是位址目標那一種的查詢（PR #45 第 2 輪）。
+    # 名稱目標是在探測之後、用回應所來的位址只查一次；沒人回應的名稱則根本沒有查。
+    # 寫成函式而不是內嵌字串，是為了讓 unit 步驟能把它釘住。
+    if ($TargetIsAddress) {
+        return ("；路由選擇來自 Find-NetRoute -RemoteIPAddress {0}，在探測前後各讀一次" -f $Target)
+    }
+    if ([string]::IsNullOrWhiteSpace($LookupAddress)) {
+        return "；沒有做路由查詢，因為這個目標是名稱，而且沒有任何回應可以提供位址"
+    }
+    return ("；路由選擇來自 Find-NetRoute -RemoteIPAddress {0}，也就是回應所來的位址，在探測之後讀一次" -f $LookupAddress)
+}
+
 function Format-RouteSelection {
     param([object]$Before, [object]$After, [string]$LookupAddress = "")
 
@@ -2195,7 +2210,7 @@ function Test-PingTargets {
                 }
 
                 $message = "目標 {0}：遺失 {1}%（{2}/{3} 成功），{4}。" -f $target, $measurement.LossPercent, $measurement.Received, $measurement.Sent, $latencyText
-                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter -LookupAddress $lookupAddress) + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms；路由選擇來自 Find-NetRoute -RemoteIPAddress {2}，在探測前後各讀一次。" -f $count, $timeout, $target) + ("手動驗證：ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
+                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter -LookupAddress $lookupAddress) + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms{2}。" -f $count, $timeout, (Get-RouteMethodText -Target ([string]$target) -LookupAddress $lookupAddress -TargetIsAddress $targetIsAddress)) + ("手動驗證：ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
                 if ($status -eq "INFO") {
                     $details += [Environment]::NewLine + "補充說明：此為非必要目標，可能單純封鎖 ICMP——網際網路的權威判定請看「連線能力」群組。"
                 }

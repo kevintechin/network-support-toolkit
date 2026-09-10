@@ -2019,6 +2019,21 @@ function Get-RouteSelectionText {
     return "unavailable (the route selection was not read)"
 }
 
+function Get-RouteMethodText {
+    param([string]$Target, [string]$LookupAddress, [bool]$TargetIsAddress)
+
+    # The Method line has to describe the lookup that happened, not the one the address case makes (PR #45, round 2).
+    # A name is looked up once, after the probes, by the address the replies came from; a name nothing answered is
+    # not looked up at all. It is a function rather than an inline string so that the unit step can hold it to that.
+    if ($TargetIsAddress) {
+        return ("; the route selection comes from Find-NetRoute -RemoteIPAddress {0}, read before and after the probes" -f $Target)
+    }
+    if ([string]::IsNullOrWhiteSpace($LookupAddress)) {
+        return "; no route lookup was made, because this target is a name and nothing replied to give an address"
+    }
+    return ("; the route selection comes from Find-NetRoute -RemoteIPAddress {0}, the address the replies came from, read once after the probes" -f $LookupAddress)
+}
+
 function Format-RouteSelection {
     param([object]$Before, [object]$After, [string]$LookupAddress = "")
 
@@ -2233,7 +2248,7 @@ function Test-PingTargets {
                 }
 
                 $message = "Target {0}: {1}% loss ({2}/{3} successful), {4}." -f $target, $measurement.LossPercent, $measurement.Received, $measurement.Sent, $latencyText
-                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter -LookupAddress $lookupAddress) + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms; the route selection comes from Find-NetRoute -RemoteIPAddress {2}, read before and after the probes." -f $count, $timeout, $target) + ("Manual check: ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
+                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter -LookupAddress $lookupAddress) + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms{2}." -f $count, $timeout, (Get-RouteMethodText -Target ([string]$target) -LookupAddress $lookupAddress -TargetIsAddress $targetIsAddress)) + ("Manual check: ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
                 if ($status -eq "INFO") {
                     $details += [Environment]::NewLine + "Informational: this optional target may simply block ICMP - see the Connectivity group for the authoritative internet verdict."
                 }
