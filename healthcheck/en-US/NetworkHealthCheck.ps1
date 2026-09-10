@@ -853,7 +853,12 @@ function Test-HttpTargetSyntax {
     # group, over a value no packet ever left for.
     $uri = $null
     if (-not [System.Uri]::TryCreate([string]$Value, [System.UriKind]::Absolute, [ref]$uri)) { return $false }
-    return ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")
+    if (-not ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")) { return $false }
+    # The host inside the URL is a host name like any other: Uri.TryCreate is happy with 'http://foo..bar/',
+    # and the empty label is only found when the request is already on its way, where the failure reads as a
+    # site that would not answer (PR #41, round 9). Uri strips the brackets from an IPv6 literal and keeps
+    # the userinfo out of Host, so what is tested here is the name itself.
+    return (Test-HostNameSyntax $uri.Host)
 }
 
 function Test-HostNameSyntax {

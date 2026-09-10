@@ -264,5 +264,14 @@ Assert-Case 'config rows: a -TcpTarget shaped right with a host that is not a na
 $o = [pscustomobject]@{ ExtraTargets = [pscustomobject]@{ Ping = @(); Dns = @(); Tcp = @('1.1.1.1:53'); Http = @() } }
 Assert-Case 'config rows: and a usable one leaves the PASS row alone' @($(if ((Get-ConfigRowCount $c $o) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $o), expected 1") })) $true ''
 
+# PR #41, round 9: a URL whose host is not a name, and the panel's six check boxes.
+$c = New-BrokenConfig; $c.Tests.HttpTargets[0].Url = 'http://foo..bar/'
+Assert-Case 'http target: an empty label in the host is not usable' @($(if (-not (Test-ConfiguredHttpTarget $c.Tests.HttpTargets[0])) { @() } else { @('the oracle called http://foo..bar/ usable') })) $true ''
+Assert-Case 'config rows: and it is the configured-targets row' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+$c = New-BrokenConfig; $c.Checks.ProxySettings = 'bad'; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: an invalid flag -NoWifi does not cover still warns' @($(if ((Get-ConfigRowCount $c $null @{ NoWifi = $true }) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c $null @{ NoWifi = $true }), expected 2") })) $true ''
+$panel = @{ Checks = @{ WifiRf = $true; Traceroute = $true; RouteTable = $true; GatewayNeighbor = $true; ProxySettings = $true; DriverInfo = $true } }
+Assert-Case 'config rows: but the panel replaces all six, leaving one' @($(if ((Get-ConfigRowCount $c $null $panel) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $null $panel), expected 1") })) $true ''
+
 "Summary: $passes passed, $fails failed"
 exit $fails

@@ -743,6 +743,13 @@ Assert-Equal '#39 host syntax: a host and port' (Test-HostNameSyntax 'example.co
 Assert-Equal '#39 host syntax: a user in the value' (Test-HostNameSyntax 'user@example.com') False
 Assert-Equal '#39 host syntax: a space inside' (Test-HostNameSyntax 'foo bar') False
 Assert-Equal '#39 host syntax: an IPv6 literal is not labels' (Test-HostNameSyntax 'fe80::1') True
+# Round 9: the host inside a URL, which Uri.TryCreate does not judge.
+Assert-Equal '#39 url syntax: an empty label in the host' (Test-HttpTargetSyntax 'http://foo..bar/') False
+Assert-Equal '#39 url syntax: a hyphen at the edge of the host' (Test-HttpTargetSyntax 'https://-foo.example.com/x') False
+Assert-Equal '#39 url syntax: a name with a path and a query' (Test-HttpTargetSyntax 'https://example.com/a/b?c=d') True
+Assert-Equal '#39 url syntax: a port is not part of the host' (Test-HttpTargetSyntax 'https://example.com:8443/') True
+Assert-Equal '#39 url syntax: an IPv6 literal in brackets' (Test-HttpTargetSyntax 'http://[fe80::1]/') True
+Assert-Equal '#39 url syntax: a user in the URL is not part of the host' (Test-HttpTargetSyntax 'https://user@example.com/') True
 Assert-Equal '#39 ping syntax: two values in one' (Test-PingTargetSyntax '1.1.1.1 8.8.8.8') False
 Assert-Equal '#39 ping syntax: a path' (Test-PingTargetSyntax 'example.com/health') False
 # A name that is well formed and does not resolve is the opposite case: it is tested, the resolver answers, and that

@@ -274,9 +274,11 @@ function Get-ConfigRowCount($Config, $Options, [hashtable]$Overrides) {
     # ConvertTo-IntSafe with -1 as the default, so a blank one is invalid there (PR #41, round 3).
     # Set-RunOptions replaces three scalars in the effective configuration before Test-ConfigurationSemantics
     # reads it, and only when the switch is greater than zero, so a file value the product would warn about is
-    # not warned about when a switch replaced it (PR #41, round 7). $Overrides is the case's own $Expect, whose
-    # scalar keys are exactly the switches that case passes - the report cannot answer this on its own, because
-    # RunOptions carries the sanitised value ([math]::Max(1, ...)) and not what the switch supplied.
+    # not warned about when a switch replaced it (PR #41, round 7). The report cannot answer this on its own,
+    # because RunOptions carries the sanitised value ([math]::Max(1, ...)) and not what the switch supplied, so
+    # the case states what it passed. Round 7 read those from $Expect itself, which was wrong for a window run:
+    # Invoke-WindowRun fills PingCount and SampleSeconds from the folder's configuration to assert against, and a
+    # user-entry run passes no switches at all (round 9). $Expect['Overrides'] is only what was really given.
     $overridden = @{}
     if ($null -ne $Overrides) {
         foreach ($pair in @(@('PingCount', 'PingCount'), @('RetransmissionSampleSeconds', 'SampleSeconds'), @('TracerouteHops', 'TracerouteHops'))) {
@@ -367,6 +369,9 @@ function Get-ConfigRowCount($Config, $Options, [hashtable]$Overrides) {
     if ($null -ne $Overrides) {
         if ($Overrides['NoWifi'] -eq $true) { $flagOverridden['WifiRf'] = $true }
         if ($Overrides['NoTraceroute'] -eq $true) { $flagOverridden['Traceroute'] = $true }
+        # The IT panel's Start passes all six controls through Get-RunOptionsFromPanel, so every flag it names is
+        # a real boolean in the effective configuration whatever the file said (round 9).
+        if ($Overrides['Checks'] -is [hashtable]) { foreach ($key in @($Overrides['Checks'].Keys)) { $flagOverridden[[string]$key] = $true } }
     }
     foreach ($flag in @('WifiRf', 'RouteTable', 'GatewayNeighbor', 'ProxySettings', 'Traceroute', 'DriverInfo')) {
         if ($flagOverridden.ContainsKey($flag)) { continue }
@@ -528,7 +533,7 @@ function Test-ResultSet {
         # config is one row on a configuration the tool can use as written, and up to four when it cannot: the
         # validation and threshold rows keep their weight, while the targets and options rows that name this run's
         # own input do not (backlog #39). The packaged configuration is valid, so the chain's own runs see one.
-        'config-file' = 1; 'config' = (Get-ConfigRowCount $Config $o $Expect); 'environment' = 1; 'system' = 1; 'adapters' = 1
+        'config-file' = 1; 'config' = (Get-ConfigRowCount $Config $o $Expect['Overrides']); 'environment' = 1; 'system' = 1; 'adapters' = 1
         'data-source' = $(if ([bool]$Machine.DataSourceRow) { 1 } else { 0 })   # the CIM fallback's warning row, only when the cmdlets threw
         # Without a connected adapter the snapshot writes the aggregate adapters row only: no gateway or DNS settings rows.
         'gateway-config' = $(if ($connected -gt 0) { 1 } else { 0 })
@@ -690,6 +695,20 @@ function Invoke-WindowRun {
     $expect = Get-ConfigSampling $Dir
     $expect['EntryPoint'] = $Entry
     $expect['ExpandDetails'] = ($Entry -eq 'IT')
+    # An IT window run is started from the panel - the Start handler, not the Reset button - and
+    # Get-RunOptionsFromPanel hands Set-RunOptions the three spinner values and all six check boxes, so those
+    # reach the effective configuration as real values before it is validated, whatever the file holds (PR #41,
+    # round 9). A user entry has no panel and overrides nothing. The spinners hold whatever Set-OptionsPanelValues
+    # seeded them with, always within their own minimum and maximum; what matters below is only that a value is
+    # supplied, so the hop count here stands for the panel's, not for a number this run asserts.
+    if ($Entry -eq 'IT') {
+        $expect['Overrides'] = @{
+            PingCount      = $expect['PingCount']
+            SampleSeconds  = $expect['SampleSeconds']
+            TracerouteHops = 3
+            Checks         = @{ WifiRf = $true; Traceroute = $true; RouteTable = $true; GatewayNeighbor = $true; ProxySettings = $true; DriverInfo = $true }
+        }
+    }
     $factsBefore = Get-MachineFacts
     $started = Get-Date
     $argList = @('-PackageDir', $Dir, '-Entry', $Entry, '-Via', 'Launcher', '-TimeoutSeconds', $GuiTimeoutSeconds)
@@ -859,10 +878,10 @@ try {
         # The two user runs go through the shipped console launcher (its trailing `pause` reads from NUL); the IT-switches
         # run calls the script directly because the launcher takes no arguments.
         $unreachableArgs = @('-ConsoleOnly', '-PingCount', '2', '-SampleSeconds', '2', '-TracerouteHops', '2', '-ExpandDetails', '-PingTarget', 'nhc-no-such-host.invalid', '-TcpTarget', '192.0.2.1:9', '-HttpUrl', 'https://nhc-no-such-host.invalid/')
-        $unreachableExpect = @{ EntryPoint = 'IT'; ExpandDetails = $true; PingCount = 2; SampleSeconds = 2; TracerouteHops = 2; ExtraPing = 'nhc-no-such-host.invalid'; ExtraTcp = '192.0.2.1:9'; ExtraHttp = 'https://nhc-no-such-host.invalid/'; AllowUnhealthy = $true; RequireErrorCause = $true }
+        $unreachableExpect = @{ EntryPoint = 'IT'; ExpandDetails = $true; PingCount = 2; SampleSeconds = 2; TracerouteHops = 2; Overrides = @{ PingCount = 2; SampleSeconds = 2; TracerouteHops = 2 }; ExtraPing = 'nhc-no-such-host.invalid'; ExtraTcp = '192.0.2.1:9'; ExtraHttp = 'https://nhc-no-such-host.invalid/'; AllowUnhealthy = $true; RequireErrorCause = $true }
         $acceptance = @(
             @{ Lang = 'en-US'; Case = 'en-US user (Start-NetworkCheck-Console.cmd)'; Launcher = 'Start-NetworkCheck-Console.cmd'; Expect = @{ EntryPoint = 'User'; ExpandDetails = $false } },
-            @{ Lang = 'en-US'; Case = 'en-US IT switches (direct)'; Args = @('-ConsoleOnly', '-PingCount', '6', '-SampleSeconds', '6', '-PingTarget', '8.8.8.8', '-TcpTarget', '1.1.1.1:53', '-TracerouteHops', '4', '-ExpandDetails'); Expect = @{ EntryPoint = 'IT'; ExpandDetails = $true; PingCount = 6; SampleSeconds = 6; TracerouteHops = 4; ExtraPing = '8.8.8.8'; ExtraTcp = '1.1.1.1:53' } },
+            @{ Lang = 'en-US'; Case = 'en-US IT switches (direct)'; Args = @('-ConsoleOnly', '-PingCount', '6', '-SampleSeconds', '6', '-PingTarget', '8.8.8.8', '-TcpTarget', '1.1.1.1:53', '-TracerouteHops', '4', '-ExpandDetails'); Expect = @{ EntryPoint = 'IT'; ExpandDetails = $true; PingCount = 6; SampleSeconds = 6; TracerouteHops = 4; Overrides = @{ PingCount = 6; SampleSeconds = 6; TracerouteHops = 4 }; ExtraPing = '8.8.8.8'; ExtraTcp = '1.1.1.1:53' } },
             @{ Lang = 'zh-TW'; Case = 'zh-TW user (Start-NetworkCheck-Console.cmd)'; Launcher = 'Start-NetworkCheck-Console.cmd'; Expect = @{ EntryPoint = 'User'; ExpandDetails = $false } },
             # Unreachable on purpose (RFC 2606 .invalid, RFC 5737 TEST-NET-1), so the ping, TCP and HTTP failure paths -
             # and with them the error-code classification of backlog #14 - are executed on every run of the chain: a

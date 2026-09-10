@@ -832,7 +832,11 @@ function Test-HttpTargetSyntax {
     # 因此可能顯示「發現問題」，必要群組的成員甚至會讓整個群組失敗，而那個值根本沒讓任何封包離開過。
     $uri = $null
     if (-not [System.Uri]::TryCreate([string]$Value, [System.UriKind]::Absolute, [ref]$uri)) { return $false }
-    return ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")
+    if (-not ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")) { return $false }
+    # 網址裡面的主機名稱也是一個主機名稱：Uri.TryCreate 會接受 'http://foo..bar/'，而那個空標籤要等到
+    # 請求已經送出去才會被發現，到時候看起來就像網站不回應（PR #41，第 9 輪）。Uri 會拿掉 IPv6 文字
+    # 位址的方括號，也不會把使用者資訊留在 Host 裡，所以這裡檢查的就是名稱本身。
+    return (Test-HostNameSyntax $uri.Host)
 }
 
 function Test-HostNameSyntax {
