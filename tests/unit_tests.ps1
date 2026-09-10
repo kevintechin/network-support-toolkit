@@ -1061,5 +1061,17 @@ Assert-Equal 'route #59: disagreeing is not the agreeing sentence' ($differText 
 Assert-Equal 'route #59: method line for several addresses names none of them' ((Get-RouteMethodText -Target 'a-name' -LookupAddress '93.184.216.34' -TargetIsAddress $false -ExtraCount 1) -match '93\.184\.216\.34') False
 Assert-Equal 'route #59: method line for several addresses counts them' ((Get-RouteMethodText -Target 'a-name' -LookupAddress '93.184.216.34' -TargetIsAddress $false -ExtraCount 1) -match '2') True
 
+
+# PR #45 round 4: the earlier shape returned on an unresolved first address and never read the others, hiding a
+# usable adapter behind one failed lookup while the Method line claimed every address had been read.
+$othersUsable = @([pscustomobject]@{ Address = '23.39.61.99'; Selection = $selEth })
+$primaryDeadText = Format-RouteSelection -Before $null -After $selNone -LookupAddress '93.184.216.34' -Others $othersUsable
+Assert-Equal 'route #59: an unresolved first address no longer hides the others' ($primaryDeadText -match '23\.39\.61\.99') True
+Assert-Equal 'route #59: and it names the adapter that other address selects' ($primaryDeadText -match 'Ethernet') True
+$othersAllDead = @([pscustomobject]@{ Address = '23.39.61.99'; Selection = $selNone })
+$allDeadText = Format-RouteSelection -Before $null -After $selNone -LookupAddress '93.184.216.34' -Others $othersAllDead
+Assert-Equal 'route #59: several addresses that all fail the same way say so once' ($allDeadText -match '23\.39\.61\.99') False
+Assert-Equal 'route #59: and they are not the single-address sentence' ($allDeadText -eq (Format-RouteSelection -Before $null -After $selNone -LookupAddress '93.184.216.34')) False
+
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

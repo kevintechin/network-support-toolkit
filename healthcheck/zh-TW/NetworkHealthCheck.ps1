@@ -2014,24 +2014,31 @@ function Format-RouteSelection {
     # 這一列就直接說出來而不是暗示有一對（PR #45 第 1 輪）。工具不自己去解析名稱：那會讓 ping
     # 檢查變成依賴解析器，而正在被診斷的機器往往就是解析器壞掉的那一台。
     if ($null -eq $Before) {
-        if ($null -ne $After -and $After.Resolved) {
+        # 整組位址在任何 return 之前就先組好。第 4 輪抓到舊寫法在第一個位址查不到時直接 return，
+        # 從來不讀其餘的 —— 把一張其實可用的網路卡藏在一次失敗的查詢後面，也讓 Method 行的「每一個都讀了」變成假的。
+        # 第一個有沒有查到，只決定措辭，不決定要不要看其餘的。
+        $agree = $true
+        $eachText = @(("{0}：{1}" -f $LookupAddress, $afterText))
+        foreach ($other in @($Others)) {
+            $otherText = Get-RouteSelectionText $other.Selection
+            $eachText += ("{0}：{1}" -f $other.Address, $otherText)
+            if ($otherText -ne $afterText) { $agree = $false }
+        }
+        $addressCount = @($Others).Count + 1
+        $primaryResolved = ($null -ne $After -and $After.Resolved)
+
+        if (-not $agree) {
+            return ("路由選擇：這個目標是名稱，而它的回應來自 {0} 個位址，路由表並不一視同仁 —— {1}。這一列無法把這次量測歸給單一一張網路卡。" -f $addressCount, ($eachText -join "；"))
+        }
+        if ($primaryResolved) {
             $sentence = ("路由選擇：{0}，是在探測之後針對 {1} 查的 —— 這個目標是名稱，探測之前沒有位址可以問，因此沒有取得前後兩次的對照。探測本身沒有綁定它。" -f $afterText, $LookupAddress)
-            if (@($Others).Count -gt 0) {
-                $agree = $true
-                $eachText = @(("{0}：{1}" -f $LookupAddress, $afterText))
-                foreach ($other in @($Others)) {
-                    $otherText = Get-RouteSelectionText $other.Selection
-                    $eachText += ("{0}：{1}" -f $other.Address, $otherText)
-                    if ($otherText -ne $afterText) { $agree = $false }
-                }
-                if ($agree) {
-                    $sentence += ("它的回應來自 {0} 個位址，而路由表對每一個都選出相同的來源與介面。" -f (@($Others).Count + 1))
-                }
-                else {
-                    $sentence = ("路由選擇：這個目標是名稱，而它的回應來自 {0} 個位址，路由表並不一視同仁 —— {1}。這一列無法把這次量測歸給單一一張網路卡。" -f (@($Others).Count + 1), ($eachText -join "；"))
-                }
+            if ($addressCount -gt 1) {
+                $sentence += ("它的回應來自 {0} 個位址，而路由表對每一個都選出相同的來源與介面。" -f $addressCount)
             }
             return $sentence
+        }
+        if ($addressCount -gt 1) {
+            return ("路由選擇：{0}，而且它回應所來的 {1} 個位址每一個都是如此。這一列無法說出這些探測是從哪一張網路卡送出的。" -f $afterText, $addressCount)
         }
         return ("路由選擇：{0}。這一列無法說出這些探測是從哪一張網路卡送出的。" -f $afterText)
     }

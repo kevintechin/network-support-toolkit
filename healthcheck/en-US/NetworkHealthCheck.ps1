@@ -2051,24 +2051,32 @@ function Format-RouteSelection {
     # taken and the row says so rather than implying one (PR #45, round 1). The tool does not resolve the name itself:
     # that would put the ping check behind the resolver, on a machine whose resolver is often what is being diagnosed.
     if ($null -eq $Before) {
-        if ($null -ne $After -and $After.Resolved) {
+        # The whole set is built before anything returns. Round 4 caught the earlier shape returning on an unresolved
+        # first address and never reading the others, which hid a usable adapter behind one failed lookup and left the
+        # Method line claiming every address had been read. Whether the first one resolved decides the wording, never
+        # whether the rest are consulted.
+        $agree = $true
+        $eachText = @(("{0}: {1}" -f $LookupAddress, $afterText))
+        foreach ($other in @($Others)) {
+            $otherText = Get-RouteSelectionText $other.Selection
+            $eachText += ("{0}: {1}" -f $other.Address, $otherText)
+            if ($otherText -ne $afterText) { $agree = $false }
+        }
+        $addressCount = @($Others).Count + 1
+        $primaryResolved = ($null -ne $After -and $After.Resolved)
+
+        if (-not $agree) {
+            return ("Route selection: this target is a name and its replies came from {0} addresses which the route table does not treat alike - {1}. This row cannot attribute the measurement to one adapter." -f $addressCount, ($eachText -join "; "))
+        }
+        if ($primaryResolved) {
             $sentence = ("Route selection: {0}, looked up for {1} after the probes - this target is a name, so there was no address to ask about before them and no before-and-after pair was taken. The probes are not bound to it." -f $afterText, $LookupAddress)
-            if (@($Others).Count -gt 0) {
-                $agree = $true
-                $eachText = @(("{0}: {1}" -f $LookupAddress, $afterText))
-                foreach ($other in @($Others)) {
-                    $otherText = Get-RouteSelectionText $other.Selection
-                    $eachText += ("{0}: {1}" -f $other.Address, $otherText)
-                    if ($otherText -ne $afterText) { $agree = $false }
-                }
-                if ($agree) {
-                    $sentence += (" Its replies came from {0} addresses and the route table selects the same source and interface for every one of them." -f (@($Others).Count + 1))
-                }
-                else {
-                    $sentence = ("Route selection: this target is a name and its replies came from {0} addresses which the route table does not treat alike - {1}. This row cannot attribute the measurement to one adapter." -f (@($Others).Count + 1), ($eachText -join "; "))
-                }
+            if ($addressCount -gt 1) {
+                $sentence += (" Its replies came from {0} addresses and the route table selects the same source and interface for every one of them." -f $addressCount)
             }
             return $sentence
+        }
+        if ($addressCount -gt 1) {
+            return ("Route selection: {0}, for every one of the {1} addresses its replies came from. This row cannot say which adapter the probes left by." -f $afterText, $addressCount)
         }
         return ("Route selection: {0}. This row cannot say which adapter the probes left by." -f $afterText)
     }
