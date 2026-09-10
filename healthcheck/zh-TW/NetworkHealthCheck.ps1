@@ -844,6 +844,17 @@ function Test-HostNameSyntax {
     # 這裡只檢查結構，不限制字元：格式正確但解析不出來的名稱是問過也得到答覆的——那是量測——而國際化
     # 名稱也必須維持可用。
     $name = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+    # 分隔符號屬於 URI，不屬於名稱：'http://example.com' 的標籤長度合法、邊緣也沒有連字號，下方的結構
+    # 規則會讓它通過（PR #41，第 7 輪）。ping 那邊拦得住，是因為這三行本來就寫在那裡；DNS 那邊沒有，
+    # 值就送到解析器去了。現在整條規則都在這裡，兩邊問的是同一個問題。冒號只有在值是 IP 位址時才允許，
+    # fe80::1 因此仍是目標，而 host:80 不是。
+    if ($name -match '\s') { return $false }
+    if ($name -match '[/\\?#@]') { return $false }
+    if ($name.Contains(":")) {
+        $parsedAddress = $null
+        return [System.Net.IPAddress]::TryParse($name, [ref]$parsedAddress)
+    }
     if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
     if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
     foreach ($label in $name.Split(".")) {
@@ -863,14 +874,6 @@ function Test-PingTargetSyntax {
     $text = ([string]$Value).Trim()
     if ([string]::IsNullOrWhiteSpace($text)) { return $false }
     if ($text -eq "AUTO_GATEWAY" -or $text -eq "AUTO_DNS") { return $true }
-    if ($text -match '\s') { return $false }
-    if ($text -match '[/\\?#@]') { return $false }
-    if ($text.Contains(":")) {
-        $parsedAddress = $null
-        if (-not [System.Net.IPAddress]::TryParse($text, [ref]$parsedAddress)) { return $false }
-        return $true
-    }
-
     # 解析器根本無法接受的名稱，跟網址一樣屬於輸入問題：foo..bar 這種空標籤、超過 63 個字元的
     # 標籤、超過 253 個字元的完整名稱，或以連字號開頭或結尾的標籤。Ping.Send 會在封包產生之前就擲回例外，
     # 而包在外層的 catch 會把它記成一次遺失的回覆 - 因此這樣拼寫的必要目標會被報成量測到的 100% 遺失，

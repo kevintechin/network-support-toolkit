@@ -242,5 +242,14 @@ Assert-Case 'config rows: an unusable -DnsName and -HttpUrl are the same one row
 $o = [pscustomobject]@{ ExtraTargets = [pscustomobject]@{ Ping = @('8.8.8.8'); Dns = @('www.example.com'); Tcp = @(); Http = @('https://example.com') } }
 Assert-Case 'config rows: usable switch targets leave the PASS row alone' @($(if ((Get-ConfigRowCount $c $o) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $o), expected 1") })) $true ''
 
+# PR #41, round 7: a URL where a DNS name belongs, and the scalar switches that replace a file value.
+Assert-Case 'dns rows: a URL is not a usable name' @($(if (-not (Test-ConfiguredDnsTarget 'http://example.com')) { @() } else { @('the oracle called a URL a usable DNS name') })) $true ''
+$c = New-BrokenConfig; $c.Tests.PingCount = 0; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: a file PingCount of 0 warns, so two rows' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+Assert-Case 'config rows: and -PingCount 4 replaces it, leaving one' @($(if ((Get-ConfigRowCount $c $null @{ PingCount = 4 }) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $null @{ PingCount = 4 }), expected 1") })) $true ''
+$c = New-BrokenConfig; $c.Checks.TracerouteHops = 99; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: a file hop count out of range warns, so two rows' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+Assert-Case 'config rows: and -TracerouteHops 4 replaces it, leaving one' @($(if ((Get-ConfigRowCount $c $null @{ TracerouteHops = 4 }) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $null @{ TracerouteHops = 4 }), expected 1") })) $true ''
+
 "Summary: $passes passed, $fails failed"
 exit $fails

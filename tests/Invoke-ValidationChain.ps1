@@ -263,13 +263,25 @@ function Test-UsableIPAddress([string]$Value) {
     $parsed = $null
     return [System.Net.IPAddress]::TryParse([string]$Value, [ref]$parsed)
 }
-function Get-ConfigRowCount($Config, $Options) {
+function Get-ConfigRowCount($Config, $Options, [hashtable]$Overrides) {
     # Test-ConfigurationSemantics writes up to four rows out of four lists, and the PASS row appears only when all
     # four are empty (backlog #39, PR #41 round 1): a configuration whose only problem is an invalid target has no
     # validation row at all, and threshold and option problems together produce two rows rather than one. The four
     # predicates are reproduced here in the order the script applies them.
     # Blank entries are skipped by the product in three of these loops, and prefix lengths are read through
     # ConvertTo-IntSafe with -1 as the default, so a blank one is invalid there (PR #41, round 3).
+    # Set-RunOptions replaces three scalars in the effective configuration before Test-ConfigurationSemantics
+    # reads it, and only when the switch is greater than zero, so a file value the product would warn about is
+    # not warned about when a switch replaced it (PR #41, round 7). $Overrides is the case's own $Expect, whose
+    # scalar keys are exactly the switches that case passes - the report cannot answer this on its own, because
+    # RunOptions carries the sanitised value ([math]::Max(1, ...)) and not what the switch supplied.
+    $overridden = @{}
+    if ($null -ne $Overrides) {
+        foreach ($pair in @(@('PingCount', 'PingCount'), @('RetransmissionSampleSeconds', 'SampleSeconds'), @('TracerouteHops', 'TracerouteHops'))) {
+            if ($Overrides.ContainsKey($pair[1]) -and (ConvertTo-IntSafe $Overrides[$pair[1]] 0) -gt 0) { $overridden[$pair[0]] = ConvertTo-IntSafe $Overrides[$pair[1]] 0 }
+        }
+    }
+
     $standards = 0
     $expected = $Config.Expected
     foreach ($ip in @(Get-Value $expected 'AllowedIPv4Addresses')) { if (-not [string]::IsNullOrWhiteSpace([string]$ip) -and -not (Test-IsValidIPv4Address ([string]$ip))) { $standards += 1 } }
@@ -301,6 +313,7 @@ function Get-ConfigRowCount($Config, $Options) {
     $thresholds = 0
     foreach ($name in @('PingCount', 'PingTimeoutMs', 'DnsTimeoutMs', 'TcpTimeoutMs', 'HttpTimeoutMs', 'RetransmissionSampleSeconds')) {
         $value = Get-Value $Config.Tests $name
+        if ($overridden.ContainsKey($name)) { $value = $overridden[$name] }
         # The product's two branches, in its order: a present value that is not a whole number, or - and this is the
         # branch an explicit null reaches, because ConvertTo-IntSafe hands back 0 - a value of zero or less.
         if ($null -ne $value -and -not (Test-IsWholeNumber $value)) { $thresholds += 1 }
@@ -348,6 +361,7 @@ function Get-ConfigRowCount($Config, $Options) {
         if ($null -ne $value -and -not ($value -is [bool])) { $options += 1 }
     }
     $hops = Get-Value $Config.Checks 'TracerouteHops'
+    if ($overridden.ContainsKey('TracerouteHops')) { $hops = $overridden['TracerouteHops'] }
     if ($null -ne $hops -and (-not (Test-IsWholeNumber $hops) -or (ConvertTo-IntSafe $hops 0) -lt 1 -or (ConvertTo-IntSafe $hops 0) -gt 10)) { $options += 1 }
 
     $rows = 0
@@ -501,7 +515,7 @@ function Test-ResultSet {
         # config is one row on a configuration the tool can use as written, and up to four when it cannot: the
         # validation and threshold rows keep their weight, while the targets and options rows that name this run's
         # own input do not (backlog #39). The packaged configuration is valid, so the chain's own runs see one.
-        'config-file' = 1; 'config' = (Get-ConfigRowCount $Config $o); 'environment' = 1; 'system' = 1; 'adapters' = 1
+        'config-file' = 1; 'config' = (Get-ConfigRowCount $Config $o $Expect); 'environment' = 1; 'system' = 1; 'adapters' = 1
         'data-source' = $(if ([bool]$Machine.DataSourceRow) { 1 } else { 0 })   # the CIM fallback's warning row, only when the cmdlets threw
         # Without a connected adapter the snapshot writes the aggregate adapters row only: no gateway or DNS settings rows.
         'gateway-config' = $(if ($connected -gt 0) { 1 } else { 0 })

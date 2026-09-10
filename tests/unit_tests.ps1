@@ -737,6 +737,12 @@ Assert-Equal '#39 host syntax: a leading dot' (Test-HostNameSyntax '.example.com
 Assert-Equal '#39 host syntax: blank' (Test-HostNameSyntax '') False
 Assert-Equal '#39 host syntax: a 64-character label' (Test-HostNameSyntax (('a' * 64) + '.example.com')) False
 Assert-Equal '#39 host syntax: a hyphen at the edge' (Test-HostNameSyntax '-foo.example.com') False
+# Round 7: the delimiters the ping family always refused, now refused for DNS names too.
+Assert-Equal '#39 host syntax: a URL' (Test-HostNameSyntax 'http://example.com') False
+Assert-Equal '#39 host syntax: a host and port' (Test-HostNameSyntax 'example.com:80') False
+Assert-Equal '#39 host syntax: a user in the value' (Test-HostNameSyntax 'user@example.com') False
+Assert-Equal '#39 host syntax: a space inside' (Test-HostNameSyntax 'foo bar') False
+Assert-Equal '#39 host syntax: an IPv6 literal is not labels' (Test-HostNameSyntax 'fe80::1') True
 Assert-Equal '#39 ping syntax: two values in one' (Test-PingTargetSyntax '1.1.1.1 8.8.8.8') False
 Assert-Equal '#39 ping syntax: a path' (Test-PingTargetSyntax 'example.com/health') False
 # A name that is well formed and does not resolve is the opposite case: it is tested, the resolver answers, and that

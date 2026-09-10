@@ -867,6 +867,18 @@ function Test-HostNameSyntax {
     # resolve was asked and answered - that is a measurement - and because an internationalised name has to stay
     # usable.
     $name = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+    # A delimiter belongs to a URI, not to a name: 'http://example.com' has labels of a legal length and no
+    # hyphen at an edge, so the structural rules below say yes to it (PR #41, round 7). The ping family caught
+    # this because these three lines used to live there; the DNS family did not, and the value went to the
+    # resolver. Now the whole rule is here and both families ask the same question. A colon is allowed only
+    # when the value is an IP address, which is how fe80::1 stays a target and host:80 does not.
+    if ($name -match '\s') { return $false }
+    if ($name -match '[/\\?#@]') { return $false }
+    if ($name.Contains(":")) {
+        $parsedAddress = $null
+        return [System.Net.IPAddress]::TryParse($name, [ref]$parsedAddress)
+    }
     if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
     if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
     foreach ($label in $name.Split(".")) {
@@ -887,14 +899,6 @@ function Test-PingTargetSyntax {
     $text = ([string]$Value).Trim()
     if ([string]::IsNullOrWhiteSpace($text)) { return $false }
     if ($text -eq "AUTO_GATEWAY" -or $text -eq "AUTO_DNS") { return $true }
-    if ($text -match '\s') { return $false }
-    if ($text -match '[/\\?#@]') { return $false }
-    if ($text.Contains(":")) {
-        $parsedAddress = $null
-        if (-not [System.Net.IPAddress]::TryParse($text, [ref]$parsedAddress)) { return $false }
-        return $true
-    }
-
     # A name no resolver can accept is the same kind of input problem as a URL: an empty label such as
     # foo..bar, a label of more than 63 characters, a whole name of more than 253, or a label that starts or
     # ends with a hyphen. Ping.Send throws before any packet exists, and the catch around it records that as a
