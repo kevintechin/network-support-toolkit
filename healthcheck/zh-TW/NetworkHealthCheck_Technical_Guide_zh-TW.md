@@ -144,7 +144,7 @@ HTTP/HTTPS 使用 `HttpWebRequest`：
 FAIL > ERROR > WARN > PASS
 ```
 
-因此任何 `FAIL` 會顯示「偵測到異常」；沒有 FAIL 但有無法執行項目時顯示「檢測未完整」；再其次是警告；最後才是整體正常。
+因此任何 `FAIL` 會顯示「偵測到異常」；沒有 FAIL 但有無法執行項目時顯示「檢測未完整」；再其次是警告；最後才是整體正常。**自 1.2.8 起，這個優先序只套用在這次執行量到的列上**（backlog #39）：被標記為 `Weightless` 的列——量不到的統計、對所套用門檻來說太粗的樣本、關於本次執行輸入的事實——不參與這個比較，也不參與指紋的任何判斷式；而 `Get-SummaryCounts` 與報告的提醒仍然讀頁面上的每一列，所以這種列保有徽章與對徽章的說明。標記是逐分支 opt-in：沒被點名的列一律保有權重，因此日後新增的檢查不會因為漏寫而失去權重。
 
 ### 4.10 網卡分類、IT 診斷資料與指紋（1.2）
 
@@ -163,7 +163,7 @@ IT 診斷資料每次都會執行（可在設定檔 `Checks` 區段或用 `-NoWi
 
 IT 範圍的項目不影響整體結果與摘要計數：`Get-OverallStatus` 與 `Get-SummaryCounts` 排除 `Scope = "IT"`，IT 資料收集失敗只會在 IT 區段內顯示為「無法檢查」（整個 IT 步驟都在該範圍執行，即使發生非預期例外也不會翻轉整體結果）。虛擬網卡的計數器項目不論增量大小都只列為資訊。
 
-每筆結果現在帶有語言中立的 `Tag`（例如 `ping-gateway`、`dns`、`connectivity-group`、`tcp-retransmissions`、`wifi`）與 `Scope`（`Main` 或 `IT`）。指紋由標籤計算：`local`、`gateway-unreachable`、`gateway-up-internet-dead`（閘道有回應、必要連線群組失敗且沒有任何群組通過）、`dns`（只在沒有任何 DNS 檢查通過時）、`quality`（遺失、延遲、重傳或網卡錯誤的警告或異常，且沒有其他項目失敗）、`attention`（其他只有警告的執行）、`mixed`、`incomplete`、`healthy`，驅動 HTML 與文字報告頂端的「要告訴 IT 的話」，JSON 存在 `Fingerprint`。
+每筆結果現在帶有語言中立的 `Tag`（例如 `ping-gateway`、`dns`、`connectivity-group`、`tcp-retransmissions`、`wifi`）與 `Scope`（`Main` 或 `IT`）；自 1.2.8 起又多一個 `Weightless` 布林值（backlog #39）：`true` 代表這一列保有徽章、訊息與統計數字，卻不決定整體結果、也不影響指紋。這個欄位是在 **`SchemaVersion: 2` 下新增**，而不是升到 3：依本文件自己的規則，使用者只讀有文件記載的欄位，沒讀的欄位影響不了它，而這份欄位清單就是新欄位成為契約的地方。指紋由標籤計算：`local`、`gateway-unreachable`、`gateway-up-internet-dead`（閘道有回應、必要連線群組失敗且沒有任何群組通過）、`dns`（只在沒有任何 DNS 檢查通過時）、`quality`（遺失、延遲、重傳或網卡錯誤的警告或異常，且沒有其他項目失敗）、`attention`（其他只有警告的執行）、`mixed`、`incomplete`、`healthy`，驅動 HTML 與文字報告頂端的「要告訴 IT 的話」，JSON 存在 `Fingerprint`。
 
 執行選項由入口決定：`Start-NetworkCheck-IT.cmd` 帶 `-Interactive -ExpandDetails`；`-PingTarget`、`-DnsName`、`-TcpTarget`（host:port）、`-HttpUrl`、`-PingCount`、`-SampleSeconds`、`-TracerouteHops`、`-NoTraceroute`、`-NoWifi` 只影響本次執行（在同一個值裡，多個 Ping／DNS／TCP 項目可用逗號、分號或空白分隔，例如 `-PingTarget 10.0.0.1,10.0.0.2`，多個 URL 只能用空白分隔，因為逗號與分號是 URL 的合法字元；從 shell 傳入時請把清單寫成一個逗號分隔或加引號的值：多出來的第二個值會被 PowerShell 在腳本開始之前直接拒絕（1.2.7 起不再有任何位置參數），而在 PowerShell 提示字元下沒加引號的分號會結束陳述式），並記錄在報告的執行設定行與 JSON 的 `RunOptions`（`EntryPoint`、`ExtraTargets` 為通過驗證的值、`RawTargets` 為原始輸入、`PingCount`、`SampleSeconds`、`TracerouteHops`、`ChecksEnabled`）。IT 面板的 Ping 次數與取樣秒數旋轉鈕預設範圍為 1–20 與 1–120 秒；設定值超過上限時會放寬旋轉鈕範圍，因此面板會顯示設定值，未更動就開始也會以設定值執行（1.2.1）。設定檔永遠不會被寫入。JSON 的 `SchemaVersion` 為 2。
 

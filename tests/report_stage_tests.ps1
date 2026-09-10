@@ -315,5 +315,100 @@ $ruleCalls = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Lan
 Assert-Equal 'J: one rule, called by both the run and the panel' ($ruleCalls.Count -ge 2) True
 $script:OptionsPanel = $null
 
+# --- Scenario K: what the verdict follows, and what it stops following (backlog #39) ---
+# Every fixture below asserts its own row count first. Against a script without the marking, -Weightless fails to
+# bind and the row is never added at all, so a verdict assertion alone would pass for the wrong reason - the run
+# would be healthy because nothing was there. The count is what makes the rest of each fixture mean something.
+# The rule is one sentence: the overall result is decided by what the run measured. Every assertion below is written
+# for both languages, and each is paired with its opposite - the same row weighted - so that what is proved is the
+# marking and not the fixture.
+
+# A run in which every check passed and one counter could not be read: the case this decision was written for, where
+# 1.2.7 said Test Incomplete on a healthy network and the manual had to apologise for the verdict.
+$script:Results = New-Object System.Collections.ArrayList
+$script:RetransmissionRateComputed = $false
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+Add-CheckResult -Category "Test" -Check "TCPv4 counters" -Status "ERROR" -Message "unreadable" -Details "" -Tag "tcp-retransmissions" -Weightless | Out-Null
+Assert-Equal 'K: the fixture built its 2 row(s)' (@($script:Results).Count) 2
+Assert-Equal 'K: an unreadable counter leaves a healthy run healthy' (Get-OverallStatus).Code "PASS"
+Assert-Equal 'K: and the fingerprint agrees with the verdict' (Get-FingerprintSummary).Key "healthy"
+Assert-Equal 'K: the row keeps its badge in the counts' (Get-SummaryCounts).Error 1
+Assert-Equal 'K: and the notice still explains that badge (#40)' (Get-ReportNoticeFlags).Unable True
+Assert-Equal 'K: the summary names what was not measured' ((@((Get-FingerprintSummary).Lines) -join " ") -match 'TCPv4 counters') True
+# The same row weighted is the 1.2.7 behaviour, and it must still be reachable: nothing is weightless by default.
+$script:Results = New-Object System.Collections.ArrayList
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+Add-CheckResult -Category "Test" -Check "TCPv4 counters" -Status "ERROR" -Message "unreadable" -Details "" -Tag "tcp-retransmissions" | Out-Null
+Assert-Equal 'K: the fixture built its 2 row(s)' (@($script:Results).Count) 2
+Assert-Equal 'K: the same row unmarked still makes the run Test Incomplete' (Get-OverallStatus).Code "ERROR"
+Assert-Equal 'K: and the fingerprint follows it' (Get-FingerprintSummary).Key "incomplete"
+
+# A quality warning that was measured keeps its weight - the decision moves the verdict off rows that could not
+# measure, and removes no number from any report.
+$script:Results = New-Object System.Collections.ArrayList
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+Add-CheckResult -Category "Test" -Check "TCPv4" -Status "WARN" -Message "measured rate" -Details "" -Tag "tcp-retransmissions" | Out-Null
+Assert-Equal 'K: the fixture built its 2 row(s)' (@($script:Results).Count) 2
+Assert-Equal 'K: a measured quality warning still turns the verdict' (Get-OverallStatus).Code "WARN"
+Assert-Equal 'K: and still reads as a quality problem' (Get-FingerprintSummary).Key "quality"
+# The same row on a sample too coarse for the threshold is weightless (#51's branch, decided here), and then the
+# fingerprint must not go on calling it a quality problem - the predicate that concludes follows the weights.
+$script:Results = New-Object System.Collections.ArrayList
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+Add-CheckResult -Category "Test" -Check "TCPv4" -Status "WARN" -Message "small sample" -Details "" -Tag "tcp-retransmissions" -Weightless | Out-Null
+Assert-Equal 'K: the fixture built its 2 row(s)' (@($script:Results).Count) 2
+Assert-Equal 'K: a sample too small to mean anything does not turn the verdict' (Get-OverallStatus).Code "PASS"
+Assert-Equal 'K: and does not leave the fingerprint saying quality' (Get-FingerprintSummary).Key "healthy"
+Assert-Equal 'K: while the row is still in the counts' (Get-SummaryCounts).Warn 1
+
+# An input notice must not suppress the quality key either: a weightless row that reached the other-problem
+# predicate would turn "Connected, but quality is poor" into "Warnings to review" about the same run.
+$script:Results = New-Object System.Collections.ArrayList
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+Add-CheckResult -Category "Test" -Check "TCPv4" -Status "WARN" -Message "measured rate" -Details "" -Tag "tcp-retransmissions" | Out-Null
+Add-CheckResult -Category "Test" -Check "Extra TCP 8.8.8.8" -Status "ERROR" -Message "not host:port" -Details "" -Tag "tcp" -Weightless | Out-Null
+Assert-Equal 'K: the fixture built its 3 row(s)' (@($script:Results).Count) 3
+Assert-Equal 'K: an input notice beside a measured warning leaves the quality key' (Get-FingerprintSummary).Key "quality"
+Assert-Equal 'K: and the verdict is the warning''s, not the notice''s' (Get-OverallStatus).Code "WARN"
+
+# A required check that did not run keeps its weight, so the run cannot read Overall Healthy with a measurement
+# missing - the second half of the two-row cut.
+$script:Results = New-Object System.Collections.ArrayList
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+Add-CheckResult -Category "Test" -Check "Direct HTTPS Test" -Status "ERROR" -Message "invalid host or port" -Details "" -Tag "tcp" -Weightless | Out-Null
+Add-CheckResult -Category "Test" -Check "Direct HTTPS Test" -Status "ERROR" -Message "did not run" -Details "" -Tag "tcp" | Out-Null
+Assert-Equal 'K: the fixture built its 3 row(s)' (@($script:Results).Count) 3
+Assert-Equal 'K: a required check that did not run still makes the run Test Incomplete' (Get-OverallStatus).Code "ERROR"
+Assert-Equal 'K: the input notice beside it is named once in the summary' (([regex]::Matches(((@((Get-FingerprintSummary).Lines) -join " ")), 'Direct HTTPS Test')).Count) 1
+
+# Scope beats nothing: an IT-scoped row is out of the verdict as it always was, marked or not.
+$script:Results = New-Object System.Collections.ArrayList
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+Add-CheckResult -Category "IT" -Check "Traceroute" -Status "FAIL" -Message "it row" -Details "" -Tag "traceroute" -Scope "IT" | Out-Null
+Assert-Equal 'K: the fixture built its 2 row(s)' (@($script:Results).Count) 2
+Assert-Equal 'K: an IT row never reached the verdict and still does not' (Get-OverallStatus).Code "PASS"
+
+# The startup notice is weightless where it names a dropped target, and weighted where it names the environment -
+# two families under one tag, and the run that says Overall Healthy while its report is written into a folder that
+# disappears is the one this distinction prevents.
+$script:Results = New-Object System.Collections.ArrayList
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+Add-CheckResult -Category "Test" -Check "Startup Notice" -Status "WARN" -Message "compressed folder" -Details "" -Tag "startup" | Out-Null
+Assert-Equal 'K: the fixture built its 2 row(s)' (@($script:Results).Count) 2
+Assert-Equal 'K: an environment notice still turns the verdict' (Get-OverallStatus).Code "WARN"
+$script:Results = New-Object System.Collections.ArrayList
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+Add-CheckResult -Category "Test" -Check "Startup Notice" -Status "WARN" -Message "dropped target" -Details "" -Tag "startup" -Weightless | Out-Null
+Assert-Equal 'K: the fixture built its 2 row(s)' (@($script:Results).Count) 2
+Assert-Equal 'K: an input notice does not' (Get-OverallStatus).Code "PASS"
+Assert-Equal 'K: and is not named in the summary, where its own section row names the target' ((@((Get-FingerprintSummary).Lines) -join " ") -match '(Startup Notice|啟動提示)') False
+
+# The marking is opt-in, which is the property that keeps a check added later from becoming weightless by accident.
+$script:Results = New-Object System.Collections.ArrayList
+Add-CheckResult -Category "Test" -Check "Something new" -Status "FAIL" -Message "a check nobody marked" -Details "" -Tag "new-check" | Out-Null
+Assert-Equal 'K: the fixture built its 1 row(s)' (@($script:Results).Count) 1
+Assert-Equal 'K: an unmarked row is weighted by default' (Get-OverallStatus).Code "FAIL"
+Assert-Equal 'K: and the field is on every row, marked or not' (@($script:Results)[0].PSObject.Properties.Name -contains "Weightless") True
+
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

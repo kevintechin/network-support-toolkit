@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -702,6 +702,67 @@ $enclosingBlock = $warmCall.Parent
 while ($null -ne $enclosingBlock -and -not ($enclosingBlock -is [System.Management.Automation.Language.ScriptBlockExpressionAst])) { $enclosingBlock = $enclosingBlock.Parent }
 Assert-Equal '#38 dead baseline: the baseline step has a script block to read' ($null -ne $enclosingBlock) True
 Assert-Equal '#38 dead baseline: and it throws nothing away' (@($enclosingBlock.FindAll({ param($n) $n -is [System.Management.Automation.Language.ThrowStatementAst] }, $true)).Count) 0
+
+# ---------------------------------------------------------------------------
+# backlog #39: the overall result is decided by what the run measured. Two things are asserted here that the
+# report-stage scenarios cannot see: which call sites declare the marking, and which functions read it.
+# ---------------------------------------------------------------------------
+# Can this value become a ping target at all - asked before anything is sent, because attempting a value that cannot
+# be one turns a typo into a measurement: 'http://example.com' reports 100% loss, which reads as a network that
+# dropped every packet.
+Assert-Equal '#39 ping syntax: a literal address' (Test-PingTargetSyntax '1.1.1.1') True
+Assert-Equal '#39 ping syntax: a host name' (Test-PingTargetSyntax 'www.example.com') True
+Assert-Equal '#39 ping syntax: an IPv6 literal' (Test-PingTargetSyntax 'fe80::1') True
+Assert-Equal '#39 ping syntax: the gateway placeholder' (Test-PingTargetSyntax 'AUTO_GATEWAY') True
+Assert-Equal '#39 ping syntax: the DNS placeholder' (Test-PingTargetSyntax 'AUTO_DNS') True
+Assert-Equal '#39 ping syntax: blank' (Test-PingTargetSyntax '') False
+Assert-Equal '#39 ping syntax: whitespace only' (Test-PingTargetSyntax '   ') False
+Assert-Equal '#39 ping syntax: a URL' (Test-PingTargetSyntax 'http://example.com') False
+Assert-Equal '#39 ping syntax: a host and port' (Test-PingTargetSyntax '8.8.8.8:443') False
+Assert-Equal '#39 ping syntax: two values in one' (Test-PingTargetSyntax '1.1.1.1 8.8.8.8') False
+Assert-Equal '#39 ping syntax: a path' (Test-PingTargetSyntax 'example.com/health') False
+# A name that is well formed and does not resolve is the opposite case: it is tested, the resolver answers, and that
+# answer is a measurement this rule must not touch.
+Assert-Equal '#39 ping syntax: a name that will not resolve is still a usable target' (Test-PingTargetSyntax 'nhc-no-such-host.invalid') True
+
+# The step carries the weight, not the tag: the four quality collectors declare the marking at their call site and
+# their step-error rows inherit it, while the two analysis steps beside them keep theirs. Read off the AST, because
+# a run that proves it needs a machine whose counters and adapter statistics both fail.
+$stepCalls = @($scriptAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-CheckStep' }, $true))
+# The parameter, not the text: a step's extent includes its whole -Action block, and one of those blocks writes a
+# row that carries the marking of its own, which made the first draft of this assertion count five steps.
+function Get-StepParameter($Call, [string]$Name) {
+    return @($Call.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq $Name })
+}
+function Get-StepProgress($Call) {
+    $elements = @($Call.CommandElements)
+    for ($i = 0; $i -lt $elements.Count - 1; $i++) {
+        if ($elements[$i] -is [System.Management.Automation.Language.CommandParameterAst] -and $elements[$i].ParameterName -eq 'Progress') {
+            return [int]$elements[$i + 1].Extent.Text
+        }
+    }
+    return -1
+}
+$weightlessSteps = @($stepCalls | Where-Object { (Get-StepParameter $_ 'Weightless').Count -gt 0 })
+Assert-Equal '#39 steps: four of them declare the marking' $weightlessSteps.Count 4
+Assert-Equal '#39 steps: and they are the collectors, by their progress points' ((@($weightlessSteps | ForEach-Object { Get-StepProgress $_ } | Sort-Object) -join ',')) '10,13,82,89'
+Assert-Equal '#39 steps: the analysis steps beside them keep their weight' (@($stepCalls | Where-Object { (Get-StepProgress $_) -in @(85, 92) -and (Get-StepParameter $_ 'Weightless').Count -gt 0 }).Count) 0
+
+# What concludes follows the weights; what describes the page follows the rows on the page. Round 8 of PR #37 found
+# the first draft of that sentence saying "every predicate that reads the result set", which would have taken the
+# Unable flag with it - the flag whose only job is to explain a badge the weightless row still carries.
+function Get-FunctionBody([string]$Name) {
+    $fn = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }, $true)
+    if ($null -eq $fn) { return "" }
+    return $fn.Extent.Text
+}
+Assert-Equal '#39 verdict: Get-OverallStatus reads the weighted rows' ((Get-FunctionBody 'Get-OverallStatus') -match '-not \$_\.Weightless') True
+Assert-Equal '#39 fingerprint: its predicates read the weighted rows' ((Get-FunctionBody 'Get-FingerprintSummary') -match '-not \$_\.Weightless') True
+Assert-Equal '#39 counts: Get-SummaryCounts describes the page and reads every row' ((Get-FunctionBody 'Get-SummaryCounts') -match 'Weightless') False
+Assert-Equal '#39 notice: Get-ReportNoticeFlags does too, so a badge keeps its explanation' ((Get-FunctionBody 'Get-ReportNoticeFlags') -match 'Weightless') False
+# The marking is opt-in, and that is a property of Add-CheckResult itself: a switch, defaulting to unmarked.
+Assert-Equal '#39 marking: the row carries the field' ((Get-FunctionBody 'Add-CheckResult') -match 'Weightless  = \[bool\]\$Weightless') True
+Assert-Equal '#39 marking: and it is a switch, so a row is weighted unless it is named' ((Get-FunctionBody 'Add-CheckResult') -match '\[switch\]\$Weightless') True
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

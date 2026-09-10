@@ -1,4 +1,4 @@
-param([string]$ReportPath, [string]$ReportDir, [string]$ConfigDir)
+﻿param([string]$ReportPath, [string]$ReportDir, [string]$ConfigDir)
 # Negative self-check of the runner's result-set assertion (Test-ResultSet in Invoke-ValidationChain.ps1): the helper
 # functions are lifted out of the runner by AST; a real report from an earlier run must pass intact against the real
 # machine facts (the positive control); and a fixture normalised out of that report - three adapter rows and three counter
@@ -21,7 +21,7 @@ $ErrorActionPreference = 'Stop'
 $runner = Join-Path $PSScriptRoot 'Invoke-ValidationChain.ps1'
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($runner, [ref]$tokens, [ref]$errors)
-foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Read-Config', 'Get-Count', 'Test-TrueFlag', 'Get-CimOrWmiInstance', 'Add-PrimaryFacts', 'Get-MachineFacts', 'Get-StandardRuleCount', 'Test-ResultSet', 'ConvertTo-FactsKey', 'Test-ResultSetForRun') }, $true)) { Invoke-Expression $f.Extent.Text }
+foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Read-Config', 'Get-Count', 'Test-TrueFlag', 'Get-CimOrWmiInstance', 'Add-PrimaryFacts', 'Get-MachineFacts', 'Get-StandardRuleCount', 'Test-ResultSet', 'ConvertTo-FactsKey', 'Test-ResultSetForRun', 'Get-Value', 'Get-ConfigRowCount', 'Get-TargetRowCount', 'Test-ConfiguredTcpTarget', 'Test-ConfiguredPingAddress') }, $true)) { Invoke-Expression $f.Extent.Text }
 $machine = Get-MachineFacts
 "machine: $($machine.ConnectedAdapters) connected adapter(s) with an address, gateway(s) $(@($machine.Gateways) -join ', '), source $($machine.Source), TCP counters v4=$($machine.TcpCounters.TCPv4) v6=$($machine.TcpCounters.TCPv6)"
 $cfg = Read-Config $ConfigDir

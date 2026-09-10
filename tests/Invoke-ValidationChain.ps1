@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Runs the NetworkHealthCheck validation chain against this checkout (backlog #16).
 
@@ -170,6 +170,58 @@ function Add-PrimaryFacts([hashtable]$Facts, [object[]]$Adapters) {
     $Facts.Gateways = @(@($primary | ForEach-Object { @($_.Gateways) }) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
     $Facts.DnsServers = @(@($primary | ForEach-Object { @($_.Dns) }) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
 }
+function Test-ConfiguredTcpTarget($Target) {
+    $hostName = [string](Get-Value $Target 'Host')
+    $port = 0
+    [void][int]::TryParse([string](Get-Value $Target 'Port'), [ref]$port)
+    return (-not [string]::IsNullOrWhiteSpace($hostName)) -and $port -ge 1 -and $port -le 65535
+}
+function Test-ConfiguredPingAddress([string]$Address) {
+    $text = ([string]$Address).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+    if ($text -eq 'AUTO_GATEWAY' -or $text -eq 'AUTO_DNS') { return $true }
+    if ($text -match '\s') { return $false }
+    if ($text -match '[/\\?#@]') { return $false }
+    if ($text.Contains(':')) {
+        $parsed = $null
+        if (-not [System.Net.IPAddress]::TryParse($text, [ref]$parsed)) { return $false }
+    }
+    return $true
+}
+function Get-TargetRowCount($Targets, [scriptblock]$IsUsable, [bool]$RequiredByDefault) {
+    # One row per target, as before - and two for a target the run cannot test that was required: the input notice
+    # that names the mistake, weightless, plus the weighted row saying the required check did not run (backlog #39).
+    $rows = 0
+    foreach ($target in @($Targets)) {
+        if ($null -eq $target) { continue }
+        $rows += 1
+        if (-not (& $IsUsable $target)) {
+            $required = $RequiredByDefault
+            $value = Get-Value $target 'Required'
+            if ($null -ne $value) { $required = [bool]$value }
+            if ($required) { $rows += 1 }
+        }
+    }
+    return $rows
+}
+function Get-Value($Object, [string]$Name) {
+    if ($null -eq $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+function Get-ConfigRowCount($Config) {
+    # The validation row (PASS when everything is usable, ERROR when a standard is not), plus the targets row when a
+    # target cannot be tested and the options row when a check flag or the hop count could not be used as written.
+    $rows = 1
+    $badTargets = 0
+    foreach ($target in @($Config.Tests.TcpTargets)) { if ($null -ne $target -and -not (Test-ConfiguredTcpTarget $target)) { $badTargets += 1 } }
+    foreach ($target in @($Config.Tests.HttpTargets)) { if ($null -ne $target -and [string]::IsNullOrWhiteSpace([string](Get-Value $target 'Url'))) { $badTargets += 1 } }
+    foreach ($target in @($Config.Tests.DnsNames)) { if ($null -ne $target -and [string]::IsNullOrWhiteSpace([string](Get-Value $target 'Host'))) { $badTargets += 1 } }
+    foreach ($target in @($Config.Tests.PingTargets)) { if ($null -ne $target -and -not (Test-ConfiguredPingAddress ([string](Get-Value $target 'Address')))) { $badTargets += 1 } }
+    if ($badTargets -gt 0) { $rows += 1 }
+    return $rows
+}
 function Get-MachineFacts {
     # What the script's snapshot sees, read from the operating system the way Get-NetworkSnapshot does: first
     # Get-NetIPConfiguration (an adapter counts when it is Up and has an IPv4 or IPv6 address; the gateways are those of
@@ -299,7 +351,10 @@ function Test-ResultSet {
     $groups = @(@(@($groupKeys.Keys) + $requiredGroups) | Select-Object -Unique)
     $rules = Get-StandardRuleCount $Config
     $want = [ordered]@{
-        'config-file' = 1; 'config' = 1; 'environment' = 1; 'system' = 1; 'adapters' = 1
+        # config is one row on a configuration the tool can use as written, and up to four when it cannot: the
+        # validation and threshold rows keep their weight, while the targets and options rows that name this run's
+        # own input do not (backlog #39). The packaged configuration is valid, so the chain's own runs see one.
+        'config-file' = 1; 'config' = (Get-ConfigRowCount $Config); 'environment' = 1; 'system' = 1; 'adapters' = 1
         'data-source' = $(if ([bool]$Machine.DataSourceRow) { 1 } else { 0 })   # the CIM fallback's warning row, only when the cmdlets threw
         # Without a connected adapter the snapshot writes the aggregate adapters row only: no gateway or DNS settings rows.
         'gateway-config' = $(if ($connected -gt 0) { 1 } else { 0 })
@@ -309,9 +364,12 @@ function Test-ResultSet {
         'ping-gateway' = $gatewayTargets * [math]::Max(1, $gateways.Count)   # one row per resolved gateway, or one "no target" row
         # A literal target is one row; AUTO_DNS is one row per DNS server of the primary adapters, or one "no target" row.
         'ping-target' = ($pingTargets.Count - $gatewayTargets - $dnsTargets) + $dnsTargets * [math]::Max(1, $dnsServerCount) + (Get-Count $o.ExtraTargets.Ping)
-        'dns' = (Get-Count $Config.Tests.DnsNames) + (Get-Count $o.ExtraTargets.Dns)
-        'tcp' = (Get-Count $Config.Tests.TcpTargets) + (Get-Count $o.ExtraTargets.Tcp)
-        'http' = (Get-Count $Config.Tests.HttpTargets) + (Get-Count $o.ExtraTargets.Http)
+        # A target the run cannot test is reported where its result belonged instead of vanishing, and a required one
+        # adds the weighted row saying the check did not run (backlog #39); a dropped extra target - one the parser
+        # refused, so it is in RawTargets and not in ExtraTargets - leaves a row of its own in the same section.
+        'dns' = (Get-TargetRowCount $Config.Tests.DnsNames { param($t) -not [string]::IsNullOrWhiteSpace([string](Get-Value $t 'Host')) } $true) + (Get-Count $o.ExtraTargets.Dns)
+        'tcp' = (Get-TargetRowCount $Config.Tests.TcpTargets { param($t) Test-ConfiguredTcpTarget $t } $false) + (Get-Count $o.ExtraTargets.Tcp) + ((Get-Count $o.RawTargets.Tcp) - (Get-Count $o.ExtraTargets.Tcp))
+        'http' = (Get-TargetRowCount $Config.Tests.HttpTargets { param($t) -not [string]::IsNullOrWhiteSpace([string](Get-Value $t 'Url')) } $false) + (Get-Count $o.ExtraTargets.Http)
         'connectivity-group' = $groups.Count
         # Per class as computed above, and that formula now covers every case: since 1.2.8 a baseline where neither
         # class could be read is returned rather than thrown away, so the analysis writes one row per read that failed

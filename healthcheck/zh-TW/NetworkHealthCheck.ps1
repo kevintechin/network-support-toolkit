@@ -153,6 +153,7 @@ $script:UsingFallbackOutputDirectory = $false
 $script:BaseConfig = $null
 $script:RunOptions = $null
 $script:RunOptionMessages = New-Object System.Collections.ArrayList
+$script:DroppedTargets = New-Object System.Collections.ArrayList
 $script:RetransmissionRateComputed = $false
 $script:PanelWarned = $false
 $script:PanelHints = $null
@@ -601,9 +602,13 @@ function Add-CheckResult {
         [string]$Details = "",
         [string]$Diagnostics = "",
         [string]$Tag = "",
-        [string]$Scope = "Main"
+        [string]$Scope = "Main",
+        [switch]$Weightless
     )
 
+    # -Weightless 標記一種列：徽章、訊息與統計數字都照舊，但不決定整體結果，也不影響 fingerprint（backlog #39）。
+    # 標記是逐一分支加上去的：說「什麼都沒量到」的列、樣本比套用的門檻還粗的列，或陳述本次執行輸入的列。其餘一律
+    # 預設保有權重——後來新增的檢查不會因為漏寫什麼而變得沒有權重，那種失誤沒有人會發現。
     $item = [pscustomobject][ordered]@{
         Time     = Get-Date
         Category = $Category
@@ -614,6 +619,7 @@ function Add-CheckResult {
         Diagnostics = $Diagnostics
         Tag         = $Tag
         Scope       = $Scope
+        Weightless  = [bool]$Weightless
     }
 
     [void]$script:Results.Add($item)
@@ -627,8 +633,14 @@ function Invoke-CheckStep {
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][int]$Progress,
         [Parameter(Mandatory = $true)][scriptblock]$Action,
-        [string]$Scope = "Main"
+        [string]$Scope = "Main",
+        [switch]$Weightless
     )
+
+    # 權重跟著步驟走，不跟著標籤走（backlog #39）。step-error 是所有步驟共用的一個標籤，其中四個是品質資料的收集
+    # 步驟：完全失敗的收集步驟會在這裡寫下一列 step-error，接著在後續分析裡再寫一列自己的，所以只降權後者，執行
+    # 仍舊會是「檢測未完整」——這個決定會在它唯一為之而寫的那個案例上失效。那四個步驟在呼叫處自行宣告，它們產生的
+    # step-error 列繼承這個標記；其餘每個步驟的 step-error 權重完全不變。
 
     Set-UiProgress -Percent $Progress -Text $Name
     Write-UiLog -Status "INFO" -Text ("開始：$Name")
@@ -639,7 +651,7 @@ function Invoke-CheckStep {
     catch {
         $details = Get-ExceptionDetails $_
         $diagnostics = Get-ExceptionDiagnostics $_
-        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "此項目無法執行，已記錄錯誤。" -Details $details -Diagnostics $diagnostics -Tag "step-error" -Scope $Scope | Out-Null
+        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "此項目無法執行，已記錄錯誤。" -Details $details -Diagnostics $diagnostics -Tag "step-error" -Scope $Scope -Weightless:$Weightless | Out-Null
         return $null
     }
 }
@@ -810,6 +822,25 @@ function Test-TcpTargetSyntax {
     return (($port -ge 1) -and ($port -le 65535))
 }
 
+function Test-PingTargetSyntax {
+    param([string]$Value)
+
+    # 這個值到底能不能成為一個 ping 目標——這和「它會不會回應」是兩個問題（backlog #39）。空白的位址，或帶了通訊
+    # 協定、路徑、使用者或連接埠的位址，根本組不成目標：什麼都沒送出去，也就沒學到任何關於網路的事，說明這件事的
+    # 那一列是關於本次輸入的事實。格式正確但解析不到的名稱則相反——它被實際檢測過，解析器回答了，那個回答是量測，
+    # 這條規則不能碰。兩個佔位符是由執行自己解析的目標。
+    $text = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+    if ($text -eq "AUTO_GATEWAY" -or $text -eq "AUTO_DNS") { return $true }
+    if ($text -match '\s') { return $false }
+    if ($text -match '[/\\?#@]') { return $false }
+    if ($text.Contains(":")) {
+        $parsedAddress = $null
+        if (-not [System.Net.IPAddress]::TryParse($text, [ref]$parsedAddress)) { return $false }
+    }
+    return $true
+}
+
 # v1.2：執行選項來自入口（啟動器參數）或 IT 選項面板；JSON 設定檔永遠不會被寫入。
 function Set-RunOptions {
     param([hashtable]$Overrides)
@@ -818,6 +849,7 @@ function Set-RunOptions {
         $Overrides = @{}
     }
     $script:RunOptionMessages = New-Object System.Collections.ArrayList
+    $script:DroppedTargets = New-Object System.Collections.ArrayList
     $config = ($script:BaseConfig | ConvertTo-Json -Depth 10) | ConvertFrom-Json
     $extra = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
     $raw = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
@@ -844,7 +876,11 @@ function Set-RunOptions {
         $port = 0
         if ($parts.Count -eq 2) { $port = ConvertTo-IntSafe $parts[1] 0 }
         if (-not (Test-TcpTargetSyntax $value)) {
+            # 提示說明發生了什麼事；這筆紀錄則是為了在「結果本該出現的地方」留下一列（backlog #39）。被丟棄的
+            # 目標若只留下程式環境區的一則提示，讀者看到的是空的 TCP 區段，那讀起來像沒有人設定過這項檢查，而
+            # 不是它被丟掉了。
             [void]$script:RunOptionMessages.Add("已忽略額外 TCP 目標「$value」：格式應為 host:port。")
+            [void]$script:DroppedTargets.Add([pscustomobject][ordered]@{ Kind = "Tcp"; Value = [string]$value })
             continue
         }
         $config.Tests.TcpTargets = @($config.Tests.TcpTargets) + [pscustomobject][ordered]@{ Name = ("額外 TCP " + [string]$value); Host = $parts[0]; Port = $port; Required = $false; Group = "" }
@@ -1416,8 +1452,14 @@ function Test-IsValidIPv4Address {
 # 設定語意驗證與公司規範比對：檢查 IP、CIDR、前綴、閘道、DNS、DHCP。
 # -----------------------------------------------------------------------------
 function Test-ConfigurationSemantics {
+    # 四個清單，因為判定無法只附著在一列的一半上（backlog #39）。組織自己的標準與門檻值，是其他每一列被拿來比對的
+    # 基準：其中一項壞掉，判定就不可信，因此保有權重。無法檢測的目標項目、不是布林值的檢查旗標、超出範圍的 hop 數，
+    # 則是關於本次執行輸入的事實，不會動搖任何已量到的東西——而且那些目標項目現在會由「本來要做那個量測的檢查」在它
+    # 所屬的區段報告，所以這一列不再對同一個打錯的值定罪第二次。
     $errors = New-Object System.Collections.ArrayList
     $warnings = New-Object System.Collections.ArrayList
+    $inputErrors = New-Object System.Collections.ArrayList
+    $inputWarnings = New-Object System.Collections.ArrayList
     $expected = $script:Config.Expected
     $tests = $script:Config.Tests
     $thresholds = $script:Config.Thresholds
@@ -1472,7 +1514,7 @@ function Test-ConfigurationSemantics {
         $hostName = ConvertTo-SafeString (Get-PropertyValue $target "Host" "")
         $port = ConvertTo-IntSafe (Get-PropertyValue $target "Port" 0) 0
         if ([string]::IsNullOrWhiteSpace($hostName) -or $port -lt 1 -or $port -gt 65535) {
-            [void]$errors.Add("TcpTargets 的「$name」主機或連接埠無效：Host=$hostName, Port=$port")
+            [void]$inputErrors.Add("TcpTargets 的「$name」主機或連接埠無效：Host=$hostName, Port=$port")
         }
     }
 
@@ -1486,7 +1528,16 @@ function Test-ConfigurationSemantics {
             $validUri = ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")
         }
         if (-not $validUri) {
-            [void]$errors.Add("HttpTargets 的「$name」URL 無效：$url")
+            [void]$inputErrors.Add("HttpTargets 的「$name」URL 無效：$url")
+        }
+    }
+
+    foreach ($target in @($tests.PingTargets)) {
+        if ($null -eq $target) { continue }
+        $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "Ping 目標")
+        $address = ConvertTo-SafeString (Get-PropertyValue $target "Address" "")
+        if (-not (Test-PingTargetSyntax $address)) {
+            [void]$inputErrors.Add("PingTargets「$name」的位址無法當成 ping 目標：$address")
         }
     }
 
@@ -1499,7 +1550,7 @@ function Test-ConfigurationSemantics {
             $hostName = ConvertTo-SafeString (Get-PropertyValue $dnsTarget "Host" "")
         }
         if ([string]::IsNullOrWhiteSpace($hostName)) {
-            [void]$errors.Add("DnsNames 含有空白的 Host。")
+            [void]$inputErrors.Add("DnsNames 含有空白的 Host。")
         }
     }
 
@@ -1523,12 +1574,12 @@ function Test-ConfigurationSemantics {
     foreach ($flagName in @("WifiRf", "RouteTable", "GatewayNeighbor", "ProxySettings", "Traceroute", "DriverInfo")) {
         $flagValue = Get-PropertyValue $checks $flagName
         if ($null -ne $flagValue -and -not ($flagValue -is [bool])) {
-            [void]$warnings.Add("Checks.$flagName 必須是 true 或 false（目前值：$flagValue），該檢查已停用。")
+            [void]$inputWarnings.Add("Checks.$flagName 必須是 true 或 false（目前值：$flagValue），該檢查已停用。")
         }
     }
     $hopsValue = Get-PropertyValue $checks "TracerouteHops"
     if ($null -ne $hopsValue -and (-not (Test-IsWholeNumber $hopsValue) -or (ConvertTo-IntSafe $hopsValue 0) -lt 1 -or (ConvertTo-IntSafe $hopsValue 0) -gt 10)) {
-        [void]$warnings.Add("Checks.TracerouteHops 必須是 1 到 10 的整數（目前值：$hopsValue），將改用內建預設值。")
+        [void]$inputWarnings.Add("Checks.TracerouteHops 必須是 1 到 10 的整數（目前值：$hopsValue），將改用內建預設值。")
     }
 
     $countThresholdNames = @("TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")
@@ -1566,12 +1617,20 @@ function Test-ConfigurationSemantics {
     if ($errors.Count -gt 0) {
         Add-CheckResult -Category "程式設定" -Check "設定值驗證" -Status "ERROR" -Message ("設定檔有 {0} 個無效值；程式會繼續執行，但相關結果可能不具判斷意義。" -f $errors.Count) -Details (@($errors) -join [Environment]::NewLine) -Tag "config" | Out-Null
     }
-    elseif ($warnings.Count -eq 0) {
+    elseif ($warnings.Count -eq 0 -and $inputErrors.Count -eq 0 -and $inputWarnings.Count -eq 0) {
         Add-CheckResult -Category "程式設定" -Check "設定值驗證" -Status "PASS" -Message "設定值格式檢查通過。" -Details "" -Tag "config" | Out-Null
     }
 
     if ($warnings.Count -gt 0) {
         Add-CheckResult -Category "程式設定" -Check "設定值門檻" -Status "WARN" -Message ("設定檔有 {0} 個需要注意的門檻值。" -f $warnings.Count) -Details (@($warnings) -join [Environment]::NewLine) -Tag "config" | Out-Null
+    }
+
+    if ($inputErrors.Count -gt 0) {
+        Add-CheckResult -Category "程式設定" -Check "設定的目標" -Status "ERROR" -Message ("這次執行拿到的目標裡有 {0} 個無法檢測；每一個都會在它自己結果本該出現的地方被報告，而且都不改變整體結果。" -f $inputErrors.Count) -Details (@($inputErrors) -join [Environment]::NewLine) -Tag "config" -Weightless | Out-Null
+    }
+
+    if ($inputWarnings.Count -gt 0) {
+        Add-CheckResult -Category "程式設定" -Check "設定的檢查項目" -Status "WARN" -Message ("有 {0} 個選項值無法依原樣使用；已改用內建預設值或停用該項檢查，整體結果不因它改變。" -f $inputWarnings.Count) -Details (@($inputWarnings) -join [Environment]::NewLine) -Tag "config" -Weightless | Out-Null
     }
 }
 
@@ -1911,6 +1970,16 @@ function Test-PingTargets {
         $pingTag = "ping-target"
         if ($address -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
         $required = [bool](Get-PropertyValue $targetConfig "Required" $false)
+        # 在送出任何東西之前就決定（backlog #39）：無法成為 ping 目標的值是關於本次執行輸入的事實，硬要嘗試會把
+        # 打錯字變成一次量測——「http://example.com」解析不到任何位址，卻回報 100% 遺失，讀起來像網路把每個封包
+        # 都丟掉了。下面那個「格式正確卻解析不到」的分支則是量測，保有權重。
+        if (-not (Test-PingTargetSyntax $address)) {
+            Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "設定的位址無法當成 ping 目標。" -Details ("Configured value: $address") -Tag $pingTag -Weightless | Out-Null
+            if ($required) {
+                Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標無法檢測。" -Details ("Configured value: $address") -Tag $pingTag | Out-Null
+            }
+            continue
+        }
         $targets = @(Resolve-PingTargets -Address $address -PrimaryAdapters $PrimaryAdapters)
 
         if ($targets.Count -eq 0) {
@@ -2009,6 +2078,13 @@ function Test-DnsNames {
         }
 
         if ([string]::IsNullOrWhiteSpace($hostName)) {
+        # 與 TCP、HTTP 目標同一種切法（backlog #39）：空白的主機名稱是關於本次執行輸入的事實，會在結果本該出現的
+        # 地方留下一列——1.2.8 之前，空白的 DNS 名稱不論必要與否都什麼都不寫，讀者在那個區段看不到任何痕跡，儘管
+        # 有人設定過這項檢查。必要目標再加上那列「量測沒有發生」的有權重列。
+            Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "設定的主機名稱是空白的。" -Details "" -Tag "dns" -Weightless | Out-Null
+            if ($required) {
+                Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標無法檢測。" -Details "" -Tag "dns" | Out-Null
+            }
             continue
         }
 
@@ -2214,8 +2290,12 @@ function Test-ConnectivityTargets {
         $group = ConvertTo-SafeString (Get-PropertyValue $target "Group" "")
 
         if ([string]::IsNullOrWhiteSpace($hostName) -or $port -lt 1 -or $port -gt 65535) {
+            # 兩列，因為一列會同時承載兩個主張（backlog #39）：這個值設定錯了——規則說它不能左右判定；以及，當
+            # 該目標是必要的，本來該發生的量測沒有發生——那必須保有權重。提示列在結果本該出現的區段寫出輸入的原
+            # 值，讓沒被檢測的選用目標看得見、而不是整段消失；第二列則是避免「必要檢查從未執行，卻顯示整體正常」。
+            Add-CheckResult -Category "TCP 連線" -Check $name -Status "ERROR" -Message "設定的主機或連接埠無效。" -Details ("Host=$hostName, Port=$port") -Tag "tcp" -Weightless | Out-Null
             if ($required) {
-                Add-CheckResult -Category "TCP 連線" -Check $name -Status "ERROR" -Message "設定的主機或連接埠無效。" -Details ("Host=$hostName, Port=$port") -Tag "tcp" | Out-Null
+                Add-CheckResult -Category "TCP 連線" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標無法檢測。" -Details ("Host=$hostName, Port=$port") -Tag "tcp" | Out-Null
             }
             continue
         }
@@ -2250,8 +2330,9 @@ function Test-ConnectivityTargets {
         $group = ConvertTo-SafeString (Get-PropertyValue $target "Group" "")
 
         if ([string]::IsNullOrWhiteSpace($url)) {
+            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "URL 設定為空白。" -Details "" -Tag "http" -Weightless | Out-Null
             if ($required) {
-                Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "URL 設定為空白。" -Details "" -Tag "http" | Out-Null
+                Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標無法檢測。" -Details "" -Tag "http" | Out-Null
             }
             continue
         }
@@ -2373,7 +2454,7 @@ function Compare-AdapterStatistics {
             ) -join [Environment]::NewLine
             $resetStatus = "WARN"
             if ($isVirtualAdapter) { $resetStatus = "INFO" }
-            Add-CheckResult -Category "網卡錯誤計數" -Check $name -Status $resetStatus -Message "網卡計數器在檢測期間重設，可能曾重新連線或重啟；無法可靠計算增量。" -Details $resetDetails -Tag "adapter-errors" | Out-Null
+            Add-CheckResult -Category "網卡錯誤計數" -Check $name -Status $resetStatus -Message "網卡計數器在檢測期間重設，可能曾重新連線或重啟；無法可靠計算增量。" -Details $resetDetails -Tag "adapter-errors" -Weightless | Out-Null
             continue
         }
 
@@ -2785,6 +2866,19 @@ function Add-TracerouteResult {
     Add-CheckResult -Category "IT 診斷資料" -Check "Traceroute（前幾跳）" -Status "INFO" -Message ("{0}：探測 {1} 跳，抵達目的地：{2}。" -f $target, $hops.Count, $reachedText) -Details ($lines -join [Environment]::NewLine) -Tag "traceroute" -Scope "IT" | Out-Null
 }
 
+function Add-DroppedTargetResults {
+    # 交給了這次執行卻沒有被檢測的目標，會在它結果本該出現的地方、它所屬的區段留下一列（backlog #39）。只把判定
+    # 從啟動提示上拿掉、卻不補這一列，等於把錯誤藏起來而不是降權：讀者往答案該在的地方看，看到的是空白，於是把
+    # 「沒有」讀成「沒有人要求過這項檢查」。這一列沒有權重，理由和那則提示一樣——它是關於輸入的事實。
+    foreach ($dropped in @($script:DroppedTargets)) {
+        $kind = [string]$dropped.Kind
+        $value = [string]$dropped.Value
+        if ($kind -eq "Tcp") {
+            Add-CheckResult -Category "TCP 連線" -Check ("額外 TCP " + $value) -Status "ERROR" -Message "這個目標交給了這次執行，但沒有被檢測，因為它不是 host:port 格式。" -Details ("輸入的值：{0}。沒有送出任何封包，所以這一列不說明網路的任何事；整體結果不因它改變。" -f $value) -Tag "tcp" -Weightless | Out-Null
+        }
+    }
+}
+
 function Add-DriverInfoResult {
     param([object[]]$Adapters)
 
@@ -2998,7 +3092,7 @@ function Compare-TcpCounters {
     )
 
     if ($null -eq $Before -or $null -eq $After) {
-        Add-CheckResult -Category "TCP 重傳" -Check "系統計數器" -Status "ERROR" -Message "沒有完整的前後 TCP 計數器資料。" -Details "" -Tag "tcp-retransmissions" | Out-Null
+        Add-CheckResult -Category "TCP 重傳" -Check "系統計數器" -Status "ERROR" -Message "沒有完整的前後 TCP 計數器資料。" -Details "" -Tag "tcp-retransmissions" -Weightless | Out-Null
         return
     }
 
@@ -3020,7 +3114,7 @@ function Compare-TcpCounters {
             if (@(@($other.Errors) | Where-Object { [string]$_.Protocol -eq $errorProtocol }).Count -eq 0) {
                 $errorDetails += @(Get-TcpReadFailureLines -Snapshot $other -Protocol $errorProtocol -Ending:(-not $isEnding))
             }
-            Add-CheckResult -Category "TCP 重傳" -Check ("{0} 計數器" -f $errorItem.Protocol) -Status "ERROR" -Message "無法讀取 TCP 重傳計數器。" -Details ((@($errorDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Diagnostics $errorItem.Diagnostics -Tag "tcp-retransmissions" | Out-Null
+            Add-CheckResult -Category "TCP 重傳" -Check ("{0} 計數器" -f $errorItem.Protocol) -Status "ERROR" -Message "無法讀取 TCP 重傳計數器。" -Details ((@($errorDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Diagnostics $errorItem.Diagnostics -Tag "tcp-retransmissions" -Weightless | Out-Null
         }
     }
 
@@ -3069,7 +3163,7 @@ function Compare-TcpCounters {
             # 增量」那句話——這一列根本沒有增量。補充句只講秒數與讀取，那句關於增量的話由有增量的那一列自己加上
             # （PR #40 第 7 輪）。
             $resetDetails = @($durationLine, ("起始 Sent={0}, Retrans={1}; 結束 Sent={2}, Retrans={3}" -f $start.SegmentsSent, $start.Retransmitted, $end.SegmentsSent, $end.Retransmitted)) + $evidenceLines
-            Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "ERROR" -Message "計數器在檢測期間重設或溢位，無法計算增量。" -Details ((@($resetDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Tag "tcp-retransmissions" | Out-Null
+            Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "ERROR" -Message "計數器在檢測期間重設或溢位，無法計算增量。" -Details ((@($resetDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Tag "tcp-retransmissions" -Weightless | Out-Null
             continue
         }
 
@@ -3111,7 +3205,7 @@ function Compare-TcpCounters {
 
         if ($sentDelta -lt $minimumSegments) {
             if ($retransDelta -gt 0) {
-                Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "WARN" -Message ("流量樣本偏少，但觀察到 {0} 次重傳（近似 {1}%）。" -f $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" | Out-Null
+                Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "WARN" -Message ("流量樣本偏少，但觀察到 {0} 次重傳（近似 {1}%）。" -f $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" -Weightless | Out-Null
             }
             else {
                 Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "INFO" -Message ("樣本只有 {0} 個傳送 segment，未觀察到重傳。" -f $sentDelta) -Details $details -Tag "tcp-retransmissions" | Out-Null
@@ -3156,9 +3250,15 @@ function Wait-ForMinimumTcpSample {
 # 結果彙總：整體狀態優先序為 FAIL > ERROR > WARN > PASS。
 # -----------------------------------------------------------------------------
 function Get-OverallStatus {
-    $failCount = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "FAIL" }).Count
-    $errorCount = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "ERROR" }).Count
-    $warnCount = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "WARN" }).Count
+    # 整體結果由這次執行「量到了什麼」決定（backlog #39）。量不到的補充統計、樣本比所套用門檻還粗的量測，以及關於
+    # 本次執行輸入的事實，都保有自己的列、徽章與統計數字，也會在摘要裡被點名，但不改變整體結果；其餘一律保有權重，
+    # 包含選用目標——選用目標回應不良是一次量測。反過來說：判定回答的是「這台機器怎麼樣」，不是「最後三十秒打了
+    # 什麼字」。1.2.8 之前，一次讀不到的計數器就會讓每項檢查都通過的執行顯示為「檢測未完整」，使用者手冊還得為這個
+    # 判定辯解——手冊要為判定辯解，就是判定做錯事的徵兆。
+    $weighted = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and -not $_.Weightless })
+    $failCount = @($weighted | Where-Object { $_.Status -eq "FAIL" }).Count
+    $errorCount = @($weighted | Where-Object { $_.Status -eq "ERROR" }).Count
+    $warnCount = @($weighted | Where-Object { $_.Status -eq "WARN" }).Count
 
     if ($failCount -gt 0) {
         return [pscustomobject]@{
@@ -3223,7 +3323,12 @@ function Get-SendToItLine {
 }
 
 function Get-FingerprintSummary {
-    $results = @($script:Results)
+    # 下面每一個判斷式都在下結論，所以每一個都只讀有權重的列（backlog #39）。判定不是唯一由結果集推導出來的東西：
+    # 否則，被降權的「樣本不足」重傳列會讓整體結果是「正常」，fingerprint 卻仍是 quality，同一次執行的這一段又寫
+    # 「連線可用，但品質不佳」；而被降權的輸入提示會觸發 other-problem 判斷式，反過來壓掉 quality。描述頁面的東西
+    # 跟著頁面上的列走——Get-SummaryCounts 與 Get-ReportNoticeFlags 仍讀每一列，所以沒有權重的列保有徽章與說明。
+    $allResults = @($script:Results)
+    $results = @($allResults | Where-Object { -not $_.Weightless })
     $overall = Get-OverallStatus
 
     $adaptersFail = @($results | Where-Object { $_.Tag -eq "adapters" -and $_.Status -eq "FAIL" }).Count -gt 0
@@ -3276,6 +3381,15 @@ function Get-FingerprintSummary {
         }
     }
     # 一個檔案，而不是兩者之一：視窗用路徑指出同一個檔案，這一行指的是讀者手上的這一份（待辦 #46）。
+    # 摘要會點名「量不到的」與「被丟棄的」，並明說兩者都沒有改變結果（backlog #39）。只做排除，讀者會看到一個
+    # 健康的判定旁邊掛著幾個錯誤徽章，卻沒有東西把它們連起來；這一行就是那個連結，它是排除之外的補充，不是替代。
+    $weightless = @($allResults | Where-Object { [string]$_.Scope -ne "IT" -and $_.Weightless -and [string]$_.Tag -ne "startup" })
+    if ($weightless.Count -gt 0) {
+        # 啟動提示不列進來，因為目標所屬區段的那一列會寫出目標本身，而這一則在名單裡只會貢獻「啟動提示」四個
+        # 字；那一列本身仍然保留。
+        $weightlessNames = @(@($weightless | ForEach-Object { [string]$_.Check }) | Select-Object -Unique)
+        $lines += ("以下項目沒有量到、或無法照原樣使用，它們都不改變結果：{0}。" -f ($weightlessNames -join ", "))
+    }
     $lines += "把這個檔案原樣交給 IT。報告內含電腦名稱、使用者名稱、網卡 MAC 位址與 Wi-Fi 網路名稱。"
 
     return [pscustomobject][ordered]@{
@@ -3804,8 +3918,16 @@ function Run-AllChecks {
         Add-CheckResult -Category "程式設定" -Check "設定檔" -Status "PASS" -Message ("已載入：{0}" -f $script:EffectiveConfigPath) -Details "" -Tag "config-file" | Out-Null
     }
 
-    foreach ($startupMessage in @(@($script:StartupMessages) + @($script:RunOptionMessages))) {
+    # 同一個標籤下有兩種家族，只有第二種是關於本次執行輸入的事實（backlog #39）。環境提示保有權重：報告資料夾不可
+    # 寫而改用後援位置、圖形介面無法啟動，以及決定這件事的那一則——這份副本正在壓縮資料夾裡執行，報告會被寫到一個
+    # 不會留存的地方。整個標籤一起降權，會讓某次執行說「整體正常」，而它要人送出的那個檔案正被寫進一個會消失的資料
+    # 夾。輸入提示在加入處標記，而不是另給一個標籤，讓文件提到的每個標籤仍然是原本的意思——而它們之所以可以降權，
+    # 是因為 Add-DroppedTargetResults 現在會在每個被丟棄目標的結果本該出現的地方留下一列。
+    foreach ($startupMessage in @($script:StartupMessages)) {
         Add-CheckResult -Category "程式環境" -Check "啟動提示" -Status "WARN" -Message $startupMessage -Details "" -Tag "startup" | Out-Null
+    }
+    foreach ($startupMessage in @($script:RunOptionMessages)) {
+        Add-CheckResult -Category "程式環境" -Check "啟動提示" -Status "WARN" -Message $startupMessage -Details "" -Tag "startup" -Weightless | Out-Null
     }
 
     Invoke-CheckStep -Category "程式設定" -Name "驗證設定值" -Progress 4 -Action {
@@ -3832,7 +3954,7 @@ function Run-AllChecks {
         Add-CheckResult -Category "系統資訊" -Check "電腦" -Status "INFO" -Message ("{0}，使用者 {1}。" -f $summary.ComputerName, $summary.UserName) -Details ("作業系統：{0} ({1})`r`nPowerShell：{2}" -f $summary.OperatingSystem, $summary.OperatingVersion, $summary.PowerShellVersion) -Tag "system" | Out-Null
     } | Out-Null
 
-    $tcpBaseline = Invoke-CheckStep -Category "TCP 重傳" -Name "取得 TCP 重傳基準值" -Progress 10 -Action {
+    $tcpBaseline = Invoke-CheckStep -Category "TCP 重傳" -Name "取得 TCP 重傳基準值" -Progress 10 -Weightless -Action {
         # 只有基準值使用 -WarmUp：這次會被丟棄的讀取，把計數器提供者第一次查詢要收的成本付在取樣窗之外，
         # 在那裡它不會拉長窗所回報的數字（backlog #38）。
         # 不論快照裡有什麼都照樣回傳，包括兩個類別都失敗的基準快照（PR #40 第 5 輪）。在那裡拋出例外，換來的是
@@ -3843,7 +3965,7 @@ function Run-AllChecks {
     }
     $tcpSampleStart = Get-Date
 
-    $adapterStatsBefore = Invoke-CheckStep -Category "網卡錯誤計數" -Name "取得網卡錯誤基準值" -Progress 13 -Action {
+    $adapterStatsBefore = Invoke-CheckStep -Category "網卡錯誤計數" -Name "取得網卡錯誤基準值" -Progress 13 -Weightless -Action {
         return (Get-AdapterStatisticsSnapshot)
     }
 
@@ -3877,6 +3999,7 @@ function Run-AllChecks {
 
     Invoke-CheckStep -Category "連線能力" -Name "測試 TCP 與 HTTP/HTTPS 連線" -Progress 70 -Action {
         Test-ConnectivityTargets
+        Add-DroppedTargetResults
     } | Out-Null
 
     Invoke-CheckStep -Category "IT 診斷資料" -Name "收集 IT 診斷資料（Wi-Fi、路由、閘道鄰居、Proxy、traceroute、驅動程式）" -Progress 74 -Scope "IT" -Action {
@@ -3891,20 +4014,20 @@ function Run-AllChecks {
     $minimumSampleSeconds = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.RetransmissionSampleSeconds 8))
     Wait-ForMinimumTcpSample -StartTime $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
 
-    $adapterStatsAfter = Invoke-CheckStep -Category "網卡錯誤計數" -Name "取得網卡錯誤結束值" -Progress 82 -Action {
+    $adapterStatsAfter = Invoke-CheckStep -Category "網卡錯誤計數" -Name "取得網卡錯誤結束值" -Progress 82 -Weightless -Action {
         return (Get-AdapterStatisticsSnapshot)
     }
 
     Invoke-CheckStep -Category "網卡錯誤計數" -Name "分析網卡錯誤與丟棄" -Progress 85 -Action {
         if ($null -eq $adapterStatsBefore -or $null -eq $adapterStatsAfter) {
-            Add-CheckResult -Category "網卡錯誤計數" -Check "前後比較" -Status "ERROR" -Message "缺少基準值或結束值，無法計算錯誤增量。" -Details "" -Tag "adapter-errors" | Out-Null
+            Add-CheckResult -Category "網卡錯誤計數" -Check "前後比較" -Status "ERROR" -Message "缺少基準值或結束值，無法計算錯誤增量。" -Details "" -Tag "adapter-errors" -Weightless | Out-Null
         }
         else {
             Compare-AdapterStatistics -Before $adapterStatsBefore -After $adapterStatsAfter -Adapters $networkSnapshot
         }
     } | Out-Null
 
-    $tcpAfter = Invoke-CheckStep -Category "TCP 重傳" -Name "取得 TCP 重傳結束值" -Progress 89 -Action {
+    $tcpAfter = Invoke-CheckStep -Category "TCP 重傳" -Name "取得 TCP 重傳結束值" -Progress 89 -Weightless -Action {
         return (Get-TcpCounterSnapshot)
     }
 
