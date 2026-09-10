@@ -503,6 +503,9 @@ function Test-ResultSet {
     $pingTargets = @($Config.Tests.PingTargets | Where-Object { $null -ne $_ })
     $gatewayTargets = @($pingTargets | Where-Object { [string]$_.Address -eq 'AUTO_GATEWAY' }).Count
     $dnsTargets = @($pingTargets | Where-Object { [string]$_.Address -eq 'AUTO_DNS' }).Count
+    # A -TcpTarget the parser refused is in RawTargets and not in ExtraTargets; it costs one row in the TCP section
+    # and one Startup Notice.
+    $droppedTcp = (Get-Count $o.RawTargets.Tcp) - (Get-Count $o.ExtraTargets.Tcp)
     $gateways = @($Machine.Gateways)
     $dnsServerCount = Get-Count $Machine.DnsServers
     $connected = [int]$Machine.ConnectedAdapters
@@ -547,9 +550,14 @@ function Test-ResultSet {
         'ping-target' = ($pingTargets.Count - $gatewayTargets - $dnsTargets) + $dnsTargets * [math]::Max(1, $dnsServerCount) + (Get-Count $o.ExtraTargets.Ping) + (Get-UnusablePingExtraRows $Config)
         # A target the run cannot test is reported where its result belonged instead of vanishing, and a required one
         # adds the weighted row saying the check did not run (backlog #39); a dropped extra target - one the parser
-        # refused, so it is in RawTargets and not in ExtraTargets - leaves a row of its own in the same section.
+        # refused, so it is in RawTargets and not in ExtraTargets - leaves a row of its own in the same section, and
+        # a Startup Notice besides, which is the row this table had no entry for until round 11: any startup row at
+        # all was an unexpected tag, so no case could ever pass a target that gets dropped. The environment
+        # notices - report folder, graphical interface, running from a ZIP - are not expected here, and a run that
+        # produced one would fail this assertion, which is the intent: none of them is true of a staged run.
         'dns' = (Get-TargetRowCount $Config.Tests.DnsNames { param($t) Test-ConfiguredDnsTarget $t } $true) + (Get-Count $o.ExtraTargets.Dns)
-        'tcp' = (Get-TargetRowCount $Config.Tests.TcpTargets { param($t) Test-ConfiguredTcpTarget $t } $false) + (Get-Count $o.ExtraTargets.Tcp) + ((Get-Count $o.RawTargets.Tcp) - (Get-Count $o.ExtraTargets.Tcp))
+        'tcp' = (Get-TargetRowCount $Config.Tests.TcpTargets { param($t) Test-ConfiguredTcpTarget $t } $false) + (Get-Count $o.ExtraTargets.Tcp) + $droppedTcp
+        'startup' = $droppedTcp
         'http' = (Get-TargetRowCount $Config.Tests.HttpTargets { param($t) Test-ConfiguredHttpTarget $t } $false) + (Get-Count $o.ExtraTargets.Http)
         'connectivity-group' = $groups.Count
         # Per class as computed above, and that formula now covers every case: since 1.2.8 a baseline where neither
@@ -877,7 +885,10 @@ try {
     if ($selected -contains 'acceptance') {
         # The two user runs go through the shipped console launcher (its trailing `pause` reads from NUL); the IT-switches
         # run calls the script directly because the launcher takes no arguments.
-        $unreachableArgs = @('-ConsoleOnly', '-PingCount', '2', '-SampleSeconds', '2', '-TracerouteHops', '2', '-ExpandDetails', '-PingTarget', 'nhc-no-such-host.invalid', '-TcpTarget', '192.0.2.1:9', '-HttpUrl', 'https://nhc-no-such-host.invalid/')
+        # The second TCP value has no port, so the run drops it: that is the only case in this chain that exercises
+        # the dropped-target rows end to end - the weightless row where the result belonged, and the Startup Notice
+        # beside it (PR #41, round 11). The first value keeps the unreachable-but-usable half of the case intact.
+        $unreachableArgs = @('-ConsoleOnly', '-PingCount', '2', '-SampleSeconds', '2', '-TracerouteHops', '2', '-ExpandDetails', '-PingTarget', 'nhc-no-such-host.invalid', '-TcpTarget', '192.0.2.1:9,8.8.8.8', '-HttpUrl', 'https://nhc-no-such-host.invalid/')
         $unreachableExpect = @{ EntryPoint = 'IT'; ExpandDetails = $true; PingCount = 2; SampleSeconds = 2; TracerouteHops = 2; Overrides = @{ PingCount = 2; SampleSeconds = 2; TracerouteHops = 2 }; ExtraPing = 'nhc-no-such-host.invalid'; ExtraTcp = '192.0.2.1:9'; ExtraHttp = 'https://nhc-no-such-host.invalid/'; AllowUnhealthy = $true; RequireErrorCause = $true }
         $acceptance = @(
             @{ Lang = 'en-US'; Case = 'en-US user (Start-NetworkCheck-Console.cmd)'; Launcher = 'Start-NetworkCheck-Console.cmd'; Expect = @{ EntryPoint = 'User'; ExpandDetails = $false } },

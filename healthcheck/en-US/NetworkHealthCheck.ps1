@@ -2968,7 +2968,7 @@ function Add-DroppedTargetResults {
         $kind = [string]$dropped.Kind
         $value = [string]$dropped.Value
         if ($kind -eq "Tcp") {
-            Add-CheckResult -Category "TCP Connection" -Check ("Extra TCP " + $value) -Status "ERROR" -Message "This target was given to the run and not tested, because it is not host:port." -Details ("Value as given: {0}. Nothing was sent, so this row says nothing about the network; the overall result is unchanged by it." -f $value) -Tag "tcp" -Weightless | Out-Null
+            Add-CheckResult -Category "TCP Connection" -Check ("Extra TCP " + $value) -Status "ERROR" -Message "This target was given to the run and not tested, because it is not host:port with a host that can be used." -Details ("Value as given: {0}. Nothing was sent, so this row says nothing about the network; the overall result is unchanged by it." -f $value) -Tag "tcp" -Weightless | Out-Null
         }
     }
 }

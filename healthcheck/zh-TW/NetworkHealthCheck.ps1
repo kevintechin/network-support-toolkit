@@ -2931,7 +2931,7 @@ function Add-DroppedTargetResults {
         $kind = [string]$dropped.Kind
         $value = [string]$dropped.Value
         if ($kind -eq "Tcp") {
-            Add-CheckResult -Category "TCP 連線" -Check ("額外 TCP " + $value) -Status "ERROR" -Message "這個目標交給了這次執行，但沒有被檢測，因為它不是 host:port 格式。" -Details ("輸入的值：{0}。沒有送出任何封包，所以這一列不說明網路的任何事；整體結果不因它改變。" -f $value) -Tag "tcp" -Weightless | Out-Null
+            Add-CheckResult -Category "TCP 連線" -Check ("額外 TCP " + $value) -Status "ERROR" -Message "這個目標交給了這次執行，但沒有被檢測，因為它不是 host:port 格式，或主機名稱無法使用。" -Details ("輸入的值：{0}。沒有送出任何封包，所以這一列不說明網路的任何事；整體結果不因它改變。" -f $value) -Tag "tcp" -Weightless | Out-Null
         }
     }
 }
