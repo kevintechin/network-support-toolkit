@@ -2,10 +2,30 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
+
+# Two guards over this file itself. A case that calls a function nobody loaded is a statement-terminating error:
+# PowerShell prints it, carries on with the next line, and the summary counts only the assertions that ran - so
+# six new cases of PR #41 round 10 reported nothing at all and the step still passed. Counting the Assert-Equal
+# calls in this file would not catch that, because several of them run inside loops.
+# The first guard is for a name the script no longer defines - the list below asks for something that is gone.
+# The trap is for the other direction, and it is the one that catches the round-10 bug: a call to anything not
+# loaded, whether the name was left out of the list or misspelled in the case. Both were checked against a
+# mutant of this file before being trusted.
+$missing = @($wanted | Where-Object { $loaded = @($funcs | ForEach-Object { $_.Name }); $loaded -notcontains $_ })
+if ($missing.Count -gt 0) {
+    Write-Output ("[FAIL] harness: the script does not define {0}" -f ($missing -join ", "))
+    Write-Output ("Summary: 0 passed, {0} failed" -f $missing.Count)
+    exit $missing.Count
+}
+trap [System.Management.Automation.CommandNotFoundException] {
+    Write-Output ("[FAIL] harness: an assertion called something that is not loaded - {0}" -f $_.Exception.Message)
+    Write-Output "Summary: 0 passed, 1 failed"
+    exit 1
+}
 
 $fails = 0; $passes = 0
 function Assert-Equal($name, $actual, $expected) {
@@ -702,6 +722,183 @@ $enclosingBlock = $warmCall.Parent
 while ($null -ne $enclosingBlock -and -not ($enclosingBlock -is [System.Management.Automation.Language.ScriptBlockExpressionAst])) { $enclosingBlock = $enclosingBlock.Parent }
 Assert-Equal '#38 dead baseline: the baseline step has a script block to read' ($null -ne $enclosingBlock) True
 Assert-Equal '#38 dead baseline: and it throws nothing away' (@($enclosingBlock.FindAll({ param($n) $n -is [System.Management.Automation.Language.ThrowStatementAst] }, $true)).Count) 0
+
+# ---------------------------------------------------------------------------
+# backlog #39: the overall result is decided by what the run measured. Two things are asserted here that the
+# report-stage scenarios cannot see: which call sites declare the marking, and which functions read it.
+# ---------------------------------------------------------------------------
+# Can this value become a ping target at all - asked before anything is sent, because attempting a value that cannot
+# be one turns a typo into a measurement: 'http://example.com' reports 100% loss, which reads as a network that
+# dropped every packet.
+Assert-Equal '#39 ping syntax: a literal address' (Test-PingTargetSyntax '1.1.1.1') True
+Assert-Equal '#39 ping syntax: a host name' (Test-PingTargetSyntax 'www.example.com') True
+Assert-Equal '#39 ping syntax: an IPv6 literal' (Test-PingTargetSyntax 'fe80::1') True
+Assert-Equal '#39 ping syntax: the gateway placeholder' (Test-PingTargetSyntax 'AUTO_GATEWAY') True
+Assert-Equal '#39 ping syntax: the DNS placeholder' (Test-PingTargetSyntax 'AUTO_DNS') True
+Assert-Equal '#39 ping syntax: blank' (Test-PingTargetSyntax '') False
+Assert-Equal '#39 ping syntax: whitespace only' (Test-PingTargetSyntax '   ') False
+Assert-Equal '#39 ping syntax: a URL' (Test-PingTargetSyntax 'http://example.com') False
+Assert-Equal '#39 ping syntax: a host and port' (Test-PingTargetSyntax '8.8.8.8:443') False
+Assert-Equal '#39 ping syntax: an empty label (round 5)' (Test-PingTargetSyntax 'foo..bar') False
+Assert-Equal '#39 ping syntax: nothing but a dot' (Test-PingTargetSyntax '.') False
+Assert-Equal '#39 ping syntax: a trailing root dot is still a name' (Test-PingTargetSyntax 'www.example.com.') True
+Assert-Equal '#39 ping syntax: a label starting with a hyphen' (Test-PingTargetSyntax '-foo.example.com') False
+Assert-Equal '#39 ping syntax: a label ending with a hyphen' (Test-PingTargetSyntax 'foo-.example.com') False
+Assert-Equal '#39 ping syntax: a label of 64 characters' (Test-PingTargetSyntax (('a' * 64) + '.example.com')) False
+Assert-Equal '#39 ping syntax: a name of more than 253 characters' (Test-PingTargetSyntax ((('a' * 63 + '.') * 4) + 'abc')) False
+Assert-Equal '#39 ping syntax: an internationalised name in its wire form stays usable' (Test-PingTargetSyntax 'xn--kpry57d.tw') True
+Assert-Equal '#39 ping syntax: an underscore is left alone, because structure is what is tested' (Test-PingTargetSyntax 'my_host.example.com') True
+# Round 6: the same rule, now a function of its own, because the DNS family needs it too.
+Assert-Equal '#39 host syntax: a name' (Test-HostNameSyntax 'www.example.com') True
+Assert-Equal '#39 host syntax: a single label' (Test-HostNameSyntax 'router') True
+Assert-Equal '#39 host syntax: an IPv4 literal reads as labels' (Test-HostNameSyntax '8.8.8.8') True
+Assert-Equal '#39 host syntax: an empty label' (Test-HostNameSyntax 'foo..bar') False
+Assert-Equal '#39 host syntax: a leading dot' (Test-HostNameSyntax '.example.com') False
+Assert-Equal '#39 host syntax: blank' (Test-HostNameSyntax '') False
+Assert-Equal '#39 host syntax: a 64-character label' (Test-HostNameSyntax (('a' * 64) + '.example.com')) False
+Assert-Equal '#39 host syntax: a hyphen at the edge' (Test-HostNameSyntax '-foo.example.com') False
+# Round 7: the delimiters the ping family always refused, now refused for DNS names too.
+Assert-Equal '#39 host syntax: a URL' (Test-HostNameSyntax 'http://example.com') False
+Assert-Equal '#39 host syntax: a host and port' (Test-HostNameSyntax 'example.com:80') False
+Assert-Equal '#39 host syntax: a user in the value' (Test-HostNameSyntax 'user@example.com') False
+Assert-Equal '#39 host syntax: a space inside' (Test-HostNameSyntax 'foo bar') False
+Assert-Equal '#39 host syntax: an IPv6 literal is not labels' (Test-HostNameSyntax 'fe80::1') True
+# Round 9: the host inside a URL, which Uri.TryCreate does not judge.
+Assert-Equal '#39 url syntax: an empty label in the host' (Test-HttpTargetSyntax 'http://foo..bar/') False
+Assert-Equal '#39 url syntax: a hyphen at the edge of the host' (Test-HttpTargetSyntax 'https://-foo.example.com/x') False
+Assert-Equal '#39 url syntax: a name with a path and a query' (Test-HttpTargetSyntax 'https://example.com/a/b?c=d') True
+Assert-Equal '#39 url syntax: a port is not part of the host' (Test-HttpTargetSyntax 'https://example.com:8443/') True
+Assert-Equal '#39 url syntax: an IPv6 literal in brackets' (Test-HttpTargetSyntax 'http://[fe80::1]/') True
+Assert-Equal '#39 url syntax: a user in the URL is not part of the host' (Test-HttpTargetSyntax 'https://user@example.com/') True
+# Round 10: the panel's pre-check and the run's rule are the same rule, so neither can refuse what the other takes.
+Assert-Equal '#39 tcp syntax: a host and port' (Test-TcpTargetSyntax '8.8.8.8:443') True
+Assert-Equal '#39 tcp syntax: a name and port' (Test-TcpTargetSyntax 'example.com:443') True
+Assert-Equal '#39 tcp syntax: an empty label in the host' (Test-TcpTargetSyntax 'foo..bar:443') False
+Assert-Equal '#39 tcp syntax: a hyphen at the edge of the host' (Test-TcpTargetSyntax '-foo.example.com:443') False
+Assert-Equal '#39 tcp syntax: a blank host' (Test-TcpTargetSyntax ':443') False
+Assert-Equal '#39 tcp syntax: a port out of range' (Test-TcpTargetSyntax 'example.com:70000') False
+Assert-Equal '#39 ping syntax: two values in one' (Test-PingTargetSyntax '1.1.1.1 8.8.8.8') False
+Assert-Equal '#39 ping syntax: a path' (Test-PingTargetSyntax 'example.com/health') False
+# A name that is well formed and does not resolve is the opposite case: it is tested, the resolver answers, and that
+# answer is a measurement this rule must not touch.
+Assert-Equal '#39 ping syntax: a name that will not resolve is still a usable target' (Test-PingTargetSyntax 'nhc-no-such-host.invalid') True
+
+# The same question for a URL, and the reason it has one place (PR #41, round 1): the configuration validation called
+# 'example.com' unusable while the check intercepted only a blank, so the request went out, failed, and was recorded
+# as a measured connectivity failure - a required target could produce Problem Detected over a value no packet ever
+# left for, and a member of a required group could fail that group with it.
+Assert-Equal '#39 url syntax: https' (Test-HttpTargetSyntax 'https://www.example.com/') True
+Assert-Equal '#39 url syntax: http' (Test-HttpTargetSyntax 'http://10.0.0.1:8080/health') True
+Assert-Equal '#39 url syntax: blank' (Test-HttpTargetSyntax '') False
+Assert-Equal '#39 url syntax: no scheme' (Test-HttpTargetSyntax 'example.com') False
+Assert-Equal '#39 url syntax: a scheme this tool does not speak' (Test-HttpTargetSyntax 'ftp://files.example.com/') False
+Assert-Equal '#39 url syntax: a relative path' (Test-HttpTargetSyntax '/health') False
+# And the check asks that helper rather than repeating the rule, so the two cannot drift apart again.
+$httpCheck = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-ConnectivityTargets' }, $true)
+Assert-Equal '#39 url syntax: the check consults it' ($httpCheck.Extent.Text -match 'Test-HttpTargetSyntax') True
+$configCheck = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-ConfigurationSemantics' }, $true)
+Assert-Equal '#39 url syntax: and so does the configuration validation' ($configCheck.Extent.Text -match 'Test-HttpTargetSyntax') True
+Assert-Equal '#39 url syntax: neither keeps a rule of its own' ((($httpCheck.Extent.Text + $configCheck.Extent.Text) -match 'UriKind\]::Absolute')) False
+
+# The step carries the weight, not the tag: the four quality collectors declare the marking at their call site and
+# their step-error rows inherit it, while the two analysis steps beside them keep theirs. Read off the AST, because
+# a run that proves it needs a machine whose counters and adapter statistics both fail.
+$stepCalls = @($scriptAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Invoke-CheckStep' }, $true))
+# The parameter, not the text: a step's extent includes its whole -Action block, and one of those blocks writes a
+# row that carries the marking of its own, which made the first draft of this assertion count five steps.
+function Get-StepParameter($Call, [string]$Name) {
+    return @($Call.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq $Name })
+}
+function Get-StepProgress($Call) {
+    $elements = @($Call.CommandElements)
+    for ($i = 0; $i -lt $elements.Count - 1; $i++) {
+        if ($elements[$i] -is [System.Management.Automation.Language.CommandParameterAst] -and $elements[$i].ParameterName -eq 'Progress') {
+            return [int]$elements[$i + 1].Extent.Text
+        }
+    }
+    return -1
+}
+$weightlessSteps = @($stepCalls | Where-Object { (Get-StepParameter $_ 'Weightless').Count -gt 0 })
+Assert-Equal '#39 steps: four of them declare the marking' $weightlessSteps.Count 4
+Assert-Equal '#39 steps: and they are the collectors, by their progress points' ((@($weightlessSteps | ForEach-Object { Get-StepProgress $_ } | Sort-Object) -join ',')) '10,13,82,89'
+Assert-Equal '#39 steps: the analysis steps beside them keep their weight' (@($stepCalls | Where-Object { (Get-StepProgress $_) -in @(85, 92) -and (Get-StepParameter $_ 'Weightless').Count -gt 0 }).Count) 0
+
+# The dropped-target rows must exist in every report this tool writes, including the two that end early - the
+# unsupported operating system and the unsupported PowerShell - because a notice about a target with no row where
+# its result belonged is exactly the absence backlog #39 set out to remove. Read off the AST by position, because
+# proving it by running needs a machine this tool refuses to run on (PR #41, round 12).
+$mainBody = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Run-AllChecks' }, $true)
+$droppedCall = $mainBody.Find({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Add-DroppedTargetResults' }, $true)
+$platformCall = $mainBody.Find({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Test-IsWindowsPlatform' }, $true)
+Assert-Equal '#39 dropped rows: the run writes them' ($null -ne $droppedCall) True
+Assert-Equal '#39 dropped rows: and before the branch that can return early' ($droppedCall.Extent.StartOffset -lt $platformCall.Extent.StartOffset) True
+Assert-Equal '#39 dropped rows: exactly once' (@($mainBody.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Add-DroppedTargetResults' }, $true)).Count) 1
+# And not inside a step's action, where a throw in the step would take the row with it.
+Assert-Equal '#39 dropped rows: not inside a check step' (@($stepCalls | Where-Object { $_.Extent.Text -match 'Add-DroppedTargetResults' }).Count) 0
+
+# Test-HostNameSyntax trims before it judges, so ' example.com ' is a usable name - and until PR #41 round 13 the
+# checks then handed the untrimmed value to Ping.Send, GetHostAddressesAsync and TcpClient.BeginConnect, which
+# reject it. The rule and the run have to see the same string, or the classification this release is about is
+# decided on one value and carried out on another. The HTTP family needs nothing: Uri.TryCreate and
+# HttpWebRequest.Create both trim, so its two sides already agree.
+$scriptText = $scriptAst.Extent.Text
+$hostReads = @([regex]::Matches($scriptText, 'ConvertTo-SafeString \(Get-PropertyValue \$\w+ "(?:Host|Address)" ""\)'))
+$trimmedReads = @([regex]::Matches($scriptText, '\(ConvertTo-SafeString \(Get-PropertyValue \$\w+ "(?:Host|Address)" ""\)\)\.Trim\(\)'))
+# Seven, not six: the count is asserted so that a new read site has to be looked at rather than quietly joining
+# the untrimmed ones - which is how the traceroute target was found, a site the review did not name.
+Assert-Equal '#39 host values: the script reads seven of them' $hostReads.Count 7
+Assert-Equal '#39 host values: and every one is trimmed' $trimmedReads.Count $hostReads.Count
+Assert-Equal '#39 host values: the bare-string DNS form too' (@([regex]::Matches($scriptText, '\$hostName = \(\[string\]\$dns\w+\)\.Trim\(\)')).Count) 2
+Assert-Equal '#39 host values: and none of it is read raw' ($scriptText -match '\$hostName = \[string\]\$dns') False
+Assert-Equal '#39 host values: a padded name is usable, which is why the run must trim it' (Test-HostNameSyntax ' example.com ') True
+
+# Round 18: 63 is a limit on the encoded label, not on the characters typed. Written as code points so that the
+# assertion cannot be changed by how this file is saved or read - the same mistake made the first probe of this
+# say a perfectly good Chinese name was invalid.
+$twName = [string][char]0x53F0 + [string][char]0x7063 + '.tw'
+$umlautName = [string][char]0x00FC + 'ber.example.com'
+$longIdn = (([string][char]0x00E9) * 58) + '.tw'
+Assert-Equal '#39 idn: a Chinese name is usable' (Test-HostNameSyntax $twName) True
+Assert-Equal '#39 idn: so is a label with an umlaut' (Test-HostNameSyntax $umlautName) True
+Assert-Equal '#39 idn: 58 accented letters fit here and not on the wire' (Test-HostNameSyntax $longIdn) False
+Assert-Equal '#39 idn: and its label really is 58 characters' (($longIdn -split '\.')[0].Length) 58
+# Round 19: the separators IDNA turns into an ASCII dot. A name written with one of these carries no ASCII dot on
+# the way in and a trailing one on the way out, which is why the root dot is taken off after the conversion.
+$twBase = [string][char]0x53F0 + [string][char]0x7063
+Assert-Equal '#39 idn: an ideographic full stop as the root dot' (Test-HostNameSyntax ($twBase + [string][char]0x3002)) True
+Assert-Equal '#39 idn: a fullwidth full stop' (Test-HostNameSyntax ($twBase + [string][char]0xFF0E)) True
+Assert-Equal '#39 idn: a halfwidth ideographic full stop' (Test-HostNameSyntax ($twBase + [string][char]0xFF61)) True
+Assert-Equal '#39 idn: and one used as a separator, not as the root' (Test-HostNameSyntax ($twBase + [string][char]0x3002 + 'tw')) True
+Assert-Equal '#39 idn: a separator on its own is still nothing' (Test-HostNameSyntax ([string][char]0x3002)) False
+# Round 20: the compatibility characters IDNA turns into delimiters. Each of these passes the delimiter rules as
+# typed and fails them as sent, which is why the conversion runs before them.
+Assert-Equal '#39 idn: a fullwidth solidus becomes a path separator' (Test-HostNameSyntax ('foo' + [string][char]0xFF0F + 'bar')) False
+Assert-Equal '#39 idn: a fullwidth colon becomes a port separator' (Test-HostNameSyntax ('foo' + [string][char]0xFF1A + '80')) False
+Assert-Equal '#39 idn: an ideographic space becomes a space' (Test-HostNameSyntax ('foo' + [string][char]0x3000 + 'bar')) False
+Assert-Equal '#39 idn: a fullwidth at sign becomes a user separator' (Test-HostNameSyntax ('user' + [string][char]0xFF20 + 'example.com')) False
+Assert-Equal '#39 idn: a fullwidth question mark becomes a query separator' (Test-HostNameSyntax ('foo' + [string][char]0xFF1F + 'bar')) False
+# Round 21: control characters, which are neither delimiters nor whitespace. A JSON \u0000 reached Dns.Send and
+# came back as a SocketException - the same exception an unresolvable name gives, so it was measured, not reported.
+Assert-Equal '#39 controls: an embedded NUL' (Test-HostNameSyntax ('foo' + [string][char]0 + 'bar')) False
+Assert-Equal '#39 controls: a start-of-heading' (Test-HostNameSyntax ('foo' + [string][char]1 + 'bar')) False
+Assert-Equal '#39 controls: a delete' (Test-HostNameSyntax ('foo' + [string][char]0x7F + 'bar')) False
+Assert-Equal '#39 controls: a tab, which the whitespace rule already refused' (Test-HostNameSyntax ('foo' + [string][char]9 + 'bar')) False
+
+# What concludes follows the weights; what describes the page follows the rows on the page. Round 8 of PR #37 found
+# the first draft of that sentence saying "every predicate that reads the result set", which would have taken the
+# Unable flag with it - the flag whose only job is to explain a badge the weightless row still carries.
+function Get-FunctionBody([string]$Name) {
+    $fn = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }, $true)
+    if ($null -eq $fn) { return "" }
+    return $fn.Extent.Text
+}
+Assert-Equal '#39 verdict: Get-OverallStatus reads the weighted rows' ((Get-FunctionBody 'Get-OverallStatus') -match '-not \$_\.Weightless') True
+Assert-Equal '#39 fingerprint: its predicates read the weighted rows' ((Get-FunctionBody 'Get-FingerprintSummary') -match '-not \$_\.Weightless') True
+Assert-Equal '#39 counts: Get-SummaryCounts describes the page and reads every row' ((Get-FunctionBody 'Get-SummaryCounts') -match 'Weightless') False
+Assert-Equal '#39 notice: Get-ReportNoticeFlags does too, so a badge keeps its explanation' ((Get-FunctionBody 'Get-ReportNoticeFlags') -match 'Weightless') False
+# The marking is opt-in, and that is a property of Add-CheckResult itself: a switch, defaulting to unmarked.
+Assert-Equal '#39 marking: the row carries the field' ((Get-FunctionBody 'Add-CheckResult') -match 'Weightless  = \[bool\]\$Weightless') True
+Assert-Equal '#39 marking: and it is a switch, so a row is weighted unless it is named' ((Get-FunctionBody 'Add-CheckResult') -match '\[switch\]\$Weightless') True
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

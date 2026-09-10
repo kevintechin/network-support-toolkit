@@ -1,4 +1,4 @@
-param([string]$ReportPath, [string]$ReportDir, [string]$ConfigDir)
+﻿param([string]$ReportPath, [string]$ReportDir, [string]$ConfigDir)
 # Negative self-check of the runner's result-set assertion (Test-ResultSet in Invoke-ValidationChain.ps1): the helper
 # functions are lifted out of the runner by AST; a real report from an earlier run must pass intact against the real
 # machine facts (the positive control); and a fixture normalised out of that report - three adapter rows and three counter
@@ -21,9 +21,10 @@ $ErrorActionPreference = 'Stop'
 $runner = Join-Path $PSScriptRoot 'Invoke-ValidationChain.ps1'
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($runner, [ref]$tokens, [ref]$errors)
-foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Read-Config', 'Get-Count', 'Test-TrueFlag', 'Get-CimOrWmiInstance', 'Add-PrimaryFacts', 'Get-MachineFacts', 'Get-StandardRuleCount', 'Test-ResultSet', 'ConvertTo-FactsKey', 'Test-ResultSetForRun') }, $true)) { Invoke-Expression $f.Extent.Text }
+foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -in @('Read-Config', 'Get-Count', 'Test-TrueFlag', 'Get-CimOrWmiInstance', 'Add-PrimaryFacts', 'Get-MachineFacts', 'Get-StandardRuleCount', 'Test-ResultSet', 'ConvertTo-FactsKey', 'Test-ResultSetForRun', 'Get-Value', 'Get-ConfigRowCount', 'Get-TargetRowCount', 'Test-ConfiguredTcpTarget', 'Test-ConfiguredHttpTarget', 'Test-ConfiguredPingAddress', 'Test-UsableIPAddress', 'Test-ConfiguredDnsTarget', 'Test-ConfiguredDnsRequired', 'Get-UnusablePingExtraRows', 'Get-ConfigConverterSource') }, $true)) { Invoke-Expression $f.Extent.Text }
 $machine = Get-MachineFacts
 "machine: $($machine.ConnectedAdapters) connected adapter(s) with an address, gateway(s) $(@($machine.Gateways) -join ', '), source $($machine.Source), TCP counters v4=$($machine.TcpCounters.TCPv4) v6=$($machine.TcpCounters.TCPv6)"
+foreach ($converterSource in (Get-ConfigConverterSource (Join-Path $ConfigDir 'NetworkHealthCheck.ps1'))) { Invoke-Expression $converterSource }
 $cfg = Read-Config $ConfigDir
 if ($ReportPath) { $json = Get-Item -LiteralPath $ReportPath }
 else {
@@ -180,5 +181,112 @@ if ($run.Note -ne '') { $script:fails++; "[FAIL] the pre-launch match must carry
 $run = Test-ResultSetForRun (ConvertTo-TwoAdapters (New-Fixture)) $cfg @{} $facts $twoAdapters; Assert-Case 'an adapter dropped during the run, report from after the drop' @($run.Mismatches) $true ''
 if ($run.Note -like '*matches the post-run facts*') { $script:passes++; "[PASS] the post-run match is noted -> '$($run.Note)'" } else { $script:fails++; "[FAIL] the post-run match must be noted -> '$($run.Note)'" }
 $run = Test-ResultSetForRun (ConvertTo-TwoAdapters (New-Fixture)) $cfg @{} $facts $facts; Assert-Case 'two adapter rows with three adapters throughout' @($run.Mismatches) $false 'adapter: 2 row(s), expected one per connected adapter with an address (3)'
+
+# PR #41, round 2: the row-count oracle's own predicates, on configurations the packaged one does not have. Each case
+# states what the product would write and asks the oracle for the same number; the packaged configuration exercises
+# none of these paths, so passing 42 cases against it proved nothing about them.
+function New-BrokenConfig { return (Read-Config $ConfigDir) }
+$c = New-BrokenConfig; $c.Expected.AllowedIPv4Addresses = @('not-an-ip')
+Assert-Case 'config rows: an invalid standard alone is the validation row' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+$c = New-BrokenConfig; $c.Expected.AllowedIPv4Addresses = @('not-an-ip'); $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: a standard and a target are two rows' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+$c = New-BrokenConfig; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: a target alone suppresses the PASS row, leaving one' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+$c = New-BrokenConfig; $c.Thresholds.AdapterErrorWarningDelta = 'bad'; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: an adapter threshold and a target are two rows' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+$c = New-BrokenConfig; $c.Thresholds.LatencyWarningMs = 900; $c.Thresholds.LatencyCriticalMs = 100; $c.Checks.WifiRf = 'yes'
+# Two rows, not three: with no invalid standard the validation row is not written at all, because the PASS branch is
+# suppressed by any input problem. The first draft of this case expected three and the oracle was right.
+Assert-Case 'config rows: thresholds and options are two rows, with no validation row between them' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+# A bare string in DnsNames is the documented short form: one lookup row, not a notice and a did-not-run row.
+$c = New-BrokenConfig; $c.Tests.DnsNames = @('www.example.com')
+Assert-Case 'dns rows: a bare string is a usable target' @($(if ((Get-TargetRowCount $c.Tests.DnsNames { param($t) Test-ConfiguredDnsTarget $t } $true) -eq 1) { @() } else { @('dns rows wrong') })) $true ''
+Assert-Case 'config rows: and it is not counted as unusable' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+# A required ping address that cannot be used adds the weighted row beside its notice.
+$c = New-BrokenConfig; $c.Tests.PingTargets = @([pscustomobject]@{ Name = 'Broken'; Address = 'http://example.com'; Required = $true })
+Assert-Case 'ping rows: a required unusable address adds its second row' @($(if ((Get-UnusablePingExtraRows $c) -eq 1) { @() } else { @('ping extra rows wrong') })) $true ''
+$c.Tests.PingTargets = @([pscustomobject]@{ Name = 'Broken'; Address = 'http://example.com'; Required = $false })
+Assert-Case 'ping rows: an optional one does not' @($(if ((Get-UnusablePingExtraRows $c) -eq 0) { @() } else { @('ping extra rows wrong') })) $true ''
+
+# PR #41, round 3: five findings with one cause - the oracle read configuration values with Int32.TryParse and its
+# own range checks, where the product reads them through ConvertTo-IntSafe and Test-IsWholeNumber. It now loads those
+# converters from the package under test; these are the five configurations the reviewer named, each paired with an
+# invalid TCP target so the count distinguishes 'one row' from 'two'.
+$c = New-BrokenConfig; $c.Expected.AllowedIPv4Addresses = @(''); $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: a blank standard entry is skipped, exactly as the product skips it' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+$c = New-BrokenConfig; $c.Tests.PingCount = '4.0'; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: 4.0 as a string is a whole number to the tool, so no threshold row' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+# An explicit null does not skip the setting: it falls to the second branch, where ConvertTo-IntSafe makes it 0.
+$c = New-BrokenConfig; $c.Tests.PingCount = $null; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: an explicit null test setting warns, adding the thresholds row' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+# Whole-valued, but outside Int32 - which Test-IsWholeNumber rejects and a floor-equality check alone would not.
+$c = New-BrokenConfig; $c.Thresholds.TcpRetransmissionCriticalCount = 2147483648; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: a count threshold beyond Int32 is not a whole number' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+$c = New-BrokenConfig; $c.Tests.TcpTargets[0].Port = '443.0'
+Assert-Case 'tcp target: 443.0 is a usable port, because that is how the tool parses it' @($(if (Test-ConfiguredTcpTarget $c.Tests.TcpTargets[0]) { @() } else { @('the oracle called a port the tool accepts unusable') })) $true ''
+
+# A threshold whose decimal separator this machine's culture accepts and the tool's invariant reader does not.
+# The tool warns and falls back to its default; the oracle used to agree with the machine instead (round 4).
+$c = New-BrokenConfig; $c.Thresholds.PacketLossCriticalPercent = '2,5'; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: a comma decimal is not a number to the tool, so the thresholds row is written' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+
+# PR #41, round 6: a DNS name no resolver can be asked, and the targets a switch adds to the configuration.
+$c = New-BrokenConfig; $c.Tests.DnsNames = @('foo..bar')
+Assert-Case 'dns rows: a malformed name is not a usable target' @($(if (-not (Test-ConfiguredDnsTarget 'foo..bar')) { @() } else { @('the oracle called foo..bar usable') })) $true ''
+Assert-Case 'config rows: and it is a configured-targets row' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+$c = New-BrokenConfig
+$o = [pscustomobject]@{ ExtraTargets = [pscustomobject]@{ Ping = @('http://example.com'); Dns = @(); Tcp = @(); Http = @() } }
+Assert-Case 'config rows: an unusable -PingTarget is a row the file on disk cannot show' @($(if ((Get-ConfigRowCount $c $o) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $o), expected 1") })) $true ''
+$o = [pscustomobject]@{ ExtraTargets = [pscustomobject]@{ Ping = @(); Dns = @('foo..bar'); Tcp = @(); Http = @('ftp://host') } }
+Assert-Case 'config rows: an unusable -DnsName and -HttpUrl are the same one row' @($(if ((Get-ConfigRowCount $c $o) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $o), expected 1") })) $true ''
+$o = [pscustomobject]@{ ExtraTargets = [pscustomobject]@{ Ping = @('8.8.8.8'); Dns = @('www.example.com'); Tcp = @(); Http = @('https://example.com') } }
+Assert-Case 'config rows: usable switch targets leave the PASS row alone' @($(if ((Get-ConfigRowCount $c $o) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $o), expected 1") })) $true ''
+
+# PR #41, round 7: a URL where a DNS name belongs, and the scalar switches that replace a file value.
+Assert-Case 'dns rows: a URL is not a usable name' @($(if (-not (Test-ConfiguredDnsTarget 'http://example.com')) { @() } else { @('the oracle called a URL a usable DNS name') })) $true ''
+$c = New-BrokenConfig; $c.Tests.PingCount = 0; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: a file PingCount of 0 warns, so two rows' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+Assert-Case 'config rows: and -PingCount 4 replaces it, leaving one' @($(if ((Get-ConfigRowCount $c $null @{ PingCount = 4 }) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $null @{ PingCount = 4 }), expected 1") })) $true ''
+$c = New-BrokenConfig; $c.Checks.TracerouteHops = 99; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: a file hop count out of range warns, so two rows' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+Assert-Case 'config rows: and -TracerouteHops 4 replaces it, leaving one' @($(if ((Get-ConfigRowCount $c $null @{ TracerouteHops = 4 }) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $null @{ TracerouteHops = 4 }), expected 1") })) $true ''
+
+# PR #41, round 8: a TCP host that is not a name, and the boolean switches that replace an invalid file value.
+$c = New-BrokenConfig; $c.Tests.TcpTargets[0].Host = 'http://example.com'
+Assert-Case 'tcp target: a URL in Host is not a usable target' @($(if (-not (Test-ConfiguredTcpTarget $c.Tests.TcpTargets[0])) { @() } else { @('the oracle called a URL a usable TCP host') })) $true ''
+Assert-Case 'config rows: and it is the configured-targets row' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+$c = New-BrokenConfig; $c.Checks.WifiRf = 'bad'; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: an invalid check flag warns, so two rows' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+Assert-Case 'config rows: and -NoWifi replaces it before validation, leaving one' @($(if ((Get-ConfigRowCount $c $null @{ NoWifi = $true }) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $null @{ NoWifi = $true }), expected 1") })) $true ''
+# Round 8 put two cases here for an unusable -TcpTarget, and round 10 found that both expected 1 - a clean
+# configuration with one bad target and a clean configuration with none produce one row either way, for opposite
+# reasons. They could not fail, so they are gone; Test-TcpTargetSyntax is asserted directly in unit_tests.ps1,
+# where the value it rejects is the point.
+
+# PR #41, round 9: a URL whose host is not a name, and the panel's six check boxes.
+$c = New-BrokenConfig; $c.Tests.HttpTargets[0].Url = 'http://foo..bar/'
+Assert-Case 'http target: an empty label in the host is not usable' @($(if (-not (Test-ConfiguredHttpTarget $c.Tests.HttpTargets[0])) { @() } else { @('the oracle called http://foo..bar/ usable') })) $true ''
+Assert-Case 'config rows: and it is the configured-targets row' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+$c = New-BrokenConfig; $c.Checks.ProxySettings = 'bad'; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: an invalid flag -NoWifi does not cover still warns' @($(if ((Get-ConfigRowCount $c $null @{ NoWifi = $true }) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c $null @{ NoWifi = $true }), expected 2") })) $true ''
+$panel = @{ Checks = @{ WifiRf = $true; Traceroute = $true; RouteTable = $true; GatewayNeighbor = $true; ProxySettings = $true; DriverInfo = $true } }
+Assert-Case 'config rows: but the panel replaces all six, leaving one' @($(if ((Get-ConfigRowCount $c $null $panel) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $null $panel), expected 1") })) $true ''
+
+# PR #41, round 14: the run trims an address before it decides what it is, so a padded placeholder is still the
+# placeholder. Get-UnusablePingExtraRows asks Test-PingTargetSyntax, which trims; these assert the whole path.
+$c = New-BrokenConfig; $c.Tests.PingTargets = @([pscustomobject]@{ Name = 'Padded'; Address = ' AUTO_GATEWAY '; Required = $true })
+Assert-Case 'ping rows: a padded placeholder is usable, so it adds no second row' @($(if ((Get-UnusablePingExtraRows $c) -eq 0) { @() } else { @('a padded placeholder was called unusable') })) $true ''
+Assert-Case 'config rows: and it is not a configured-targets row' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+# The three cases above exercise the product's own trim, which was already there. This one exercises the two
+# lines round 14 changed: Test-ResultSet decides what a configured address is, and until now it compared the
+# placeholder untrimmed. Padding every address in the packaged configuration must leave the expectation
+# identical, because the run reads them all trimmed.
+$padded = Read-Config $ConfigDir
+foreach ($t in @($padded.Tests.PingTargets)) { $t.Address = ' ' + ([string]$t.Address) + ' ' }
+$r = New-Fixture
+Assert-Case 'padded addresses do not change what the report must contain' @(Test-ResultSet $r $padded @{} $facts) $true ''
+$c = New-BrokenConfig; $c.Tests.PingTargets = @([pscustomobject]@{ Name = 'Padded'; Address = ' example.com '; Required = $true })
+Assert-Case 'ping rows: a padded name is usable too' @($(if ((Get-UnusablePingExtraRows $c) -eq 0) { @() } else { @('a padded name was called unusable') })) $true ''
+
 "Summary: $passes passed, $fails failed"
 exit $fails

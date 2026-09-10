@@ -164,6 +164,7 @@ $script:UsingFallbackOutputDirectory = $false
 $script:BaseConfig = $null
 $script:RunOptions = $null
 $script:RunOptionMessages = New-Object System.Collections.ArrayList
+$script:DroppedTargets = New-Object System.Collections.ArrayList
 $script:RetransmissionRateComputed = $false
 $script:PanelWarned = $false
 $script:PanelHints = $null
@@ -616,9 +617,15 @@ function Add-CheckResult {
         [string]$Details = "",
         [string]$Diagnostics = "",
         [string]$Tag = "",
-        [string]$Scope = "Main"
+        [string]$Scope = "Main",
+        [switch]$Weightless
     )
 
+    # -Weightless marks a row that keeps its badge, its message and its place in the counts but does not decide the
+    # overall result or the fingerprint (backlog #39). The marking is opt-in, one branch at a time: a row that says
+    # nothing was measured, that a sample was too coarse for the threshold applied to it, or that states a fact about
+    # this run's own input. Everything else keeps its weight by default - a check added later cannot become weightless
+    # by forgetting something, which is the failure nobody would notice.
     $item = [pscustomobject][ordered]@{
         Time     = Get-Date
         Category = $Category
@@ -629,6 +636,7 @@ function Add-CheckResult {
         Diagnostics = $Diagnostics
         Tag         = $Tag
         Scope       = $Scope
+        Weightless  = [bool]$Weightless
     }
 
     [void]$script:Results.Add($item)
@@ -642,8 +650,15 @@ function Invoke-CheckStep {
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][int]$Progress,
         [Parameter(Mandatory = $true)][scriptblock]$Action,
-        [string]$Scope = "Main"
+        [string]$Scope = "Main",
+        [switch]$Weightless
     )
+
+    # The step carries the weight, not the tag (backlog #39). step-error is one tag over every step, and four of them
+    # are quality collectors: a collector that fails completely writes a step-error row here and then its own row in
+    # the analysis that follows, so demoting only the second of each pair would leave the run Test Incomplete exactly
+    # as before - this decision failing at the one case it was written for. The four declare themselves at the call
+    # site and their step-error rows inherit it; every other step's keeps its weight untouched.
 
     Set-UiProgress -Percent $Progress -Text $Name
     Write-UiLog -Status "INFO" -Text ("Starting: $Name")
@@ -654,7 +669,7 @@ function Invoke-CheckStep {
     catch {
         $details = Get-ExceptionDetails $_
         $diagnostics = Get-ExceptionDiagnostics $_
-        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "This item could not be executed. The error has been recorded." -Details $details -Diagnostics $diagnostics -Tag "step-error" -Scope $Scope | Out-Null
+        Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "This item could not be executed. The error has been recorded." -Details $details -Diagnostics $diagnostics -Tag "step-error" -Scope $Scope -Weightless:$Weightless | Out-Null
         return $null
     }
 }
@@ -813,18 +828,106 @@ function Load-Configuration {
     }
 }
 
-# The one syntax rule any of the four free-text fields has, in one place. Set-RunOptions rejects with it after
-# the run has started; the IT panel checks with it before, on Start, so a panel that disagreed with the run is
-# not possible. The other three fields are deliberately left without a rule: a name or an address the resolver
-# refuses is a result and not a typing mistake, and an extra URL that is not a URL fails later as a test
-# (backlog #45).
+# The syntax rules the four free-text fields have, in one place. Test-TcpTargetSyntax is the one that rejects:
+# Set-RunOptions drops the target after the run has started, and the IT panel checks with it before, on Start,
+# so a panel that disagreed with the run is not possible. The other three do not drop anything - a value they
+# refuse keeps its row and is reported as a fact about this run's input (backlog #39). What they refuse is only
+# what could never be sent: not a name the resolver rejects, which is an answer and stays a measurement.
 function Test-TcpTargetSyntax {
     param([string]$Value)
     $parts = ([string]$Value).Split(":")
     if ($parts.Count -ne 2) { return $false }
-    if ([string]::IsNullOrWhiteSpace($parts[0])) { return $false }
+    if (-not (Test-HostNameSyntax $parts[0])) { return $false }
     $port = ConvertTo-IntSafe $parts[1] 0
     return (($port -ge 1) -and ($port -le 65535))
+}
+
+function Test-HttpTargetSyntax {
+    param([string]$Value)
+
+    # Can this value become an HTTP target at all - an absolute URI with a scheme this tool speaks. The rule lives
+    # here because two places ask it: the configuration validation, and the check that would otherwise send the
+    # request. They disagreed until 1.2.8 (PR #41, round 1): the validation called 'example.com' unusable while the
+    # check only intercepted a blank, so the request went out, failed, and was recorded as a measured connectivity
+    # failure - a required target could produce Problem Detected, and a member of a required group could fail that
+    # group, over a value no packet ever left for.
+    $uri = $null
+    if (-not [System.Uri]::TryCreate([string]$Value, [System.UriKind]::Absolute, [ref]$uri)) { return $false }
+    if (-not ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")) { return $false }
+    # The host inside the URL is a host name like any other: Uri.TryCreate is happy with 'http://foo..bar/',
+    # and the empty label is only found when the request is already on its way, where the failure reads as a
+    # site that would not answer (PR #41, round 9). Uri strips the brackets from an IPv6 literal and keeps
+    # the userinfo out of Host, so what is tested here is the name itself.
+    return (Test-HostNameSyntax $uri.Host)
+}
+
+function Test-HostNameSyntax {
+    param([string]$Value)
+
+    # Could a resolver be asked this name at all? A delimiter that belongs to a URI, an empty label such as
+    # foo..bar, a label of more than 63 characters, a whole name of more than 253, or a label that starts or
+    # ends with a hyphen cannot be asked: the call throws before a query exists, and the catch around it
+    # would record the throw as an answer (PR #41, rounds 5 and 6 - the ping family first, then DNS, which
+    # is the same rule and now the same code; round 7 brought the delimiters here too).
+    $name = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+    # Everything below judges the form that would go on the wire, which is why the conversion comes first.
+    # Two rounds were spent learning that. A label's limit is counted in encoded characters and not typed
+    # ones - 58 accented letters are 58 here and more than 63 once encoded (round 18). And IDNA maps a
+    # compatibility character to its ASCII equivalent: a full-width solidus becomes '/', a full-width colon
+    # ':', an ideographic space a space - so a check made before the conversion is a check made on a string
+    # this tool will never send, and 'foo<U+FF0F>bar' walked past the delimiter rules straight into the
+    # resolver (round 20). GetAscii is the conversion the resolver itself would do, so what it refuses could
+    # never have been asked; a plain ASCII name needs none of this and is left exactly as it was.
+    if ($name -match '[^\x00-\x7F]') {
+        try { $name = (New-Object System.Globalization.IdnMapping).GetAscii($name) }
+        catch { return $false }
+    }
+    # A delimiter belongs to a URI, not to a name: 'http://example.com' has labels of a legal length and no
+    # hyphen at an edge, so the structural rules below would say yes to it (round 7). A colon is allowed only
+    # when the value is an IP address, which is how fe80::1 stays a target and host:80 does not.
+    # A control character is not a delimiter and not whitespace, so nothing above or below catches it: an
+    # embedded NUL from a JSON \u0000 reached Dns.GetHostAddressesAsync and Ping.Send, and both came back with
+    # a SocketException - the same exception a name that genuinely does not resolve produces, so the run
+    # recorded it as a measurement (PR #41, round 21). No host name has ever contained one.
+    if ($name -match '[\x00-\x1F\x7F]') { return $false }
+    if ($name -match '\s') { return $false }
+    if ($name -match '[/\\?#@]') { return $false }
+    if ($name.Contains(":")) {
+        $parsedAddress = $null
+        return [System.Net.IPAddress]::TryParse($name, [ref]$parsedAddress)
+    }
+    # The root dot is taken off here rather than before the conversion, because IDNA is what can create it: a
+    # name written with an ideographic full stop carries no ASCII dot on the way in and a trailing one on the
+    # way out, and the label test would then see an empty last label (round 19).
+    if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
+    if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
+    foreach ($label in $name.Split(".")) {
+        if ($label.Length -lt 1 -or $label.Length -gt 63) { return $false }
+        if ($label.StartsWith("-") -or $label.EndsWith("-")) { return $false }
+    }
+    return $true
+}
+
+function Test-PingTargetSyntax {
+    param([string]$Value)
+
+    # Can this value become a ping target at all, which is a different question from whether it answers (backlog #39).
+    # A blank address, or one carrying a scheme, a path, a user or a port, cannot be turned into a target: nothing is
+    # sent, so nothing is learned about the network and the row that says so is a fact about this run's input. A name
+    # that is well formed and does not resolve is the opposite case - it was tested, the resolver answered, and that
+    # answer is a measurement this rule must not touch. The two placeholders are targets the run resolves itself.
+    $text = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+    if ($text -eq "AUTO_GATEWAY" -or $text -eq "AUTO_DNS") { return $true }
+    # A name no resolver can accept is the same kind of input problem as a URL: an empty label such as
+    # foo..bar, a label of more than 63 characters, a whole name of more than 253, or a label that starts or
+    # ends with a hyphen. Ping.Send throws before any packet exists, and the catch around it records that as a
+    # lost reply - so a required target spelled this way was reported as a measured 100% loss, which is the
+    # confusion this helper exists to prevent (PR #41, round 5). Structure is all that is tested here. The
+    # characters are left alone, because a well-formed name that does not resolve is the opposite case - it was
+    # asked, and it was answered - and because an internationalised name has to stay usable.
+    return (Test-HostNameSyntax $text)
 }
 
 # v1.2: run options come from the entry point (launcher switches) or the IT options panel; the JSON config file is never written.
@@ -835,6 +938,7 @@ function Set-RunOptions {
         $Overrides = @{}
     }
     $script:RunOptionMessages = New-Object System.Collections.ArrayList
+    $script:DroppedTargets = New-Object System.Collections.ArrayList
     $config = ($script:BaseConfig | ConvertTo-Json -Depth 10) | ConvertFrom-Json
     $extra = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
     $raw = [ordered]@{ Ping = @(); Dns = @(); Tcp = @(); Http = @() }
@@ -862,7 +966,11 @@ function Set-RunOptions {
         $port = 0
         if ($parts.Count -eq 2) { $port = ConvertTo-IntSafe $parts[1] 0 }
         if (-not (Test-TcpTargetSyntax $value)) {
-            [void]$script:RunOptionMessages.Add("Ignored extra TCP target '$value': expected host:port.")
+            # The notice says what happened; the record is what puts a row where the result belonged (backlog #39).
+            # A dropped target that leaves only a notice under Program Environment shows the reader an empty TCP
+            # section, which reads as a check nobody configured rather than one that was thrown away.
+            [void]$script:RunOptionMessages.Add("Ignored extra TCP target '$value': expected host:port with a host that can be used.")
+            [void]$script:DroppedTargets.Add([pscustomobject][ordered]@{ Kind = "Tcp"; Value = [string]$value })
             continue
         }
         $config.Tests.TcpTargets = @($config.Tests.TcpTargets) + [pscustomobject][ordered]@{ Name = ("Extra TCP " + [string]$value); Host = $parts[0]; Port = $port; Required = $false; Group = "" }
@@ -1434,8 +1542,16 @@ function Test-IsValidIPv4Address {
 # Semantic validation and company-standard comparison for IP, CIDR, prefix, gateway, DNS, and DHCP.
 # -----------------------------------------------------------------------------
 function Test-ConfigurationSemantics {
+    # Four lists, because a verdict cannot attach to part of a row (backlog #39). What the organisation's own standard
+    # says, and what the thresholds are, is what every other row was judged against: a broken one makes the verdict
+    # untrustworthy and keeps its weight. A target entry that cannot be tested, a check flag that is not a boolean and
+    # a hop count out of range are facts about this run's input that undermine nothing measured - and the target
+    # entries are now reported by the check that would have made the measurement, in the section it belonged in, so
+    # this row no longer convicts the same typo a second time.
     $errors = New-Object System.Collections.ArrayList
     $warnings = New-Object System.Collections.ArrayList
+    $inputErrors = New-Object System.Collections.ArrayList
+    $inputWarnings = New-Object System.Collections.ArrayList
     $expected = $script:Config.Expected
     $tests = $script:Config.Tests
     $thresholds = $script:Config.Thresholds
@@ -1487,10 +1603,10 @@ function Test-ConfigurationSemantics {
     foreach ($target in @($tests.TcpTargets)) {
         if ($null -eq $target) { continue }
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "TCP target")
-        $hostName = ConvertTo-SafeString (Get-PropertyValue $target "Host" "")
+        $hostName = (ConvertTo-SafeString (Get-PropertyValue $target "Host" "")).Trim()
         $port = ConvertTo-IntSafe (Get-PropertyValue $target "Port" 0) 0
-        if ([string]::IsNullOrWhiteSpace($hostName) -or $port -lt 1 -or $port -gt 65535) {
-            [void]$errors.Add("The host or port for TcpTargets '$name' is invalid: Host=$hostName, Port=$port")
+        if (-not (Test-HostNameSyntax $hostName) -or $port -lt 1 -or $port -gt 65535) {
+            [void]$inputErrors.Add("The host or port for TcpTargets '$name' is invalid: Host=$hostName, Port=$port")
         }
     }
 
@@ -1498,26 +1614,33 @@ function Test-ConfigurationSemantics {
         if ($null -eq $target) { continue }
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "HTTP target")
         $url = ConvertTo-SafeString (Get-PropertyValue $target "Url" "")
-        $uri = $null
-        $validUri = [System.Uri]::TryCreate($url, [System.UriKind]::Absolute, [ref]$uri)
-        if ($validUri) {
-            $validUri = ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")
+        if (-not (Test-HttpTargetSyntax $url)) {
+            [void]$inputErrors.Add("The URL for HttpTargets '$name' is invalid: $url")
         }
-        if (-not $validUri) {
-            [void]$errors.Add("The URL for HttpTargets '$name' is invalid: $url")
+    }
+
+    foreach ($target in @($tests.PingTargets)) {
+        if ($null -eq $target) { continue }
+        $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "Ping target")
+        $address = (ConvertTo-SafeString (Get-PropertyValue $target "Address" "")).Trim()
+        if (-not (Test-PingTargetSyntax $address)) {
+            [void]$inputErrors.Add("The address for PingTargets '$name' cannot be used as a ping target: $address")
         }
     }
 
     foreach ($dnsTarget in @($tests.DnsNames)) {
         if ($null -eq $dnsTarget) { continue }
         if ($dnsTarget -is [string]) {
-            $hostName = [string]$dnsTarget
+            $hostName = ([string]$dnsTarget).Trim()
         }
         else {
-            $hostName = ConvertTo-SafeString (Get-PropertyValue $dnsTarget "Host" "")
+            $hostName = (ConvertTo-SafeString (Get-PropertyValue $dnsTarget "Host" "")).Trim()
         }
         if ([string]::IsNullOrWhiteSpace($hostName)) {
-            [void]$errors.Add("DnsNames contains a blank Host value.")
+            [void]$inputErrors.Add("DnsNames contains a blank Host value.")
+        }
+        elseif (-not (Test-HostNameSyntax $hostName)) {
+            [void]$inputErrors.Add("DnsNames contains a host name that cannot be used as a DNS target: $hostName")
         }
     }
 
@@ -1541,12 +1664,12 @@ function Test-ConfigurationSemantics {
     foreach ($flagName in @("WifiRf", "RouteTable", "GatewayNeighbor", "ProxySettings", "Traceroute", "DriverInfo")) {
         $flagValue = Get-PropertyValue $checks $flagName
         if ($null -ne $flagValue -and -not ($flagValue -is [bool])) {
-            [void]$warnings.Add("Checks.$flagName must be true or false (current value: $flagValue); the check is disabled.")
+            [void]$inputWarnings.Add("Checks.$flagName must be true or false (current value: $flagValue); the check is disabled.")
         }
     }
     $hopsValue = Get-PropertyValue $checks "TracerouteHops"
     if ($null -ne $hopsValue -and (-not (Test-IsWholeNumber $hopsValue) -or (ConvertTo-IntSafe $hopsValue 0) -lt 1 -or (ConvertTo-IntSafe $hopsValue 0) -gt 10)) {
-        [void]$warnings.Add("Checks.TracerouteHops must be a whole number from 1 to 10 (current value: $hopsValue); the built-in default will be used.")
+        [void]$inputWarnings.Add("Checks.TracerouteHops must be a whole number from 1 to 10 (current value: $hopsValue); the built-in default will be used.")
     }
 
     $countThresholdNames = @("TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")
@@ -1584,12 +1707,20 @@ function Test-ConfigurationSemantics {
     if ($errors.Count -gt 0) {
         Add-CheckResult -Category "Program Configuration" -Check "Configuration Validation" -Status "ERROR" -Message ("The configuration file contains {0} invalid value(s). The program will continue, but related results may not be meaningful." -f $errors.Count) -Details (@($errors) -join [Environment]::NewLine) -Tag "config" | Out-Null
     }
-    elseif ($warnings.Count -eq 0) {
+    elseif ($warnings.Count -eq 0 -and $inputErrors.Count -eq 0 -and $inputWarnings.Count -eq 0) {
         Add-CheckResult -Category "Program Configuration" -Check "Configuration Validation" -Status "PASS" -Message "Configuration value format validation passed." -Details "" -Tag "config" | Out-Null
     }
 
     if ($warnings.Count -gt 0) {
         Add-CheckResult -Category "Program Configuration" -Check "Configuration Thresholds" -Status "WARN" -Message ("The configuration file contains {0} threshold value(s) that need attention." -f $warnings.Count) -Details (@($warnings) -join [Environment]::NewLine) -Tag "config" | Out-Null
+    }
+
+    if ($inputErrors.Count -gt 0) {
+        Add-CheckResult -Category "Program Configuration" -Check "Configured Targets" -Status "ERROR" -Message ("{0} target(s) given to this run cannot be tested; each is reported where its own result belonged, and none of them changes the overall result." -f $inputErrors.Count) -Details (@($inputErrors) -join [Environment]::NewLine) -Tag "config" -Weightless | Out-Null
+    }
+
+    if ($inputWarnings.Count -gt 0) {
+        Add-CheckResult -Category "Program Configuration" -Check "Configured Checks" -Status "WARN" -Message ("{0} option value(s) could not be used as written; a built-in default was applied or the check was disabled, and the overall result is unchanged by it." -f $inputWarnings.Count) -Details (@($inputWarnings) -join [Environment]::NewLine) -Tag "config" -Weightless | Out-Null
     }
 }
 
@@ -1925,10 +2056,21 @@ function Test-PingTargets {
         if ($null -eq $targetConfig) { continue }
 
         $name = ConvertTo-SafeString (Get-PropertyValue $targetConfig "Name" "Ping")
-        $address = ConvertTo-SafeString (Get-PropertyValue $targetConfig "Address" "")
+        $address = (ConvertTo-SafeString (Get-PropertyValue $targetConfig "Address" "")).Trim()
         $pingTag = "ping-target"
         if ($address -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
         $required = [bool](Get-PropertyValue $targetConfig "Required" $false)
+        # Decided before anything is sent (backlog #39): a value that cannot become a ping target is a fact about this
+        # run's input, and attempting it anyway would turn a typo into a measurement - 'http://example.com' resolves
+        # to nothing and reports 100% loss, which reads as a network that dropped every packet. What remains below,
+        # where a well-formed address resolved to nothing, is a measurement and keeps its weight.
+        if (-not (Test-PingTargetSyntax $address)) {
+            Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured address cannot be used as a ping target." -Details ("Configured value: $address") -Tag $pingTag -Weightless | Out-Null
+            if ($required) {
+                Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details ("Configured value: $address") -Tag $pingTag | Out-Null
+            }
+            continue
+        }
         $targets = @(Resolve-PingTargets -Address $address -PrimaryAdapters $PrimaryAdapters)
 
         if ($targets.Count -eq 0) {
@@ -2017,16 +2159,34 @@ function Test-DnsNames {
 
         if ($dnsConfig -is [string]) {
             $name = "DNS Name Resolution"
-            $hostName = [string]$dnsConfig
+            $hostName = ([string]$dnsConfig).Trim()
             $required = $true
         }
         else {
             $name = ConvertTo-SafeString (Get-PropertyValue $dnsConfig "Name" "DNS Name Resolution")
-            $hostName = ConvertTo-SafeString (Get-PropertyValue $dnsConfig "Host" "")
+            $hostName = (ConvertTo-SafeString (Get-PropertyValue $dnsConfig "Host" "")).Trim()
             $required = [bool](Get-PropertyValue $dnsConfig "Required" $true)
         }
 
         if ([string]::IsNullOrWhiteSpace($hostName)) {
+        # The same cut as the TCP and HTTP targets (backlog #39): a blank host name is a fact about this run's input
+        # and gets a row of its own where the result belonged - until 1.2.8 a blank DNS name produced nothing at all,
+        # required or not, so the reader saw a section with no trace of a check somebody had configured. A required
+        # target adds the weighted row that says the measurement did not happen.
+            Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "The configured host name is blank." -Details "" -Tag "dns" -Weightless | Out-Null
+            if ($required) {
+                Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details "" -Tag "dns" | Out-Null
+            }
+            continue
+        }
+        if (-not (Test-HostNameSyntax $hostName)) {
+        # A name no resolver can be asked is the same fact about this run's input as a blank one, and until
+        # this round it was the opposite: the lookup threw, the catch below turned the throw into a weighted
+        # FAIL, and a typo became Problem Detected (PR #41, round 6).
+            Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "The configured host name cannot be used as a DNS target." -Details ("Configured value: $hostName") -Tag "dns" -Weightless | Out-Null
+            if ($required) {
+                Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details "" -Tag "dns" | Out-Null
+            }
             continue
         }
 
@@ -2226,14 +2386,20 @@ function Test-ConnectivityTargets {
         if ($null -eq $target) { continue }
 
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "TCP Connection")
-        $hostName = ConvertTo-SafeString (Get-PropertyValue $target "Host" "")
+        $hostName = (ConvertTo-SafeString (Get-PropertyValue $target "Host" "")).Trim()
         $port = ConvertTo-IntSafe (Get-PropertyValue $target "Port" 0) 0
         $required = [bool](Get-PropertyValue $target "Required" $false)
         $group = ConvertTo-SafeString (Get-PropertyValue $target "Group" "")
 
-        if ([string]::IsNullOrWhiteSpace($hostName) -or $port -lt 1 -or $port -gt 65535) {
+        if (-not (Test-HostNameSyntax $hostName) -or $port -lt 1 -or $port -gt 65535) {
+            # Two rows, because one row would carry two claims (backlog #39): this was configured wrongly, which the
+            # rule says cannot move the verdict, and - when the target is required - a measurement that had to happen
+            # did not, which has to keep its weight. The notice names the value as it was given, in the section where
+            # the result belonged, so an optional target that is never tested is visible instead of absent; the second
+            # row is what stops a run reading Overall Healthy with a required check that never ran.
+            Add-CheckResult -Category "TCP Connection" -Check $name -Status "ERROR" -Message "The configured host or port is invalid." -Details ("Host=$hostName, Port=$port") -Tag "tcp" -Weightless | Out-Null
             if ($required) {
-                Add-CheckResult -Category "TCP Connection" -Check $name -Status "ERROR" -Message "The configured host or port is invalid." -Details ("Host=$hostName, Port=$port") -Tag "tcp" | Out-Null
+                Add-CheckResult -Category "TCP Connection" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details ("Host=$hostName, Port=$port") -Tag "tcp" | Out-Null
             }
             continue
         }
@@ -2267,9 +2433,14 @@ function Test-ConnectivityTargets {
         $required = [bool](Get-PropertyValue $target "Required" $false)
         $group = ConvertTo-SafeString (Get-PropertyValue $target "Group" "")
 
-        if ([string]::IsNullOrWhiteSpace($url)) {
+        if (-not (Test-HttpTargetSyntax $url)) {
+            # Blank was never the only way a URL cannot be used: 'example.com' has no scheme and 'ftp://host' has one
+            # this tool does not speak. Both are decided here, before anything is sent, so that a value no packet
+            # left for cannot be recorded as a measured connectivity failure (PR #41, round 1).
+            $urlDetail = "Configured value: $url"
+            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "The configured URL cannot be used: it must be an absolute http:// or https:// address." -Details $urlDetail -Tag "http" -Weightless | Out-Null
             if ($required) {
-                Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "The configured URL is blank." -Details "" -Tag "http" | Out-Null
+                Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details $urlDetail -Tag "http" | Out-Null
             }
             continue
         }
@@ -2391,7 +2562,7 @@ function Compare-AdapterStatistics {
             ) -join [Environment]::NewLine
             $resetStatus = "WARN"
             if ($isVirtualAdapter) { $resetStatus = "INFO" }
-            Add-CheckResult -Category "Network Adapter Error Counters" -Check $name -Status $resetStatus -Message "The adapter counters were reset during the test, possibly because the adapter reconnected or restarted; a reliable delta cannot be calculated." -Details $resetDetails -Tag "adapter-errors" | Out-Null
+            Add-CheckResult -Category "Network Adapter Error Counters" -Check $name -Status $resetStatus -Message "The adapter counters were reset during the test, possibly because the adapter reconnected or restarted; a reliable delta cannot be calculated." -Details $resetDetails -Tag "adapter-errors" -Weightless | Out-Null
             continue
         }
 
@@ -2780,7 +2951,7 @@ function Add-TracerouteResult {
     if ($maxHops -lt 1 -or $maxHops -gt 10) { $maxHops = 3 }
     $target = "1.1.1.1"
     foreach ($candidate in @($script:Config.Tests.PingTargets)) {
-        $address = ConvertTo-SafeString (Get-PropertyValue $candidate "Address" "")
+        $address = (ConvertTo-SafeString (Get-PropertyValue $candidate "Address" "")).Trim()
         if (-not [string]::IsNullOrWhiteSpace($address) -and $address -ne "AUTO_GATEWAY" -and $address -ne "AUTO_DNS") { $target = $address; break }
     }
 
@@ -2802,6 +2973,20 @@ function Add-TracerouteResult {
     $reachedText = "no"
     if (@($hops | Where-Object { $_.Reached }).Count -gt 0) { $reachedText = "yes" }
     Add-CheckResult -Category "IT Diagnostics" -Check "Traceroute (first hops)" -Status "INFO" -Message ("{0}: {1} hop(s) probed, destination reached: {2}." -f $target, $hops.Count, $reachedText) -Details ($lines -join [Environment]::NewLine) -Tag "traceroute" -Scope "IT" | Out-Null
+}
+
+function Add-DroppedTargetResults {
+    # A target that was given to the run and not tested leaves a row where its result would have been, in the section
+    # it belonged in (backlog #39). Taking the verdict off the Startup Notice without this row would hide the mistake
+    # instead of demoting it: the reader looks where the answer belongs, finds nothing, and reads absence as a check
+    # nobody asked for. The row is weightless for the same reason the notice is - it is a fact about the input.
+    foreach ($dropped in @($script:DroppedTargets)) {
+        $kind = [string]$dropped.Kind
+        $value = [string]$dropped.Value
+        if ($kind -eq "Tcp") {
+            Add-CheckResult -Category "TCP Connection" -Check ("Extra TCP " + $value) -Status "ERROR" -Message "This target was given to the run and not tested, because it is not host:port with a host that can be used." -Details ("Value as given: {0}. Nothing was sent, so this row says nothing about the network; the overall result is unchanged by it." -f $value) -Tag "tcp" -Weightless | Out-Null
+        }
+    }
 }
 
 function Add-DriverInfoResult {
@@ -3024,7 +3209,7 @@ function Compare-TcpCounters {
     )
 
     if ($null -eq $Before -or $null -eq $After) {
-        Add-CheckResult -Category "TCP Retransmissions" -Check "System Counters" -Status "ERROR" -Message "Complete before-and-after TCP counter data is unavailable." -Details "" -Tag "tcp-retransmissions" | Out-Null
+        Add-CheckResult -Category "TCP Retransmissions" -Check "System Counters" -Status "ERROR" -Message "Complete before-and-after TCP counter data is unavailable." -Details "" -Tag "tcp-retransmissions" -Weightless | Out-Null
         return
     }
 
@@ -3049,7 +3234,7 @@ function Compare-TcpCounters {
             if (@(@($other.Errors) | Where-Object { [string]$_.Protocol -eq $errorProtocol }).Count -eq 0) {
                 $errorDetails += @(Get-TcpReadFailureLines -Snapshot $other -Protocol $errorProtocol -Ending:(-not $isEnding))
             }
-            Add-CheckResult -Category "TCP Retransmissions" -Check ("{0} counters" -f $errorItem.Protocol) -Status "ERROR" -Message "The TCP retransmission counter could not be read." -Details ((@($errorDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Diagnostics $errorItem.Diagnostics -Tag "tcp-retransmissions" | Out-Null
+            Add-CheckResult -Category "TCP Retransmissions" -Check ("{0} counters" -f $errorItem.Protocol) -Status "ERROR" -Message "The TCP retransmission counter could not be read." -Details ((@($errorDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Diagnostics $errorItem.Diagnostics -Tag "tcp-retransmissions" -Weightless | Out-Null
         }
     }
 
@@ -3101,7 +3286,7 @@ function Compare-TcpCounters {
             # not have - the note keeps to the seconds and the reads, and the row with deltas adds that sentence
             # for itself (PR #40, round 7).
             $resetDetails = @($durationLine, ("Start Sent={0}, Retrans={1}; end Sent={2}, Retrans={3}" -f $start.SegmentsSent, $start.Retransmitted, $end.SegmentsSent, $end.Retransmitted)) + $evidenceLines
-            Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "ERROR" -Message "The counter was reset or overflowed during the test, so the delta cannot be calculated." -Details ((@($resetDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Tag "tcp-retransmissions" | Out-Null
+            Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "ERROR" -Message "The counter was reset or overflowed during the test, so the delta cannot be calculated." -Details ((@($resetDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Tag "tcp-retransmissions" -Weightless | Out-Null
             continue
         }
 
@@ -3143,7 +3328,7 @@ function Compare-TcpCounters {
 
         if ($sentDelta -lt $minimumSegments) {
             if ($retransDelta -gt 0) {
-                Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "WARN" -Message ("The traffic sample is small, but {0} retransmission(s) were observed (approximately {1}%)." -f $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" | Out-Null
+                Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "WARN" -Message ("The traffic sample is small, but {0} retransmission(s) were observed (approximately {1}%)." -f $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" -Weightless | Out-Null
             }
             else {
                 Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "INFO" -Message ("The sample contains only {0} sent segment(s); no retransmissions were observed." -f $sentDelta) -Details $details -Tag "tcp-retransmissions" | Out-Null
@@ -3188,9 +3373,18 @@ function Wait-ForMinimumTcpSample {
 # Result aggregation: overall precedence is FAIL > ERROR > WARN > PASS.
 # -----------------------------------------------------------------------------
 function Get-OverallStatus {
-    $failCount = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "FAIL" }).Count
-    $errorCount = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "ERROR" }).Count
-    $warnCount = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "WARN" }).Count
+    # The overall result is decided by what the run measured (backlog #39). A supplementary statistic that could not
+    # be taken, a sample too coarse for the threshold applied to it, and a fact about this run's own input each keep
+    # their row, their badge and their place in the counts, are named in the summary, and do not change the result;
+    # everything else keeps its weight, optional targets included, because an optional target that answered badly is
+    # a measurement. Put the other way round: the verdict answers what the machine is like, not what the last thirty
+    # seconds of typing were like. Until 1.2.8 one unreadable counter made a run in which every check passed read as
+    # Test Incomplete, and the user manual had to apologise for the verdict - a document apologising for a verdict is
+    # a sign the verdict is doing the wrong work.
+    $weighted = @($script:Results | Where-Object { [string]$_.Scope -ne "IT" -and -not $_.Weightless })
+    $failCount = @($weighted | Where-Object { $_.Status -eq "FAIL" }).Count
+    $errorCount = @($weighted | Where-Object { $_.Status -eq "ERROR" }).Count
+    $warnCount = @($weighted | Where-Object { $_.Status -eq "WARN" }).Count
 
     if ($failCount -gt 0) {
         return [pscustomobject]@{
@@ -3258,7 +3452,14 @@ function Get-SendToItLine {
 }
 
 function Get-FingerprintSummary {
-    $results = @($script:Results)
+    # Every predicate below draws a conclusion, so every one of them reads the weighted rows only (backlog #39). The
+    # verdict is not the only thing derived from the result set: a demoted below-minimum retransmission row would
+    # otherwise leave the overall result Healthy while the key stayed quality and this section said "Connected, but
+    # quality is poor" about the same run, and a demoted input notice would set the other-problem predicate, which
+    # suppresses the quality key in turn. What describes the page follows the rows on the page - Get-SummaryCounts
+    # and Get-ReportNoticeFlags read every row, so a weightless row keeps its badge and its explanation.
+    $allResults = @($script:Results)
+    $results = @($allResults | Where-Object { -not $_.Weightless })
     $overall = Get-OverallStatus
 
     $adaptersFail = @($results | Where-Object { $_.Tag -eq "adapters" -and $_.Status -eq "FAIL" }).Count -gt 0
@@ -3313,6 +3514,17 @@ function Get-FingerprintSummary {
     }
     # One file, not a choice between two: the window names the same file by its path, and this line names the
     # one in the reader's hand (backlog #46).
+    # The summary names what could not be taken and what was dropped, and says plainly that neither changed the
+    # result (backlog #39). The exclusion alone would leave a person reading a healthy verdict beside rows carrying
+    # error badges with nothing to connect them; this line is what connects them, and it is additional to the
+    # exclusion rather than a substitute for it.
+    $weightless = @($allResults | Where-Object { [string]$_.Scope -ne "IT" -and $_.Weightless -and [string]$_.Tag -ne "startup" })
+    if ($weightless.Count -gt 0) {
+        # The startup notice is left out of the list because the row in the target's own section names the target
+        # itself, where this one would contribute only the words "Startup Notice"; the notice keeps its own row.
+        $weightlessNames = @(@($weightless | ForEach-Object { [string]$_.Check }) | Select-Object -Unique)
+        $lines += ("These were not measured or could not be used as given, and none of them changes the result: {0}." -f ($weightlessNames -join ", "))
+    }
     $lines += "Send this file to IT as it is. It contains the computer name, user name, adapter MAC addresses and the Wi-Fi network name."
 
     return [pscustomobject][ordered]@{
@@ -3841,9 +4053,28 @@ function Run-AllChecks {
         Add-CheckResult -Category "Program Configuration" -Check "Configuration File" -Status "PASS" -Message ("Loaded: {0}" -f $script:EffectiveConfigPath) -Details "" -Tag "config-file" | Out-Null
     }
 
-    foreach ($startupMessage in @(@($script:StartupMessages) + @($script:RunOptionMessages))) {
+    # Two families under one tag, and only the second is a fact about this run's input (backlog #39). The environment
+    # notices keep their weight: the report directory was not writable and a fallback was used, the graphical
+    # interface could not start, and the one that decides it - this copy is running from inside a compressed folder,
+    # where a report is written somewhere it will not survive. Demoting the tag as a whole would let a run say Overall
+    # Healthy while the file it tells the person to send is being written into a folder that disappears. The input
+    # notices are marked here, where they are added, rather than given a tag of their own, so that every tag a
+    # document names goes on meaning what it meant - and they may only be demoted because Add-DroppedTargetResults
+    # now leaves a row where each dropped target's result belonged.
+    foreach ($startupMessage in @($script:StartupMessages)) {
         Add-CheckResult -Category "Program Environment" -Check "Startup Notice" -Status "WARN" -Message $startupMessage -Details "" -Tag "startup" | Out-Null
     }
+    foreach ($startupMessage in @($script:RunOptionMessages)) {
+        Add-CheckResult -Category "Program Environment" -Check "Startup Notice" -Status "WARN" -Message $startupMessage -Details "" -Tag "startup" -Weightless | Out-Null
+    }
+
+    # Beside the notice it belongs to, and before anything can return: a run that ends at the unsupported
+    # operating system or PowerShell branch below still writes a report, and until PR #41 round 12 that report
+    # carried the notice about the dropped target with no row where its result belonged - which is the one
+    # thing this release promises not to do. It was also inside the connectivity step's action, so a throw
+    # inside that step took the row with it. Nothing here depends on the run: the targets were dropped while
+    # the options were read, which is also why this row belongs at this point in the table.
+    Add-DroppedTargetResults
 
     Invoke-CheckStep -Category "Program Configuration" -Name "Validate Configuration" -Progress 4 -Action {
         Test-ConfigurationSemantics
@@ -3869,7 +4100,7 @@ function Run-AllChecks {
         Add-CheckResult -Category "System Information" -Check "Computer" -Status "INFO" -Message ("{0}, user {1}." -f $summary.ComputerName, $summary.UserName) -Details ("Operating system: {0} ({1})`r`nPowerShell: {2}" -f $summary.OperatingSystem, $summary.OperatingVersion, $summary.PowerShellVersion) -Tag "system" | Out-Null
     } | Out-Null
 
-    $tcpBaseline = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Get TCP Retransmission Baseline" -Progress 10 -Action {
+    $tcpBaseline = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Get TCP Retransmission Baseline" -Progress 10 -Weightless -Action {
         # -WarmUp on the baseline only: the throwaway read that pays whatever the counter provider charges for a
         # first query outside the sample window, where it cannot lengthen what the window reports (backlog #38).
         # The snapshot is returned whatever it holds, including a baseline where both classes failed (PR #40, round
@@ -3881,7 +4112,7 @@ function Run-AllChecks {
     }
     $tcpSampleStart = Get-Date
 
-    $adapterStatsBefore = Invoke-CheckStep -Category "Network Adapter Error Counters" -Name "Get Network Adapter Error Baseline" -Progress 13 -Action {
+    $adapterStatsBefore = Invoke-CheckStep -Category "Network Adapter Error Counters" -Name "Get Network Adapter Error Baseline" -Progress 13 -Weightless -Action {
         return (Get-AdapterStatisticsSnapshot)
     }
 
@@ -3929,20 +4160,20 @@ function Run-AllChecks {
     $minimumSampleSeconds = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.RetransmissionSampleSeconds 8))
     Wait-ForMinimumTcpSample -StartTime $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
 
-    $adapterStatsAfter = Invoke-CheckStep -Category "Network Adapter Error Counters" -Name "Get Ending Network Adapter Error Values" -Progress 82 -Action {
+    $adapterStatsAfter = Invoke-CheckStep -Category "Network Adapter Error Counters" -Name "Get Ending Network Adapter Error Values" -Progress 82 -Weightless -Action {
         return (Get-AdapterStatisticsSnapshot)
     }
 
     Invoke-CheckStep -Category "Network Adapter Error Counters" -Name "Analyze Adapter Errors and Discards" -Progress 85 -Action {
         if ($null -eq $adapterStatsBefore -or $null -eq $adapterStatsAfter) {
-            Add-CheckResult -Category "Network Adapter Error Counters" -Check "Before/After Comparison" -Status "ERROR" -Message "The baseline or ending value is missing, so the error delta cannot be calculated." -Details "" -Tag "adapter-errors" | Out-Null
+            Add-CheckResult -Category "Network Adapter Error Counters" -Check "Before/After Comparison" -Status "ERROR" -Message "The baseline or ending value is missing, so the error delta cannot be calculated." -Details "" -Tag "adapter-errors" -Weightless | Out-Null
         }
         else {
             Compare-AdapterStatistics -Before $adapterStatsBefore -After $adapterStatsAfter -Adapters $networkSnapshot
         }
     } | Out-Null
 
-    $tcpAfter = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Get Ending TCP Retransmission Values" -Progress 89 -Action {
+    $tcpAfter = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Get Ending TCP Retransmission Values" -Progress 89 -Weightless -Action {
         return (Get-TcpCounterSnapshot)
     }
 
@@ -4065,7 +4296,7 @@ function Get-RejectedPanelValues {
     if ($null -eq $controls) { return @() }
     foreach ($item in @(([string]$controls["TcpTarget"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
         if (-not (Test-TcpTargetSyntax $item)) {
-            [void]$rejected.Add([pscustomobject][ordered]@{ Key = "TcpTarget"; Value = [string]$item; Problem = "Extra TCP: '" + $item + "' is not host:port - for example 8.8.8.8:443." })
+            [void]$rejected.Add([pscustomobject][ordered]@{ Key = "TcpTarget"; Value = [string]$item; Problem = "Extra TCP: '" + $item + "' is not host:port with a host that can be used - for example 8.8.8.8:443." })
         }
     }
     return @($rejected)

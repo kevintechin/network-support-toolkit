@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Runs the NetworkHealthCheck validation chain against this checkout (backlog #16).
 
@@ -99,6 +99,30 @@ function Invoke-TestScript {
     param([string]$Name, [string[]]$ArgumentList, [string]$LogName)
     Invoke-Native -FilePath $PsExe -ArgumentList (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot $Name)) + $ArgumentList) -LogName $LogName
 }
+function Test-DocumentedTotal([string]$Summary, [string]$RowPattern, [string]$ValuePattern) {
+    # A step's own row in README.md advertises how many cases it runs, and in this pull request alone those
+    # numbers went stale four times - the result-set one in rounds 4, 10 and 15, the unit one in round 17 - and a
+    # reader found every one of them. The only honest source is the run that just happened, so each step that
+    # reports a total compares it here and fails when the two disagree. Returns '' when they agree, or the
+    # sentence that says how they differ.
+    # -Encoding UTF8, because README.md has no byte-order mark and Windows PowerShell 5.1 would otherwise read it
+    # in the machine's ANSI codepage - where the multiplication sign in '353 x 2' is two characters and the
+    # pattern below silently matches nothing. The first draft of this guard failed for exactly that reason, which
+    # looks like a stale total and is not one.
+    $row = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Encoding UTF8 | Where-Object { $_ -match $RowPattern }) -join ' '
+    $all = @([regex]::Matches($row, $ValuePattern))
+    if ($all.Count -eq 0) { return ('README.md has no total on the row matching {0}' -f $RowPattern) }
+    $m = $all[$all.Count - 1]
+    $documented = $m.Groups[1].Value
+    # A pair, where the pattern asks for one: 'N / N' has to be the same number twice.
+    if ($m.Groups.Count -gt 2 -and $m.Groups[2].Success -and $m.Groups[2].Value -ne $documented) {
+        return ('README.md advertises {0}, which is not one number twice' -f $m.Value)
+    }
+    $ran = [regex]::Match([string]$Summary, 'Summary: (\d+) passed')
+    if (-not $ran.Success) { return 'this run reported no total to compare with README.md' }
+    if ($documented -ne $ran.Groups[1].Value) { return ('README.md advertises {0}' -f $m.Value) }
+    return ''
+}
 function Invoke-Case {
     # Runs one case of a step, records PASS / FAIL with its detail and duration, and prints the line.
     param([string]$Step, [string]$Case, [scriptblock]$Body)
@@ -169,6 +193,226 @@ function Add-PrimaryFacts([hashtable]$Facts, [object[]]$Adapters) {
     $Facts.ConnectedAdapters = @($Adapters).Count
     $Facts.Gateways = @(@($primary | ForEach-Object { @($_.Gateways) }) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
     $Facts.DnsServers = @(@($primary | ForEach-Object { @($_.Dns) }) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
+}
+function Test-ConfiguredTcpTarget($Target) {
+    # The host is a name like any other since round 8: a valid port with 'http://example.com' beside it used to
+    # reach TcpClient.BeginConnect and be recorded as a failed connection.
+    $hostName = [string](Get-Value $Target 'Host')
+    if (-not (Test-HostNameSyntax $hostName)) { return $false }
+    $port = ConvertTo-IntSafe (Get-Value $Target 'Port') 0
+    return ($port -ge 1 -and $port -le 65535)
+}
+function Get-UnusablePingExtraRows($Config) {
+    # The second row a required, unusable ping address adds. The address itself is already counted once by the
+    # expression above, which counts every configured entry.
+    $rows = 0
+    foreach ($target in @($Config.Tests.PingTargets)) {
+        if ($null -eq $target) { continue }
+        $address = [string](Get-Value $target 'Address')
+        if (Test-ConfiguredPingAddress $address) { continue }
+        $required = $false
+        $value = Get-Value $target 'Required'
+        if ($null -ne $value) { $required = [bool]$value }
+        if ($required) { $rows += 1 }
+    }
+    return $rows
+}
+function Test-ConfiguredDnsTarget($Target) {
+    # A bare string is the documented short form and is treated as required; an object carries its name under Host.
+    # Asking a string for a Host property called every one of them unusable (PR #41, round 2). Since round 6 the
+    # name must also be one a resolver could be asked, which is the tool's own rule.
+    $hostName = if ($Target -is [string]) { [string]$Target } else { [string](Get-Value $Target 'Host') }
+    if ([string]::IsNullOrWhiteSpace($hostName)) { return $false }
+    return (Test-HostNameSyntax $hostName)
+}
+function Test-ConfiguredDnsRequired($Target) {
+    if ($Target -is [string]) { return $true }
+    $value = Get-Value $Target 'Required'
+    if ($null -eq $value) { return $true }
+    return [bool]$value
+}
+function Test-ConfiguredHttpTarget($Target) {
+    # The tool's own rule, on the URL this target carries.
+    return (Test-HttpTargetSyntax ([string](Get-Value $Target 'Url')))
+}
+function Test-ConfiguredPingAddress([string]$Address) {
+    # The tool's own rule. This was a character-for-character copy of it until PR #41 round 3, which is a copy that
+    # would have kept agreeing with the old rule after the tool's changed.
+    return (Test-PingTargetSyntax $Address)
+}
+function Get-TargetRowCount($Targets, [scriptblock]$IsUsable, [bool]$RequiredByDefault) {
+    # One row per target, as before - and two for a target the run cannot test that was required: the input notice
+    # that names the mistake, weightless, plus the weighted row saying the required check did not run (backlog #39).
+    $rows = 0
+    foreach ($target in @($Targets)) {
+        if ($null -eq $target) { continue }
+        $rows += 1
+        if (-not (& $IsUsable $target)) {
+            $required = $RequiredByDefault
+            if ($target -is [string]) {
+                $required = $RequiredByDefault
+            }
+            else {
+                $value = Get-Value $target 'Required'
+                if ($null -ne $value) { $required = [bool]$value }
+            }
+            if ($required) { $rows += 1 }
+        }
+    }
+    return $rows
+}
+function Get-Value($Object, [string]$Name) {
+    if ($null -eq $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+function Get-ConfigConverterSource([string]$ScriptPath) {
+    # Five findings of PR #41 round 3 were one cause: this oracle re-implemented the tool's value conversion by hand,
+    # and "4.0" is a whole number to the tool but not to Int32.TryParse, an explicit null becomes 0 rather than being
+    # skipped, and a whole-valued double outside Int32 is not a whole number at all. The predicates below - which rows
+    # a configuration produces - stay this file's own; how a value is *read* now comes from the package being tested.
+    # The source is returned rather than run here: Invoke-Expression inside a function defines those functions in that
+    # function's own scope, where they vanish on return, so the caller evaluates them at its scope instead. They are
+    # not marking their own homework - unit_tests.ps1 asserts every one of them directly, on fixed inputs, in both
+    # languages.
+    $tokens = $null; $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path -LiteralPath $ScriptPath).Path, [ref]$tokens, [ref]$errors)
+    $wanted = 'ConvertTo-DoubleSafe', 'ConvertTo-IntSafe', 'Test-IsNumericValue', 'Test-IsWholeNumber', 'Test-IsValidIPv4Address', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax'
+    $found = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true))
+    $loaded = @($found | ForEach-Object { $_.Name })
+    $missing = @($wanted | Where-Object { $loaded -notcontains $_ })
+    if ($missing.Count -gt 0) { throw ("The package at {0} is missing: {1}" -f $ScriptPath, ($missing -join ', ')) }
+    return @($found | ForEach-Object { $_.Extent.Text })
+}
+function Test-UsableIPAddress([string]$Value) {
+    $parsed = $null
+    return [System.Net.IPAddress]::TryParse([string]$Value, [ref]$parsed)
+}
+function Get-ConfigRowCount($Config, $Options, [hashtable]$Overrides) {
+    # Test-ConfigurationSemantics writes up to four rows out of four lists, and the PASS row appears only when all
+    # four are empty (backlog #39, PR #41 round 1): a configuration whose only problem is an invalid target has no
+    # validation row at all, and threshold and option problems together produce two rows rather than one. The four
+    # predicates are reproduced here in the order the script applies them.
+    # Blank entries are skipped by the product in three of these loops, and prefix lengths are read through
+    # ConvertTo-IntSafe with -1 as the default, so a blank one is invalid there (PR #41, round 3).
+    # Set-RunOptions replaces three scalars in the effective configuration before Test-ConfigurationSemantics
+    # reads it, and only when the switch is greater than zero, so a file value the product would warn about is
+    # not warned about when a switch replaced it (PR #41, round 7). The report cannot answer this on its own,
+    # because RunOptions carries the sanitised value ([math]::Max(1, ...)) and not what the switch supplied, so
+    # the case states what it passed. Round 7 read those from $Expect itself, which was wrong for a window run:
+    # Invoke-WindowRun fills PingCount and SampleSeconds from the folder's configuration to assert against, and a
+    # user-entry run passes no switches at all (round 9). $Expect['Overrides'] is only what was really given.
+    $overridden = @{}
+    if ($null -ne $Overrides) {
+        foreach ($pair in @(@('PingCount', 'PingCount'), @('RetransmissionSampleSeconds', 'SampleSeconds'), @('TracerouteHops', 'TracerouteHops'))) {
+            if ($Overrides.ContainsKey($pair[1]) -and (ConvertTo-IntSafe $Overrides[$pair[1]] 0) -gt 0) { $overridden[$pair[0]] = ConvertTo-IntSafe $Overrides[$pair[1]] 0 }
+        }
+    }
+
+    $standards = 0
+    $expected = $Config.Expected
+    foreach ($ip in @(Get-Value $expected 'AllowedIPv4Addresses')) { if (-not [string]::IsNullOrWhiteSpace([string]$ip) -and -not (Test-IsValidIPv4Address ([string]$ip))) { $standards += 1 } }
+    foreach ($cidr in @(Get-Value $expected 'AllowedIPv4Cidrs')) {
+        if ([string]::IsNullOrWhiteSpace([string]$cidr)) { continue }
+        $parts = ([string]$cidr).Split('/')
+        $valid = ($parts.Count -eq 2) -and (Test-IsValidIPv4Address $parts[0])
+        if ($valid) {
+            $prefix = ConvertTo-IntSafe $parts[1] -1
+            $valid = ($prefix -ge 0 -and $prefix -le 32)
+        }
+        if (-not $valid) { $standards += 1 }
+    }
+    foreach ($prefixValue in @(Get-Value $expected 'AllowedPrefixLengths')) {
+        $prefix = ConvertTo-IntSafe $prefixValue -1
+        if ($prefix -lt 0 -or $prefix -gt 32) { $standards += 1 }
+    }
+    foreach ($gateway in @(Get-Value $expected 'AllowedDefaultGateways')) { if (-not [string]::IsNullOrWhiteSpace([string]$gateway) -and -not (Test-IsValidIPv4Address ([string]$gateway))) { $standards += 1 } }
+    foreach ($dns in @(Get-Value $expected 'RequiredDnsServers')) {
+        if ([string]::IsNullOrWhiteSpace([string]$dns)) { continue }
+        if (-not (Test-UsableIPAddress $dns)) { $standards += 1 }
+    }
+    $dhcp = Get-Value $expected 'DhcpEnabled'
+    if ($null -ne $dhcp -and -not ($dhcp -is [bool])) { $standards += 1 }
+
+    # Every threshold the script validates, with the two rules it applies: a value that is not a number, and a count
+    # threshold that is not a whole number. The adapter deltas are thresholds too, and the first draft of this oracle
+    # left all four out (PR #41, round 2).
+    $thresholds = 0
+    foreach ($name in @('PingCount', 'PingTimeoutMs', 'DnsTimeoutMs', 'TcpTimeoutMs', 'HttpTimeoutMs', 'RetransmissionSampleSeconds')) {
+        $value = Get-Value $Config.Tests $name
+        if ($overridden.ContainsKey($name)) { $value = $overridden[$name] }
+        # The product's two branches, in its order: a present value that is not a whole number, or - and this is the
+        # branch an explicit null reaches, because ConvertTo-IntSafe hands back 0 - a value of zero or less.
+        if ($null -ne $value -and -not (Test-IsWholeNumber $value)) { $thresholds += 1 }
+        elseif ((ConvertTo-IntSafe $value 0) -le 0) { $thresholds += 1 }
+    }
+    $limits = $Config.Thresholds
+    $countThresholds = @('TcpRetransmissionCriticalCount', 'MinimumTcpSegmentsForRate', 'AdapterErrorWarningDelta', 'AdapterErrorCriticalDelta', 'AdapterDiscardWarningDelta', 'AdapterDiscardCriticalDelta')
+    foreach ($name in @('PacketLossWarningPercent', 'PacketLossCriticalPercent', 'LatencyWarningMs', 'LatencyCriticalMs', 'TcpRetransmissionWarningPercent', 'TcpRetransmissionCriticalPercent') + $countThresholds) {
+        $value = Get-Value $limits $name
+        if ($null -eq $value) { continue }
+        # Round 3 replaced the hand-rolled conversion everywhere except here, and here is where the culture shows:
+        # the product's Test-IsNumericValue parses a string in invariant culture, so "2,5" is not a number to the tool
+        # while this machine's own TryParse reads it as twenty-five (PR #41, round 4).
+        if (-not (Test-IsNumericValue $value)) { $thresholds += 1 }
+        elseif (($countThresholds -contains $name) -and -not (Test-IsWholeNumber $value)) { $thresholds += 1 }
+    }
+    # A warning threshold below zero, or a critical one below its warning, is one row per pair - read through
+    # ConvertTo-DoubleSafe with the product's own defaults, which is what the product falls back to for a value it
+    # cannot read.
+    foreach ($pair in @(@('PacketLossWarningPercent', 'PacketLossCriticalPercent', 5, 20), @('LatencyWarningMs', 'LatencyCriticalMs', 100, 250), @('TcpRetransmissionWarningPercent', 'TcpRetransmissionCriticalPercent', 2, 5))) {
+        $warning = ConvertTo-DoubleSafe (Get-Value $limits $pair[0]) $pair[2]
+        $critical = ConvertTo-DoubleSafe (Get-Value $limits $pair[1]) $pair[3]
+        if ($warning -lt 0 -or $critical -lt $warning) { $thresholds += 1 }
+    }
+
+    $badTargets = 0
+    foreach ($target in @($Config.Tests.TcpTargets)) { if ($null -ne $target -and -not (Test-ConfiguredTcpTarget $target)) { $badTargets += 1 } }
+    foreach ($target in @($Config.Tests.HttpTargets)) { if ($null -ne $target -and -not (Test-ConfiguredHttpTarget $target)) { $badTargets += 1 } }
+    foreach ($target in @($Config.Tests.DnsNames)) { if ($null -ne $target -and -not (Test-ConfiguredDnsTarget $target)) { $badTargets += 1 } }
+    foreach ($target in @($Config.Tests.PingTargets)) { if ($null -ne $target -and -not (Test-ConfiguredPingAddress ([string](Get-Value $target 'Address')))) { $badTargets += 1 } }
+    # Set-RunOptions appends the switch targets to the effective configuration before Test-ConfigurationSemantics
+    # reads it, so an unusable -PingTarget, -DnsName or -HttpUrl is a Configured Targets row exactly as a
+    # configured one is; this oracle read the file on disk and saw none of them (PR #41, round 6). A -TcpTarget is
+    # not among them: since round 10 Test-TcpTargetSyntax judges the host as well as the shape, so the panel and
+    # Set-RunOptions refuse the same values and an unusable one never reaches the configuration at all - it is a
+    # dropped target, which has a row of its own elsewhere in this table.
+    if ($null -ne $Options) {
+        $extra = Get-Value $Options 'ExtraTargets'
+        foreach ($value in @(Get-Value $extra 'Ping')) { if (-not (Test-ConfiguredPingAddress ([string]$value))) { $badTargets += 1 } }
+        foreach ($value in @(Get-Value $extra 'Dns')) { if (-not (Test-HostNameSyntax ([string]$value))) { $badTargets += 1 } }
+        foreach ($value in @(Get-Value $extra 'Http')) { if (-not (Test-HttpTargetSyntax ([string]$value))) { $badTargets += 1 } }
+    }
+
+    $options = 0
+    # -NoWifi and -NoTraceroute write a real boolean into the effective configuration before it is validated, so
+    # they silence a warning about an invalid file value rather than adding one (PR #41, round 8 - round 7 said
+    # these needed nothing, which was true only when the file value was already valid).
+    $flagOverridden = @{}
+    if ($null -ne $Overrides) {
+        if ($Overrides['NoWifi'] -eq $true) { $flagOverridden['WifiRf'] = $true }
+        if ($Overrides['NoTraceroute'] -eq $true) { $flagOverridden['Traceroute'] = $true }
+        # The IT panel's Start passes all six controls through Get-RunOptionsFromPanel, so every flag it names is
+        # a real boolean in the effective configuration whatever the file said (round 9).
+        if ($Overrides['Checks'] -is [hashtable]) { foreach ($key in @($Overrides['Checks'].Keys)) { $flagOverridden[[string]$key] = $true } }
+    }
+    foreach ($flag in @('WifiRf', 'RouteTable', 'GatewayNeighbor', 'ProxySettings', 'Traceroute', 'DriverInfo')) {
+        if ($flagOverridden.ContainsKey($flag)) { continue }
+        $value = Get-Value $Config.Checks $flag
+        if ($null -ne $value -and -not ($value -is [bool])) { $options += 1 }
+    }
+    $hops = Get-Value $Config.Checks 'TracerouteHops'
+    if ($overridden.ContainsKey('TracerouteHops')) { $hops = $overridden['TracerouteHops'] }
+    if ($null -ne $hops -and (-not (Test-IsWholeNumber $hops) -or (ConvertTo-IntSafe $hops 0) -lt 1 -or (ConvertTo-IntSafe $hops 0) -gt 10)) { $options += 1 }
+
+    $rows = 0
+    if ($standards -gt 0) { $rows += 1 }
+    elseif ($thresholds -eq 0 -and $badTargets -eq 0 -and $options -eq 0) { $rows += 1 }
+    if ($thresholds -gt 0) { $rows += 1 }
+    if ($badTargets -gt 0) { $rows += 1 }
+    if ($options -gt 0) { $rows += 1 }
+    return $rows
 }
 function Get-MachineFacts {
     # What the script's snapshot sees, read from the operating system the way Get-NetworkSnapshot does: first
@@ -260,6 +504,11 @@ function Get-StandardRuleCount($Config) {
     if ($e.DhcpEnabled -is [bool]) { $n++ }
     return $n
 }
+# The row-count oracle reads configuration values through the package's own converters, loaded here from the
+# package under test: how a value is read comes from the tool, while which rows it produces stays this file's own
+# judgement (PR #41, round 3).
+foreach ($converterSource in (Get-ConfigConverterSource (Join-Path (Join-Path $PackageDir 'en-US') 'NetworkHealthCheck.ps1'))) { Invoke-Expression $converterSource }
+
 function Test-ResultSet {
     # The report must carry every row the configuration and the run options call for, and nothing else: one row per
     # configured or extra target, one per enabled IT diagnostic, the fixed rows (configuration, environment, system,
@@ -273,9 +522,17 @@ function Test-ResultSet {
     if ($null -eq $MachineAfter) { $MachineAfter = $Machine }   # facts read after the run, for what the ending sample saw
     $bad = @()
     $o = $Report.RunOptions
-    $pingTargets = @($Config.Tests.PingTargets)
-    $gatewayTargets = @($pingTargets | Where-Object { [string]$_.Address -eq 'AUTO_GATEWAY' }).Count
-    $dnsTargets = @($pingTargets | Where-Object { [string]$_.Address -eq 'AUTO_DNS' }).Count
+    # An explicit null entry is skipped by the run and by the configuration check, so it is not a row here
+    # either - which the DNS, TCP and HTTP helpers already knew (PR #41, round 5).
+    $pingTargets = @($Config.Tests.PingTargets | Where-Object { $null -ne $_ })
+    # Trimmed, because the run trims: since round 13 an address is read as ([string]$_).Trim() everywhere it is
+    # used, so ' AUTO_GATEWAY ' is the placeholder to the run and would have been a literal target to this oracle
+    # - one row expected where the run writes one per resolved gateway (PR #41, round 14).
+    $gatewayTargets = @($pingTargets | Where-Object { ([string]$_.Address).Trim() -eq 'AUTO_GATEWAY' }).Count
+    $dnsTargets = @($pingTargets | Where-Object { ([string]$_.Address).Trim() -eq 'AUTO_DNS' }).Count
+    # A -TcpTarget the parser refused is in RawTargets and not in ExtraTargets; it costs one row in the TCP section
+    # and one Startup Notice.
+    $droppedTcp = (Get-Count $o.RawTargets.Tcp) - (Get-Count $o.ExtraTargets.Tcp)
     $gateways = @($Machine.Gateways)
     $dnsServerCount = Get-Count $Machine.DnsServers
     $connected = [int]$Machine.ConnectedAdapters
@@ -294,12 +551,19 @@ function Test-ResultSet {
     # One connectivity-group row per group named on a TCP or HTTP target or listed in RequiredConnectivityGroups (a
     # required group without targets gets its own "no executable items" row), the way Test-ConnectivityTargets writes them.
     $groupKeys = @{}
-    foreach ($t in @(@($Config.Tests.TcpTargets) + @($Config.Tests.HttpTargets))) { $g = [string]$t.Group; if (-not [string]::IsNullOrWhiteSpace($g)) { $groupKeys[$g] = $true } }
+    # Only a target the run can test joins its group: one refused before the request is sent leaves no group result,
+    # so a group named by nothing else has no row at all (PR #41, round 2). A group listed in
+    # RequiredConnectivityGroups still gets its own row, which the line below adds.
+    foreach ($t in @($Config.Tests.TcpTargets)) { if ($null -ne $t -and (Test-ConfiguredTcpTarget $t)) { $g = [string]$t.Group; if (-not [string]::IsNullOrWhiteSpace($g)) { $groupKeys[$g] = $true } } }
+    foreach ($t in @($Config.Tests.HttpTargets)) { if ($null -ne $t -and (Test-ConfiguredHttpTarget $t)) { $g = [string]$t.Group; if (-not [string]::IsNullOrWhiteSpace($g)) { $groupKeys[$g] = $true } } }
     $requiredGroups = @(@($Config.Tests.RequiredConnectivityGroups) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
     $groups = @(@(@($groupKeys.Keys) + $requiredGroups) | Select-Object -Unique)
     $rules = Get-StandardRuleCount $Config
     $want = [ordered]@{
-        'config-file' = 1; 'config' = 1; 'environment' = 1; 'system' = 1; 'adapters' = 1
+        # config is one row on a configuration the tool can use as written, and up to four when it cannot: the
+        # validation and threshold rows keep their weight, while the targets and options rows that name this run's
+        # own input do not (backlog #39). The packaged configuration is valid, so the chain's own runs see one.
+        'config-file' = 1; 'config' = (Get-ConfigRowCount $Config $o $Expect['Overrides']); 'environment' = 1; 'system' = 1; 'adapters' = 1
         'data-source' = $(if ([bool]$Machine.DataSourceRow) { 1 } else { 0 })   # the CIM fallback's warning row, only when the cmdlets threw
         # Without a connected adapter the snapshot writes the aggregate adapters row only: no gateway or DNS settings rows.
         'gateway-config' = $(if ($connected -gt 0) { 1 } else { 0 })
@@ -308,10 +572,20 @@ function Test-ResultSet {
         'expected-standard' = $(if ($rules -eq 0 -or $connected -eq 0) { 1 } else { $rules })
         'ping-gateway' = $gatewayTargets * [math]::Max(1, $gateways.Count)   # one row per resolved gateway, or one "no target" row
         # A literal target is one row; AUTO_DNS is one row per DNS server of the primary adapters, or one "no target" row.
-        'ping-target' = ($pingTargets.Count - $gatewayTargets - $dnsTargets) + $dnsTargets * [math]::Max(1, $dnsServerCount) + (Get-Count $o.ExtraTargets.Ping)
-        'dns' = (Get-Count $Config.Tests.DnsNames) + (Get-Count $o.ExtraTargets.Dns)
-        'tcp' = (Get-Count $Config.Tests.TcpTargets) + (Get-Count $o.ExtraTargets.Tcp)
-        'http' = (Get-Count $Config.Tests.HttpTargets) + (Get-Count $o.ExtraTargets.Http)
+        # A ping target that cannot be used costs the same two rows as the other families when it is required
+        # (PR #41, round 2): the weightless notice, and the weighted row saying the check did not run.
+        'ping-target' = ($pingTargets.Count - $gatewayTargets - $dnsTargets) + $dnsTargets * [math]::Max(1, $dnsServerCount) + (Get-Count $o.ExtraTargets.Ping) + (Get-UnusablePingExtraRows $Config)
+        # A target the run cannot test is reported where its result belonged instead of vanishing, and a required one
+        # adds the weighted row saying the check did not run (backlog #39); a dropped extra target - one the parser
+        # refused, so it is in RawTargets and not in ExtraTargets - leaves a row of its own in the same section, and
+        # a Startup Notice besides, which is the row this table had no entry for until round 11: any startup row at
+        # all was an unexpected tag, so no case could ever pass a target that gets dropped. The environment
+        # notices - report folder, graphical interface, running from a ZIP - are not expected here, and a run that
+        # produced one would fail this assertion, which is the intent: none of them is true of a staged run.
+        'dns' = (Get-TargetRowCount $Config.Tests.DnsNames { param($t) Test-ConfiguredDnsTarget $t } $true) + (Get-Count $o.ExtraTargets.Dns)
+        'tcp' = (Get-TargetRowCount $Config.Tests.TcpTargets { param($t) Test-ConfiguredTcpTarget $t } $false) + (Get-Count $o.ExtraTargets.Tcp) + $droppedTcp
+        'startup' = $droppedTcp
+        'http' = (Get-TargetRowCount $Config.Tests.HttpTargets { param($t) Test-ConfiguredHttpTarget $t } $false) + (Get-Count $o.ExtraTargets.Http)
         'connectivity-group' = $groups.Count
         # Per class as computed above, and that formula now covers every case: since 1.2.8 a baseline where neither
         # class could be read is returned rather than thrown away, so the analysis writes one row per read that failed
@@ -456,6 +730,20 @@ function Invoke-WindowRun {
     $expect = Get-ConfigSampling $Dir
     $expect['EntryPoint'] = $Entry
     $expect['ExpandDetails'] = ($Entry -eq 'IT')
+    # An IT window run is started from the panel - the Start handler, not the Reset button - and
+    # Get-RunOptionsFromPanel hands Set-RunOptions the three spinner values and all six check boxes, so those
+    # reach the effective configuration as real values before it is validated, whatever the file holds (PR #41,
+    # round 9). A user entry has no panel and overrides nothing. The spinners hold whatever Set-OptionsPanelValues
+    # seeded them with, always within their own minimum and maximum; what matters below is only that a value is
+    # supplied, so the hop count here stands for the panel's, not for a number this run asserts.
+    if ($Entry -eq 'IT') {
+        $expect['Overrides'] = @{
+            PingCount      = $expect['PingCount']
+            SampleSeconds  = $expect['SampleSeconds']
+            TracerouteHops = 3
+            Checks         = @{ WifiRf = $true; Traceroute = $true; RouteTable = $true; GatewayNeighbor = $true; ProxySettings = $true; DriverInfo = $true }
+        }
+    }
     $factsBefore = Get-MachineFacts
     $started = Get-Date
     $argList = @('-PackageDir', $Dir, '-Entry', $Entry, '-Via', 'Launcher', '-TimeoutSeconds', $GuiTimeoutSeconds)
@@ -511,6 +799,29 @@ try {
     Write-Host ('  steps: {0}; work dir: {1}' -f ($selected -join ', '), $WorkDir)
 
     if ($selected -contains 'parse') {
+        # Before anything is parsed: no file in tests\ carries a control byte other than its line ending or a
+        # tab. A regex escape that arrives as the character it names leaves a real one behind, every test still
+        # passes because the class means the same thing, and git then treats the file as binary and stops
+        # normalising it - which is how one line of PR #41 round 21 rewrote all 902 (round 21 again, after the
+        # same mistake had already been fixed once in the package). validate_release.py guards the package; this
+        # guards the harness.
+        Invoke-Case 'parse' 'no stray control bytes in tests\' {
+            $bad = @()
+            foreach ($file in @(Get-ChildItem -LiteralPath $PSScriptRoot -File -Recurse -Include *.ps1, *.py, *.md, *.cmd)) {
+                $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+                # Position matters for one of them: 0x0D is half a line ending, so it is stray unless 0x0A follows
+                # it - the same blind spot the package validator had in round 22.
+                $found = New-Object System.Collections.ArrayList
+                for ($i = 0; $i -lt $bytes.Length; $i++) {
+                    $byte = $bytes[$i]
+                    if ($byte -lt 9 -or ($byte -gt 10 -and $byte -lt 13) -or ($byte -gt 13 -and $byte -lt 32) -or $byte -eq 127) { [void]$found.Add($byte); continue }
+                    if ($byte -eq 13 -and (($i + 1) -ge $bytes.Length -or $bytes[$i + 1] -ne 10)) { [void]$found.Add($byte) }
+                }
+                $found = @($found | Sort-Object -Unique)
+                if ($found.Count -gt 0) { $bad += ('{0}: {1}' -f $file.Name, (($found | ForEach-Object { '0x{0:X2}' -f $_ }) -join ', ')) }
+            }
+            @{ Passed = ($bad.Count -eq 0); Detail = $(if ($bad.Count -eq 0) { 'none' } else { $bad -join '; ' }) }
+        }
         foreach ($lang in $Languages) {
             Invoke-Case 'parse' $lang {
                 $r = Invoke-TestScript 'parse_check.ps1' @('-Path', (Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1'))) ('parse_' + $lang)
@@ -554,7 +865,10 @@ try {
             Invoke-Case 'unit' $lang {
                 $r = Invoke-TestScript 'unit_tests.ps1' @('-ScriptPath', (Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1'))) ('unit_' + $lang)
                 $s = Get-SummaryLine $r.Output
-                @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
+                $ok = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s))
+                $drift = Test-DocumentedTotal $s '^\|\s*`unit`' '(\d+)\s*×\s*2'
+                if ($ok -and $drift) { $ok = $false }
+                @{ Passed = $ok; Detail = $(if ($drift) { '{0}; {1}' -f $s, $drift } else { $s }) }
             }
         }
     }
@@ -565,7 +879,10 @@ try {
                 New-Item -ItemType Directory -Force -Path $dir | Out-Null
                 $r = Invoke-TestScript 'report_stage_tests.ps1' @('-ScriptPath', (Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1')), '-WorkDir', $dir) ('report_' + $lang)
                 $s = Get-SummaryLine $r.Output
-                @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
+                $ok = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s))
+                $drift = Test-DocumentedTotal $s '^\|\s*`report`' '(\d+)\s*×\s*2'
+                if ($ok -and $drift) { $ok = $false }
+                @{ Passed = $ok; Detail = $(if ($drift) { '{0}; {1}' -f $s, $drift } else { $s }) }
             }
         }
     }
@@ -574,7 +891,10 @@ try {
             Invoke-Case 'envguard' $lang {
                 $r = Invoke-TestScript 'env_guard_check.ps1' @('-ScriptPath', (Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1')), '-WorkDir', $WorkDir) ('envguard_' + $lang)
                 $s = Get-SummaryLine $r.Output
-                @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
+                $ok = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s))
+                $drift = Test-DocumentedTotal $s '^\|\s*`envguard`' '(\d+)\s*×\s*2'
+                if ($ok -and $drift) { $ok = $false }
+                @{ Passed = $ok; Detail = $(if ($drift) { '{0}; {1}' -f $s, $drift } else { $s }) }
             }
         }
     }
@@ -624,11 +944,14 @@ try {
     if ($selected -contains 'acceptance') {
         # The two user runs go through the shipped console launcher (its trailing `pause` reads from NUL); the IT-switches
         # run calls the script directly because the launcher takes no arguments.
-        $unreachableArgs = @('-ConsoleOnly', '-PingCount', '2', '-SampleSeconds', '2', '-TracerouteHops', '2', '-ExpandDetails', '-PingTarget', 'nhc-no-such-host.invalid', '-TcpTarget', '192.0.2.1:9', '-HttpUrl', 'https://nhc-no-such-host.invalid/')
-        $unreachableExpect = @{ EntryPoint = 'IT'; ExpandDetails = $true; PingCount = 2; SampleSeconds = 2; TracerouteHops = 2; ExtraPing = 'nhc-no-such-host.invalid'; ExtraTcp = '192.0.2.1:9'; ExtraHttp = 'https://nhc-no-such-host.invalid/'; AllowUnhealthy = $true; RequireErrorCause = $true }
+        # The second TCP value has no port, so the run drops it: that is the only case in this chain that exercises
+        # the dropped-target rows end to end - the weightless row where the result belonged, and the Startup Notice
+        # beside it (PR #41, round 11). The first value keeps the unreachable-but-usable half of the case intact.
+        $unreachableArgs = @('-ConsoleOnly', '-PingCount', '2', '-SampleSeconds', '2', '-TracerouteHops', '2', '-ExpandDetails', '-PingTarget', 'nhc-no-such-host.invalid', '-TcpTarget', '192.0.2.1:9,8.8.8.8', '-HttpUrl', 'https://nhc-no-such-host.invalid/')
+        $unreachableExpect = @{ EntryPoint = 'IT'; ExpandDetails = $true; PingCount = 2; SampleSeconds = 2; TracerouteHops = 2; Overrides = @{ PingCount = 2; SampleSeconds = 2; TracerouteHops = 2 }; ExtraPing = 'nhc-no-such-host.invalid'; ExtraTcp = '192.0.2.1:9'; ExtraHttp = 'https://nhc-no-such-host.invalid/'; AllowUnhealthy = $true; RequireErrorCause = $true }
         $acceptance = @(
             @{ Lang = 'en-US'; Case = 'en-US user (Start-NetworkCheck-Console.cmd)'; Launcher = 'Start-NetworkCheck-Console.cmd'; Expect = @{ EntryPoint = 'User'; ExpandDetails = $false } },
-            @{ Lang = 'en-US'; Case = 'en-US IT switches (direct)'; Args = @('-ConsoleOnly', '-PingCount', '6', '-SampleSeconds', '6', '-PingTarget', '8.8.8.8', '-TcpTarget', '1.1.1.1:53', '-TracerouteHops', '4', '-ExpandDetails'); Expect = @{ EntryPoint = 'IT'; ExpandDetails = $true; PingCount = 6; SampleSeconds = 6; TracerouteHops = 4; ExtraPing = '8.8.8.8'; ExtraTcp = '1.1.1.1:53' } },
+            @{ Lang = 'en-US'; Case = 'en-US IT switches (direct)'; Args = @('-ConsoleOnly', '-PingCount', '6', '-SampleSeconds', '6', '-PingTarget', '8.8.8.8', '-TcpTarget', '1.1.1.1:53', '-TracerouteHops', '4', '-ExpandDetails'); Expect = @{ EntryPoint = 'IT'; ExpandDetails = $true; PingCount = 6; SampleSeconds = 6; TracerouteHops = 4; Overrides = @{ PingCount = 6; SampleSeconds = 6; TracerouteHops = 4 }; ExtraPing = '8.8.8.8'; ExtraTcp = '1.1.1.1:53' } },
             @{ Lang = 'zh-TW'; Case = 'zh-TW user (Start-NetworkCheck-Console.cmd)'; Launcher = 'Start-NetworkCheck-Console.cmd'; Expect = @{ EntryPoint = 'User'; ExpandDetails = $false } },
             # Unreachable on purpose (RFC 2606 .invalid, RFC 5737 TEST-NET-1), so the ping, TCP and HTTP failure paths -
             # and with them the error-code classification of backlog #14 - are executed on every run of the chain: a
@@ -686,7 +1009,18 @@ try {
             }
             $r = Invoke-TestScript 'selftest_resultset.ps1' @('-ReportPath', $report, '-ConfigDir', $stage) 'resultset'
             $s = Get-SummaryLine $r.Output
-            @{ Passed = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s)); Detail = $s }
+            $ok = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s))
+            $detail = [string]$s
+            # The number README.md advertises for this step has gone stale three times in PR #41 - rounds 4, 10
+            # and 15 - and every time a reader found it rather than a test. The only honest source for it is the
+            # run that just happened, so it is checked here: the last N / N on the resultset row of that table
+            # must be what this run reported.
+            # Two groups rather than a backreference, because the cell reads 'N / N' and \1 written through a
+            # heredoc arrives as chr(1) - the pattern then matches nothing and the guard fails for the wrong
+            # reason (PR #41, round 15).
+            $drift = Test-DocumentedTotal $detail '^\|\s*`resultset`' '(\d+)\s*/\s*(\d+)'
+            if ($ok -and $drift) { $ok = $false; $detail = '{0}; {1}' -f $detail, $drift }
+            @{ Passed = $ok; Detail = $detail }
         }
     }
     if ($selected -contains 'package') {
