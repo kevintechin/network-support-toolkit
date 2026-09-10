@@ -860,7 +860,17 @@ function Test-HostNameSyntax {
         return [System.Net.IPAddress]::TryParse($name, [ref]$parsedAddress)
     }
     if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
-    if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
+    if ([string]::IsNullOrEmpty($name)) { return $false }
+    # 標籤的長度上限算的是送上線路的那個形式，不是你打出來的字元：58 個帶重音的字母在這裡是
+    # 58 個字元，經 IDNA 編碼後却超過 63，於是解析器拒絕了這條規則剛宣布可用的名稱，而那個拒絕又被當成量測
+    # （PR #41，第 18 輪）。GetAscii 做的就是解析器自己會做的轉換，所以它拒絕的名稱本來就問不出去；只有含非
+    # ASCII 的名稱需要轉，純 ASCII 的名稱本身就是它的線路形式。長度沒超的國際化名稱仍然可用：「台灣」
+    # 會變成 xn--kpry57d.tw，跟其他名稱一樣被測試。
+    if ($name -match '[^\x00-\x7F]') {
+        try { $name = (New-Object System.Globalization.IdnMapping).GetAscii($name) }
+        catch { return $false }
+    }
+    if ($name.Length -gt 253) { return $false }
     foreach ($label in $name.Split(".")) {
         if ($label.Length -lt 1 -or $label.Length -gt 63) { return $false }
         if ($label.StartsWith("-") -or $label.EndsWith("-")) { return $false }

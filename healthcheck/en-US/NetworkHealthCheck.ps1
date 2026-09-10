@@ -885,7 +885,19 @@ function Test-HostNameSyntax {
         return [System.Net.IPAddress]::TryParse($name, [ref]$parsedAddress)
     }
     if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
-    if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
+    if ([string]::IsNullOrEmpty($name)) { return $false }
+    # A label's limit belongs to the form that goes on the wire, not to the characters as typed: 58 accented
+    # letters are 58 characters here and longer than 63 once IDNA has encoded them, so the resolver refused a
+    # name this rule had just called usable and the refusal came back as a measurement (PR #41, round 18).
+    # GetAscii is the conversion the resolver itself would do, so what it refuses could never have been asked;
+    # only a name carrying non-ASCII needs it, because a plain one already is its own wire form. An
+    # internationalised name that does fit stays usable - the Traditional Chinese for Taiwan becomes
+    # xn--kpry57d.tw and is tested like any other.
+    if ($name -match '[^\x00-\x7F]') {
+        try { $name = (New-Object System.Globalization.IdnMapping).GetAscii($name) }
+        catch { return $false }
+    }
+    if ($name.Length -gt 253) { return $false }
     foreach ($label in $name.Split(".")) {
         if ($label.Length -lt 1 -or $label.Length -gt 63) { return $false }
         if ($label.StartsWith("-") -or $label.EndsWith("-")) { return $false }

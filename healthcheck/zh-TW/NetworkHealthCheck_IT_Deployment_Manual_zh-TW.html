@@ -275,16 +275,18 @@
     <p>百分比和毫秒可以是小數；次數與增量必須是整數。不是數字的值會被換成預設值並指出；<code>null</code> 會被換成預設值但不指出。警告值高於嚴重值時，封包遺失、延遲與重傳百分比會被指出並照寫的值使用；網卡增量則悄悄把嚴重值提高到警告值，低於 1 的警告值變成 1。</p>
 
     <h3>3.6 · 報告怎麼描述設定檔</h3>
-    <p>報告一開始就是設定檔的幾列（設定檔、任何啟動提示，接著設定值驗證與設定值門檻），所以錯誤會出現在使用者不可能錯過的地方；「標準設定」那一列則在較後面比對的位置：</p>
+    <p>報告一開始就是設定檔的幾列（設定檔、任何啟動提示，接著設定值驗證、設定值門檻、設定的目標與設定的檢查項目），所以錯誤會出現在使用者不可能錯過的地方；「標準設定」那一列則在較後面比對的位置。其中後兩列，以及寫著目標被丟掉的那則啟動提示，都是<b>不計權重</b>的：它們講的是本次執行被給了什麼，而不是網路量測到什麼，所以它們保留自己的列、徽記與計數，但整體結果不由它們決定：</p>
     <table>
       <tr><th>列</th><th>狀態</th><th>意思</th></tr>
       <tr><td>設定檔</td><td><span class="badge pass">正常</span>：「已載入：&lt;路徑&gt;」</td><td>檔案讀到了；路徑就是使用中的那一個</td></tr>
       <tr><td>設定檔</td><td><span class="badge error">無法檢查</span></td><td>檔案不存在或不是合法 JSON；用內建預設值跑了。整體結果為檢測未完整</td></tr>
-      <tr><td>設定值驗證</td><td><span class="badge error">無法檢查</span></td><td>有無效值：<code>Expected</code> 底下解析不了的 IPv4 位址、網段、前綴、閘道或 DNS 伺服器，不是 <code>true</code>、<code>false</code>、<code>null</code> 的 <code>DhcpEnabled</code>，沒有主機或連接埠不在 1–65535 的 TCP 目標，URL 不是絕對 <code>http</code> 或 <code>https</code> 位址的 HTTP 目標，主機空白的 DNS 項目。數量與有問題的值寫在該列的詳細資料裡。值不會被移除：主機或連接埠無效的 TCP 目標、URL 空白的 HTTP 目標，必要時變成它自己的「無法檢查」列，選用時被跳過；主機空白的 DNS 項目被跳過；格式錯誤但不空白的 URL 仍會嘗試，並像連不上的目標一樣失敗；<code>Expected</code> 底下的無效值永遠比對不到任何東西</td></tr>
-      <tr><td>設定值驗證</td><td><span class="badge pass">正常</span>：「設定值格式檢查通過。」</td><td>完全沒有東西要報。只有下面那列門檻有話要說時，這一列不會出現</td></tr>
-      <tr><td>設定值門檻</td><td><span class="badge warn">需注意</span></td><td>只在某個次數、逾時、門檻或檢查旗標型別錯誤、超出範圍，或警告值高於嚴重值時出現；詳細資料逐一點名，被取代的值會說明改用了什麼；順序警告只寫出那一對值，因為它們照寫的值使用（第 3.5 節）</td></tr>
+      <tr><td>設定值驗證</td><td><span class="badge error">無法檢查</span></td><td><code>Expected</code> 底下有無效值：解析不了的 IPv4 位址、網段、前綴、閘道或 DNS 伺服器，或不是 <code>true</code>、<code>false</code>、<code>null</code> 的 <code>DhcpEnabled</code>。數量與有問題的值寫在該列的詳細資料裡。值不會被移除 —— <code>Expected</code> 底下的無效值永遠比對不到任何東西。目標與檢查旗標不在這一列判斷，它們在下面有自己的列</td></tr>
+      <tr><td>設定值驗證</td><td><span class="badge pass">正常</span>：「設定值格式檢查通過。」</td><td>到處都沒有東西要報。只有下面三列都沒話要說時，這一列才會出現</td></tr>
+      <tr><td>設定值門檻</td><td><span class="badge warn">需注意</span></td><td>在某個次數、逾時或門檻型別錯誤、超出範圍，或警告值高於嚴重值時出現；詳細資料逐一點名，被取代的值會說明改用了什麼；順序警告只寫出那一對值，因為它們照寫的值使用（第 3.5 節）。檢查旗標已不在這一列，見「設定的檢查項目」</td></tr>
+      <tr><td>設定的目標</td><td><span class="badge error">無法檢查</span></td><td>本次執行被給了、卻無法檢測的目標，<b>不計權重</b>：沒有可用主機名稱或連接埠不在 1–65535 的 TCP 目標，URL 不是絕對 <code>http</code>、<code>https</code> 位址或其主機名稱不可用的 HTTP 目標，以及根本當不成主機名稱的 ping 或 DNS 目標。不會被跳過，也不會默默消失：每一個這樣的目標都會在結果本該出現的地方留下一列，<b>必要</b>的目標再加一列有權重的「這項檢查沒有執行」。格式錯誤的 URL 會在發出請求之前就被退回，不再嘗試並被寫成失敗</td></tr>
+      <tr><td>設定的檢查項目</td><td><span class="badge warn">需注意</span></td><td><code>Checks</code> 底下不是 <code>true</code>、<code>false</code> 的旗標，或不在 1–10 的 <code>TracerouteHops</code>，<b>不計權重</b>：程式改用內建預設值，詳細資料逐一點名</td></tr>
       <tr><td>標準設定</td><td><span class="badge info">資訊</span></td><td><code>Expected</code> 底下沒有規則；設了規則後改出現比對列</td></tr>
-      <tr><td>啟動提示</td><td><span class="badge warn">需注意</span></td><td>執行時的狀況：報告資料夾退到暫存資料夾、工具在壓縮檔檢視裡執行、視窗開不起來改用文字模式，或執行選項裡的額外 TCP 目標被忽略</td></tr>
+      <tr><td>啟動提示</td><td><span class="badge warn">需注意</span></td><td>執行時的狀況：報告資料夾退到暫存資料夾、工具在壓縮檔檢視裡執行，或視窗開不起來改用文字模式。這三種仍然計權重，它們自己就會把整體結果變成「需要注意」。寫著額外 TCP 目標被忽略的那一則不計：它不計權重，而那個目標會在結果本該出現的區段裡留下自己的一列</td></tr>
     </table>
   </div>
 </section>

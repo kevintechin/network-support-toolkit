@@ -852,6 +852,17 @@ Assert-Equal '#39 host values: the bare-string DNS form too' (@([regex]::Matches
 Assert-Equal '#39 host values: and none of it is read raw' ($scriptText -match '\$hostName = \[string\]\$dns') False
 Assert-Equal '#39 host values: a padded name is usable, which is why the run must trim it' (Test-HostNameSyntax ' example.com ') True
 
+# Round 18: 63 is a limit on the encoded label, not on the characters typed. Written as code points so that the
+# assertion cannot be changed by how this file is saved or read - the same mistake made the first probe of this
+# say a perfectly good Chinese name was invalid.
+$twName = [string][char]0x53F0 + [string][char]0x7063 + '.tw'
+$umlautName = [string][char]0x00FC + 'ber.example.com'
+$longIdn = (([string][char]0x00E9) * 58) + '.tw'
+Assert-Equal '#39 idn: a Chinese name is usable' (Test-HostNameSyntax $twName) True
+Assert-Equal '#39 idn: so is a label with an umlaut' (Test-HostNameSyntax $umlautName) True
+Assert-Equal '#39 idn: 58 accented letters fit here and not on the wire' (Test-HostNameSyntax $longIdn) False
+Assert-Equal '#39 idn: and its label really is 58 characters' (($longIdn -split '\.')[0].Length) 58
+
 # What concludes follows the weights; what describes the page follows the rows on the page. Round 8 of PR #37 found
 # the first draft of that sentence saying "every predicate that reads the result set", which would have taken the
 # Unable flag with it - the flag whose only job is to explain a badge the weightless row still carries.
