@@ -290,7 +290,7 @@ python tools\validate_release.py .
 
 **發出去之前先定處理規定**：報告可以送到哪裡、留多久、誰能看，並在把工具交給使用者的同一則訊息裡說明；使用手冊只說請依公司對這類資訊的規定處理。報告是一般檔案：保留期限就是你對報告資料夾（或共用資料夾，第 3.1 節）套用的規定。
 
-**給你的工具用。** JSON 報告是 schema 2：`SchemaVersion`、`ToolVersion`、`RunOptions`（第 4 節）、`Fingerprint`（`Key`、`Title`、`Lines`，即「要告訴 IT 的話」）、`Overall`（`Code`、`Text`、`Description`）、`Counts`、`System`、`StartedAt`、`FinishedAt`，以及 `Results`：每一列一個物件，含 `Time`、`Category`、`Check`、`Status`（`PASS`、`WARN`、`FAIL`、`INFO`、`ERROR`）、`Message`、`Details`、`Diagnostics`、`Tag` 與 `Scope`（`Main` 或 `IT`）。`Tag` 是與語言無關的檢查名稱（`ping-gateway`、`dns`、`connectivity-group`、`tcp-retransmissions`、`expected-standard`……）；技術文件第 4.10 節有清單，`Scope` 則告訴你整體結果忽略了哪些列。
+**給你的工具用。** JSON 報告是 schema 2：`SchemaVersion`、`ToolVersion`、`RunOptions`（第 4 節）、`Fingerprint`（`Key`、`Title`、`Lines`，即「要告訴 IT 的話」）、`Overall`（`Code`、`Text`、`Description`）、`Counts`、`System`、`StartedAt`、`FinishedAt`，以及 `Results`：每一列一個物件，含 `Time`、`Category`、`Check`、`Status`（`PASS`、`WARN`、`FAIL`、`INFO`、`ERROR`）、`Message`、`Details`、`Diagnostics`、`Tag`、`Scope`（`Main` 或 `IT`）與 `Weightless`。`Tag` 是與語言無關的檢查名稱（`ping-gateway`、`dns`、`connectivity-group`、`tcp-retransmissions`、`expected-standard`……）；技術文件第 4.10 節有清單，`Scope` 則告訴你整體結果忽略了哪些列；`Weightless`（1.2.8 新增，在 schema 2 下新增欄位）為 `true` 時，代表這一列保有徽章、訊息與 `Counts` 裡的位置，卻不決定 `Overall`，也不決定 `Fingerprint`——量不到的統計、對所套用門檻來說太粗的樣本，或關於這次執行拿到什麼的事實。它就是「`Overall` 是 `PASS`，旁邊卻有 `ERROR` 或 `WARN` 列」的解釋。
 
 **讀報告。** 使用手冊解釋整體結果、「要告訴 IT 的話」的標題與各種標籤；技術文件解釋每一條規則。repo 的 `sop` 資料夾有支援工程師的現場手冊和把報告整理成交接文件的範本。
 

@@ -842,6 +842,20 @@ function Test-TcpTargetSyntax {
     return (($port -ge 1) -and ($port -le 65535))
 }
 
+function Test-HttpTargetSyntax {
+    param([string]$Value)
+
+    # Can this value become an HTTP target at all - an absolute URI with a scheme this tool speaks. The rule lives
+    # here because two places ask it: the configuration validation, and the check that would otherwise send the
+    # request. They disagreed until 1.2.8 (PR #41, round 1): the validation called 'example.com' unusable while the
+    # check only intercepted a blank, so the request went out, failed, and was recorded as a measured connectivity
+    # failure - a required target could produce Problem Detected, and a member of a required group could fail that
+    # group, over a value no packet ever left for.
+    $uri = $null
+    if (-not [System.Uri]::TryCreate([string]$Value, [System.UriKind]::Absolute, [ref]$uri)) { return $false }
+    return ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")
+}
+
 function Test-PingTargetSyntax {
     param([string]$Value)
 
@@ -1546,12 +1560,7 @@ function Test-ConfigurationSemantics {
         if ($null -eq $target) { continue }
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "HTTP target")
         $url = ConvertTo-SafeString (Get-PropertyValue $target "Url" "")
-        $uri = $null
-        $validUri = [System.Uri]::TryCreate($url, [System.UriKind]::Absolute, [ref]$uri)
-        if ($validUri) {
-            $validUri = ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")
-        }
-        if (-not $validUri) {
+        if (-not (Test-HttpTargetSyntax $url)) {
             [void]$inputErrors.Add("The URL for HttpTargets '$name' is invalid: $url")
         }
     }
@@ -2357,10 +2366,14 @@ function Test-ConnectivityTargets {
         $required = [bool](Get-PropertyValue $target "Required" $false)
         $group = ConvertTo-SafeString (Get-PropertyValue $target "Group" "")
 
-        if ([string]::IsNullOrWhiteSpace($url)) {
-            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "The configured URL is blank." -Details "" -Tag "http" -Weightless | Out-Null
+        if (-not (Test-HttpTargetSyntax $url)) {
+            # Blank was never the only way a URL cannot be used: 'example.com' has no scheme and 'ftp://host' has one
+            # this tool does not speak. Both are decided here, before anything is sent, so that a value no packet
+            # left for cannot be recorded as a measured connectivity failure (PR #41, round 1).
+            $urlDetail = "Configured value: $url"
+            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "The configured URL cannot be used: it must be an absolute http:// or https:// address." -Details $urlDetail -Tag "http" -Weightless | Out-Null
             if ($required) {
-                Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details "" -Tag "http" | Out-Null
+                Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details $urlDetail -Tag "http" | Out-Null
             }
             continue
         }

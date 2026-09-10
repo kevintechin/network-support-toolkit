@@ -822,6 +822,18 @@ function Test-TcpTargetSyntax {
     return (($port -ge 1) -and ($port -le 65535))
 }
 
+function Test-HttpTargetSyntax {
+    param([string]$Value)
+
+    # 這個值到底能不能成為 HTTP 目標——必須是絕對 URI，而且用的是本工具會講的 scheme。規則放在這裡，是因為有兩個
+    # 地方要問它：設定驗證，以及那個不然就會把請求送出去的檢查。1.2.8 之前這兩邊講的不一樣（PR #41 第 1 輪）：驗證
+    # 說「example.com」不可用，檢查卻只攔空白，於是請求真的送出去、失敗，然後被記成一次量到的連線失敗——必要目標
+    # 因此可能顯示「發現問題」，必要群組的成員甚至會讓整個群組失敗，而那個值根本沒讓任何封包離開過。
+    $uri = $null
+    if (-not [System.Uri]::TryCreate([string]$Value, [System.UriKind]::Absolute, [ref]$uri)) { return $false }
+    return ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")
+}
+
 function Test-PingTargetSyntax {
     param([string]$Value)
 
@@ -1522,12 +1534,7 @@ function Test-ConfigurationSemantics {
         if ($null -eq $target) { continue }
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "HTTP target")
         $url = ConvertTo-SafeString (Get-PropertyValue $target "Url" "")
-        $uri = $null
-        $validUri = [System.Uri]::TryCreate($url, [System.UriKind]::Absolute, [ref]$uri)
-        if ($validUri) {
-            $validUri = ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")
-        }
-        if (-not $validUri) {
+        if (-not (Test-HttpTargetSyntax $url)) {
             [void]$inputErrors.Add("HttpTargets 的「$name」URL 無效：$url")
         }
     }
@@ -2329,10 +2336,14 @@ function Test-ConnectivityTargets {
         $required = [bool](Get-PropertyValue $target "Required" $false)
         $group = ConvertTo-SafeString (Get-PropertyValue $target "Group" "")
 
-        if ([string]::IsNullOrWhiteSpace($url)) {
-            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "URL 設定為空白。" -Details "" -Tag "http" -Weightless | Out-Null
+        if (-not (Test-HttpTargetSyntax $url)) {
+            # 空白從來不是 URL 唯一不能用的方式：「example.com」沒有 scheme，「ftp://host」的 scheme 這個工具不會
+            # 講。兩者都在這裡決定，在送出任何東西之前，這樣「沒讓任何封包離開過的值」就不會被記成一次量到的連線
+            # 失敗（PR #41 第 1 輪）。
+            $urlDetail = "設定值：$url"
+            Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "設定的 URL 無法使用：必須是絕對的 http:// 或 https:// 位址。" -Details $urlDetail -Tag "http" -Weightless | Out-Null
             if ($required) {
-                Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標無法檢測。" -Details "" -Tag "http" | Out-Null
+                Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標無法檢測。" -Details $urlDetail -Tag "http" | Out-Null
             }
             continue
         }

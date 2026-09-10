@@ -176,6 +176,12 @@ function Test-ConfiguredTcpTarget($Target) {
     [void][int]::TryParse([string](Get-Value $Target 'Port'), [ref]$port)
     return (-not [string]::IsNullOrWhiteSpace($hostName)) -and $port -ge 1 -and $port -le 65535
 }
+function Test-ConfiguredHttpTarget($Target) {
+    # An absolute http:// or https:// address, which is what the check now requires before it sends anything.
+    $uri = $null
+    if (-not [System.Uri]::TryCreate([string](Get-Value $Target 'Url'), [System.UriKind]::Absolute, [ref]$uri)) { return $false }
+    return ($uri.Scheme -eq 'http' -or $uri.Scheme -eq 'https')
+}
 function Test-ConfiguredPingAddress([string]$Address) {
     $text = ([string]$Address).Trim()
     if ([string]::IsNullOrWhiteSpace($text)) { return $false }
@@ -210,16 +216,84 @@ function Get-Value($Object, [string]$Name) {
     if ($null -eq $property) { return $null }
     return $property.Value
 }
+function Test-UsableIPv4([string]$Value) {
+    $parsed = $null
+    if (-not [System.Net.IPAddress]::TryParse([string]$Value, [ref]$parsed)) { return $false }
+    return ($parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork)
+}
+function Test-UsableIPAddress([string]$Value) {
+    $parsed = $null
+    return [System.Net.IPAddress]::TryParse([string]$Value, [ref]$parsed)
+}
+function Test-UsableCidr([string]$Value) {
+    $parts = ([string]$Value).Split('/')
+    if ($parts.Count -ne 2) { return $false }
+    if (-not (Test-UsableIPv4 $parts[0])) { return $false }
+    $bits = 0
+    if (-not [int]::TryParse($parts[1], [ref]$bits)) { return $false }
+    return ($bits -ge 0 -and $bits -le 32)
+}
+function Test-WholeNumberInRange($Value, [int]$Minimum, [int]$Maximum) {
+    if ($null -eq $Value -or $Value -is [bool]) { return $false }
+    $number = 0
+    if (-not [int]::TryParse([string]$Value, [ref]$number)) { return $false }
+    return ($number -ge $Minimum -and $number -le $Maximum)
+}
 function Get-ConfigRowCount($Config) {
-    # The validation row (PASS when everything is usable, ERROR when a standard is not), plus the targets row when a
-    # target cannot be tested and the options row when a check flag or the hop count could not be used as written.
-    $rows = 1
+    # Test-ConfigurationSemantics writes up to four rows out of four lists, and the PASS row appears only when all
+    # four are empty (backlog #39, PR #41 round 1): a configuration whose only problem is an invalid target has no
+    # validation row at all, and threshold and option problems together produce two rows rather than one. The four
+    # predicates are reproduced here in the order the script applies them.
+    $standards = 0
+    $expected = $Config.ExpectedNetwork
+    foreach ($ip in @(Get-Value $expected 'AllowedIPv4Addresses')) { if (-not (Test-UsableIPv4 $ip)) { $standards += 1 } }
+    foreach ($cidr in @(Get-Value $expected 'AllowedIPv4Cidrs')) { if (-not (Test-UsableCidr $cidr)) { $standards += 1 } }
+    foreach ($prefix in @(Get-Value $expected 'AllowedPrefixLengths')) { if (-not (Test-WholeNumberInRange $prefix 0 32)) { $standards += 1 } }
+    foreach ($gateway in @(Get-Value $expected 'AllowedDefaultGateways')) { if (-not (Test-UsableIPv4 $gateway)) { $standards += 1 } }
+    foreach ($dns in @(Get-Value $expected 'RequiredDnsServers')) { if (-not (Test-UsableIPAddress $dns)) { $standards += 1 } }
+    $dhcp = Get-Value $expected 'DhcpEnabled'
+    if ($null -ne $dhcp -and -not ($dhcp -is [bool])) { $standards += 1 }
+
+    $thresholds = 0
+    foreach ($name in @('PingCount', 'PingTimeoutMs', 'DnsTimeoutMs', 'TcpTimeoutMs', 'HttpTimeoutMs', 'RetransmissionSampleSeconds')) {
+        $value = Get-Value $Config.Tests $name
+        if ($null -ne $value -and -not (Test-WholeNumberInRange $value 1 600000)) { $thresholds += 1 }
+    }
+    $limits = $Config.Thresholds
+    foreach ($name in @('PacketLossWarningPercent', 'PacketLossCriticalPercent', 'LatencyWarningMs', 'LatencyCriticalMs', 'TcpRetransmissionWarningPercent', 'TcpRetransmissionCriticalPercent', 'TcpRetransmissionCriticalCount', 'MinimumTcpSegmentsForRate')) {
+        $value = Get-Value $limits $name
+        if ($null -eq $value) { continue }
+        if ($value -is [bool]) { $thresholds += 1; continue }
+        $number = 0.0
+        if (-not [double]::TryParse([string]$value, [ref]$number)) { $thresholds += 1 }
+    }
+    foreach ($pair in @(@('PacketLossWarningPercent', 'PacketLossCriticalPercent'), @('LatencyWarningMs', 'LatencyCriticalMs'), @('TcpRetransmissionWarningPercent', 'TcpRetransmissionCriticalPercent'))) {
+        $warning = 0.0; $critical = 0.0
+        if ([double]::TryParse([string](Get-Value $limits $pair[0]), [ref]$warning) -and [double]::TryParse([string](Get-Value $limits $pair[1]), [ref]$critical)) {
+            if ($warning -gt $critical) { $thresholds += 1 }
+        }
+    }
+
     $badTargets = 0
     foreach ($target in @($Config.Tests.TcpTargets)) { if ($null -ne $target -and -not (Test-ConfiguredTcpTarget $target)) { $badTargets += 1 } }
-    foreach ($target in @($Config.Tests.HttpTargets)) { if ($null -ne $target -and [string]::IsNullOrWhiteSpace([string](Get-Value $target 'Url'))) { $badTargets += 1 } }
+    foreach ($target in @($Config.Tests.HttpTargets)) { if ($null -ne $target -and -not (Test-ConfiguredHttpTarget $target)) { $badTargets += 1 } }
     foreach ($target in @($Config.Tests.DnsNames)) { if ($null -ne $target -and [string]::IsNullOrWhiteSpace([string](Get-Value $target 'Host'))) { $badTargets += 1 } }
     foreach ($target in @($Config.Tests.PingTargets)) { if ($null -ne $target -and -not (Test-ConfiguredPingAddress ([string](Get-Value $target 'Address')))) { $badTargets += 1 } }
+
+    $options = 0
+    foreach ($flag in @('WifiRf', 'RouteTable', 'GatewayNeighbor', 'ProxySettings', 'Traceroute', 'DriverInfo')) {
+        $value = Get-Value $Config.Checks $flag
+        if ($null -ne $value -and -not ($value -is [bool])) { $options += 1 }
+    }
+    $hops = Get-Value $Config.Checks 'TracerouteHops'
+    if ($null -ne $hops -and -not (Test-WholeNumberInRange $hops 1 10)) { $options += 1 }
+
+    $rows = 0
+    if ($standards -gt 0) { $rows += 1 }
+    elseif ($thresholds -eq 0 -and $badTargets -eq 0 -and $options -eq 0) { $rows += 1 }
+    if ($thresholds -gt 0) { $rows += 1 }
     if ($badTargets -gt 0) { $rows += 1 }
+    if ($options -gt 0) { $rows += 1 }
     return $rows
 }
 function Get-MachineFacts {
@@ -369,7 +443,7 @@ function Test-ResultSet {
         # refused, so it is in RawTargets and not in ExtraTargets - leaves a row of its own in the same section.
         'dns' = (Get-TargetRowCount $Config.Tests.DnsNames { param($t) -not [string]::IsNullOrWhiteSpace([string](Get-Value $t 'Host')) } $true) + (Get-Count $o.ExtraTargets.Dns)
         'tcp' = (Get-TargetRowCount $Config.Tests.TcpTargets { param($t) Test-ConfiguredTcpTarget $t } $false) + (Get-Count $o.ExtraTargets.Tcp) + ((Get-Count $o.RawTargets.Tcp) - (Get-Count $o.ExtraTargets.Tcp))
-        'http' = (Get-TargetRowCount $Config.Tests.HttpTargets { param($t) -not [string]::IsNullOrWhiteSpace([string](Get-Value $t 'Url')) } $false) + (Get-Count $o.ExtraTargets.Http)
+        'http' = (Get-TargetRowCount $Config.Tests.HttpTargets { param($t) Test-ConfiguredHttpTarget $t } $false) + (Get-Count $o.ExtraTargets.Http)
         'connectivity-group' = $groups.Count
         # Per class as computed above, and that formula now covers every case: since 1.2.8 a baseline where neither
         # class could be read is returned rather than thrown away, so the analysis writes one row per read that failed

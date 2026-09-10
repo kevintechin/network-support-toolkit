@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -724,6 +724,23 @@ Assert-Equal '#39 ping syntax: a path' (Test-PingTargetSyntax 'example.com/healt
 # A name that is well formed and does not resolve is the opposite case: it is tested, the resolver answers, and that
 # answer is a measurement this rule must not touch.
 Assert-Equal '#39 ping syntax: a name that will not resolve is still a usable target' (Test-PingTargetSyntax 'nhc-no-such-host.invalid') True
+
+# The same question for a URL, and the reason it has one place (PR #41, round 1): the configuration validation called
+# 'example.com' unusable while the check intercepted only a blank, so the request went out, failed, and was recorded
+# as a measured connectivity failure - a required target could produce Problem Detected over a value no packet ever
+# left for, and a member of a required group could fail that group with it.
+Assert-Equal '#39 url syntax: https' (Test-HttpTargetSyntax 'https://www.example.com/') True
+Assert-Equal '#39 url syntax: http' (Test-HttpTargetSyntax 'http://10.0.0.1:8080/health') True
+Assert-Equal '#39 url syntax: blank' (Test-HttpTargetSyntax '') False
+Assert-Equal '#39 url syntax: no scheme' (Test-HttpTargetSyntax 'example.com') False
+Assert-Equal '#39 url syntax: a scheme this tool does not speak' (Test-HttpTargetSyntax 'ftp://files.example.com/') False
+Assert-Equal '#39 url syntax: a relative path' (Test-HttpTargetSyntax '/health') False
+# And the check asks that helper rather than repeating the rule, so the two cannot drift apart again.
+$httpCheck = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-ConnectivityTargets' }, $true)
+Assert-Equal '#39 url syntax: the check consults it' ($httpCheck.Extent.Text -match 'Test-HttpTargetSyntax') True
+$configCheck = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-ConfigurationSemantics' }, $true)
+Assert-Equal '#39 url syntax: and so does the configuration validation' ($configCheck.Extent.Text -match 'Test-HttpTargetSyntax') True
+Assert-Equal '#39 url syntax: neither keeps a rule of its own' ((($httpCheck.Extent.Text + $configCheck.Extent.Text) -match 'UriKind\]::Absolute')) False
 
 # The step carries the weight, not the tag: the four quality collectors declare the marking at their call site and
 # their step-error rows inherit it, while the two analysis steps beside them keep theirs. Read off the AST, because
