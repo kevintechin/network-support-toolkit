@@ -272,5 +272,21 @@ Assert-Case 'config rows: an invalid flag -NoWifi does not cover still warns' @(
 $panel = @{ Checks = @{ WifiRf = $true; Traceroute = $true; RouteTable = $true; GatewayNeighbor = $true; ProxySettings = $true; DriverInfo = $true } }
 Assert-Case 'config rows: but the panel replaces all six, leaving one' @($(if ((Get-ConfigRowCount $c $null $panel) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c $null $panel), expected 1") })) $true ''
 
+# PR #41, round 14: the run trims an address before it decides what it is, so a padded placeholder is still the
+# placeholder. Get-UnusablePingExtraRows asks Test-PingTargetSyntax, which trims; these assert the whole path.
+$c = New-BrokenConfig; $c.Tests.PingTargets = @([pscustomobject]@{ Name = 'Padded'; Address = ' AUTO_GATEWAY '; Required = $true })
+Assert-Case 'ping rows: a padded placeholder is usable, so it adds no second row' @($(if ((Get-UnusablePingExtraRows $c) -eq 0) { @() } else { @('a padded placeholder was called unusable') })) $true ''
+Assert-Case 'config rows: and it is not a configured-targets row' @($(if ((Get-ConfigRowCount $c) -eq 1) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 1") })) $true ''
+# The three cases above exercise the product's own trim, which was already there. This one exercises the two
+# lines round 14 changed: Test-ResultSet decides what a configured address is, and until now it compared the
+# placeholder untrimmed. Padding every address in the packaged configuration must leave the expectation
+# identical, because the run reads them all trimmed.
+$padded = Read-Config $ConfigDir
+foreach ($t in @($padded.Tests.PingTargets)) { $t.Address = ' ' + ([string]$t.Address) + ' ' }
+$r = New-Fixture
+Assert-Case 'padded addresses do not change what the report must contain' @(Test-ResultSet $r $padded @{} $facts) $true ''
+$c = New-BrokenConfig; $c.Tests.PingTargets = @([pscustomobject]@{ Name = 'Padded'; Address = ' example.com '; Required = $true })
+Assert-Case 'ping rows: a padded name is usable too' @($(if ((Get-UnusablePingExtraRows $c) -eq 0) { @() } else { @('a padded name was called unusable') })) $true ''
+
 "Summary: $passes passed, $fails failed"
 exit $fails

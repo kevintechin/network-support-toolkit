@@ -501,8 +501,11 @@ function Test-ResultSet {
     # An explicit null entry is skipped by the run and by the configuration check, so it is not a row here
     # either - which the DNS, TCP and HTTP helpers already knew (PR #41, round 5).
     $pingTargets = @($Config.Tests.PingTargets | Where-Object { $null -ne $_ })
-    $gatewayTargets = @($pingTargets | Where-Object { [string]$_.Address -eq 'AUTO_GATEWAY' }).Count
-    $dnsTargets = @($pingTargets | Where-Object { [string]$_.Address -eq 'AUTO_DNS' }).Count
+    # Trimmed, because the run trims: since round 13 an address is read as ([string]$_).Trim() everywhere it is
+    # used, so ' AUTO_GATEWAY ' is the placeholder to the run and would have been a literal target to this oracle
+    # - one row expected where the run writes one per resolved gateway (PR #41, round 14).
+    $gatewayTargets = @($pingTargets | Where-Object { ([string]$_.Address).Trim() -eq 'AUTO_GATEWAY' }).Count
+    $dnsTargets = @($pingTargets | Where-Object { ([string]$_.Address).Trim() -eq 'AUTO_DNS' }).Count
     # A -TcpTarget the parser refused is in RawTargets and not in ExtraTargets; it costs one row in the TCP section
     # and one Startup Notice.
     $droppedTcp = (Get-Count $o.RawTargets.Tcp) - (Get-Count $o.ExtraTargets.Tcp)
