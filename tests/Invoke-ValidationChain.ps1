@@ -309,16 +309,18 @@ function Get-ConfigRowCount($Config) {
     foreach ($name in @('PacketLossWarningPercent', 'PacketLossCriticalPercent', 'LatencyWarningMs', 'LatencyCriticalMs', 'TcpRetransmissionWarningPercent', 'TcpRetransmissionCriticalPercent') + $countThresholds) {
         $value = Get-Value $limits $name
         if ($null -eq $value) { continue }
-        $number = 0.0
-        if ($value -is [bool] -or -not [double]::TryParse([string]$value, [ref]$number)) { $thresholds += 1; continue }
-        if (($countThresholds -contains $name) -and -not (Test-IsWholeNumber $value)) { $thresholds += 1 }
+        # Round 3 replaced the hand-rolled conversion everywhere except here, and here is where the culture shows:
+        # the product's Test-IsNumericValue parses a string in invariant culture, so "2,5" is not a number to the tool
+        # while this machine's own TryParse reads it as twenty-five (PR #41, round 4).
+        if (-not (Test-IsNumericValue $value)) { $thresholds += 1 }
+        elseif (($countThresholds -contains $name) -and -not (Test-IsWholeNumber $value)) { $thresholds += 1 }
     }
-    # A warning threshold below zero, or a critical one below its warning, is one row per pair.
+    # A warning threshold below zero, or a critical one below its warning, is one row per pair - read through
+    # ConvertTo-DoubleSafe with the product's own defaults, which is what the product falls back to for a value it
+    # cannot read.
     foreach ($pair in @(@('PacketLossWarningPercent', 'PacketLossCriticalPercent', 5, 20), @('LatencyWarningMs', 'LatencyCriticalMs', 100, 250), @('TcpRetransmissionWarningPercent', 'TcpRetransmissionCriticalPercent', 2, 5))) {
-        $warning = [double]$pair[2]; $critical = [double]$pair[3]
-        $parsed = 0.0
-        if ([double]::TryParse([string](Get-Value $limits $pair[0]), [ref]$parsed)) { $warning = $parsed }
-        if ([double]::TryParse([string](Get-Value $limits $pair[1]), [ref]$parsed)) { $critical = $parsed }
+        $warning = ConvertTo-DoubleSafe (Get-Value $limits $pair[0]) $pair[2]
+        $critical = ConvertTo-DoubleSafe (Get-Value $limits $pair[1]) $pair[3]
         if ($warning -lt 0 -or $critical -lt $warning) { $thresholds += 1 }
     }
 

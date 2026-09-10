@@ -225,5 +225,10 @@ Assert-Case 'config rows: a count threshold beyond Int32 is not a whole number' 
 $c = New-BrokenConfig; $c.Tests.TcpTargets[0].Port = '443.0'
 Assert-Case 'tcp target: 443.0 is a usable port, because that is how the tool parses it' @($(if (Test-ConfiguredTcpTarget $c.Tests.TcpTargets[0]) { @() } else { @('the oracle called a port the tool accepts unusable') })) $true ''
 
+# A threshold whose decimal separator this machine's culture accepts and the tool's invariant reader does not.
+# The tool warns and falls back to its default; the oracle used to agree with the machine instead (round 4).
+$c = New-BrokenConfig; $c.Thresholds.PacketLossCriticalPercent = '2,5'; $c.Tests.TcpTargets[0].Port = 0
+Assert-Case 'config rows: a comma decimal is not a number to the tool, so the thresholds row is written' @($(if ((Get-ConfigRowCount $c) -eq 2) { @() } else { @("config rows: $(Get-ConfigRowCount $c), expected 2") })) $true ''
+
 "Summary: $passes passed, $fails failed"
 exit $fails
