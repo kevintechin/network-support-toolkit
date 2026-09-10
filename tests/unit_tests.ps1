@@ -1042,5 +1042,24 @@ Assert-Equal 'route #59: method line for a name is not the address one' ($method
 Assert-Equal 'route #59: nothing replied, so no lookup is claimed' ($methodNoReply -match 'Find-NetRoute') False
 Assert-Equal 'route #59: nothing replied, so no address is named' ($methodNoReply -match '\d+\.\d+\.\d+\.\d+') False
 
+
+# PR #45 round 3: .NET resolves a name per send, so a name behind round-robin DNS can answer from more than one
+# address and the row may not name the first as if it were all of them. Not reproducible on this machine - eight
+# sends to www.microsoft.com and six to outlook.office365.com each answered from one address, the resolver cache
+# holding it for its TTL - so the shapes are pinned here instead.
+$selEth = [pscustomobject]@{ Resolved = $true; Reason = ''; SourceAddress = '10.0.0.5'; InterfaceAlias = 'Ethernet' }
+$othersAgree = @([pscustomobject]@{ Address = '23.39.61.99'; Selection = $selName })
+$othersDiffer = @([pscustomobject]@{ Address = '23.39.61.99'; Selection = $selEth })
+$oneText = Format-RouteSelection -Before $null -After $selName -LookupAddress '93.184.216.34'
+$agreeText = Format-RouteSelection -Before $null -After $selName -LookupAddress '93.184.216.34' -Others $othersAgree
+$differText = Format-RouteSelection -Before $null -After $selName -LookupAddress '93.184.216.34' -Others $othersDiffer
+Assert-Equal 'route #59: two addresses that agree say so' ($agreeText -eq $oneText) False
+Assert-Equal 'route #59: two addresses that agree still name the one looked up first' ($agreeText -match '93\.184\.216\.34') True
+Assert-Equal 'route #59: two addresses that disagree name both' (($differText -match '93\.184\.216\.34') -and ($differText -match '23\.39\.61\.99')) True
+Assert-Equal 'route #59: two addresses that disagree name both interfaces' (($differText -match 'Wi-Fi') -and ($differText -match 'Ethernet')) True
+Assert-Equal 'route #59: disagreeing is not the agreeing sentence' ($differText -eq $agreeText) False
+Assert-Equal 'route #59: method line for several addresses names none of them' ((Get-RouteMethodText -Target 'a-name' -LookupAddress '93.184.216.34' -TargetIsAddress $false -ExtraCount 1) -match '93\.184\.216\.34') False
+Assert-Equal 'route #59: method line for several addresses counts them' ((Get-RouteMethodText -Target 'a-name' -LookupAddress '93.184.216.34' -TargetIsAddress $false -ExtraCount 1) -match '2') True
+
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

@@ -1984,7 +1984,7 @@ function Get-RouteSelectionText {
 }
 
 function Get-RouteMethodText {
-    param([string]$Target, [string]$LookupAddress, [bool]$TargetIsAddress)
+    param([string]$Target, [string]$LookupAddress, [bool]$TargetIsAddress, [int]$ExtraCount = 0)
 
     # 這一行必須描述「實際做了的查詢」，而不是位址目標那一種的查詢（PR #45 第 2 輪）。
     # 名稱目標是在探測之後、用回應所來的位址只查一次；沒人回應的名稱則根本沒有查。
@@ -1995,11 +1995,14 @@ function Get-RouteMethodText {
     if ([string]::IsNullOrWhiteSpace($LookupAddress)) {
         return "；沒有做路由查詢，因為這個目標是名稱，而且沒有任何回應可以提供位址"
     }
+    if ($ExtraCount -gt 0) {
+        return ("；路由選擇來自 Find-NetRoute -RemoteIPAddress，在探測之後對回應所來的 {0} 個位址各讀一次" -f ($ExtraCount + 1))
+    }
     return ("；路由選擇來自 Find-NetRoute -RemoteIPAddress {0}，也就是回應所來的位址，在探測之後讀一次" -f $LookupAddress)
 }
 
 function Format-RouteSelection {
-    param([object]$Before, [object]$After, [string]$LookupAddress = "")
+    param([object]$Before, [object]$After, [string]$LookupAddress = "", [object[]]$Others = @())
 
     # 兩次查詢會產生三種句子。兩次都查到而且相同，是一般情況的那一句。兩者只要不一致就報告為「改變」——
     # 包含一次查到、另一次沒查到，因為那同樣是對「當時是哪一張網路卡」的不一致，也正是這一列存在的理由。
@@ -2012,7 +2015,23 @@ function Format-RouteSelection {
     # 檢查變成依賴解析器，而正在被診斷的機器往往就是解析器壞掉的那一台。
     if ($null -eq $Before) {
         if ($null -ne $After -and $After.Resolved) {
-            return ("路由選擇：{0}，是在探測之後針對 {1} 查的 —— 這個目標是名稱，探測之前沒有位址可以問，因此沒有取得前後兩次的對照。探測本身沒有綁定它。" -f $afterText, $LookupAddress)
+            $sentence = ("路由選擇：{0}，是在探測之後針對 {1} 查的 —— 這個目標是名稱，探測之前沒有位址可以問，因此沒有取得前後兩次的對照。探測本身沒有綁定它。" -f $afterText, $LookupAddress)
+            if (@($Others).Count -gt 0) {
+                $agree = $true
+                $eachText = @(("{0}：{1}" -f $LookupAddress, $afterText))
+                foreach ($other in @($Others)) {
+                    $otherText = Get-RouteSelectionText $other.Selection
+                    $eachText += ("{0}：{1}" -f $other.Address, $otherText)
+                    if ($otherText -ne $afterText) { $agree = $false }
+                }
+                if ($agree) {
+                    $sentence += ("它的回應來自 {0} 個位址，而路由表對每一個都選出相同的來源與介面。" -f (@($Others).Count + 1))
+                }
+                else {
+                    $sentence = ("路由選擇：這個目標是名稱，而它的回應來自 {0} 個位址，路由表並不一視同仁 —— {1}。這一列無法把這次量測歸給單一一張網路卡。" -f (@($Others).Count + 1), ($eachText -join "；"))
+                }
+            }
+            return $sentence
         }
         return ("路由選擇：{0}。這一列無法說出這些探測是從哪一張網路卡送出的。" -f $afterText)
     }
@@ -2038,7 +2057,7 @@ function Invoke-PingMeasurement {
 
     $successes = New-Object System.Collections.ArrayList
     $attemptDetails = New-Object System.Collections.ArrayList
-    $repliedAddress = ""
+    $repliedAddresses = New-Object System.Collections.ArrayList
     $ping = New-Object System.Net.NetworkInformation.Ping
 
     try {
@@ -2046,9 +2065,16 @@ function Invoke-PingMeasurement {
             try {
                 $reply = $ping.Send($Target, $TimeoutMs)
                 if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
-                    # backlog #59: the address the echoes actually reached, kept because a target given as a name is
-                    # not something the route table can be asked about - this is the address that can be.
-                    if ([string]::IsNullOrWhiteSpace($repliedAddress)) { $repliedAddress = [string]$reply.Address }
+                    # backlog #59: the addresses the echoes actually reached, kept because a target given as a name is
+                    # not something the route table can be asked about - these are the addresses that can be. Every
+                    # distinct one is kept, in the order they first answered: .NET resolves the name per send, so a
+                    # name behind round-robin DNS or a TTL that expires mid-run can answer from more than one, and a
+                    # row that named the first as 'the address the replies came from' would be claiming the rest
+                    # (PR #45, round 3).
+                    $thisAddress = [string]$reply.Address
+                    if (-not [string]::IsNullOrWhiteSpace($thisAddress) -and @($repliedAddresses) -notcontains $thisAddress) {
+                        [void]$repliedAddresses.Add($thisAddress)
+                    }
                     [void]$successes.Add([double]$reply.RoundtripTime)
                     [void]$attemptDetails.Add(("第 {0} 次：成功，{1} ms，回覆 {2}" -f $i, $reply.RoundtripTime, $reply.Address))
                 }
@@ -2093,7 +2119,7 @@ function Invoke-PingMeasurement {
         AverageMs      = $average
         MinimumMs      = $minimum
         MaximumMs      = $maximum
-        RepliedAddress = $repliedAddress
+        RepliedAddresses = @($repliedAddresses)
         AttemptDetails = @($attemptDetails)
     }
 }
@@ -2177,13 +2203,21 @@ function Test-PingTargets {
                 $routeBefore = $null
                 if ($targetIsAddress) { $routeBefore = Get-RouteSelection -Target ([string]$target) }
                 $measurement = Invoke-PingMeasurement -Target ([string]$target) -Count $count -TimeoutMs $timeout
-                $lookupAddress = [string]$target
-                if (-not $targetIsAddress) { $lookupAddress = ConvertTo-SafeString $measurement.RepliedAddress }
+                $lookupAddresses = @([string]$target)
+                if (-not $targetIsAddress) { $lookupAddresses = @($measurement.RepliedAddresses) }
+                $lookupAddress = ""
+                if (@($lookupAddresses).Count -gt 0) { $lookupAddress = ConvertTo-SafeString @($lookupAddresses)[0] }
+                $routeOthers = @()
                 if ([string]::IsNullOrWhiteSpace($lookupAddress)) {
                     $routeAfter = [pscustomobject][ordered]@{ Resolved = $false; Reason = "noreply"; SourceAddress = ""; InterfaceAlias = "" }
                 }
                 else {
                     $routeAfter = Get-RouteSelection -Target $lookupAddress
+                    # Each further address its replies came from is looked up too, because the point of this row is
+                    # which adapter carried the measurement and two addresses can answer through two of them.
+                    foreach ($extra in @($lookupAddresses | Select-Object -Skip 1)) {
+                        $routeOthers += [pscustomobject][ordered]@{ Address = ConvertTo-SafeString $extra; Selection = (Get-RouteSelection -Target ([string]$extra)) }
+                    }
                 }
                 $status = "PASS"
 
@@ -2210,7 +2244,7 @@ function Test-PingTargets {
                 }
 
                 $message = "目標 {0}：遺失 {1}%（{2}/{3} 成功），{4}。" -f $target, $measurement.LossPercent, $measurement.Received, $measurement.Sent, $latencyText
-                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter -LookupAddress $lookupAddress) + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms{2}。" -f $count, $timeout, (Get-RouteMethodText -Target ([string]$target) -LookupAddress $lookupAddress -TargetIsAddress $targetIsAddress)) + ("手動驗證：ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
+                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter -LookupAddress $lookupAddress -Others $routeOthers) + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms{2}。" -f $count, $timeout, (Get-RouteMethodText -Target ([string]$target) -LookupAddress $lookupAddress -TargetIsAddress $targetIsAddress -ExtraCount (@($routeOthers).Count))) + ("手動驗證：ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
                 if ($status -eq "INFO") {
                     $details += [Environment]::NewLine + "補充說明：此為非必要目標，可能單純封鎖 ICMP——網際網路的權威判定請看「連線能力」群組。"
                 }

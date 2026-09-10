@@ -2020,7 +2020,7 @@ function Get-RouteSelectionText {
 }
 
 function Get-RouteMethodText {
-    param([string]$Target, [string]$LookupAddress, [bool]$TargetIsAddress)
+    param([string]$Target, [string]$LookupAddress, [bool]$TargetIsAddress, [int]$ExtraCount = 0)
 
     # The Method line has to describe the lookup that happened, not the one the address case makes (PR #45, round 2).
     # A name is looked up once, after the probes, by the address the replies came from; a name nothing answered is
@@ -2031,11 +2031,14 @@ function Get-RouteMethodText {
     if ([string]::IsNullOrWhiteSpace($LookupAddress)) {
         return "; no route lookup was made, because this target is a name and nothing replied to give an address"
     }
+    if ($ExtraCount -gt 0) {
+        return ("; the route selection comes from Find-NetRoute -RemoteIPAddress, read once after the probes for each of the {0} addresses the replies came from" -f ($ExtraCount + 1))
+    }
     return ("; the route selection comes from Find-NetRoute -RemoteIPAddress {0}, the address the replies came from, read once after the probes" -f $LookupAddress)
 }
 
 function Format-RouteSelection {
-    param([object]$Before, [object]$After, [string]$LookupAddress = "")
+    param([object]$Before, [object]$After, [string]$LookupAddress = "", [object[]]$Others = @())
 
     # Three shapes out of the two lookups. Both resolved and equal is the ordinary line. Any disagreement between
     # them is reported as a change - including one resolving where the other did not, because that is a disagreement
@@ -2049,7 +2052,23 @@ function Format-RouteSelection {
     # that would put the ping check behind the resolver, on a machine whose resolver is often what is being diagnosed.
     if ($null -eq $Before) {
         if ($null -ne $After -and $After.Resolved) {
-            return ("Route selection: {0}, looked up for {1} after the probes - this target is a name, so there was no address to ask about before them and no before-and-after pair was taken. The probes are not bound to it." -f $afterText, $LookupAddress)
+            $sentence = ("Route selection: {0}, looked up for {1} after the probes - this target is a name, so there was no address to ask about before them and no before-and-after pair was taken. The probes are not bound to it." -f $afterText, $LookupAddress)
+            if (@($Others).Count -gt 0) {
+                $agree = $true
+                $eachText = @(("{0}: {1}" -f $LookupAddress, $afterText))
+                foreach ($other in @($Others)) {
+                    $otherText = Get-RouteSelectionText $other.Selection
+                    $eachText += ("{0}: {1}" -f $other.Address, $otherText)
+                    if ($otherText -ne $afterText) { $agree = $false }
+                }
+                if ($agree) {
+                    $sentence += (" Its replies came from {0} addresses and the route table selects the same source and interface for every one of them." -f (@($Others).Count + 1))
+                }
+                else {
+                    $sentence = ("Route selection: this target is a name and its replies came from {0} addresses which the route table does not treat alike - {1}. This row cannot attribute the measurement to one adapter." -f (@($Others).Count + 1), ($eachText -join "; "))
+                }
+            }
+            return $sentence
         }
         return ("Route selection: {0}. This row cannot say which adapter the probes left by." -f $afterText)
     }
@@ -2075,7 +2094,7 @@ function Invoke-PingMeasurement {
 
     $successes = New-Object System.Collections.ArrayList
     $attemptDetails = New-Object System.Collections.ArrayList
-    $repliedAddress = ""
+    $repliedAddresses = New-Object System.Collections.ArrayList
     $ping = New-Object System.Net.NetworkInformation.Ping
 
     try {
@@ -2083,9 +2102,16 @@ function Invoke-PingMeasurement {
             try {
                 $reply = $ping.Send($Target, $TimeoutMs)
                 if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
-                    # backlog #59: the address the echoes actually reached, kept because a target given as a name is
-                    # not something the route table can be asked about - this is the address that can be.
-                    if ([string]::IsNullOrWhiteSpace($repliedAddress)) { $repliedAddress = [string]$reply.Address }
+                    # backlog #59: the addresses the echoes actually reached, kept because a target given as a name is
+                    # not something the route table can be asked about - these are the addresses that can be. Every
+                    # distinct one is kept, in the order they first answered: .NET resolves the name per send, so a
+                    # name behind round-robin DNS or a TTL that expires mid-run can answer from more than one, and a
+                    # row that named the first as 'the address the replies came from' would be claiming the rest
+                    # (PR #45, round 3).
+                    $thisAddress = [string]$reply.Address
+                    if (-not [string]::IsNullOrWhiteSpace($thisAddress) -and @($repliedAddresses) -notcontains $thisAddress) {
+                        [void]$repliedAddresses.Add($thisAddress)
+                    }
                     [void]$successes.Add([double]$reply.RoundtripTime)
                     [void]$attemptDetails.Add(("Attempt {0}: success, {1} ms, reply from {2}" -f $i, $reply.RoundtripTime, $reply.Address))
                 }
@@ -2130,7 +2156,7 @@ function Invoke-PingMeasurement {
         AverageMs      = $average
         MinimumMs      = $minimum
         MaximumMs      = $maximum
-        RepliedAddress = $repliedAddress
+        RepliedAddresses = @($repliedAddresses)
         AttemptDetails = @($attemptDetails)
     }
 }
@@ -2215,13 +2241,21 @@ function Test-PingTargets {
                 $routeBefore = $null
                 if ($targetIsAddress) { $routeBefore = Get-RouteSelection -Target ([string]$target) }
                 $measurement = Invoke-PingMeasurement -Target ([string]$target) -Count $count -TimeoutMs $timeout
-                $lookupAddress = [string]$target
-                if (-not $targetIsAddress) { $lookupAddress = ConvertTo-SafeString $measurement.RepliedAddress }
+                $lookupAddresses = @([string]$target)
+                if (-not $targetIsAddress) { $lookupAddresses = @($measurement.RepliedAddresses) }
+                $lookupAddress = ""
+                if (@($lookupAddresses).Count -gt 0) { $lookupAddress = ConvertTo-SafeString @($lookupAddresses)[0] }
+                $routeOthers = @()
                 if ([string]::IsNullOrWhiteSpace($lookupAddress)) {
                     $routeAfter = [pscustomobject][ordered]@{ Resolved = $false; Reason = "noreply"; SourceAddress = ""; InterfaceAlias = "" }
                 }
                 else {
                     $routeAfter = Get-RouteSelection -Target $lookupAddress
+                    # Each further address its replies came from is looked up too, because the point of this row is
+                    # which adapter carried the measurement and two addresses can answer through two of them.
+                    foreach ($extra in @($lookupAddresses | Select-Object -Skip 1)) {
+                        $routeOthers += [pscustomobject][ordered]@{ Address = ConvertTo-SafeString $extra; Selection = (Get-RouteSelection -Target ([string]$extra)) }
+                    }
                 }
                 $status = "PASS"
 
@@ -2248,7 +2282,7 @@ function Test-PingTargets {
                 }
 
                 $message = "Target {0}: {1}% loss ({2}/{3} successful), {4}." -f $target, $measurement.LossPercent, $measurement.Received, $measurement.Sent, $latencyText
-                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter -LookupAddress $lookupAddress) + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms{2}." -f $count, $timeout, (Get-RouteMethodText -Target ([string]$target) -LookupAddress $lookupAddress -TargetIsAddress $targetIsAddress)) + ("Manual check: ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
+                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter -LookupAddress $lookupAddress -Others $routeOthers) + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms{2}." -f $count, $timeout, (Get-RouteMethodText -Target ([string]$target) -LookupAddress $lookupAddress -TargetIsAddress $targetIsAddress -ExtraCount (@($routeOthers).Count))) + ("Manual check: ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
                 if ($status -eq "INFO") {
                     $details += [Environment]::NewLine + "Informational: this optional target may simply block ICMP - see the Connectivity group for the authoritative internet verdict."
                 }
