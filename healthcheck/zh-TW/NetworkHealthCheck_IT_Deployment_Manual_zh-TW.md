@@ -298,7 +298,7 @@ python tools\validate_release.py .
 
 **給你的工具用。** JSON 報告是 schema 2：`SchemaVersion`、`ToolVersion`、`RunOptions`（第 4 節）、`Fingerprint`（`Key`、`Title`、`Lines`，即「要告訴 IT 的話」）、`Overall`（`Code`、`Text`、`Description`）、`Counts`、`System`、`StartedAt`、`FinishedAt`，以及 `Results`：每一列一個物件，含 `Time`、`Category`、`Check`、`Status`（`PASS`、`WARN`、`FAIL`、`INFO`、`ERROR`）、`Message`、`Details`、`Diagnostics`、`Tag`、`Scope`（`Main` 或 `IT`）與 `Weightless`。`Tag` 是與語言無關的檢查名稱（`ping-gateway`、`dns`、`connectivity-group`、`tcp-retransmissions`、`expected-standard`……）；技術文件第 4.10 節有清單，`Scope` 則告訴你整體結果忽略了哪些列；`Weightless`（在 schema 2 下新增的欄位）為 `true` 時，代表這一列保有徽章、訊息與 `Counts` 裡的位置，卻不決定 `Overall`，也不決定 `Fingerprint`——量不到的統計、對所套用門檻來說太粗的樣本，或關於這次執行拿到什麼的事實。它就是「`Overall` 是 `PASS`，旁邊卻有 `ERROR` 或 `WARN` 列」的解釋。
 
-**讀報告。** 使用手冊解釋整體結果、「要告訴 IT 的話」的標題與各種標籤；技術文件解釋每一條規則。repo 的 `sop` 資料夾有支援工程師的現場手冊和把報告整理成交接文件的範本。 那本現場手冊有一條讀法也該寫在這裡，因為電話那頭的人手上沒有它：唯一的必要 ping 目標——預設閘道——是由閘道自己的 stack 回應的，而網路設備通常會對送給自己的 ICMP 限速或降低優先權——所以閘道爽快回應是「近端路徑正常」的好證據，「閘道沒有回應」則是嫌疑、不是定罪。請讀成「先查本地路徑，同時考慮設備可能就是不回應送給自己的 ping」——同一份報告裡若有閘道之外的目標通過，就表示它有在轉送。這項檢查維持必要，因為連自己閘道都到不了的機器通常真的有問題值得回報（2026-09-10 決定，backlog #58）；失敗那一列的詳細資料和「要告訴 IT 的話」現在也這麼說。
+**讀報告。** 使用手冊解釋整體結果、「要告訴 IT 的話」的標題與各種標籤；技術文件解釋每一條規則。repo 的 `sop` 資料夾有支援工程師的現場手冊和把報告整理成交接文件的範本。 那本現場手冊有一條讀法也該寫在這裡，因為電話那頭的人手上沒有它：唯一的必要 ping 目標——預設閘道——是由閘道自己的 stack 回應的，而網路設備通常會對送給自己的 ICMP 限速或降低優先權——所以閘道爽快回應是「近端路徑正常」的好證據，「閘道沒有回應」則是嫌疑、不是定罪。請讀成「先查本地路徑，同時考慮設備可能就是不回應送給自己的 ping」——同一份報告裡閘道之外的目標通過，只有在它的路由經過這個閘道時才證明它有在轉送：同網段的主機、VPN 或 Proxy 都可能沒經過它就成功，而多網卡機器上 `AUTO_GATEWAY` 會為每個閘道各寫一列。這項檢查維持必要，因為連自己閘道都到不了的機器通常真的有問題值得回報（2026-09-10 決定，backlog #58）；失敗那一列的詳細資料和「要告訴 IT 的話」現在也這麼說。
 
 ---
 

@@ -98,6 +98,12 @@ Assert-Equal 'D: gateway silent -> gateway-unreachable' (Get-FingerprintSummary)
 # backlog #58: the summary for a gateway that did not answer says what that does and does not establish - a fourth
 # line before the send-to-IT one - and the summary for a gateway that answered has no such line.
 Assert-Equal 'D: #58 the unreachable-gateway summary carries the suspect-not-conviction line' ((Get-FingerprintSummary).Lines.Count) 5
+# The most a section can hold, which the user manual states as its maximum (PR #50, round 1: the manual said five and
+# six is reachable): the gateway summary's four lines, the sentence naming the rows that were not measured, and the
+# send-to-IT line. A weightless row changes no predicate, so the key stays and only the count moves.
+Add-CheckResult -Category "T" -Check "TCPv4 counters" -Status "ERROR" -Message "m" -Details "" -Tag "tcp-retransmissions" -Weightless | Out-Null
+Assert-Equal 'D: #58 beside a weightless row the section is six lines, the documented maximum' ((Get-FingerprintSummary).Lines.Count) 6
+Assert-Equal 'D: #58 and the weightless row moved the count, not the key' (Get-FingerprintSummary).Key "gateway-unreachable"
 Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "ping-gateway" "PASS"; Add-Tagged "dns" "FAIL"; Add-Tagged "connectivity-group" "FAIL"
 Assert-Equal 'D: gateway ok, internet dead -> gateway-up-internet-dead' (Get-FingerprintSummary).Key "gateway-up-internet-dead"
 Assert-Equal 'D: #58 a gateway that answered has nothing to qualify' ((Get-FingerprintSummary).Lines.Count) 4
