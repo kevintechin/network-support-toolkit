@@ -2504,6 +2504,10 @@ function Add-PingTargetResult {
         # verdict is withheld where the sample is too coarse for the threshold AND the classification would be a
         # different one had one fewer reply been lost. At four probes it would not (three of four is still
         # critical) and at one it would. Nothing more is sent either way: the expensive case stays the cheap one.
+        # The sentence belongs to the case and not to the verdict (PR #49, round 6): an optional target that
+        # answered nothing may simply be blocking ICMP whether or not its verdict was withheld, and round 5 had
+        # tied the two together, so a one-probe optional target lost the guidance it most needs.
+        $blockedIcmpNote = (-not $Required)
         if ($loss.Weightless) {
             $status = "INFO"
             $weightless = $true
@@ -2511,7 +2515,6 @@ function Add-PingTargetResult {
         }
         else {
             $status = if ($Required) { "FAIL" } else { "INFO" }
-            $blockedIcmpNote = (-not $Required)
         }
     }
     else {

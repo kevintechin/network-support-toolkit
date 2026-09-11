@@ -2444,6 +2444,9 @@ function Add-PingTargetResult {
         # 是同一件事：一次逾時就讓必要目標異常。這個版本已經有的規則不必發明新數字就能解決它，因為它問的正是
         # 對的問題 —— 取樣對門檻來說太粗，「而且」少遺失一次分類就會不一樣時，才收回判定。四次探測不會（四次
         # 掉三次仍然是嚴重），一次會。而且兩種情況都不會多送：最貴的那一種仍然是最便宜的那一種。
+        # 那句話屬於「情況」，不屬於「判定」（PR #49 第 6 輪）：非必要目標完全沒有回覆時，不論判定有沒有被收回，
+        # 它都可能只是封鎖了 ICMP；第 5 輪把兩者綁在一起，結果一次探測的非必要目標反而失去了它最需要的那句指引。
+        $blockedIcmpNote = (-not $Required)
         if ($loss.Weightless) {
             $status = "INFO"
             $weightless = $true
@@ -2451,7 +2454,6 @@ function Add-PingTargetResult {
         }
         else {
             $status = if ($Required) { "FAIL" } else { "INFO" }
-            $blockedIcmpNote = (-not $Required)
         }
     }
     else {

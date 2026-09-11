@@ -1303,6 +1303,11 @@ $rowSilentOptional = Get-PingRow 4 0 $null $false
 # target that may simply be blocking ICMP is the second. One match is that sentence absent.
 Assert-Equal '#49 silent: an optional target that answered nothing keeps its ICMP sentence' (Get-DetailMatchCount $rowSilentOptional 'ICMP') 2
 Assert-Equal '#49 silent: a required one whose verdict was withheld does not' (Get-DetailMatchCount $rowSilentOne 'ICMP') 1
+# The sentence belongs to the case, not to the verdict (PR #49, round 6): an optional target that answered nothing
+# may simply be blocking ICMP whether or not the verdict was withheld, and round 5 had tied the two together.
+$rowSilentOneOptional = Get-PingRow 1 0 $null $false
+Assert-Equal '#49 silent: a one-probe optional target has its verdict withheld' $rowSilentOneOptional.Weightless True
+Assert-Equal '#49 silent: and keeps the ICMP sentence all the same' (Get-DetailMatchCount $rowSilentOneOptional 'ICMP') 2
 
 # A continued sample rewrites the row it already has rather than adding a second one: the report renders rows in
 # the order they were added, so a row written late would leave the ping section in two pieces.
