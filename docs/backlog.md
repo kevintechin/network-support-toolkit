@@ -46,6 +46,7 @@ It is in the repository and not in the package, like [`application-control.md`](
 | 60 | There is no near-end baseline, so no measurement can be attributed to a segment | tool |
 | 61 | On a Wi-Fi-only machine nothing distinguishes the air from what is behind the AP | tool |
 | 62 | The Wi-Fi row infers its connected state from the BSSID | tool / measurement |
+| 63 | A retransmission count decides the verdict without reference to how much was sent | decision / tool |
 
 The table is an index; each item's own paragraph below is the statement.
 
@@ -584,6 +585,38 @@ Acceptance: the BSSID sampled at least before and after the run with a row when 
 **What limits it.** The row is an IT-scope `INFO` row: it never moves the verdict, and [#39](#39--a-measurement-that-could-not-be-taken-outranks-a-measurement-that-failed)'s rule keeps it that way. The cost is a false sentence in the section of the report written for the person who will act on it, on the machine type [#61](#61--on-a-wi-fi-only-machine-nothing-distinguishes-the-air-from-what-is-behind-the-ap) is about.
 
 Acceptance: the connected state no longer derived from the presence of the BSSID — the candidates being `netsh`'s own state field, `Get-NetConnectionProfile`, and `wlan_intf_opcode_interface_state`, which the location page does not list, and this item chooses between none of them, since the parser is shape-driven for a reason the fix has to keep; where a BSSID is genuinely unavailable, the row reporting the connection with that field marked unavailable, which is closed item #5's shape, rather than reporting no connection; the existing message's three causes no longer offered as exhaustive; unit tests in both languages over a captured block with two MAC-shaped values and the same block with the second removed; and a measurement on a machine with precise location denied, recording what `netsh wlan show interfaces` prints there, which is the run [#61](#61--on-a-wi-fi-only-machine-nothing-distinguishes-the-air-from-what-is-behind-the-ap) needs anyway. — *raised on 2026-09-10 while answering #61's elevation question; what found it was the location-consent page's list of which calls are denied without consent, read against the parser that consumes the field.*
+
+### 63 — A retransmission count decides the verdict without reference to how much was sent
+
+`Compare-TcpCounters` classifies in two lines, and the second one is the item:
+
+```text
+if   ($rate -ge $criticalPercent -or ($retransDelta -ge $criticalCount -and $rate -ge $warningPercent))  -> FAIL
+elseif ($rate -ge $warningPercent -or $retransDelta -ge $criticalCount)                                  -> WARN
+```
+
+`TcpRetransmissionCriticalCount` is **50**, and in the second line it stands alone: fifty retransmissions warn whatever the rate is. The rate the tool itself computed, in the same row, may say the link is healthy.
+
+**Measured on the reference machine on 2026-09-11, in one chain run and its re-run.** The run failed four `gui` cases, all with the fingerprint `quality`:
+
+| run | window | sent | retransmitted | rate | verdict |
+|---|---|---|---|---|---|
+| busy, en-US user | 10.1 s | 3 832 | 57 | **1.487 %** | Attention Required |
+| busy, en-US IT | 128.6 s | 27 594 | 482 | **1.747 %** | Attention Required |
+| quiet, en-US user | 8 s | 139 | 0 | 0 % | Healthy |
+| quiet, en-US IT | 125 s | 947 | 1 | 0.106 % | Healthy |
+
+Both busy rates are **below the shipped 2 % warning threshold** — by the tool's own rule the link was carrying its traffic well — and both rows warned. The quiet pair is the same machine and the same configuration with **29 times less traffic in the same 125-second window**, and it passed. In that hour the verdict tracked how much the machine was sending rather than how well the link was carrying it.
+
+**What that does and does not establish.** It does not establish that a busy machine always crosses 50: the quiet run sent 947 segments in the window that the busy run sent 27 594 in, and nothing here says which is typical of anything. What it establishes is that **the count can decide the verdict while the rate disagrees with it**, on a real machine, in the shipped configuration, twice in one run.
+
+**Why it is a different item from the two beside it.** [#51](#51--a-quality-verdict-can-rest-on-a-single-packet-because-the-threshold-is-finer-than-the-sample) is a sample **too small** for the threshold applied to it — one packet in seventy deciding a verdict. This is the other end: samples large enough that a fixed count stops carrying information. [#56](#56--the-shipped-thresholds-have-no-recorded-basis-and-the-standards-that-exist-do-not-supply-one) is that the twelve thresholds have no recorded basis; this one would still be true if somebody sourced the number 50 tomorrow, because what is wrong is the **shape** of the threshold rather than its value. A count is a quantity that scales with traffic; the thing being judged is a proportion that does not.
+
+**The span is the argument.** Across the shipped configurations this project's own runs have measured samples of **70** segments and of **27 594** in the same release's validation — a factor of nearly 400 — with one absolute count applied across all of it. At 70 segments, 50 retransmissions is 71 % and the count can only fire when the rate has already failed; at 27 594 it is 0.18 % and fires on its own.
+
+**What must not be assumed by whoever takes this.** That the count should simply be deleted. It may be there to catch a burst that a long window's average would hide, which is a real thing to want and is [#57](#57--the-retransmission-rates-denominator-is-not-the-quantity-any-published-figure-refers-to)'s neighbourhood — an average over 125 seconds says nothing about a bad ten seconds inside it. If that is what it is for, the fix is not removal but a rule that says so, and the row would have to name the burst rather than the total.
+
+Acceptance: a decision recorded on what `TcpRetransmissionCriticalCount` is for, with its reason and its date, before any code moves; then whichever follows from it — if the count stays an independent trigger, the threshold tables and the IT deployment manual say plainly that a large enough sample warns at a healthy rate, so nobody reads the verdict as a statement about the link; if it changes, unit cases for both halves of what was measured here, a healthy rate at a large count and an unhealthy rate at a small one, and a chain run on a machine sending enough to reach the old trigger; and in either case the row's own sentence saying which of the two — the rate or the count — decided it, since today a reader cannot tell. — *raised on 2026-09-11 by the validation chain of the 1.2.9 work (PR #45), which failed four cases on it; the numbers above are that run's and its re-run's, and they are in the 1.2.9 entry of the validation record.*
 
 ## Closed items
 
