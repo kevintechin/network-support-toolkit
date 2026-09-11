@@ -595,7 +595,7 @@ if   ($rate -ge $criticalPercent -or ($retransDelta -ge $criticalCount -and $rat
 elseif ($rate -ge $warningPercent -or $retransDelta -ge $criticalCount)                                  -> WARN
 ```
 
-`TcpRetransmissionCriticalCount` is **50**, and in the second line it stands alone: fifty retransmissions warn whatever the rate is. The rate the tool itself computed, in the same row, may say the link is healthy.
+`TcpRetransmissionCriticalCount` is **50**, and in the second line it stands alone: fifty retransmissions warn whatever the rate is. The rate the tool itself computed, in the same row, may be below both of its own thresholds.
 
 **Measured on the reference machine on 2026-09-11, in one chain run and its re-run.** The run failed four `gui` cases, all with the fingerprint `quality`:
 
@@ -618,7 +618,7 @@ Both busy rates are **below the shipped 2 % warning threshold**, so **the rate b
 
 **What must not be assumed by whoever takes this.** That the count should simply be deleted. It may be there to catch a burst that a long window's average would hide, which is a real thing to want and is [#57](#57--the-retransmission-rates-denominator-is-not-the-quantity-any-published-figure-refers-to)'s neighbourhood — an average over 125 seconds says nothing about a bad ten seconds inside it. If that is what it is for, the fix is not removal but a rule that says so, and the row would have to name the burst rather than the total.
 
-Acceptance: a decision recorded on what `TcpRetransmissionCriticalCount` is for, with its reason and its date, before any code moves; then whichever follows from it — if the count stays an independent trigger, the threshold tables and the IT deployment manual say plainly that a large enough sample warns at a healthy rate, so nobody reads the verdict as a statement about the link; if it changes, unit cases for both halves of what was measured here, a healthy rate at a large count and an unhealthy rate at a small one, and a chain run on a machine sending enough to reach the old trigger; and in either case the row's own sentence saying which of the two — the rate or the count — decided it, since today a reader cannot tell. — *raised on 2026-09-11 by the validation chain of the 1.2.9 work (PR #45), which failed four cases on it; the numbers above are that run's and its re-run's, and they are in the 1.2.9 entry of the validation record.*
+Acceptance: a decision recorded on what `TcpRetransmissionCriticalCount` is for, with its reason and its date, before any code moves; then whichever follows from it — if the count stays an independent trigger, the threshold tables and the IT deployment manual say plainly that a large enough sample warns even where the rate is below both thresholds, so nobody reads the verdict as a statement about the link; if it changes, unit cases for both halves of what was measured here, a rate below both thresholds at a large count and a rate above them at a small one, and a chain run on a machine sending enough to reach the old trigger; and in either case the row's own sentence saying which of the two — the rate or the count — decided it, since today a reader cannot tell. — *raised on 2026-09-11 by the validation chain of the 1.2.9 work (PR #45), which failed four cases on it; the numbers above are that run's and its re-run's, and they are in the 1.2.9 entry of the validation record.*
 
 ## Closed items
 
