@@ -599,14 +599,14 @@ elseif ($rate -ge $warningPercent -or $retransDelta -ge $criticalCount)         
 
 **Measured on the reference machine on 2026-09-11, in one chain run and its re-run.** The run failed four `gui` cases, all with the fingerprint `quality`:
 
-| run | window | sent | retransmitted | rate | verdict |
-|---|---|---|---|---|---|
-| busy, en-US user | 10.1 s | 3 832 | 57 | **1.487 %** | Attention Required |
-| busy, en-US IT | 128.6 s | 27 594 | 482 | **1.747 %** | Attention Required |
-| quiet, en-US user | 8 s | 139 | 0 | 0 % | Healthy |
-| quiet, en-US IT | 125 s | 947 | 1 | 0.106 % | Healthy |
+| run | window measured (configured minimum) | sent | segments/s | retransmitted | rate | verdict |
+|---|---|---|---|---|---|---|
+| busy, en-US user | 10.1 s (8) | 3 832 | 379 | 57 | **1.487 %** | Attention Required |
+| busy, en-US IT | 128.6 s (125) | 27 594 | 215 | 482 | **1.747 %** | Attention Required |
+| quiet, en-US user | 8.8 s (8) | 139 | 16 | 0 | 0 % | Healthy |
+| quiet, en-US IT | 128.0 s (125) | 947 | 7 | 1 | 0.106 % | Healthy |
 
-Both busy rates are **below the shipped 2 % warning threshold**, so **the rate branch alone would not have warned**: the verdict came from the count branch and from nothing else. The quiet pair is the same machine and the same configuration with **29 times less traffic in the same 125-second window**, and it passed.
+Both busy rates are **below the shipped 2 % warning threshold**, so **the rate branch alone would not have warned**: the verdict came from the count branch and from nothing else. The quiet pair is the same machine and the same configuration, and the windows are comparable rather than identical — 128.0 seconds against 128.6 for the IT pair, 8.8 against 10.1 for the user pair, because the configured value is a **minimum** and the row reports what it actually measured. Normalised for that, the busy IT run sent **29 times more segments per second** than the quiet one, 215 against 7, and the quiet one passed.
 
 **And the conclusion stops there, because the statistic cannot carry a larger one** (PR #46, round 1). These counters are system-wide — the row says so itself, and [#52](#52--the-retransmission-statistic-cannot-say-whose-traffic-it-measured) is the item about it — and [#57](#57--the-retransmission-rates-denominator-is-not-the-quantity-any-published-figure-refers-to) records that the denominator is not the quantity any published figure refers to. So nothing here says the link was carrying its traffic well, or badly: what it says is that two branches of one classifier disagreed, and the one that decided was the one that does not divide by anything.
 
