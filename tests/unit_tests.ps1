@@ -574,6 +574,10 @@ Assert-Equal '#57 rate: two retransmissions and nothing counted as sent is the s
 Assert-Equal '#57 rate: which names the two' ($pureRow.Details -match '(?<![\d.])2(?![\d.])') True
 Assert-Equal '#57 rate: prints no 0%' ($pureRow.Details -match '(?<![\d.])0%') False
 Assert-Equal '#57 rate: and no denominator sentence, since it divided nothing' ($pureRow.Details -match 'Segments Sent/sec') False
+# The message is the line the report shows before the details, and round 2's assertions stopped at the details
+# (PR #50, round 3): it must not print the 0% the details no longer do, and it still names what was counted.
+Assert-Equal '#57 rate: nor does its message, which the report shows first' ($pureRow.Message -match '(?<![\d.])0%') False
+Assert-Equal '#57 rate: while the message still names the two it counted' ($pureRow.Message -match '(?<![\d.])2(?![\d.])') True
 Assert-Equal '#38 clean run: and nothing about a window that did not run long' (@(Get-TcpReadFailureLines -Snapshot $cleanBefore -Protocol 'TCPv4').Count) 0
 
 # PR #40, round 1: a baseline read that stalls delays every stamp taken after it, so it lands inside the window of

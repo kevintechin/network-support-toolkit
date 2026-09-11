@@ -4032,7 +4032,11 @@ function Compare-TcpCounters {
                 # the row is not evidence - which is the contradiction a row should not carry. This is #51's
                 # answer to what a small sample carrying a retransmission means: it is the record of that
                 # retransmission, and not a verdict.
-                Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "INFO" -Message ("The traffic sample is small, but {0} retransmission(s) were observed (approximately {1}%)." -f $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" -Weightless | Out-Null
+                # A window with nothing counted as sent has no rate, and the message - the line the report shows before the
+                # details - must not print one either (PR #50, round 3). The phrase the user manual quotes is kept.
+                $smallMessage = ("The traffic sample is small, but {0} retransmission(s) were observed (approximately {1}%)." -f $retransDelta, $rate)
+                if ($sentDelta -eq 0) { $smallMessage = ("The traffic sample is small, but {0} retransmission(s) were observed; no segment was counted as sent, so no rate can be computed from them." -f $retransDelta) }
+                Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "INFO" -Message $smallMessage -Details $details -Tag "tcp-retransmissions" -Weightless | Out-Null
             }
             else {
                 Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "INFO" -Message ("The sample contains only {0} sent segment(s); no retransmissions were observed." -f $sentDelta) -Details $details -Tag "tcp-retransmissions" | Out-Null

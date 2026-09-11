@@ -3924,7 +3924,11 @@ function Compare-TcpCounters {
                 # 1.2.10 之前這是 WARN。1.2.8（已結案的 #39）已經把它變成 weightless，所以那個徽章不再決定任何
                 # 事情，它唯一的作用就是在一句「這不是證據」旁邊把一列標成需要注意——這正是這一列不該帶的矛盾。
                 # 這是 #51 要求「決定一個帶著重傳的小樣本代表什麼」的回答：它是那次重傳的紀錄，不是一個判定。
-                Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "INFO" -Message ("流量樣本偏少，但觀察到 {0} 次重傳（近似 {1}%）。" -f $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" -Weightless | Out-Null
+                # 沒有任何 segment 被算成送出的窗沒有比例，訊息——報告裡排在詳細資料前面的那一行——也不能印出一個來
+                # （PR #50 第 3 輪）。使用手冊引用的那個片語保持不變。
+                $smallMessage = ("流量樣本偏少，但觀察到 {0} 次重傳（近似 {1}%）。" -f $retransDelta, $rate)
+                if ($sentDelta -eq 0) { $smallMessage = ("流量樣本偏少，但觀察到 {0} 次重傳；沒有任何 segment 被算成送出，算不出比例。" -f $retransDelta) }
+                Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "INFO" -Message $smallMessage -Details $details -Tag "tcp-retransmissions" -Weightless | Out-Null
             }
             else {
                 Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "INFO" -Message ("樣本只有 {0} 個傳送 segment，未觀察到重傳。" -f $sentDelta) -Details $details -Tag "tcp-retransmissions" | Out-Null
