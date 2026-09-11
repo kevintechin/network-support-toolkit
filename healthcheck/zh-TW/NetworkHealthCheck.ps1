@@ -43,7 +43,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：報告保存例外類型、訊息與內部例外；腳本位置與呼叫堆疊只寫入 JSON 報告（Diagnostics）。
 
-$script:ToolVersion = "1.2.10"
+$script:ToolVersion = "1.2.11"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -2513,6 +2513,14 @@ function Add-PingTargetResult {
     $detailLines += ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms{2}。" -f $Measurement.Sent, $TimeoutMs, (Get-RouteMethodText -Target $Target -LookupAddress $RouteAfter.LookupAddress -TargetIsAddress $TargetIsAddress -ExtraCount (@($RouteAfter.Others).Count)))
     $detailLines += ("手動驗證：ping -n {0} {1}" -f $Measurement.Sent, $Target)
     $details = (@($detailLines) -join [Environment]::NewLine)
+    # backlog #58：唯一的必要 ping 目標是由閘道自己的 stack 回應的，而網路設備通常會對送給自己的 ICMP 限速或降低優先權——
+    # 所以閘道爽快回應是「近端路徑正常」的好證據，閘道不回應卻不是「它壞了」的證明。這項檢查維持必要（2026-09-10 決定：
+    # 連自己閘道都到不了的機器通常真的有問題值得回報），而失敗的那一列要說清楚這個失敗能說明什麼、不能說明什麼，措辭沿用
+    # 現場手冊 gateway-unreachable 那一格，讓兩邊不會各說各話。只有 FAIL 列帶這句：通過的列沒有東西要補充，判定被收回的列
+    # 已經說明了原因。
+    if ($pingTag -eq "ping-gateway" -and $status -eq "FAIL") {
+        $details += [Environment]::NewLine + "這個失敗能說明什麼、不能說明什麼：閘道沒有回應送到它自己位址的 echo 請求。這是先查本地路徑——連線、Wi-Fi、交換器——的理由，但不證明閘道壞了：正常轉送流量的閘道仍可能丟棄或限速送給它自己的 Ping；本報告裡若有閘道之外的目標通過，就表示它有在轉送。把這一列當成嫌疑，不是定罪。"
+    }
     # 只有在這一列真的是「非必要目標完全沒有回覆」時才加。第 5 輪之前這是看狀態判斷的，那時兩者等價 —— 但現在
     # 被收回判定的「完全沒有回覆」同樣是 INFO，就不等價了。
     if ($blockedIcmpNote) {
@@ -3860,7 +3868,13 @@ function Compare-TcpCounters {
             "結束累積：Sent=$($end.SegmentsSent), Retrans=$($end.Retransmitted)",
             "檢測方式：Win32_PerfRawData_Tcpip_$protocol 累積計數器，取樣期間增量。",
             "手動驗證：Get-CimInstance Win32_PerfRawData_Tcpip_$protocol（取樣兩次比較增量）",
-            "說明：此為整台電腦在檢測期間的系統級統計，不只包含單一程式。"
+            "說明：此為整台電腦在檢測期間的系統級統計，不只包含單一程式。",
+            # backlog #57：分母是 Windows 定義下的 Segments Sent/sec 計數器，這一列要把它說出來，因為印出來的百分比並不是
+            # 任何公開發表的重傳率所指的那個量。句子依據計數器自己的說明文字與 Microsoft 的 TCP Object 參考（皆於 2026-09-10
+            # 讀取）：Segments Sent 不含「只帶重傳位元組」的 segment，Segments Retransmitted 則算入每一個「帶有一個以上先前
+            # 傳過的位元組」的 segment，所以混合的 segment 兩邊都算。這一列只說分母是什麼，不說數字偏哪一邊：裡面的 ACK 把它
+            # 拉得比資料 segment 比例低、被排除的純重傳把它拉得比位元組比值高，而這兩個偏差都沒有在任何一次執行上量化過。
+            "百分比除的是什麼：這台電腦在取樣窗內送出的 segment 數，照 Segments Sent/sec 計數器的算法——含 ACK，但不含只帶重傳位元組的 segment；新位元組和重傳位元組同在一個 segment 裡時兩個計數都算到它。這是本工具自己的比值，分母和公開發表的重傳率不同，不能拿來比較。"
         ) -join [Environment]::NewLine
 
         if ($rate -gt 100) {
@@ -4140,7 +4154,7 @@ function Get-FingerprintSummary {
     $lines = @()
     switch ($key) {
         "local" { $title = "本機連線問題"; $lines = @("找不到可用的網卡或預設閘道。", "問題在這台電腦或它的連線：網路線、Wi-Fi 連線、網卡停用或 DHCP 沒有回應。", "用同一個網路上的另一台裝置測試，確認是否只有這台電腦有問題。") }
-        "gateway-unreachable" { $title = "閘道沒有回應"; $lines = @("已設定預設閘道，但閘道不回應 Ping。", "問題在這台電腦和路由器之間：連線、Wi-Fi、交換器或路由器本身。", "確認連線燈號或 Wi-Fi 訊號，以及其他裝置能否連到路由器。") }
+        "gateway-unreachable" { $title = "閘道沒有回應"; $lines = @("已設定預設閘道，但閘道不回應 Ping。", "問題在這台電腦和路由器之間：連線、Wi-Fi、交換器或路由器本身。", "確認連線燈號或 Wi-Fi 訊號，以及其他裝置能否連到路由器。", "閘道不回應送給它自己的 Ping 是嫌疑、不是定罪：它可能一邊正常轉送流量、一邊丟棄這種 Ping，所以如果下面的連線列有通過，就表示它有在轉送，該看的是到它的那段連線。") }
         "gateway-up-internet-dead" { $title = "閘道正常，網際網路不通"; $lines = @("路由器有回應，但往外的連線失敗。", "問題在路由器或更外層：WAN 連線、ISP 或上游防火牆。", "查看路由器的 WAN 狀態，以及其他裝置是否同樣無法上網。") }
         "dns" { $title = "名稱解析失敗"; $lines = @("用 IP 直接連線正常，但主機名稱無法解析。", "問題在 DNS：設定的 DNS 伺服器、過濾服務或名稱本身。", "把報告中的 DNS 伺服器和公司預期設定比對。") }
         "quality" { $title = "連線正常但品質不佳"; $lines = @("連線可用，但封包遺失、延遲、重傳或網卡錯誤超過門檻。", "常見原因：Wi-Fi 訊號弱、線路壅塞、網路線或連接埠故障。", "問題發生時再跑一次並比較數字。") }

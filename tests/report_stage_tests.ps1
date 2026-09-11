@@ -95,8 +95,12 @@ Reset-Results; Add-Tagged "adapters" "FAIL"; Add-Tagged "gateway-config" "FAIL"
 Assert-Equal 'D: no adapter -> local' (Get-FingerprintSummary).Key "local"
 Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Tagged "ping-gateway" "FAIL"; Add-Tagged "connectivity-group" "FAIL"
 Assert-Equal 'D: gateway silent -> gateway-unreachable' (Get-FingerprintSummary).Key "gateway-unreachable"
+# backlog #58: the summary for a gateway that did not answer says what that does and does not establish - a fourth
+# line before the send-to-IT one - and the summary for a gateway that answered has no such line.
+Assert-Equal 'D: #58 the unreachable-gateway summary carries the suspect-not-conviction line' ((Get-FingerprintSummary).Lines.Count) 5
 Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "ping-gateway" "PASS"; Add-Tagged "dns" "FAIL"; Add-Tagged "connectivity-group" "FAIL"
 Assert-Equal 'D: gateway ok, internet dead -> gateway-up-internet-dead' (Get-FingerprintSummary).Key "gateway-up-internet-dead"
+Assert-Equal 'D: #58 a gateway that answered has nothing to qualify' ((Get-FingerprintSummary).Lines.Count) 4
 Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "ping-gateway" "PASS"; Add-Tagged "dns" "FAIL"; Add-Tagged "tcp" "PASS"; Add-Tagged "connectivity-group" "PASS"
 Assert-Equal 'D: dns fails, tcp by ip ok -> dns' (Get-FingerprintSummary).Key "dns"
 Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "ping-gateway" "PASS"; Add-Tagged "tcp-retransmissions" "WARN"; Add-Tagged "connectivity-group" "PASS"

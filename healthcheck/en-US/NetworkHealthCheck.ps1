@@ -50,7 +50,7 @@ param(
 # - Traceability: exception type, message, and inner exceptions are stored in every
 #   report; script location and call stack go to the JSON report only (Diagnostics).
 
-$script:ToolVersion = "1.2.10"
+$script:ToolVersion = "1.2.11"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -2581,6 +2581,16 @@ function Add-PingTargetResult {
     $detailLines += ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms{2}." -f $Measurement.Sent, $TimeoutMs, (Get-RouteMethodText -Target $Target -LookupAddress $RouteAfter.LookupAddress -TargetIsAddress $TargetIsAddress -ExtraCount (@($RouteAfter.Others).Count)))
     $detailLines += ("Manual check: ping -n {0} {1}" -f $Measurement.Sent, $Target)
     $details = (@($detailLines) -join [Environment]::NewLine)
+    # backlog #58: the one required ping target is answered by the gateway's own stack, and network devices commonly
+    # rate-limit or deprioritise ICMP addressed to themselves - so a gateway that answers promptly is good evidence that
+    # the near-end path works, while one that does not answer is not proof that it is broken. The check stays Required
+    # (decided 2026-09-10: a machine that cannot reach its own gateway usually does have a problem worth reporting), and
+    # the failed row says what its failure does and does not establish, in the words of the field manual's
+    # gateway-unreachable entry so that the two cannot drift apart. Only the FAIL row carries it: a row that passed has
+    # nothing to qualify, and a row whose verdict was withheld already says why.
+    if ($pingTag -eq "ping-gateway" -and $status -eq "FAIL") {
+        $details += [Environment]::NewLine + "What this failure does and does not establish: the gateway did not answer echo requests addressed to its own address. That is reason to check the local path first - link, Wi-Fi, switch - but it is not proof that the gateway is broken, because a gateway that forwards traffic can still drop or rate-limit pings sent to itself; a target beyond it that passed in this report shows that it forwards. Read this row as a suspect, not a conviction."
+    }
     # Only where the row really is an optional target that answered nothing. Until round 5 this read the status,
     # which was the same thing - and is not, now that a withheld silent verdict is INFO as well.
     if ($blockedIcmpNote) {
@@ -3958,7 +3968,15 @@ function Compare-TcpCounters {
             "Ending cumulative values: Sent=$($end.SegmentsSent), Retrans=$($end.Retransmitted)",
             "Method: Win32_PerfRawData_Tcpip_$protocol cumulative counters; delta over the sample window.",
             "Manual check: Get-CimInstance Win32_PerfRawData_Tcpip_$protocol — sample twice and compare the deltas.",
-            "Explanation: This is a system-wide statistic for the entire computer during the test, not for a single application."
+            "Explanation: This is a system-wide statistic for the entire computer during the test, not for a single application.",
+            # backlog #57: the denominator is the Segments Sent/sec counter as Windows defines it, and the row says so,
+            # because the printed percentage is not the quantity any published retransmission rate refers to. The sentence
+            # follows the counter's own help text and Microsoft's TCP Object reference (both read 2026-09-10): Segments Sent
+            # excludes segments containing ONLY retransmitted bytes, Segments Retransmitted counts every segment containing one
+            # or more previously transmitted bytes, so a mixed segment is in both counts. The row states the denominator and
+            # does not say which way the figure errs: the acknowledgements in it pull it below a data-segment rate, the pure
+            # retransmissions left out of it pull it above a byte ratio, and neither bias has been quantified on any run.
+            "What the percentage divides by: the segments this computer sent in the window as the Segments Sent/sec counter counts them - acknowledgements included, segments carrying only retransmitted bytes excluded; a segment carrying new bytes beside retransmitted ones is in both counts. It is this tool's own ratio, not comparable with a published retransmission rate, which divides by a different quantity."
         ) -join [Environment]::NewLine
 
         if ($rate -gt 100) {
@@ -4259,7 +4277,7 @@ function Get-FingerprintSummary {
     $lines = @()
     switch ($key) {
         "local" { $title = "Local link problem"; $lines = @("No working network adapter or no default gateway was found.", "The fault is on this computer or its link: cable, Wi-Fi association, adapter disabled, or DHCP not answering.", "Try another device on the same network to see whether only this computer is affected.") }
-        "gateway-unreachable" { $title = "Gateway does not answer"; $lines = @("The default gateway is configured but does not answer pings.", "The fault is between this computer and the router: link, Wi-Fi, switch, or the router itself.", "Check the link light or Wi-Fi signal and whether other devices reach the router.") }
+        "gateway-unreachable" { $title = "Gateway does not answer"; $lines = @("The default gateway is configured but does not answer pings.", "The fault is between this computer and the router: link, Wi-Fi, switch, or the router itself.", "Check the link light or Wi-Fi signal and whether other devices reach the router.", "A gateway that does not answer pings sent to itself is a suspect, not a conviction: it may be forwarding traffic and still dropping those pings, so if the connection rows below passed, it forwards and the link to it is where to look.") }
         "gateway-up-internet-dead" { $title = "Gateway answers, internet does not"; $lines = @("The router answers, but connections beyond it fail.", "The fault is at or beyond the router: WAN link, ISP, or an upstream firewall.", "Check the router's WAN status and whether other devices lose the internet too.") }
         "dns" { $title = "Name resolution fails"; $lines = @("Direct connections by IP address work, but host names do not resolve.", "The fault is DNS: the configured DNS servers, a filtering service, or the name itself.", "Compare the DNS servers in this report with the expected company settings.") }
         "quality" { $title = "Connected, but quality is poor"; $lines = @("Connectivity works, but packet loss, latency, retransmissions, or adapter errors were above the thresholds.", "Typical causes: weak Wi-Fi, a congested link, or a faulty cable or port.", "Run the tool again while the problem is occurring and compare the numbers.") }
