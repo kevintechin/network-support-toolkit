@@ -50,7 +50,7 @@ param(
 # - Traceability: exception type, message, and inner exceptions are stored in every
 #   report; script location and call stack go to the JSON report only (Diagnostics).
 
-$script:ToolVersion = "1.2.10"
+$script:ToolVersion = "1.2.11"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -2492,6 +2492,8 @@ function Add-PingTargetResult {
     $weightless = $false
     $coarseNote = ""
     $blockedIcmpNote = $false
+    $lossStatus = ""
+    $latencyStatus = ""
     $loss = Get-PingLossClassification -Sent $Measurement.Sent -Lost $Measurement.Lost -WarningPercent $warningLoss -CriticalPercent $criticalLoss
 
     if ($Measurement.Received -eq 0) {
@@ -2581,6 +2583,26 @@ function Add-PingTargetResult {
     $detailLines += ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms{2}." -f $Measurement.Sent, $TimeoutMs, (Get-RouteMethodText -Target $Target -LookupAddress $RouteAfter.LookupAddress -TargetIsAddress $TargetIsAddress -ExtraCount (@($RouteAfter.Others).Count)))
     $detailLines += ("Manual check: ping -n {0} {1}" -f $Measurement.Sent, $Target)
     $details = (@($detailLines) -join [Environment]::NewLine)
+    # backlog #58: the one required ping target is answered by the gateway's own stack, and network devices commonly
+    # rate-limit or deprioritise ICMP addressed to themselves - so a gateway that answers promptly is good evidence that
+    # the near-end path works, while one that does not answer is not proof that it is broken. The check stays Required
+    # (decided 2026-09-10: a machine that cannot reach its own gateway usually does have a problem worth reporting), and
+    # the failed row says what its failure does and does not establish, in the words of the field manual's
+    # gateway-unreachable entry so that the two cannot drift apart. Only the FAIL row carries it: a row that passed has
+    # nothing to qualify, and a row whose verdict was withheld already says why.
+    if ($pingTag -eq "ping-gateway" -and $status -eq "FAIL") {
+        # Two ways a required gateway row fails, and the sentence names the one that happened (PR #50, round 2):
+        # replies that did not come back, or replies that came back at or above the critical latency with the loss
+        # verdict passing or withheld. Both are answered from the device's control plane, so both are ambiguous in
+        # the same way; what differs is the fact the row can state, and a row that lost nothing must not say it did.
+        if ($latencyStatus -eq "FAIL" -and $lossStatus -ne "FAIL") {
+            $gatewayFact = ("the gateway's own address answered {1} of the {2} echo requests sent to it, and slowly - an average of {0} ms, at or above the critical latency threshold. That is reason to check the local path first - link, Wi-Fi, switch - but it is not proof that the gateway forwards slowly, because a device answers pings sent to itself from its control plane, at a lower priority than the traffic it forwards." -f $Measurement.AverageMs, $Measurement.Received, $Measurement.Sent)
+        }
+        else {
+            $gatewayFact = ("the gateway did not answer {0} of the {1} echo requests addressed to its own address. That is reason to check the local path first - link, Wi-Fi, switch - but it is not proof that the gateway is broken, because a gateway that forwards traffic can still drop or rate-limit pings sent to itself." -f $Measurement.Lost, $Measurement.Sent)
+        }
+        $details += [Environment]::NewLine + "What this failure does and does not establish: " + $gatewayFact + " What would show that it forwards is a passing target beyond it whose route runs through this gateway - not any passing row, since a same-subnet host, a VPN or a proxy can succeed without touching it. Read this row as a suspect, not a conviction."
+    }
     # Only where the row really is an optional target that answered nothing. Until round 5 this read the status,
     # which was the same thing - and is not, now that a withheld silent verdict is INFO as well.
     if ($blockedIcmpNote) {
@@ -3949,17 +3971,37 @@ function Compare-TcpCounters {
             $script:RetransmissionRateComputed = $true
         }
 
-        $details = @(
+        # A window in which no segment was counted as sent has no ratio, whatever the retransmitted delta is (PR #50,
+        # round 2): printing 0% there described an undefined ratio, and the sentence below then claimed a division
+        # that never happened. The sent counter excludes segments carrying only previously sent bytes, so such a
+        # window can still carry a retransmission count - the small-sample rule below reports it - and the row says
+        # what it can: how many, and why no rate.
+        $rateLine = "Approximate retransmission rate: $rate%"
+        $denominatorLine = "What the percentage divides by: the segments this computer sent in the window as the Segments Sent/sec counter counts them - acknowledgements included, segments carrying only retransmitted bytes excluded; a segment carrying new bytes beside retransmitted ones is in both counts. It is this tool's own ratio, not comparable with a published retransmission rate, which divides by a different quantity."
+        if ($sentDelta -eq 0) {
+            $rateLine = "Approximate retransmission rate: not computable - no segment was counted as sent in the window"
+            if ($retransDelta -gt 0) { $rateLine += (" ({0} retransmitted segment(s) were counted all the same: the sent counter excludes segments carrying only previously sent bytes)" -f $retransDelta) }
+            $denominatorLine = $null
+        }
+        $details = (@(
             $durationLine,
             "Sent TCP segment delta: $sentDelta",
             "Retransmitted segment delta: $retransDelta",
-            "Approximate retransmission rate: $rate%",
+            $rateLine,
             "Starting cumulative values: Sent=$($start.SegmentsSent), Retrans=$($start.Retransmitted)",
             "Ending cumulative values: Sent=$($end.SegmentsSent), Retrans=$($end.Retransmitted)",
             "Method: Win32_PerfRawData_Tcpip_$protocol cumulative counters; delta over the sample window.",
             "Manual check: Get-CimInstance Win32_PerfRawData_Tcpip_$protocol — sample twice and compare the deltas.",
-            "Explanation: This is a system-wide statistic for the entire computer during the test, not for a single application."
-        ) -join [Environment]::NewLine
+            "Explanation: This is a system-wide statistic for the entire computer during the test, not for a single application.",
+            # backlog #57: the denominator is the Segments Sent/sec counter as Windows defines it, and the row says so,
+            # because the printed percentage is not the quantity any published retransmission rate refers to. The sentence
+            # follows the counter's own help text and Microsoft's TCP Object reference (both read 2026-09-10): Segments Sent
+            # excludes segments containing ONLY retransmitted bytes, Segments Retransmitted counts every segment containing one
+            # or more previously transmitted bytes, so a mixed segment is in both counts. The row states the denominator and
+            # does not say which way the figure errs: the acknowledgements in it pull it below a data-segment rate, the pure
+            # retransmissions left out of it pull it above a byte ratio, and neither bias has been quantified on any run.
+            $denominatorLine
+        ) | Where-Object { $null -ne $_ }) -join [Environment]::NewLine
 
         if ($rate -gt 100) {
             $details += [Environment]::NewLine + "Note: a rate above 100% means retransmissions of segments sent before the sample window - read it as a ratio, not a percentage."
@@ -3990,7 +4032,11 @@ function Compare-TcpCounters {
                 # the row is not evidence - which is the contradiction a row should not carry. This is #51's
                 # answer to what a small sample carrying a retransmission means: it is the record of that
                 # retransmission, and not a verdict.
-                Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "INFO" -Message ("The traffic sample is small, but {0} retransmission(s) were observed (approximately {1}%)." -f $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" -Weightless | Out-Null
+                # A window with nothing counted as sent has no rate, and the message - the line the report shows before the
+                # details - must not print one either (PR #50, round 3). The phrase the user manual quotes is kept.
+                $smallMessage = ("The traffic sample is small, but {0} retransmission(s) were observed (approximately {1}%)." -f $retransDelta, $rate)
+                if ($sentDelta -eq 0) { $smallMessage = ("The traffic sample is small, but {0} retransmission(s) were observed; no segment was counted as sent, so no rate can be computed from them." -f $retransDelta) }
+                Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "INFO" -Message $smallMessage -Details $details -Tag "tcp-retransmissions" -Weightless | Out-Null
             }
             else {
                 Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "INFO" -Message ("The sample contains only {0} sent segment(s); no retransmissions were observed." -f $sentDelta) -Details $details -Tag "tcp-retransmissions" | Out-Null
@@ -4259,7 +4305,7 @@ function Get-FingerprintSummary {
     $lines = @()
     switch ($key) {
         "local" { $title = "Local link problem"; $lines = @("No working network adapter or no default gateway was found.", "The fault is on this computer or its link: cable, Wi-Fi association, adapter disabled, or DHCP not answering.", "Try another device on the same network to see whether only this computer is affected.") }
-        "gateway-unreachable" { $title = "Gateway does not answer"; $lines = @("The default gateway is configured but does not answer pings.", "The fault is between this computer and the router: link, Wi-Fi, switch, or the router itself.", "Check the link light or Wi-Fi signal and whether other devices reach the router.") }
+        "gateway-unreachable" { $title = "Gateway does not answer"; $lines = @("The default gateway is configured but does not answer pings.", "The fault is between this computer and the router: link, Wi-Fi, switch, or the router itself.", "Check the link light or Wi-Fi signal and whether other devices reach the router.", "A gateway that fails this check - not answering pings sent to itself, or answering them slowly - is a suspect, not a conviction: it may be forwarding traffic normally while dropping or deprioritising those pings. A connection that succeeded proves that only if its route ran through this gateway - a same-subnet host, a VPN or a proxy can succeed without touching it - so check the link to it first and treat the gateway as unproven rather than broken.") }
         "gateway-up-internet-dead" { $title = "Gateway answers, internet does not"; $lines = @("The router answers, but connections beyond it fail.", "The fault is at or beyond the router: WAN link, ISP, or an upstream firewall.", "Check the router's WAN status and whether other devices lose the internet too.") }
         "dns" { $title = "Name resolution fails"; $lines = @("Direct connections by IP address work, but host names do not resolve.", "The fault is DNS: the configured DNS servers, a filtering service, or the name itself.", "Compare the DNS servers in this report with the expected company settings.") }
         "quality" { $title = "Connected, but quality is poor"; $lines = @("Connectivity works, but packet loss, latency, retransmissions, or adapter errors were above the thresholds.", "Typical causes: weak Wi-Fi, a congested link, or a faulty cable or port.", "Run the tool again while the problem is occurring and compare the numbers.") }

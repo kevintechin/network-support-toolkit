@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>網路健檢工具 1.2.10 — IT 部署手冊</title>
+<title>網路健檢工具 1.2.11 — IT 部署手冊</title>
 <style>
   :root{
     --ink:#16233b; --muted:#5b6b85; --line:#d8e0ec; --bg:#f4f7fb; --card:#ffffff;
@@ -96,7 +96,7 @@
 <div class="page">
 
 <header>
-  <h1>網路健檢工具 <span class="ver">1.2.10</span></h1>
+  <h1>網路健檢工具 <span class="ver">1.2.11</span></h1>
   <div class="tag">IT 部署手冊 — 寫給把工具發出去的 IT 部門</div>
   <div class="meta">繁體中文套件（<code>zh-TW</code> 資料夾）· <code>en-US</code> 資料夾是英文套件，附英文版手冊與它自己的設定檔 · 執行檢測的人看旁邊的使用手冊；設計與判定規則在技術文件</div>
   <div class="principle">
@@ -233,12 +233,12 @@
       <tr><td>解析不出來的 DNS 名稱</td><td><span class="badge fail">異常</span></td><td><span class="badge warn">需注意</span></td></tr>
       <tr><td>連不上的 TCP 或 HTTP 目標</td><td><span class="badge fail">異常</span></td><td><span class="badge info">資訊</span></td></tr>
     </table>
-    <p><b>會靠單一個封包撐著的遺失判定會被收回（1.2.10、backlog #51）。</b> 取樣數小於警告門檻所需的次數，<b>而且</b>少遺失一次分類就會不一樣時，這一列保留量到的每一個數字、被標成不計權重，並且不去動整體結果。四次掉三次仍然會讓必要目標異常 &mdash; 75 %，少一次還有 50 %，沒有任何東西是靠那一個封包撐著的 &mdash; 完全沒有回應的目標也用同一條規則判，而在出貨的次數下它會通過 —— 4 次掉 3 次仍然是嚴重 —— 所以只有整個取樣就只有一次探測時判定才會被收回，這也是為什麼 `PingCount` 設成 1 時，一次逾時不再讓必要目標異常。它只修飾第 3.5 節的遺失規則，其他都不動：真的回來的那些回覆所達到的延遲門檻是一次量測，達到它的一列保有權重。</p>
+    <p><b>會靠單一個封包撐著的遺失判定會被收回（backlog #51）。</b> 取樣數小於警告門檻所需的次數，<b>而且</b>少遺失一次分類就會不一樣時，這一列保留量到的每一個數字、被標成不計權重，並且不去動整體結果。四次掉三次仍然會讓必要目標異常 &mdash; 75 %，少一次還有 50 %，沒有任何東西是靠那一個封包撐著的 &mdash; 完全沒有回應的目標也用同一條規則判，而在出貨的次數下它會通過 —— 4 次掉 3 次仍然是嚴重 —— 所以只有整個取樣就只有一次探測時判定才會被收回，這也是為什麼 `PingCount` 設成 1 時，一次逾時不再讓必要目標異常。它只修飾第 3.5 節的遺失規則，其他都不動：真的回來的那些回覆所達到的延遲門檻是一次量測，達到它的一列保有權重。</p>
     <p>「資訊」列永遠不影響整體結果，所以一個選用的 TCP 或 HTTP 目標可以在一份寫著 <span class="verdict pass">整體正常</span>、上方還有「全部通過」的報告裡失敗；使用手冊要求使用者去讀那幾列。群組是讓選用目標一起計入的方法：群組那一列在<b>至少一個</b>成員成功時通過；成員全部失敗時，列在 <code>RequiredConnectivityGroups</code> 的群組為異常，其他群組為需注意。一個必要群組完全沒有成員（名稱有列，但沒有目標帶這個名稱）時，會是一列「無法檢查」（「此群組沒有可執行的測試項目。」），光是這一列就會讓整體結果變成「檢測未完整」。</p>
     <p><b>逾時與次數</b>（整數；小數、文字或零以下的值會在「設定值門檻」列裡被指出並取代）：</p>
     <table>
       <tr><th>鍵</th><th>預設</th><th>下限</th><th>說明</th></tr>
-      <tr><td><code>PingCount</code></td><td>4</td><td>1</td><td>每個 Ping 目標<b>一開始</b>的回應請求次數。1.2.10 起它是起始次數：有回覆但有遺失時，取樣會繼續加到 <code>PingCountMaximum</code>；全部有回覆、以及完全沒有回覆時，都不會再送</td></tr>
+      <tr><td><code>PingCount</code></td><td>4</td><td>1</td><td>每個 Ping 目標<b>一開始</b>的回應請求次數。它是起始次數（早期版本是固定次數）：有回覆但有遺失時，取樣會繼續加到 <code>PingCountMaximum</code>；全部有回覆、以及完全沒有回覆時，都不會再送</td></tr>
       <tr><td><code>PingCountMaximum</code></td><td>21</td><td><code>PingCount</code></td><td>延續取樣對單一 Ping 目標最多加到幾次。<b>工具會自己算出需要的次數，這個值只是上限</b>，不必把它設成那個次數。21 是「單一次遺失<b>以這一列印出來的樣子</b>仍低於出廠 5 % 警告門檻」的最小次數 &mdash; 印出來的數字會四捨五入到小數第一位，所以 100 ÷ 21 印出來是 4.8 %，而 20 剛好等於 5 %、仍然會警告；校準過的門檻會讓它改變，在 4.8 % 時這個次數是 22 而不是 21。低於 <code>PingCount</code> 的值會在「設定值門檻」列被指出，並改以起始次數當上限。沒有上限：IT 面板的兩個 Ping 旋轉鈕就以這個值為範圍，把它調高，它們的範圍就跟著調高</td></tr>
       <tr><td><code>PingTimeoutMs</code></td><td>1200</td><td>250</td><td>每次回應請求</td></tr>
       <tr><td><code>DnsTimeoutMs</code></td><td>4000</td><td>500</td><td>每個名稱</td></tr>
@@ -263,17 +263,17 @@
     <p>不是 <code>true</code> 或 <code>false</code> 的旗標會停用該檢查；其他型別的值會在設定值門檻列被指出，<code>null</code> 則不會，檢查只是關掉了。</p>
 
     <h3>3.5 · 門檻值（<code>Thresholds</code>）</h3>
-    <p>預設值是通用的起始點。各列拿它們怎麼判定，照程式碼寫出來：</p>
+    <p>預設值是通用的起始點，而且每一個都是<b>沒有外部依據的營運預設值</b>：這張表裡沒有任何一個值背後有標準、量測或記錄下來的決定——這件事在 2026-09-10 查清楚並寫下（backlog #56），免得讀者去推測一個 repo 裡根本沒有的出處。其中兩個值是政策而不是量值——<code>AdapterErrorWarningDelta</code> 與 <code>AdapterDiscardWarningDelta</code> 是 1，因為<i>有就值得顯示</i>——其餘是某人挑的量值。現有的標準定義的是怎麼量測，或是對某一類服務、在某個範圍內設定目標值，從來不是通用的故障門檻；檢視了哪些文件、各自的來源與查證日期，在 repo 裡對應本手冊版本的門檻頁面：<a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.11/docs/thresholds.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.11/docs/thresholds.md</a>（英文）。請對照你自己的基準（第 2 節）校準，不要把它們當成工程值。各列拿它們怎麼判定，照程式碼寫出來：</p>
     <table>
-      <tr><th>鍵</th><th>預設</th><th>規則</th></tr>
-      <tr><td><code>PacketLossWarningPercent</code>、<code>PacketLossCriticalPercent</code></td><td>5、20</td><td>每個 Ping 目標，依這個順序：完全沒有回應 → 必要為異常、選用為資訊；遺失 ≥ 嚴重 → 必要為異常、選用為需注意；遺失 ≥ 警告 → 需注意；接著才是延遲規則。警告百分比同時決定延續取樣要加到哪裡（<code>PingCountMaximum</code>，第 3.3 節），以及什麼時候要收回一個靠單一封包撐著的遺失判定</td></tr>
-      <tr><td><code>LatencyWarningMs</code>、<code>LatencyCriticalMs</code></td><td>100、250</td><td>以有回應的探測平均值判定：≥ 嚴重 → 必要為異常、選用為需注意；≥ 警告 → 需注意</td></tr>
-      <tr><td><code>TcpRetransmissionWarningPercent</code>、<code>TcpRetransmissionCriticalPercent</code></td><td>2、5</td><td>取樣期間重傳 ÷ 傳送的 segment 數，整台電腦、TCPv4 與 TCPv6 分開算：比例 ≥ 嚴重 → 異常；≥ 警告 → 需注意</td></tr>
-      <tr><td><code>TcpRetransmissionCriticalCount</code></td><td>50</td><td>取樣期間的重傳 segment 數：<b>比例同時達到警告百分比</b>時為異常。1.2.10 起它不再自己發出警告 &mdash; 它只把比例已經下出來的判定加重，永遠不會自己造出一個判定，因為在 <code>TcpRetransmissionCriticalCount ÷ TcpRetransmissionWarningPercent</code> 個傳送 segment（出廠值下是 2 500）以上，它唯一加上的就是在低於本工具自己警告門檻的比例上發出警告</td></tr>
-      <tr><td><code>MinimumTcpSegmentsForRate</code></td><td>50</td><td>傳送的 segment 少於這個數時不判比例：有任何重傳是資訊、不決定任何事（1.2.10 之前是需注意），沒有重傳同樣是資訊。完全沒有流量也是資訊。樣本結束時低於這個下限、<b>而且</b>窗內有重傳時，取樣窗會延長一次並重讀</td></tr>
-      <tr><td><code>MinimumTcpRetransmissionsForVerdict</code></td><td>5</td><td>一個比例要成為判定所需的重傳次數。比例達到警告百分比、但重傳次數少於這個數時，是帶著數字的資訊，不決定任何事：在 50 個傳送 segment 上，一次重傳就是 2 %、剛好是警告門檻，三次是 6 %。出廠值下，超過 200 個傳送 segment 就不會壓下任何東西</td></tr>
-      <tr><td><code>AdapterErrorWarningDelta</code>、<code>AdapterErrorCriticalDelta</code></td><td>1、10</td><td>取樣期間每張網卡新增的接收加傳送錯誤數：≥ 嚴重 → 異常，≥ 警告 → 需注意。虛擬網卡不論計數一律資訊，取樣期間沒有流量也沒有錯誤的實體網卡也是資訊；計數器倒退是需注意</td></tr>
-      <tr><td><code>AdapterDiscardWarningDelta</code>、<code>AdapterDiscardCriticalDelta</code></td><td>1、100</td><td>丟棄封包的同一套規則</td></tr>
+      <tr><th>鍵</th><th>預設</th><th>依據</th><th>規則</th></tr>
+      <tr><td><code>PacketLossWarningPercent</code>、<code>PacketLossCriticalPercent</code></td><td>5、20</td><td>兩個人為選定的量值；沒有外部依據</td><td>每個 Ping 目標，依這個順序：完全沒有回應 → 必要為異常、選用為資訊；遺失 ≥ 嚴重 → 必要為異常、選用為需注意；遺失 ≥ 警告 → 需注意；接著才是延遲規則。警告百分比同時決定延續取樣要加到哪裡（<code>PingCountMaximum</code>，第 3.3 節），以及什麼時候要收回一個靠單一封包撐著的遺失判定</td></tr>
+      <tr><td><code>LatencyWarningMs</code>、<code>LatencyCriticalMs</code></td><td>100、250</td><td>兩個人為選定的量值；沒有外部依據——附近的公開延遲數字是公用 IP 網路上以一分鐘計的單向或嘴到耳上限，不是 LAN 上幾次 echo 的來回平均</td><td>以有回應的探測平均值判定：≥ 嚴重 → 必要為異常、選用為需注意；≥ 警告 → 需注意</td></tr>
+      <tr><td><code>TcpRetransmissionWarningPercent</code>、<code>TcpRetransmissionCriticalPercent</code></td><td>2、5</td><td>兩個人為選定的量值；沒有外部依據</td><td>取樣期間重傳 ÷ 傳送的 segment 數，整台電腦、TCPv4 與 TCPv6 分開算——「傳送」指的是 <code>Segments Sent/sec</code> 計數器：這台電腦送出的每一個 segment，含 ACK，但不含只帶重傳位元組的 segment，所以這個百分比是工具自己的，不能和公開發表的重傳率比較（backlog #57）：比例 ≥ 嚴重 → 異常；≥ 警告 → 需注意</td></tr>
+      <tr><td><code>TcpRetransmissionCriticalCount</code></td><td>50</td><td>人為選定的量值；沒有外部依據</td><td>取樣期間的重傳 segment 數：<b>比例同時達到警告百分比</b>時為異常。它不再自己發出警告（早期版本會） &mdash; 它只把比例已經下出來的判定加重，永遠不會自己造出一個判定，因為在 <code>TcpRetransmissionCriticalCount ÷ TcpRetransmissionWarningPercent</code> 個傳送 segment（出廠值下是 2 500）以上，它唯一加上的就是在低於本工具自己警告門檻的比例上發出警告</td></tr>
+      <tr><td><code>MinimumTcpSegmentsForRate</code></td><td>50</td><td>人為選定的量值；沒有外部依據——而且它剛好是 <code>100 ÷ TcpRetransmissionWarningPercent</code>，所以在這個下限上一次重傳就是警告門檻本身，下一列的下限就是為此而存在</td><td>傳送的 segment 少於這個數時不判比例：有任何重傳是資訊、不決定任何事（早期版本是需注意），沒有重傳同樣是資訊。完全沒有流量也是資訊。樣本結束時低於這個下限、<b>而且</b>窗內有重傳時，取樣窗會延長一次並重讀</td></tr>
+      <tr><td><code>MinimumTcpRetransmissionsForVerdict</code></td><td>5</td><td>選定時有記錄下推理（backlog #51）；沒有外部依據</td><td>一個比例要成為判定所需的重傳次數。比例達到警告百分比、但重傳次數少於這個數時，是帶著數字的資訊，不決定任何事：在 50 個傳送 segment 上，一次重傳就是 2 %、剛好是警告門檻，三次是 6 %。出廠值下，超過 200 個傳送 segment 就不會壓下任何東西</td></tr>
+      <tr><td><code>AdapterErrorWarningDelta</code>、<code>AdapterErrorCriticalDelta</code></td><td>1、10</td><td>1 是政策——<i>有就值得顯示</i>——10 是人為選定的量值；兩者都沒有外部依據</td><td>取樣期間每張網卡新增的接收加傳送錯誤數：≥ 嚴重 → 異常，≥ 警告 → 需注意。虛擬網卡不論計數一律資訊，取樣期間沒有流量也沒有錯誤的實體網卡也是資訊；計數器倒退是需注意</td></tr>
+      <tr><td><code>AdapterDiscardWarningDelta</code>、<code>AdapterDiscardCriticalDelta</code></td><td>1、100</td><td>1 是同一條政策，100 是人為選定的量值；兩者都沒有外部依據</td><td>丟棄封包的同一套規則</td></tr>
     </table>
     <p>百分比和毫秒可以是小數；次數與增量必須是整數。不是數字的值會被換成預設值並指出；<code>null</code> 會被換成預設值但不指出。警告值高於嚴重值時，封包遺失、延遲與重傳百分比會被指出並照寫的值使用；網卡增量則悄悄把嚴重值提高到警告值，低於 1 的警告值變成 1。</p>
 
@@ -341,8 +341,8 @@
   <h2><span class="num">6</span> 驗證套件</h2>
   <div class="card">
     <p><b>下載檔。</b> 專案 Releases 頁面的發行說明給出 <code>NetworkHealthCheck-&lt;版本&gt;.zip</code> 的 SHA-256。解壓縮前先比對：</p>
-<pre>certutil -hashfile NetworkHealthCheck-1.2.10.zip SHA256</pre>
-    <p>或在 PowerShell 用 <code>Get-FileHash NetworkHealthCheck-1.2.10.zip</code>。發行檔只由 repo 裡受版本控制的檔案打包，所以裡面沒有任何報告或執行輸出。</p>
+<pre>certutil -hashfile NetworkHealthCheck-1.2.11.zip SHA256</pre>
+    <p>或在 PowerShell 用 <code>Get-FileHash NetworkHealthCheck-1.2.11.zip</code>。發行檔只由 repo 裡受版本控制的檔案打包，所以裡面沒有任何報告或執行輸出。</p>
     <p><b>清單檔。</b> 套件最上層的 <code>SHA256SUMS.txt</code> 列出每個出廠檔案的摘要，除了它自己、<code>VALIDATION.md</code> 和 <code>validation-matrix.html</code>：每個檔案一行，<code>&lt;sha256&gt;  &lt;相對路徑&gt;</code>，中間兩個空格。單一檔案可以用 <code>Get-FileHash &lt;檔案&gt;</code> 手動比對，全部則交給驗證程式。</p>
     <p><b>驗證程式。</b> <code>tools\validate_release.py</code> 只需要 Python 3。對套件最上層執行：</p>
 <pre>python tools\validate_release.py .</pre>
@@ -358,7 +358,7 @@
     <p><b>落在哪裡、叫什麼名字</b>：第 3.1 節。<b>裡面有什麼</b>：使用手冊第 5 節維護完整清單：身分與版本、每張已連線網卡的位址與硬體位址、Wi-Fi 網路與基地台、路由、閘道的硬體位址、Proxy 設定、你設定的標準與目標、每項結果與時間，以及設定檔和報告資料夾的路徑（可能含使用者的個人資料夾）。JSON 還多了工具遇到的錯誤的技術細節，其中會寫出程式所在的資料夾。</p>
     <p><b>發出去之前先定處理規定</b>：報告可以送到哪裡、留多久、誰能看，並在把工具交給使用者的同一則訊息裡說明；使用手冊只說請依公司對這類資訊的規定處理。報告是一般檔案：保留期限就是你對報告資料夾（或共用資料夾，第 3.1 節）套用的規定。</p>
     <p><b>給你的工具用。</b> JSON 報告是 schema 2：<code>SchemaVersion</code>、<code>ToolVersion</code>、<code>RunOptions</code>（第 4 節）、<code>Fingerprint</code>（<code>Key</code>、<code>Title</code>、<code>Lines</code>，即「要告訴 IT 的話」）、<code>Overall</code>（<code>Code</code>、<code>Text</code>、<code>Description</code>）、<code>Counts</code>、<code>System</code>、<code>StartedAt</code>、<code>FinishedAt</code>，以及 <code>Results</code>：每一列一個物件，含 <code>Time</code>、<code>Category</code>、<code>Check</code>、<code>Status</code>（<code>PASS</code>、<code>WARN</code>、<code>FAIL</code>、<code>INFO</code>、<code>ERROR</code>）、<code>Message</code>、<code>Details</code>、<code>Diagnostics</code>、<code>Tag</code> 與 <code>Scope</code>（<code>Main</code> 或 <code>IT</code>）與 <code>Weightless</code>。<code>Tag</code> 是與語言無關的檢查名稱（<code>ping-gateway</code>、<code>dns</code>、<code>connectivity-group</code>、<code>tcp-retransmissions</code>、<code>expected-standard</code>……）；技術文件第 4.10 節有清單，<code>Scope</code> 則告訴你整體結果忽略了哪些列；<code>Weightless</code>（在 schema 2 下新增的欄位）為 <code>true</code> 時，代表這一列保有徽章、訊息與 <code>Counts</code> 裡的位置，卻不決定 <code>Overall</code>，也不決定 <code>Fingerprint</code>——量不到的統計、對所套用門檻來說太粗的樣本，或關於這次執行拿到什麼的事實。</p>
-    <p><b>讀報告。</b> 使用手冊解釋整體結果、「要告訴 IT 的話」的標題與各種標籤；技術文件解釋每一條規則。repo 的 <code>sop</code> 資料夾有支援工程師的現場手冊和把報告整理成交接文件的範本。</p>
+    <p><b>讀報告。</b> 使用手冊解釋整體結果、「要告訴 IT 的話」的標題與各種標籤；技術文件解釋每一條規則。repo 的 <code>sop</code> 資料夾有支援工程師的現場手冊和把報告整理成交接文件的範本。 那本現場手冊有一條讀法也該寫在這裡，因為電話那頭的人手上沒有它：唯一的必要 ping 目標——預設閘道——是由閘道自己的 stack 回應的，而網路設備通常會對送給自己的 ICMP 限速或降低優先權——所以閘道爽快回應是「近端路徑正常」的好證據，「閘道沒有回應」則是嫌疑、不是定罪——而且不論閘道是沒回應還是回應得很慢，標題都是這一個，因為這段摘要讀的是那一列的狀態而不是它量到的數字；那一列自己會說是哪一種（repo 待辦 #67）。請讀成「先查本地路徑，同時考慮設備可能就是不回應送給自己的 ping」——同一份報告裡閘道之外的目標通過，只有在它的路由經過這個閘道時才證明它有在轉送：同網段的主機、VPN 或 Proxy 都可能沒經過它就成功，而多網卡機器上 <code>AUTO_GATEWAY</code> 會為每個閘道各寫一列。這項檢查維持必要，因為連自己閘道都到不了的機器通常真的有問題值得回報（2026-09-10 決定，backlog #58）；失敗那一列的詳細資料和「要告訴 IT 的話」現在也這麼說。</p>
   </div>
 </section>
 
@@ -375,7 +375,7 @@
       <tr><td><b>EDR 或防毒</b>擋住 <code>powershell.exe</code> 或腳本</td><td>沒有量測：驗收執行沒有包含裝了這類產品的機器。啟動器回報它拿到的結束代碼並寫出 <code>LauncherError.txt</code></td><td><code>LauncherError.txt</code> 和該產品自己的記錄</td></tr>
     </table>
     <p><b>要向使用者要什麼</b>，使用手冊第 6 節逐列寫了；環境報告和 <code>LauncherError.txt</code> 就是為這個交接而寫的。<code>LauncherError.txt</code> 在啟動器旁邊，那個資料夾無法寫入時改寫在 <code>%TEMP%</code> 的 <code>NetworkHealthCheck_LauncherError.txt</code>，欄位較少。</p>
-    <p><b>放行工具。</b> 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：<code>SHA256SUMS.txt</code> 給出每支 <code>NetworkHealthCheck.ps1</code> 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.10/docs/application-control.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.10/docs/application-control.md</a>（英文），最新版本在 <code>main</code> 分支。</p>
+    <p><b>放行工具。</b> 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：<code>SHA256SUMS.txt</code> 給出每支 <code>NetworkHealthCheck.ps1</code> 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.11/docs/application-control.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.11/docs/application-control.md</a>（英文），最新版本在 <code>main</code> 分支。</p>
     <p><b>簽章。</b> 用你自己的憑證授權單位做 Authenticode 簽章，要在簽署憑證也受這台電腦信任時（憑證鏈受信任，且憑證在「受信任的發行者」存放區）才滿足 <i>AllSigned</i> 原則：發行者尚未被歸為信任時，PowerShell 會先詢問使用者才執行腳本（問題會出現在啟動器的視窗裡），無法詢問的工作階段就不執行。簽章也讓應用程式控制規則能依發行者放行。簽章會在腳本後面附加一段簽章區塊，所以簽過的檔案不再符合 <code>SHA256SUMS.txt</code>；請自己記下簽過檔案的摘要。</p>
   </div>
 </section>
@@ -409,13 +409,14 @@
       <li><b>使用手冊</b>：<code>NetworkHealthCheck_User_Manual_zh-TW.html</code>（或 <code>.md</code>）：使用者看到什麼、整體結果與標籤、報告裡有什麼、跑不起來時怎麼辦。</li>
       <li><b>技術文件</b>：<code>NetworkHealthCheck_Technical_Guide_zh-TW.md</code>：設計、每一條判定規則、驗證方式、已知限制、版本歷程。</li>
       <li><b>驗證記錄</b>：<code>VALIDATION.md</code>：每一版的證據，以及在其他機器上的驗收執行。</li>
-      <li><b>待辦清單</b>：<a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.10/docs/backlog.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.10/docs/backlog.md</a>（英文）：已知還沒做的事，以及每一項要怎樣才算結案。它和第 8 節的應用程式控制那一頁一樣放在 repo 而不在套件裡，因為它在兩次發行之間就會變動。</li>
+      <li><b>待辦清單</b>：<a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.11/docs/backlog.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.11/docs/backlog.md</a>（英文）：已知還沒做的事，以及每一項要怎樣才算結案。它和第 8 節的應用程式控制那一頁一樣放在 repo 而不在套件裡，因為它在兩次發行之間就會變動。</li>
+      <li><b>門檻依據</b>：<a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.11/docs/thresholds.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.11/docs/thresholds.md</a>（英文）：出貨的門檻值從哪裡來——依一個記錄下來的決定，不是任何外部來源——以及現有的公開標準給了什麼、沒給什麼，每一筆都對照來源查證並註明日期。放在 repo 的理由相同。</li>
       <li><b>Repo</b>：<a href="https://github.com/kevintechin/network-support-toolkit">github.com/kevintechin/network-support-toolkit</a>：發行版本、驗證鏈（<code>tests</code>）、支援工程師現場手冊與報告範本（<code>sop</code>），以及第 8 節提到的應用程式控制頁面。</li>
     </ul>
   </div>
 </section>
 
-<footer>NetworkHealthCheck 1.2.10。本手冊描述的是出廠狀態的工具與本版本量測到的行為；這裡引用的規則都是程式碼的規則，技術文件有完整的陳述。</footer>
+<footer>NetworkHealthCheck 1.2.11。本手冊描述的是出廠狀態的工具與本版本量測到的行為；這裡引用的規則都是程式碼的規則，技術文件有完整的陳述。</footer>
 
 </div>
 </body>
