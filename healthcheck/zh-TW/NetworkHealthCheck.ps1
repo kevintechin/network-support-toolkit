@@ -1653,6 +1653,11 @@ function Test-ConfigurationSemantics {
         if (-not [string]::IsNullOrWhiteSpace($nearEndAddress) -and -not (Test-NearEndAddressSyntax $nearEndAddress)) {
             [void]$inputErrors.Add("NearEndTarget 的位址無法當成近端目標——它必須是點分十進位形式、位於這台電腦自己子網段上、而且不是閘道的 IPv4 位址：$nearEndAddress")
         }
+        elseif ([string]::IsNullOrWhiteSpace($nearEndAddress) -and [bool](Get-PropertyValue $nearEnd "Required" $false)) {
+            # 空白且選用是出廠的、停用的狀態；空白卻必要，是一項沒有東西可查的必要檢查，執行時會報成沒有執行的必要檢查
+            # （PR #51 第 3 輪）。
+            [void]$inputErrors.Add("NearEndTarget 標記為必要卻沒有位址：給它這台電腦自己子網段上一台主機的位址，或把 Required 設為 false")
+        }
     }
 
     foreach ($dnsTarget in @($tests.DnsNames)) {
@@ -2461,12 +2466,14 @@ function Test-NearEndTargetPlacement {
     }
     $gateways = @(@(Resolve-PingTargets -Address "AUTO_GATEWAY" -PrimaryAdapters $PrimaryAdapters) | ForEach-Object { Get-CanonicalIPv4Text $_ })
     $placement = "off-subnet"
+    $matchedSubnet = ""
     if ($gateways -contains $canonical) { $placement = "gateway" }
     elseif ($ownAddresses -contains $canonical) { $placement = "self" }
     else {
         foreach ($subnet in $subnets) {
             if (Test-IPv4InCidr -IpAddress $canonical -Cidr $subnet) {
                 $placement = "on-subnet"
+                $matchedSubnet = [string]$subnet
                 # 主機部分全 0 與全 1 是子網段自己的網路位址與廣播位址，不是主機；/31 與 /32 兩者都沒有（RFC 3021），
                 # 所以不動它們。
                 $prefix = [int]($subnet.Split('/')[1])
@@ -2481,9 +2488,12 @@ function Test-NearEndTargetPlacement {
             }
         }
     }
+    # Subnet 是目標落在哪個「位址/前綴」裡，那一列用它來問路由表是不是真的為探測選了那張網卡（PR #51 第 3 輪）；
+    # 什麼都沒放到位時是空的。
     return [pscustomobject][ordered]@{
         Placement = $placement
         Canonical = $canonical
+        Subnet    = $matchedSubnet
         Subnets   = @($subnets | Select-Object -Unique)
     }
 }
@@ -2559,7 +2569,8 @@ function Add-PingTargetResult {
         [int]$TimeoutMs,
         [string]$SampleNote = "",
         [object]$Row = $null,
-        [bool]$NearEnd = $false
+        [bool]$NearEnd = $false,
+        [string]$NearEndSubnet = ""
     )
 
     # 一列 ping 結果。它獨立成一個函式，是因為第一輪不足以下結論的目標，這一列會被寫兩次——一次是在報告裡它該
@@ -2576,9 +2587,21 @@ function Add-PingTargetResult {
     # 的文件事實步驟）：它會從 AST 讀出每一個 -Tag 引數，而且只有在「對某個變數的每一次指派都是常值」時才
     # 解析得出來，所以透過參數、屬性或輔助函式回傳值送到 Add-CheckResult 的標籤，會變成一個存在於程式裡、
     # 卻在所有「用文件核對程式」的檢查之外的標籤。複製這兩行，是讓那個步驟看得見這一條規則的代價。
+    # 這一列到底能不能主張近端這一階（PR #51 第 3 輪）。在子網段內只說明主機在哪裡，不說明探測是從哪張網卡出去的：探測
+    # 沒有綁定，而 VPN、第二條連線或更明確的路由可以把送往子網段內位址的探測帶到完全不同的地方。所以只有路由表在探測前
+    # 後都選了目標所在子網段上的來源位址——也就是連接路由，接在那個子網段上的那張網卡——這一列才主張本地路徑。若不是、
+    # 或選擇變了、或查詢無法取得，這一列保留標題與量測，說明它為什麼不能主張這一階，並標成一般的 ping 目標，讓摘要永遠
+    # 不會把它當成一條它可能沒走過的路徑的證人。標籤的指派維持常值，這是 backlog #33 文件事實步驟的要求。
+    $rungAttested = $false
+    if ($NearEnd -and -not [string]::IsNullOrWhiteSpace($NearEndSubnet) -and $null -ne $RouteBefore -and $null -ne $RouteAfter.Selection -and
+        $RouteBefore.Resolved -and $RouteAfter.Selection.Resolved -and
+        $RouteBefore.SourceAddress -eq $RouteAfter.Selection.SourceAddress -and $RouteBefore.InterfaceAlias -eq $RouteAfter.Selection.InterfaceAlias -and
+        (Test-IPv4InCidr -IpAddress $RouteBefore.SourceAddress -Cidr $NearEndSubnet)) {
+        $rungAttested = $true
+    }
     $pingTag = "ping-target"
     if ($ConfiguredAddress -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
-    if ($NearEnd) { $pingTag = "ping-near-end" }
+    if ($NearEnd -and $rungAttested) { $pingTag = "ping-near-end" }
     $status = "PASS"
     $weightless = $false
     $coarseNote = ""
@@ -2667,8 +2690,11 @@ function Add-PingTargetResult {
     # 有它各列 ping 才成為一道階梯；以及閘道那一列，因為它的探測是由控制平面而不是主機回應的——而讀法規則寫在近端
     # 那一列，因為讀者正要拿一階減另一階時，看的就是那一列。遠端目標的列不主張自己是哪一階：額外目標在閘道的哪一
     # 邊，不是這一列量過的東西。
-    if ($NearEnd) {
-        $detailLines += ("階梯：近端——{0} 位於這台電腦所在的子網段、而且不是閘道，所以這些探測只經過本地路徑——這台電腦的網卡、它的網路線或 Wi-Fi 連線、以及交換器或存取點——並由一台普通主機回應，而不是由閘道的控制平面回應；它們沒有經過閘道，也沒有經過閘道之外的任何東西。把各列 ping 當成一道階梯來讀：通過的一階，說明它經過的路段在那一刻是通的；第一個失敗的一階，把問題放在最後一個通過的階之外——但不會更近——因為兩階的數字是不同時刻送出的不同流量，不能相減成兩階之間那一段的遺失率。" -f $Target)
+    if ($NearEnd -and $rungAttested) {
+        $detailLines += ("階梯：近端——{0} 位於這台電腦所在的子網段、而且不是閘道，所以這些探測只經過本地路徑——這台電腦的網卡、它的網路線或 Wi-Fi 連線、以及交換器或存取點——並由一台普通主機回應，而不是由閘道的控制平面回應；它們沒有經過閘道，也沒有經過閘道之外的任何東西。路由表在探測前後都選了來源 {1}、經由 {2}——那是同一子網段上的位址——這是這一列能主張本地路徑的依據；探測本身沒有綁定。把各列 ping 當成一道階梯來讀：通過的一階，說明它經過的路段在那一刻是通的；第一個失敗的一階，把問題放在最後一個通過的階之外——但不會更近——因為兩階的數字是不同時刻送出的不同流量，不能相減成兩階之間那一段的遺失率。" -f $Target, $RouteBefore.SourceAddress, $RouteBefore.InterfaceAlias)
+    }
+    elseif ($NearEnd) {
+        $detailLines += ("階梯：近端——不主張。{0} 位於這台電腦所在的子網段，但探測沒有綁定，而上面的路由選擇不是探測前後都選中同一子網段上的同一個位址——VPN、第二條連線或更明確的路由可能帶走了探測，或查詢無法取得——所以這一列說不出它們經過了哪些路段。它算作一般的 ping 目標，不算近端這一階，摘要也不把它當成本地路徑的證人。" -f $Target)
     }
     elseif ($pingTag -eq "ping-gateway") {
         $detailLines += "階梯：閘道——這些探測經過本地路徑——這台電腦的網卡、它的網路線或 Wi-Fi 連線、以及交換器或存取點——並由閘道自己的控制平面回應；它們沒有經過閘道之外的任何東西。"
@@ -2710,6 +2736,9 @@ function Add-PingTargetResult {
     $Row.Details = $details
     $Row.Weightless = $weightless
     $Row.Rule = $rule
+    # 標籤可能隨第二輪而動：近端列在最後一次探測之後的路由選擇若不再和探測之前的一致，就不再主張這一階，而摘要必須
+    # 看得到這一點（PR #51 第 3 輪）。
+    $Row.Tag = $pingTag
     # 執行紀錄是這次執行的敘事，所以第二次的讀數會自己占一行，而不是悄悄把第一次蓋掉：盯著視窗看的人看過那組
     # 暫時的數字，就該看到取代它們的那一組。
     Write-UiLog -Status $status -Text ("{0} / {1}: {2}" -f $Row.Category, $Row.Check, $message)
@@ -2759,7 +2788,7 @@ function Complete-PingSamples {
             }
             # 路由表再問一次，因為「探測之後」本來就得是「最後一次探測之後」。
             $routeAfter = Get-PingRouteAfter -Target $item.Target -TargetIsAddress $item.TargetIsAddress -Measurement $measurement
-            Add-PingTargetResult -Name $item.Name -Target $item.Target -ConfiguredAddress $item.Address -Required $item.Required -Measurement $measurement -RouteBefore $item.RouteBefore -RouteAfter $routeAfter -TargetIsAddress $item.TargetIsAddress -TimeoutMs $timeout -SampleNote $note -Row $item.Row -NearEnd $item.NearEnd | Out-Null
+            Add-PingTargetResult -Name $item.Name -Target $item.Target -ConfiguredAddress $item.Address -Required $item.Required -Measurement $measurement -RouteBefore $item.RouteBefore -RouteAfter $routeAfter -TargetIsAddress $item.TargetIsAddress -TimeoutMs $timeout -SampleNote $note -Row $item.Row -NearEnd $item.NearEnd -NearEndSubnet $item.NearEndSubnet | Out-Null
         }
         catch {
             # 這一列早就帶著第一輪量到的結果在報告裡了，所以這裡失去的只有延伸的那一段；多出來的是它為什麼沒發生。
@@ -2786,7 +2815,9 @@ function Test-PingTargets {
     $nearEnd = Get-PropertyValue $script:Config.Tests "NearEndTarget" $null
     $nearEndAddress = ""
     if ($null -ne $nearEnd) { $nearEndAddress = (ConvertTo-SafeString (Get-PropertyValue $nearEnd "Address" "")).Trim() }
-    if (-not [string]::IsNullOrWhiteSpace($nearEndAddress)) {
+    # 空白位址是出廠的、停用的狀態——除非這一項標記為必要，那就是一項無法執行的必要檢查，直接丟掉會讓這次執行通過一項
+    # 它從來沒做的檢查（PR #51 第 3 輪）。
+    if (-not [string]::IsNullOrWhiteSpace($nearEndAddress) -or ($null -ne $nearEnd -and [bool](Get-PropertyValue $nearEnd "Required" $false))) {
         $entries += [pscustomobject][ordered]@{ Target = $nearEnd; NearEnd = $true }
     }
     foreach ($targetConfig in @($script:Config.Tests.PingTargets)) {
@@ -2808,6 +2839,12 @@ function Test-PingTargets {
         # 都丟掉了。下面那個「格式正確卻解析不到」的分支則是量測，保有權重。
         # 近端目標用的是設定檢查套用的那條較窄的規則：點分十進位形式的 IPv4 位址，絕不是名稱、佔位符或另一種寫法，
         # 因為執行時必須在送出任何東西之前就把它放到位，而探測必須送到設定檔寫的那個位址（backlog #60；PR #51 第 2 輪）。
+        if ($isNearEnd -and [string]::IsNullOrWhiteSpace($address)) {
+            # 只有標記為必要的項目會沒有位址而走到這裡；選用的那一種從來不會被加進階梯。
+            Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "近端目標標記為必要，但沒有設定位址。" -Details "設定值：（空白）。必要的近端目標必須指名這台電腦自己子網段上的一台主機；沒有位址就沒有東西可以探測，執行時會照實說，而不是讓一項沒做的檢查通過。" -Tag $pingTag -Weightless | Out-Null
+            Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為沒有給它目標。" -Details "設定值：（空白）" -Tag $pingTag | Out-Null
+            continue
+        }
         $usable = $(if ($isNearEnd) { Test-NearEndAddressSyntax $address } else { Test-PingTargetSyntax $address })
         if (-not $usable) {
             if ($isNearEnd) {
@@ -2854,6 +2891,8 @@ function Test-PingTargets {
                 continue
             }
         }
+        $nearEndSubnet = ""
+        if ($isNearEnd) { $nearEndSubnet = [string]$placement.Subnet }
         $targets = @(Resolve-PingTargets -Address $address -PrimaryAdapters $PrimaryAdapters)
 
         if ($targets.Count -eq 0) {
@@ -2885,7 +2924,7 @@ function Test-PingTargets {
                     # 其他 ping 的列待在一起——而且一次沒能走到最後的執行，仍然會報出它確實量到的東西，這是把
                     # 整列壓到最後才寫所做不到的。
                     $pendingNote = ("這次取樣還不足以下結論：最前面 {1} 次裡有 {0} 次沒有回覆，因此會在本次執行的後段繼續，而這裡的數字只涵蓋那 {1} 次。" -f $measurement.Lost, $measurement.Sent)
-                    $pendingRow = Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -SampleNote $pendingNote -NearEnd $isNearEnd
+                    $pendingRow = Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -SampleNote $pendingNote -NearEnd $isNearEnd -NearEndSubnet $nearEndSubnet
                     [void]$script:PendingPingSamples.Add([pscustomobject][ordered]@{
                         Name            = $name
                         Target          = [string]$target
@@ -2897,10 +2936,11 @@ function Test-PingTargets {
                         Plan            = $plan
                         Row             = $pendingRow
                         NearEnd         = $isNearEnd
+                        NearEndSubnet   = $nearEndSubnet
                     })
                     continue
                 }
-                Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -NearEnd $isNearEnd | Out-Null
+                Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -NearEnd $isNearEnd -NearEndSubnet $nearEndSubnet | Out-Null
             }
             catch {
                 $status = if ($required) { "ERROR" } else { "INFO" }

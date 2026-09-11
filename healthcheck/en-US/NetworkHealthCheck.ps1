@@ -1693,6 +1693,11 @@ function Test-ConfigurationSemantics {
         if (-not [string]::IsNullOrWhiteSpace($nearEndAddress) -and -not (Test-NearEndAddressSyntax $nearEndAddress)) {
             [void]$inputErrors.Add("The address for NearEndTarget cannot be used as the near-end target, which has to be an IPv4 address in dotted-decimal form on this computer's own subnet and not the gateway: $nearEndAddress")
         }
+        elseif ([string]::IsNullOrWhiteSpace($nearEndAddress) -and [bool](Get-PropertyValue $nearEnd "Required" $false)) {
+            # Blank and optional is the shipped, disabled state; blank and required is a required check with nothing
+            # to check, which the run reports as a required check that did not run (PR #51, round 3).
+            [void]$inputErrors.Add("NearEndTarget is marked as required but has no address: give it the address of a host on this computer's own subnet, or set Required to false")
+        }
     }
 
     foreach ($dnsTarget in @($tests.DnsNames)) {
@@ -2527,12 +2532,14 @@ function Test-NearEndTargetPlacement {
     }
     $gateways = @(@(Resolve-PingTargets -Address "AUTO_GATEWAY" -PrimaryAdapters $PrimaryAdapters) | ForEach-Object { Get-CanonicalIPv4Text $_ })
     $placement = "off-subnet"
+    $matchedSubnet = ""
     if ($gateways -contains $canonical) { $placement = "gateway" }
     elseif ($ownAddresses -contains $canonical) { $placement = "self" }
     else {
         foreach ($subnet in $subnets) {
             if (Test-IPv4InCidr -IpAddress $canonical -Cidr $subnet) {
                 $placement = "on-subnet"
+                $matchedSubnet = [string]$subnet
                 # The all-zeros and all-ones host parts are the subnet's own network and broadcast addresses, not a
                 # host; a /31 and a /32 have neither (RFC 3021), so they are left alone.
                 $prefix = [int]($subnet.Split('/')[1])
@@ -2547,9 +2554,12 @@ function Test-NearEndTargetPlacement {
             }
         }
     }
+    # Subnet is the address/prefix the target fell in, which the row uses to ask whether the route table really
+    # selected that adapter for the probes (PR #51, round 3); empty where nothing placed it.
     return [pscustomobject][ordered]@{
         Placement = $placement
         Canonical = $canonical
+        Subnet    = $matchedSubnet
         Subnets   = @($subnets | Select-Object -Unique)
     }
 }
@@ -2625,7 +2635,8 @@ function Add-PingTargetResult {
         [int]$TimeoutMs,
         [string]$SampleNote = "",
         [object]$Row = $null,
-        [bool]$NearEnd = $false
+        [bool]$NearEnd = $false,
+        [string]$NearEndSubnet = ""
     )
 
     # One ping row. It is a function of its own because a target whose first pass was not conclusive has its row
@@ -2645,9 +2656,24 @@ function Add-PingTargetResult {
     # through a parameter, a property or a helper's return value would be a live tag outside every check that
     # holds the documents to the program. A copied two-line rule is the price of that step being able to see
     # this one.
+    # Whether this row may claim the near-end rung at all (PR #51, round 3). Subnet membership says where the host
+    # is, not which interface the probes left by: they are sent unbound, and a VPN, a second connection or a more
+    # specific route can carry a probe to an on-subnet address somewhere else entirely. The row therefore claims the
+    # local path only where the route table selected, both before and after the probes, a source address on the
+    # target's own subnet - the connected route, which is the adapter attached to that subnet. Where it did not, or
+    # the selection changed, or the lookup was unavailable, the row keeps its title and its measurement, says why it
+    # cannot claim the rung, and is tagged as an ordinary ping target so that the summary never reads it as a witness
+    # for a path it may not have crossed. The tag assignment stays a literal for backlog #33's document-fact step.
+    $rungAttested = $false
+    if ($NearEnd -and -not [string]::IsNullOrWhiteSpace($NearEndSubnet) -and $null -ne $RouteBefore -and $null -ne $RouteAfter.Selection -and
+        $RouteBefore.Resolved -and $RouteAfter.Selection.Resolved -and
+        $RouteBefore.SourceAddress -eq $RouteAfter.Selection.SourceAddress -and $RouteBefore.InterfaceAlias -eq $RouteAfter.Selection.InterfaceAlias -and
+        (Test-IPv4InCidr -IpAddress $RouteBefore.SourceAddress -Cidr $NearEndSubnet)) {
+        $rungAttested = $true
+    }
     $pingTag = "ping-target"
     if ($ConfiguredAddress -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
-    if ($NearEnd) { $pingTag = "ping-near-end" }
+    if ($NearEnd -and $rungAttested) { $pingTag = "ping-near-end" }
     $status = "PASS"
     $weightless = $false
     $coarseNote = ""
@@ -2747,8 +2773,11 @@ function Add-PingTargetResult {
     # answered by a control plane rather than by a host - and the near-end row carries the reading rule, because that
     # is the row a reader looks at when they are about to subtract one rung from another. A far-end target's row does
     # not claim a rung: where an extra target sits relative to the gateway is not something this row has measured.
-    if ($NearEnd) {
-        $detailLines += ("Rung: near end - {0} is on a subnet this computer is attached to and is not the gateway, so these probes crossed the local path only - this computer's adapter, its cable or Wi-Fi link, and the switch or access point - and were answered by an ordinary host rather than by the gateway's control plane; they did not cross the gateway or anything beyond it. Read the ping rows as a ladder: a rung that passes clears what it crossed, at that moment; the first rung that fails puts the problem beyond the last rung that passed, and no closer than that - the figures of two rungs are separate traffic sent at separate moments, so they cannot be subtracted into a loss figure for the segment between them." -f $Target)
+    if ($NearEnd -and $rungAttested) {
+        $detailLines += ("Rung: near end - {0} is on a subnet this computer is attached to and is not the gateway, so these probes crossed the local path only - this computer's adapter, its cable or Wi-Fi link, and the switch or access point - and were answered by an ordinary host rather than by the gateway's control plane; they did not cross the gateway or anything beyond it. The route table selected source {1} via {2} - an address on that subnet - before and after the probes, which is what lets this row claim the local path; the probes themselves are sent unbound. Read the ping rows as a ladder: a rung that passes clears what it crossed, at that moment; the first rung that fails puts the problem beyond the last rung that passed, and no closer than that - the figures of two rungs are separate traffic sent at separate moments, so they cannot be subtracted into a loss figure for the segment between them." -f $Target, $RouteBefore.SourceAddress, $RouteBefore.InterfaceAlias)
+    }
+    elseif ($NearEnd) {
+        $detailLines += ("Rung: near end - not claimed. {0} is on a subnet this computer is attached to, but the probes are sent unbound, and the route selection above is not one address on that subnet chosen both before and after the probes - a VPN, a second connection or a more specific route may have carried them, or the lookup was unavailable - so this row cannot say which segments they crossed. It is counted as an ordinary ping target, not as the near-end rung, and the summary does not read it as a witness for the local path." -f $Target)
     }
     elseif ($pingTag -eq "ping-gateway") {
         $detailLines += "Rung: gateway - these probes crossed the local path - this computer's adapter, its cable or Wi-Fi link, and the switch or access point - and were answered by the gateway's own control plane; they did not cross anything beyond the gateway."
@@ -2794,6 +2823,9 @@ function Add-PingTargetResult {
     $Row.Details = $details
     $Row.Weightless = $weightless
     $Row.Rule = $rule
+    # The tag can move with the second pass: a near-end row whose route selection after the last probe no longer
+    # matches the one before them stops claiming the rung, and the summary must see that (PR #51, round 3).
+    $Row.Tag = $pingTag
     # The log is a narrative of the run, so the second reading gets a line of its own rather than quietly replacing
     # the first: a person watching the window saw the provisional figures and is owed the ones that replaced them.
     Write-UiLog -Status $status -Text ("{0} / {1}: {2}" -f $Row.Category, $Row.Check, $message)
@@ -2847,7 +2879,7 @@ function Complete-PingSamples {
             }
             # The route table is asked again, because "after the probes" has to mean after the last of them.
             $routeAfter = Get-PingRouteAfter -Target $item.Target -TargetIsAddress $item.TargetIsAddress -Measurement $measurement
-            Add-PingTargetResult -Name $item.Name -Target $item.Target -ConfiguredAddress $item.Address -Required $item.Required -Measurement $measurement -RouteBefore $item.RouteBefore -RouteAfter $routeAfter -TargetIsAddress $item.TargetIsAddress -TimeoutMs $timeout -SampleNote $note -Row $item.Row -NearEnd $item.NearEnd | Out-Null
+            Add-PingTargetResult -Name $item.Name -Target $item.Target -ConfiguredAddress $item.Address -Required $item.Required -Measurement $measurement -RouteBefore $item.RouteBefore -RouteAfter $routeAfter -TargetIsAddress $item.TargetIsAddress -TimeoutMs $timeout -SampleNote $note -Row $item.Row -NearEnd $item.NearEnd -NearEndSubnet $item.NearEndSubnet | Out-Null
         }
         catch {
             # The row is already in the report with what the first pass measured, so what is lost here is the
@@ -2876,7 +2908,9 @@ function Test-PingTargets {
     $nearEnd = Get-PropertyValue $script:Config.Tests "NearEndTarget" $null
     $nearEndAddress = ""
     if ($null -ne $nearEnd) { $nearEndAddress = (ConvertTo-SafeString (Get-PropertyValue $nearEnd "Address" "")).Trim() }
-    if (-not [string]::IsNullOrWhiteSpace($nearEndAddress)) {
+    # A blank address is the shipped, disabled state - unless the entry is marked required, in which case it is a
+    # required check that cannot run, and dropping it would let the run pass a check it never made (PR #51, round 3).
+    if (-not [string]::IsNullOrWhiteSpace($nearEndAddress) -or ($null -ne $nearEnd -and [bool](Get-PropertyValue $nearEnd "Required" $false))) {
         $entries += [pscustomobject][ordered]@{ Target = $nearEnd; NearEnd = $true }
     }
     foreach ($targetConfig in @($script:Config.Tests.PingTargets)) {
@@ -2900,6 +2934,12 @@ function Test-PingTargets {
         # The near-end target has the narrower rule the configuration check applies: an IPv4 address in dotted-decimal
         # form, never a name, a placeholder or another spelling, because the run has to place it before anything is
         # sent and the probe has to go to the address the file names (backlog #60; PR #51, round 2).
+        if ($isNearEnd -and [string]::IsNullOrWhiteSpace($address)) {
+            # Only a required entry reaches here with no address; an optional one was never added to the ladder.
+            Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The near-end target is marked as required, but no address is configured." -Details "Configured value: (blank). A required near-end target has to name a host on this computer's own subnet; with no address there is nothing to probe, and the run says so rather than passing a check it did not make." -Tag $pingTag -Weightless | Out-Null
+            Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "This required check did not run, because no target was given." -Details "Configured value: (blank)" -Tag $pingTag | Out-Null
+            continue
+        }
         $usable = $(if ($isNearEnd) { Test-NearEndAddressSyntax $address } else { Test-PingTargetSyntax $address })
         if (-not $usable) {
             if ($isNearEnd) {
@@ -2948,6 +2988,8 @@ function Test-PingTargets {
                 continue
             }
         }
+        $nearEndSubnet = ""
+        if ($isNearEnd) { $nearEndSubnet = [string]$placement.Subnet }
         $targets = @(Resolve-PingTargets -Address $address -PrimaryAdapters $PrimaryAdapters)
 
         if ($targets.Count -eq 0) {
@@ -2981,7 +3023,7 @@ function Test-PingTargets {
                     # never reaches the end still reports what it did measure, which a row held back until then
                     # would not.
                     $pendingNote = ("This sample was not conclusive: {0} of the first {1} replies were lost, so it is continued later in this run and these figures are the first {1} alone." -f $measurement.Lost, $measurement.Sent)
-                    $pendingRow = Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -SampleNote $pendingNote -NearEnd $isNearEnd
+                    $pendingRow = Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -SampleNote $pendingNote -NearEnd $isNearEnd -NearEndSubnet $nearEndSubnet
                     [void]$script:PendingPingSamples.Add([pscustomobject][ordered]@{
                         Name            = $name
                         Target          = [string]$target
@@ -2993,10 +3035,11 @@ function Test-PingTargets {
                         Plan            = $plan
                         Row             = $pendingRow
                         NearEnd         = $isNearEnd
+                        NearEndSubnet   = $nearEndSubnet
                     })
                     continue
                 }
-                Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -NearEnd $isNearEnd | Out-Null
+                Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -NearEnd $isNearEnd -NearEndSubnet $nearEndSubnet | Out-Null
             }
             catch {
                 $status = if ($required) { "ERROR" } else { "INFO" }

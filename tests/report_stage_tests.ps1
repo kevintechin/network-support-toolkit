@@ -475,5 +475,32 @@ Assert-Equal 'K: the fixture built its 1 row(s)' (@($script:Results).Count) 1
 Assert-Equal 'K: an unmarked row is weighted by default' (Get-OverallStatus).Code "FAIL"
 Assert-Equal 'K: and the field is on every row, marked or not' (@($script:Results)[0].PSObject.Properties.Name -contains "Weightless") True
 
+# --- Scenario L: a required near-end target with no address is a required check that did not run (PR #51, round 3) ---
+# Blank and optional is the shipped, disabled state; blank and required used to be dropped from the ladder without a
+# row or a configuration finding, so a run could read Healthy without the check it was told to require. The ping list
+# is emptied so that nothing here sends a probe; the near-end branch returns before the placement is consulted.
+$script:Results = New-Object System.Collections.ArrayList
+$script:PendingPingSamples = New-Object System.Collections.ArrayList
+$script:Config = Get-DefaultConfig
+$script:Config.Tests.PingTargets = @()
+$script:Config.Tests.NearEndTarget.Required = $true
+Test-PingTargets -PrimaryAdapters @()
+Assert-Equal 'L: a required near-end target with no address writes two rows' (@($script:Results).Count) 2
+Assert-Equal 'L: both under the near-end tag' (@(@($script:Results) | Where-Object { $_.Tag -eq "ping-near-end" }).Count) 2
+Assert-Equal 'L: the first is the weightless notice' ((@($script:Results)[0].Status -eq "ERROR") -and [bool]@($script:Results)[0].Weightless) True
+Assert-Equal 'L: the second is the weighted row saying the required check did not run' ((@($script:Results)[1].Status -eq "ERROR") -and -not [bool]@($script:Results)[1].Weightless) True
+Assert-Equal 'L: so the run is Test Incomplete rather than Healthy' (Get-OverallStatus).Code "ERROR"
+$script:Results = New-Object System.Collections.ArrayList
+Test-ConfigurationSemantics
+Assert-Equal 'L: and the configuration check names it in the Configured Targets row' (@(@($script:Results) | Where-Object { $_.Tag -eq "config" -and $_.Status -eq "ERROR" -and [bool]$_.Weightless }).Count) 1
+$script:Results = New-Object System.Collections.ArrayList
+$script:Config.Tests.NearEndTarget.Required = $false
+Test-PingTargets -PrimaryAdapters @()
+Assert-Equal 'L: blank and optional is the shipped, disabled state - no row' (@($script:Results).Count) 0
+$script:Results = New-Object System.Collections.ArrayList
+Test-ConfigurationSemantics
+Assert-Equal 'L: and no configuration finding' (@(@($script:Results) | Where-Object { $_.Tag -eq "config" -and $_.Status -ne "PASS" }).Count) 0
+Set-RunOptions -Overrides @{} | Out-Null
+
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

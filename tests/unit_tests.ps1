@@ -1426,8 +1426,15 @@ Assert-Equal '#67 fingerprint: its gateway predicate reads the rule' ((Get-Funct
 # one attempt and the route line - names the host it places, the gateway's names no address, and a far-end row
 # goes straight from its route line to its method line, which names ICMP in both packages.
 function Get-DetailLineAt($row, $index) { return [string]@([string]$row.Details -split "`r`n|`n")[$index] }
+# A route selection on the target's own subnet, before and after the probes, is what lets a near-end row claim the
+# rung at all (PR #51, round 3); the fixture below is that, and $pingRoute - a source on another subnet - is not.
+$nearRoute = [pscustomobject]@{
+    Selection     = [pscustomobject]@{ Resolved = $true; Reason = ''; SourceAddress = '203.0.113.5'; InterfaceAlias = 'Ethernet' }
+    LookupAddress = '203.0.113.9'
+    Others        = @()
+}
 $script:TcpRows = New-Object System.Collections.ArrayList
-Add-PingTargetResult -Name 'Near-end host' -Target '203.0.113.9' -ConfiguredAddress '203.0.113.9' -Required $false -Measurement (New-PingFixture 4 4 5) -RouteBefore $pingRoute.Selection -RouteAfter $pingRoute -TargetIsAddress $true -TimeoutMs 1200 -NearEnd $true | Out-Null
+Add-PingTargetResult -Name 'Near-end host' -Target '203.0.113.9' -ConfiguredAddress '203.0.113.9' -Required $false -Measurement (New-PingFixture 4 4 5) -RouteBefore $nearRoute.Selection -RouteAfter $nearRoute -TargetIsAddress $true -TimeoutMs 1200 -NearEnd $true -NearEndSubnet '203.0.113.0/24' | Out-Null
 $rowNearEnd = @($script:TcpRows)[0]
 $script:TcpRows = New-Object System.Collections.ArrayList
 Add-PingTargetResult -Name 'Internet' -Target '203.0.113.9' -ConfiguredAddress '203.0.113.9' -Required $false -Measurement (New-PingFixture 4 4 5) -RouteBefore $pingRoute.Selection -RouteAfter $pingRoute -TargetIsAddress $true -TimeoutMs 1200 | Out-Null
@@ -1495,6 +1502,40 @@ Assert-Equal '#60 placement: a hexadecimal spelling of the broadcast address is 
 Assert-Equal '#60 placement: and the form that was placed is reported' (Test-NearEndTargetPlacement -Address '3221225994' -PrimaryAdapters $nearAdapters).Canonical '192.0.2.10'
 Assert-Equal '#60 syntax: the run applies the rule' ((Get-FunctionBody 'Test-PingTargets') -match 'Test-NearEndAddressSyntax') True
 Assert-Equal '#60 syntax: and so does the configuration check' ((Get-FunctionBody 'Test-ConfigurationSemantics') -match 'Test-NearEndAddressSyntax') True
+# Subnet membership says where the host is, not which interface the unbound probes left by (PR #51, round 3): a VPN,
+# a second connection or a more specific route can carry them elsewhere. The row claims the rung only where the route
+# table selected a source on the target's subnet before and after the probes; otherwise it keeps its title and its
+# measurement, says why, and is tagged as an ordinary ping target so that the fingerprint never reads it as a witness.
+function Get-NearEndRow($routeBefore, $routeAfter, $subnet) {
+    $script:TcpRows = New-Object System.Collections.ArrayList
+    Add-PingTargetResult -Name 'Near-end host' -Target '203.0.113.9' -ConfiguredAddress '203.0.113.9' -Required $false -Measurement (New-PingFixture 4 4 5) -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $true -TimeoutMs 1200 -NearEnd $true -NearEndSubnet $subnet | Out-Null
+    return @($script:TcpRows)[0]
+}
+$rowAttested = Get-NearEndRow $nearRoute.Selection $nearRoute '203.0.113.0/24'
+Assert-Equal '#60 rung: a source on the subnet before and after the probes claims the rung' $rowAttested.Tag 'ping-near-end'
+Assert-Equal '#60 rung: and the rung line names that source' ((Get-DetailLineAt $rowAttested 2) -match '203\.0\.113\.5') True
+$rowElsewhere = Get-NearEndRow $pingRoute.Selection $pingRoute '203.0.113.0/24'
+Assert-Equal '#60 rung: a source off the subnet - a VPN, a second connection - does not claim it' $rowElsewhere.Tag 'ping-target'
+Assert-Equal '#60 rung: the row still explains itself, one line longer than a far-end row' ((Get-DetailLineCount $rowElsewhere) - (Get-DetailLineCount $rowFarEnd)) 1
+Assert-Equal '#60 rung: naming the host and no source it did not have' (((Get-DetailLineAt $rowElsewhere 2) -match '203\.0\.113\.9') -and -not ((Get-DetailLineAt $rowElsewhere 2) -match '203\.0\.113\.5')) True
+Assert-Equal '#60 rung: and the two rung lines are different sentences' ((Get-DetailLineAt $rowElsewhere 2) -eq (Get-DetailLineAt $rowAttested 2)) False
+$rowChanged = Get-NearEndRow $nearRoute.Selection $pingRoute '203.0.113.0/24'
+Assert-Equal '#60 rung: a selection that changed during the probes does not claim it' $rowChanged.Tag 'ping-target'
+$rowUnresolved = Get-NearEndRow ([pscustomobject]@{ Resolved = $false; Reason = 'cmdlet'; SourceAddress = ''; InterfaceAlias = '' }) $nearRoute '203.0.113.0/24'
+Assert-Equal '#60 rung: an unavailable lookup does not claim it' $rowUnresolved.Tag 'ping-target'
+$rowNoSubnet = Get-NearEndRow $nearRoute.Selection $nearRoute ''
+Assert-Equal '#60 rung: and no subnet to test against does not claim it' $rowNoSubnet.Tag 'ping-target'
+Assert-Equal '#60 rung: whichever way, the measurement is the same' (($rowAttested.Message -eq $rowElsewhere.Message) -and ($rowAttested.Status -eq $rowElsewhere.Status)) True
+# The second pass can withdraw the claim: a row rewritten after the last probe with a selection that moved changes tag.
+$script:TcpRows = New-Object System.Collections.ArrayList
+$provisionalNear = Add-PingTargetResult -Name 'Near-end host' -Target '203.0.113.9' -ConfiguredAddress '203.0.113.9' -Required $false -Measurement (New-PingFixture 4 3 5) -RouteBefore $nearRoute.Selection -RouteAfter $nearRoute -TargetIsAddress $true -TimeoutMs 1200 -NearEnd $true -NearEndSubnet '203.0.113.0/24'
+Assert-Equal '#60 rung: the first pass claims the rung' $provisionalNear.Tag 'ping-near-end'
+Add-PingTargetResult -Name 'Near-end host' -Target '203.0.113.9' -ConfiguredAddress '203.0.113.9' -Required $false -Measurement (New-PingFixture 21 20 5) -RouteBefore $nearRoute.Selection -RouteAfter $pingRoute -TargetIsAddress $true -TimeoutMs 1200 -Row $provisionalNear -NearEnd $true -NearEndSubnet '203.0.113.0/24' | Out-Null
+Assert-Equal '#60 rung: and the second pass withdraws it when the selection moved' $provisionalNear.Tag 'ping-target'
+Assert-Equal '#60 ladder: the run hands the placement''s subnet to the row' ((Get-FunctionBody 'Test-PingTargets') -match '-NearEndSubnet \$nearEndSubnet') True
+Assert-Equal '#60 ladder: and the second pass hands it on' ((Get-FunctionBody 'Complete-PingSamples') -match '-NearEndSubnet \$item\.NearEndSubnet') True
+Assert-Equal '#60 placement: the subnet the target fell in is reported' (Test-NearEndTargetPlacement -Address '192.0.2.20' -PrimaryAdapters $nearAdapters).Subnet '192.0.2.10/24'
+Assert-Equal '#60 placement: and is empty where nothing placed it' (Test-NearEndTargetPlacement -Address '198.51.100.5' -PrimaryAdapters $nearAdapters).Subnet ''
 # The near-end entry is built in the run and never read from the ping list, so a list entry cannot promote itself
 # to the rung, and the traceroute - which walks the list for its target - never meets it.
 Assert-Equal '#60 ladder: the near-end entry is built by the run' ((Get-FunctionBody 'Test-PingTargets') -match 'NearEnd = \$true') True

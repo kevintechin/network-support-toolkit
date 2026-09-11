@@ -285,7 +285,7 @@ function Get-ConfigConverterSource([string]$ScriptPath) {
     # languages.
     $tokens = $null; $errors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path -LiteralPath $ScriptPath).Path, [ref]$tokens, [ref]$errors)
-    $wanted = 'ConvertTo-DoubleSafe', 'ConvertTo-IntSafe', 'Test-IsNumericValue', 'Test-IsWholeNumber', 'Test-IsValidIPv4Address', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-IPv4InCidr', 'Resolve-PingTargets', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Test-NearEndTargetPlacement'
+    $wanted = 'ConvertTo-DoubleSafe', 'ConvertTo-IntSafe', 'Test-IsNumericValue', 'Test-IsWholeNumber', 'Test-IsValidIPv4Address', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-IPv4InCidr', 'Resolve-PingTargets', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Test-NearEndTargetPlacement', 'ConvertTo-SafeString', 'Get-RouteSelection'
     $found = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true))
     $loaded = @($found | ForEach-Object { $_.Name })
     $missing = @($wanted | Where-Object { $loaded -notcontains $_ })
@@ -389,6 +389,15 @@ function Get-ConfigRowCount($Config, $Options, [hashtable]$Overrides) {
     foreach ($target in @($Config.Tests.HttpTargets)) { if ($null -ne $target -and -not (Test-ConfiguredHttpTarget $target)) { $badTargets += 1 } }
     foreach ($target in @($Config.Tests.DnsNames)) { if ($null -ne $target -and -not (Test-ConfiguredDnsTarget $target)) { $badTargets += 1 } }
     foreach ($target in @($Config.Tests.PingTargets)) { if ($null -ne $target -and -not (Test-ConfiguredPingAddress ([string](Get-Value $target 'Address')))) { $badTargets += 1 } }
+    # The near-end target (backlog #60): a non-blank address that is not dotted-decimal IPv4, or a blank address on an
+    # entry marked required, is a Configured Targets finding (PR #51, rounds 2 and 3); blank and optional is the
+    # shipped, disabled state.
+    $nearEndEntry = Get-Value $Config.Tests 'NearEndTarget'
+    if ($null -ne $nearEndEntry) {
+        $nearEndValue = ([string](Get-Value $nearEndEntry 'Address')).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($nearEndValue)) { if (-not (Test-NearEndAddressSyntax $nearEndValue)) { $badTargets += 1 } }
+        elseif (Test-TrueFlag (Get-Value $nearEndEntry 'Required')) { $badTargets += 1 }
+    }
     # Set-RunOptions appends the switch targets to the effective configuration before Test-ConfigurationSemantics
     # reads it, so an unusable -PingTarget, -DnsName or -HttpUrl is a Configured Targets row exactly as a
     # configured one is; this oracle read the file on disk and saw none of them (PR #41, round 6). A -TcpTarget is
@@ -569,12 +578,27 @@ function Test-ResultSet {
     # not probed, the weighted row saying the required check did not run. Where it sits is judged with the tool's own
     # placement function, loaded from the package, over the primary adapters the facts carry.
     $nearEndRows = 0
+    $nearEndTargetRows = 0
     $nearEndTarget = Get-Value $Config.Tests 'NearEndTarget'
     $nearEndAddress = ([string](Get-Value $nearEndTarget 'Address')).Trim()
-    if (-not [string]::IsNullOrWhiteSpace($nearEndAddress)) {
+    $nearEndRequired = Test-TrueFlag (Get-Value $nearEndTarget 'Required')
+    if ([string]::IsNullOrWhiteSpace($nearEndAddress)) {
+        # Blank and required is a required check that did not run: the weightless notice and the weighted row (PR #51, round 3).
+        if ($nearEndRequired) { $nearEndRows = 2 }
+    }
+    else {
         $nearEndRows = 1
-        $placed = (Test-NearEndAddressSyntax $nearEndAddress) -and ((Test-NearEndTargetPlacement -Address $nearEndAddress -PrimaryAdapters @($Machine.PrimaryAdapters)).Placement -eq 'on-subnet')
-        if ((-not $placed) -and (Test-TrueFlag (Get-Value $nearEndTarget 'Required'))) { $nearEndRows = 2 }
+        $nearEndPlacement = Test-NearEndTargetPlacement -Address $nearEndAddress -PrimaryAdapters @($Machine.PrimaryAdapters)
+        $placed = (Test-NearEndAddressSyntax $nearEndAddress) -and ($nearEndPlacement.Placement -eq 'on-subnet')
+        if (-not $placed) { if ($nearEndRequired) { $nearEndRows = 2 } }
+        else {
+            # A measured near-end row claims the rung - and its tag - only where the route table selects a source on
+            # the target's subnet before and after the probes; otherwise the run writes it as a ping-target row. The
+            # run reads the selection twice and this oracle once, so a route that changed during the run is the one
+            # shape it cannot predict, and the resultset note is what says so.
+            $nearEndSelection = Get-RouteSelection -Target $nearEndAddress
+            if (-not ($nearEndSelection.Resolved -and (Test-IPv4InCidr -IpAddress $nearEndSelection.SourceAddress -Cidr ([string]$nearEndPlacement.Subnet)))) { $nearEndRows = 0; $nearEndTargetRows = 1 }
+        }
     }
     # The two TCP counter samples are read independently (baseline, then ending): a class readable in both gives one
     # result row, unreadable in both two error rows, readable in one of them one error row and no result row. The
@@ -614,7 +638,7 @@ function Test-ResultSet {
         # A literal target is one row; AUTO_DNS is one row per DNS server of the primary adapters, or one "no target" row.
         # A ping target that cannot be used costs the same two rows as the other families when it is required
         # (PR #41, round 2): the weightless notice, and the weighted row saying the check did not run.
-        'ping-target' = ($pingTargets.Count - $gatewayTargets - $dnsTargets) + $dnsTargets * [math]::Max(1, $dnsServerCount) + (Get-Count $o.ExtraTargets.Ping) + (Get-UnusablePingExtraRows $Config)
+        'ping-target' = ($pingTargets.Count - $gatewayTargets - $dnsTargets) + $dnsTargets * [math]::Max(1, $dnsServerCount) + (Get-Count $o.ExtraTargets.Ping) + (Get-UnusablePingExtraRows $Config) + $nearEndTargetRows
         'ping-near-end' = $nearEndRows
         # A target the run cannot test is reported where its result belonged instead of vanishing, and a required one
         # adds the weighted row saying the check did not run (backlog #39); a dropped extra target - one the parser
