@@ -29,6 +29,11 @@
         "Required": false
       }
     ],
+    "NearEndTarget": {
+      "Name": "Near-end host",
+      "Address": "",
+      "Required": false
+    },
     "DnsNames": [
       {
         "Name": "DNS Name Resolution",

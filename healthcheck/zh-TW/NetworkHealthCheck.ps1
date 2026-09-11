@@ -43,7 +43,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：報告保存例外類型、訊息與內部例外；腳本位置與呼叫堆疊只寫入 JSON 報告（Diagnostics）。
 
-$script:ToolVersion = "1.2.11"
+$script:ToolVersion = "1.2.12"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -605,12 +605,17 @@ function Add-CheckResult {
         [string]$Diagnostics = "",
         [string]$Tag = "",
         [string]$Scope = "Main",
-        [switch]$Weightless
+        [switch]$Weightless,
+        [string]$Rule = ""
     )
 
     # -Weightless 標記一種列：徽章、訊息與統計數字都照舊，但不決定整體結果，也不影響 fingerprint（backlog #39）。
     # 標記是逐一分支加上去的：說「什麼都沒量到」的列、樣本比套用的門檻還粗的列，或陳述本次執行輸入的列。其餘一律
     # 預設保有權重——後來新增的檢查不會因為漏寫什麼而變得沒有權重，那種失誤沒有人會發現。
+    # -Rule 寫的是這一列的狀態是由哪一種量測決定的，只用在一列有不只一種量測的時候（backlog #67）：ping 的列由遺失
+    # 或由延遲決定，而在 1.2.12 之前，除了這一列的文字之外沒有東西說得出是哪一種，於是 fingerprint 把一個每次探測
+    # 都回應、只是回應得慢的閘道，標成「沒有回應」的閘道。沒有話可說的列——通過的列，或只有一種量測的列——這個欄位
+    # 是空的；它和 Weightless 一樣，是在 JSON schema 2 之下附加的欄位。
     $item = [pscustomobject][ordered]@{
         Time     = Get-Date
         Category = $Category
@@ -622,6 +627,7 @@ function Add-CheckResult {
         Tag         = $Tag
         Scope       = $Scope
         Weightless  = [bool]$Weightless
+        Rule        = $Rule
     }
 
     [void]$script:Results.Add($item)
@@ -693,6 +699,15 @@ function Get-DefaultConfig {
                     Required = $false
                 }
             )
+            # backlog #60：ping 階梯的近端那一階——這台電腦自己子網段上、不是閘道的一台主機，讓本地路徑能在沒有閘道
+            # 控制平面、也沒有 WAN 參與的情況下被量到。預設不存在：工具選不出來，因為某個候選主機是不是穩定、會不會
+            # 回應 ICMP，是人的判斷，所以由 IT 在這裡指定。以 IPv4 位址給定，絕不是名稱：檢查必須在送出任何東西
+            # 之前就知道這台主機在本地子網段上。
+            NearEndTarget = [pscustomobject][ordered]@{
+                Name     = "近端主機"
+                Address  = ""
+                Required = $false
+            }
             DnsNames = @(
                 [pscustomobject][ordered]@{
                     Name     = "DNS 名稱解析"
@@ -1189,9 +1204,29 @@ function Convert-LinkSpeedToText {
     }
 }
 
+function Get-DhcpServerTable {
+    # backlog #32：是哪一台伺服器回應了租約。NetTCPIP 指令帶的是 DHCP 模式而不是伺服器，所以唯一的來源是
+    # Win32_NetworkAdapterConfiguration.DHCPServer——CIM 備援路徑讀所有東西用的同一個類別。對每一個啟用 IP 的設定
+    # 查一次、以介面索引為鍵，讓偏好路徑只多付一次 CIM 呼叫，而不是每張網卡一次。$null 代表整個類別讀不到，網卡
+    # 那一列會把它報成「資料無法取得」而不是「這張網卡沒有租約」（已結案項目 #5 的形狀：未知絕不報成一個值）。
+    # 這個查詢不會嘗試第二次——它不是效能計數器的讀取，1.2.8 記錄了網卡設定查詢為什麼維持單次嘗試。
+    $table = @{}
+    try {
+        $configs = @(Get-CimOrWmiInstance -ClassName "Win32_NetworkAdapterConfiguration" | Where-Object { $null -ne $_ -and $_.IPEnabled })
+    }
+    catch {
+        return $null
+    }
+    foreach ($config in $configs) {
+        $table[(ConvertTo-IntSafe $config.InterfaceIndex -1)] = (ConvertTo-SafeString (Get-PropertyValue $config "DHCPServer" "")).Trim()
+    }
+    return $table
+}
+
 function Get-NetworkSnapshotFromNetCmdlets {
     $items = New-Object System.Collections.ArrayList
     $configs = @(Get-NetIPConfiguration -ErrorAction Stop)
+    $dhcpServers = Get-DhcpServerTable
 
     foreach ($config in $configs) {
         $adapter = $config.NetAdapter
@@ -1289,6 +1324,8 @@ function Get-NetworkSnapshotFromNetCmdlets {
             Gateways        = $gateways
             DnsServers      = $dnsServers
             DhcpEnabled     = $dhcpEnabled
+            # 類別讀不到時是 $null；否則是伺服器位址，或設定裡沒有伺服器時的 ""（固定位址，或從來沒拿到的租約）。
+            DhcpServer      = $(if ($null -eq $dhcpServers) { $null } elseif ($dhcpServers.ContainsKey((ConvertTo-IntSafe -Value $config.InterfaceIndex -DefaultValue 0))) { [string]$dhcpServers[(ConvertTo-IntSafe -Value $config.InterfaceIndex -DefaultValue 0)] } else { "" })
             IsPhysical      = -not (Test-IsVirtualAdapter -Description ([string]$adapter.InterfaceDescription) -VirtualFlag (Get-PropertyValue $adapter "Virtual") -HardwareFlag (Get-PropertyValue $adapter "HardwareInterface"))
             MediaType       = ConvertTo-SafeString (Get-PropertyValue $adapter "PhysicalMediaType" "")
             DriverVersion   = ConvertTo-SafeString (Get-PropertyValue $adapter "DriverVersion" "")
@@ -1419,6 +1456,7 @@ function Get-NetworkSnapshotFromCim {
             Gateways        = $gateways
             DnsServers      = @($config.DNSServerSearchOrder)
             DhcpEnabled     = $dhcpEnabled
+            DhcpServer      = (ConvertTo-SafeString (Get-PropertyValue $config "DHCPServer" "")).Trim()
             IsPhysical      = $isPhysical
             MediaType       = $mediaType
             DriverVersion   = ""
@@ -1605,6 +1643,18 @@ function Test-ConfigurationSemantics {
         }
     }
 
+    # 近端目標（backlog #60）的規則比其他 ping 目標窄：必須是 IPv4 位址，因為執行時必須在送出任何東西之前就知道它
+    # 在本地子網段上，名稱會讓這一階落在解析器之後。佔位符同樣不合這條規則——閘道不能當近端這一階，而 AUTO_DNS
+    # 可能解析成閘道、或閘道之外的伺服器。它在哪個子網段上是關於這台機器的事實，所以在送出探測的地方判斷，不在
+    # 這裡。
+    $nearEnd = Get-PropertyValue $tests "NearEndTarget" $null
+    if ($null -ne $nearEnd) {
+        $nearEndAddress = (ConvertTo-SafeString (Get-PropertyValue $nearEnd "Address" "")).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($nearEndAddress) -and -not (Test-IsValidIPv4Address $nearEndAddress)) {
+            [void]$inputErrors.Add("NearEndTarget 的位址無法當成近端目標——它必須是這台電腦自己子網段上、而且不是閘道的 IPv4 位址：$nearEndAddress")
+        }
+    }
+
     foreach ($dnsTarget in @($tests.DnsNames)) {
         if ($null -eq $dnsTarget) { continue }
         if ($dnsTarget -is [string]) {
@@ -1726,6 +1776,18 @@ function Get-PrimaryAdapters {
     return @($Adapters | Where-Object { @($_.IPv4Addresses).Count -gt 0 })
 }
 
+function Get-DhcpServerText {
+    param([object]$DhcpEnabled, [object]$DhcpServer)
+
+    # 四種形狀，而且順序有關係（backlog #32）。固定位址沒有租約，所以不論設定裡放著什麼都不點名伺服器。再來是資料
+    # 無法取得——類別讀不到——照實說。再來是回應租約的那個位址。最後是設定裡沒有伺服器位址、卻也沒有東西說位址是
+    # 固定的：從來沒拿到租約的 DHCP，或這次執行讀不到的模式。
+    if ($DhcpEnabled -eq $false) { return "無（固定位址，沒有租約）" }
+    if ($null -eq $DhcpServer) { return "無法取得（此欄位讀自 Win32_NetworkAdapterConfiguration，而它無法查詢；NetTCPIP 指令沒有這個欄位）" }
+    if (-not [string]::IsNullOrWhiteSpace([string]$DhcpServer)) { return [string]$DhcpServer }
+    return "無記錄（這張網卡沒有記錄任何伺服器位址）"
+}
+
 function Add-NetworkSnapshotResults {
     param([object[]]$Adapters)
 
@@ -1752,6 +1814,10 @@ function Add-NetworkSnapshotResults {
         $dhcpText = "未知"
         if ($adapter.DhcpEnabled -eq $true) { $dhcpText = "啟用" }
         elseif ($adapter.DhcpEnabled -eq $false) { $dhcpText = "停用（固定 IP）" }
+        # backlog #32：回應租約的那台伺服器，就寫在它所修飾的模式旁邊——SOP 的「誰在發 DHCP」這個問題由這一行回答。
+        # 固定位址沒有租約可以點名；類別讀不到時要說「無法取得」而不是留白，因為空白會被讀成「沒有伺服器」，那是一個
+        # 主張。
+        $dhcpServerText = Get-DhcpServerText -DhcpEnabled $adapter.DhcpEnabled -DhcpServer (Get-PropertyValue $adapter "DhcpServer" $null)
 
         $details = @(
             "介面名稱：$($adapter.Name)",
@@ -1765,6 +1831,7 @@ function Add-NetworkSnapshotResults {
             "預設閘道：$(ConvertTo-DisplayString $adapter.Gateways)",
             "DNS：$(ConvertTo-DisplayString $adapter.DnsServers)",
             "DHCP：$dhcpText",
+            "DHCP 伺服器：$dhcpServerText",
             ("網卡類型：{0}" -f $(if ($adapter.IsPhysical -eq $true) { "實體" } else { "虛擬" })),
             ("媒體類型：{0}" -f (ConvertTo-DisplayString $adapter.MediaType)),
             ("驅動程式：{0}" -f (ConvertTo-DisplayString (@($adapter.DriverVersion, $adapter.DriverDate, $adapter.DriverProvider) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }))),
@@ -2342,6 +2409,37 @@ function Invoke-PingMeasurement {
     }
 }
 
+function Test-NearEndTargetPlacement {
+    param(
+        [string]$Address,
+        [object[]]$PrimaryAdapters
+    )
+
+    # 設定的近端目標相對於這台機器在哪裡（backlog #60），在送出任何東西之前就決定，因為這一列的整個主張就是它的探測
+    # 經過了哪些路段。三種答案：位址是主要網卡的某個閘道，所以不能當近端這一階——閘道是用控制平面回應的，而且它已經
+    # 是下一階了；位址在主要網卡的某個 IPv4 子網段裡，所以它就是近端主機；或兩者都不是，那麼送給它的探測會經過閘道，
+    # 量到的是錯的東西。子網段是快照本來就帶著的「位址/前綴」值；前綴未知的網卡不貢獻子網段，而一台沒有任何已知
+    # 子網段的機器什麼都放不了——那一列會照實說，而不是猜。
+    $subnets = @()
+    foreach ($adapter in @($PrimaryAdapters)) {
+        foreach ($entry in @($adapter.IPv4WithPrefix)) {
+            if (([string]$entry) -match '/\d+$') { $subnets += [string]$entry }
+        }
+    }
+    $gateways = @(Resolve-PingTargets -Address "AUTO_GATEWAY" -PrimaryAdapters $PrimaryAdapters)
+    $placement = "off-subnet"
+    if ($gateways -contains $Address) { $placement = "gateway" }
+    else {
+        foreach ($subnet in $subnets) {
+            if (Test-IPv4InCidr -IpAddress $Address -Cidr $subnet) { $placement = "on-subnet"; break }
+        }
+    }
+    return [pscustomobject][ordered]@{
+        Placement = $placement
+        Subnets   = @($subnets | Select-Object -Unique)
+    }
+}
+
 function Resolve-PingTargets {
     param(
         [string]$Address,
@@ -2412,7 +2510,8 @@ function Add-PingTargetResult {
         [bool]$TargetIsAddress,
         [int]$TimeoutMs,
         [string]$SampleNote = "",
-        [object]$Row = $null
+        [object]$Row = $null,
+        [bool]$NearEnd = $false
     )
 
     # 一列 ping 結果。它獨立成一個函式，是因為第一輪不足以下結論的目標，這一列會被寫兩次——一次是在報告裡它該
@@ -2431,15 +2530,21 @@ function Add-PingTargetResult {
     # 卻在所有「用文件核對程式」的檢查之外的標籤。複製這兩行，是讓那個步驟看得見這一條規則的代價。
     $pingTag = "ping-target"
     if ($ConfiguredAddress -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
+    if ($NearEnd) { $pingTag = "ping-near-end" }
     $status = "PASS"
     $weightless = $false
     $coarseNote = ""
     $blockedIcmpNote = $false
     $lossStatus = ""
     $latencyStatus = ""
+    # 狀態是由哪一種量測決定的（backlog #67）：由遺失級別決定的寫 "loss"——完全沒有回應的列也算——由真的回來的那些
+    # 回覆決定的寫 "latency"，什麼都沒決定的留空。fingerprint 會讀它，因為每次探測都回應、只是回應得慢的閘道，不是
+    # 「沒有回應」的閘道。
+    $rule = ""
     $loss = Get-PingLossClassification -Sent $Measurement.Sent -Lost $Measurement.Lost -WarningPercent $warningLoss -CriticalPercent $criticalLoss
 
     if ($Measurement.Received -eq 0) {
+        $rule = "loss"
         # 非必要的 ICMP 目標本來就可能刻意封鎖 Ping。完全沒有回覆以前不論取樣多小都保有判定，理由是「四次探測
         # 下 100 % 遺失就是結論，再多次也不會更確定」—— 那是一個關於「四」的論證，卻被套用在「一」上（PR #49
         # 第 5 輪）。PingCount 設成 1 是設定檢查與 IT 面板都允許的值，而在那裡「100 % 遺失」和「掉了一個封包」
@@ -2485,9 +2590,11 @@ function Add-PingTargetResult {
         # 則，而不是自己留著——兩者是對同一批探測做的兩種量測，而 #51 認為太粗的只有遺失那一半。真的回來的那
         # 些回覆所達到的延遲門檻是一次量測，達到它的一列保有權重。
         $status = $lossStatus
+        if ($lossStatus -ne "PASS") { $rule = "loss" }
         if ($latencyStatus -ne "PASS" -and ($weightless -or $lossStatus -eq "PASS")) {
             $status = $latencyStatus
             $weightless = $false
+            $rule = "latency"
         }
     }
 
@@ -2508,6 +2615,16 @@ function Add-PingTargetResult {
     $detailLines = @()
     $detailLines += @($Measurement.AttemptDetails)
     $detailLines += (Format-RouteSelection -Before $RouteBefore -After $RouteAfter.Selection -LookupAddress $RouteAfter.LookupAddress -Others $RouteAfter.Others)
+    # backlog #60：這一列是哪一階，寫成「探測經過了哪些路段、沒有經過哪些」。只有兩列會寫——近端主機那一列，因為
+    # 有它各列 ping 才成為一道階梯；以及閘道那一列，因為它的探測是由控制平面而不是主機回應的——而讀法規則寫在近端
+    # 那一列，因為讀者正要拿一階減另一階時，看的就是那一列。遠端目標的列不主張自己是哪一階：額外目標在閘道的哪一
+    # 邊，不是這一列量過的東西。
+    if ($NearEnd) {
+        $detailLines += ("階梯：近端——{0} 位於這台電腦所在的子網段、而且不是閘道，所以這些探測只經過本地路徑——這台電腦的網卡、它的網路線或 Wi-Fi 連線、以及交換器或存取點——並由一台普通主機回應，而不是由閘道的控制平面回應；它們沒有經過閘道，也沒有經過閘道之外的任何東西。把各列 ping 當成一道階梯來讀：通過的一階，說明它經過的路段在那一刻是通的；第一個失敗的一階，把問題放在最後一個通過的階之外——但不會更近——因為兩階的數字是不同時刻送出的不同流量，不能相減成兩階之間那一段的遺失率。" -f $Target)
+    }
+    elseif ($pingTag -eq "ping-gateway") {
+        $detailLines += "階梯：閘道——這些探測經過本地路徑——這台電腦的網卡、它的網路線或 Wi-Fi 連線、以及交換器或存取點——並由閘道自己的控制平面回應；它們沒有經過閘道之外的任何東西。"
+    }
     if (-not [string]::IsNullOrWhiteSpace($SampleNote)) { $detailLines += $SampleNote }
     if (-not [string]::IsNullOrWhiteSpace($coarseNote)) { $detailLines += $coarseNote }
     # 檢測方式這一行算的是實際送出的探測次數，而不是設定的次數：從 1.2.10 起 PingCount 是起始次數，只要取樣
@@ -2538,12 +2655,13 @@ function Add-PingTargetResult {
         $details += [Environment]::NewLine + "補充說明：此為非必要目標，可能單純封鎖 ICMP——網際網路的權威判定請看「連線能力」群組。"
     }
     if ($null -eq $Row) {
-        return (Add-CheckResult -Category "延遲與封包遺失" -Check ("{0}：{1}" -f $Name, $Target) -Status $status -Message $message -Details $details -Tag $pingTag -Weightless:$weightless)
+        return (Add-CheckResult -Category "延遲與封包遺失" -Check ("{0}：{1}" -f $Name, $Target) -Status $status -Message $message -Details $details -Tag $pingTag -Weightless:$weightless -Rule $rule)
     }
     $Row.Status = $status
     $Row.Message = $message
     $Row.Details = $details
     $Row.Weightless = $weightless
+    $Row.Rule = $rule
     # 執行紀錄是這次執行的敘事，所以第二次的讀數會自己占一行，而不是悄悄把第一次蓋掉：盯著視窗看的人看過那組
     # 暫時的數字，就該看到取代它們的那一組。
     Write-UiLog -Status $status -Text ("{0} / {1}: {2}" -f $Row.Category, $Row.Check, $message)
@@ -2593,7 +2711,7 @@ function Complete-PingSamples {
             }
             # 路由表再問一次，因為「探測之後」本來就得是「最後一次探測之後」。
             $routeAfter = Get-PingRouteAfter -Target $item.Target -TargetIsAddress $item.TargetIsAddress -Measurement $measurement
-            Add-PingTargetResult -Name $item.Name -Target $item.Target -ConfiguredAddress $item.Address -Required $item.Required -Measurement $measurement -RouteBefore $item.RouteBefore -RouteAfter $routeAfter -TargetIsAddress $item.TargetIsAddress -TimeoutMs $timeout -SampleNote $note -Row $item.Row | Out-Null
+            Add-PingTargetResult -Name $item.Name -Target $item.Target -ConfiguredAddress $item.Address -Required $item.Required -Measurement $measurement -RouteBefore $item.RouteBefore -RouteAfter $routeAfter -TargetIsAddress $item.TargetIsAddress -TimeoutMs $timeout -SampleNote $note -Row $item.Row -NearEnd $item.NearEnd | Out-Null
         }
         catch {
             # 這一列早就帶著第一輪量到的結果在報告裡了，所以這裡失去的只有延伸的那一段；多出來的是它為什麼沒發生。
@@ -2613,23 +2731,70 @@ function Test-PingTargets {
     $timeout = [math]::Max(250, (ConvertTo-IntSafe $script:Config.Tests.PingTimeoutMs 1200))
     $warningLoss = ConvertTo-DoubleSafe $script:Config.Thresholds.PacketLossWarningPercent 5
 
+    # 階梯，按順序（backlog #60）：有設定近端主機時它排第一，然後是清單裡的目標——閘道，再來是閘道之外的東西。近端
+    # 這一項是在這裡組出來的，而不是從清單讀出來的，這樣設定檔就不能把清單裡的某一項升格成近端這一階，而 traceroute
+    # ——它是往第一個字面 ping 目標追蹤的——也永遠不會挑到一台只有一跳遠的主機。
+    $entries = @()
+    $nearEnd = Get-PropertyValue $script:Config.Tests "NearEndTarget" $null
+    $nearEndAddress = ""
+    if ($null -ne $nearEnd) { $nearEndAddress = (ConvertTo-SafeString (Get-PropertyValue $nearEnd "Address" "")).Trim() }
+    if (-not [string]::IsNullOrWhiteSpace($nearEndAddress)) {
+        $entries += [pscustomobject][ordered]@{ Target = $nearEnd; NearEnd = $true }
+    }
     foreach ($targetConfig in @($script:Config.Tests.PingTargets)) {
-        if ($null -eq $targetConfig) { continue }
+        if ($null -ne $targetConfig) { $entries += [pscustomobject][ordered]@{ Target = $targetConfig; NearEnd = $false } }
+    }
 
-        $name = ConvertTo-SafeString (Get-PropertyValue $targetConfig "Name" "Ping")
+    foreach ($entry in $entries) {
+        $targetConfig = $entry.Target
+        $isNearEnd = [bool]$entry.NearEnd
+
+        $name = ConvertTo-SafeString (Get-PropertyValue $targetConfig "Name" $(if ($isNearEnd) { "近端主機" } else { "Ping" }))
         $address = (ConvertTo-SafeString (Get-PropertyValue $targetConfig "Address" "")).Trim()
         $pingTag = "ping-target"
         if ($address -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
+        if ($isNearEnd) { $pingTag = "ping-near-end" }
         $required = [bool](Get-PropertyValue $targetConfig "Required" $false)
         # 在送出任何東西之前就決定（backlog #39）：無法成為 ping 目標的值是關於本次執行輸入的事實，硬要嘗試會把
         # 打錯字變成一次量測——「http://example.com」解析不到任何位址，卻回報 100% 遺失，讀起來像網路把每個封包
         # 都丟掉了。下面那個「格式正確卻解析不到」的分支則是量測，保有權重。
-        if (-not (Test-PingTargetSyntax $address)) {
-            Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "設定的位址無法當成 ping 目標。" -Details ("Configured value: $address") -Tag $pingTag -Weightless | Out-Null
+        # 近端目標用的是設定檢查套用的那條較窄的規則：IPv4 位址，絕不是名稱或佔位符，因為執行時必須在送出任何東西
+        # 之前就把它放到位（backlog #60）。
+        $usable = $(if ($isNearEnd) { Test-IsValidIPv4Address $address } else { Test-PingTargetSyntax $address })
+        if (-not $usable) {
+            if ($isNearEnd) {
+                Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "設定的近端目標無法使用：它必須是一個 IPv4 位址。" -Details ("設定值：{0}。近端目標是這台電腦所在子網段上、且不是閘道的一個 IPv4 位址；它以位址而不是名稱給定，因為檢查必須在送出任何東西之前就知道它在本地子網段上，而名稱會讓近端這一階落在解析器之後。" -f $address) -Tag $pingTag -Weightless | Out-Null
+            }
+            else {
+                Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "設定的位址無法當成 ping 目標。" -Details ("Configured value: $address") -Tag $pingTag -Weightless | Out-Null
+            }
             if ($required) {
                 Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標無法檢測。" -Details ("Configured value: $address") -Tag $pingTag | Out-Null
             }
             continue
+        }
+        if ($isNearEnd) {
+            # 在探測之前先放到位（backlog #60）：這一列的整個主張就是它的探測經過了哪些路段，所以一個其實是閘道、或
+            # 位於閘道之外的目標，不可以在那個主張之下被量。閘道那一種是設定錯誤，就照設定錯誤回報；子網段之外那一
+            # 種是關於這台機器此刻在哪裡的事實——帶著公司設定檔在家裡的筆電——就照事實回報：什麼都沒送、什麼都沒
+            # 主張、整體結果不動。沒有探測的必要近端目標，仍然要付每一個沒有執行的必要目標都要付的那一列有權重的列。
+            $placement = Test-NearEndTargetPlacement -Address $address -PrimaryAdapters $PrimaryAdapters
+            if ($placement.Placement -eq "gateway") {
+                Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "設定的近端目標就是這台電腦的預設閘道，它不能當作近端這一階。" -Details ("設定值：{0}。閘道是用自己的控制平面回應 Ping 的，而且它已經是階梯的下一階；近端目標必須是同一子網段上的普通主機，本地路徑才能在沒有閘道參與的情況下被量到。" -f $address) -Tag $pingTag -Weightless | Out-Null
+                if ($required) {
+                    Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標無法檢測。" -Details ("Configured value: $address") -Tag $pingTag | Out-Null
+                }
+                continue
+            }
+            if ($placement.Placement -ne "on-subnet") {
+                $subnetText = "無已知子網段"
+                if (@($placement.Subnets).Count -gt 0) { $subnetText = (@($placement.Subnets) -join ", ") }
+                Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "INFO" -Message "設定的近端目標不在這台電腦所在的任何子網段上，因此沒有探測。" -Details ("設定值：{0}。這台電腦的 IPv4 子網段：{1}。經過閘道才到得了的主機不是近端這一階，所以沒有送出任何東西；這一列沒有說明任何網路狀況，也不改變整體結果。" -f $address, $subnetText) -Tag $pingTag -Weightless | Out-Null
+                if ($required) {
+                    Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標不在這台電腦的網路上。" -Details ("設定值：{0}。這台電腦的 IPv4 子網段：{1}。" -f $address, $subnetText) -Tag $pingTag | Out-Null
+                }
+                continue
+            }
         }
         $targets = @(Resolve-PingTargets -Address $address -PrimaryAdapters $PrimaryAdapters)
 
@@ -2662,7 +2827,7 @@ function Test-PingTargets {
                     # 其他 ping 的列待在一起——而且一次沒能走到最後的執行，仍然會報出它確實量到的東西，這是把
                     # 整列壓到最後才寫所做不到的。
                     $pendingNote = ("這次取樣還不足以下結論：最前面 {1} 次裡有 {0} 次沒有回覆，因此會在本次執行的後段繼續，而這裡的數字只涵蓋那 {1} 次。" -f $measurement.Lost, $measurement.Sent)
-                    $pendingRow = Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -SampleNote $pendingNote
+                    $pendingRow = Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -SampleNote $pendingNote -NearEnd $isNearEnd
                     [void]$script:PendingPingSamples.Add([pscustomobject][ordered]@{
                         Name            = $name
                         Target          = [string]$target
@@ -2673,10 +2838,11 @@ function Test-PingTargets {
                         Measurement     = $measurement
                         Plan            = $plan
                         Row             = $pendingRow
+                        NearEnd         = $isNearEnd
                     })
                     continue
                 }
-                Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout | Out-Null
+                Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -NearEnd $isNearEnd | Out-Null
             }
             catch {
                 $status = if ($required) { "ERROR" } else { "INFO" }
@@ -4155,13 +4321,19 @@ function Get-FingerprintSummary {
     $adaptersFail = @($results | Where-Object { $_.Tag -eq "adapters" -and $_.Status -eq "FAIL" }).Count -gt 0
     $gatewayConfigFail = @($results | Where-Object { $_.Tag -eq "gateway-config" -and $_.Status -eq "FAIL" }).Count -gt 0
     $gatewayPingPass = @($results | Where-Object { $_.Tag -eq "ping-gateway" -and $_.Status -eq "PASS" }).Count -gt 0
-    $gatewayPingBad = @($results | Where-Object { $_.Tag -eq "ping-gateway" -and $_.Status -eq "FAIL" }).Count -gt 0
+    # 因為延遲而失敗的閘道列，每一次被拿來判斷的探測它都回應了（backlog #67）：那是一個「到得了的閘道」的品質問題，
+    # 不是「沒有回應的閘道」，所以它走下面的品質那一條，跟其他回應得慢的目標一樣——而如果還有別的東西失敗，就走
+    # mixed 那一條。只有由遺失決定的列——回覆沒有回來——才能選到 gateway-unreachable 這個鍵。
+    $gatewayPingBad = @($results | Where-Object { $_.Tag -eq "ping-gateway" -and $_.Status -eq "FAIL" -and [string]$_.Rule -ne "latency" }).Count -gt 0
+    # 近端那一階（backlog #60）不選自己的鍵：它說的是失敗在閘道的哪一邊，下面 gateway-unreachable 的摘要就是為此讀它。
+    $nearEndPass = @($results | Where-Object { $_.Tag -eq "ping-near-end" -and $_.Status -eq "PASS" }).Count -gt 0
+    $nearEndLost = @($results | Where-Object { $_.Tag -eq "ping-near-end" -and $_.Status -eq "FAIL" -and [string]$_.Rule -ne "latency" }).Count -gt 0
     $groupFail = @($results | Where-Object { $_.Tag -eq "connectivity-group" -and $_.Status -eq "FAIL" }).Count -gt 0
     $groupPass = @($results | Where-Object { $_.Tag -eq "connectivity-group" -and $_.Status -eq "PASS" }).Count -gt 0
     $dnsFail = @($results | Where-Object { $_.Tag -eq "dns" -and ($_.Status -eq "FAIL" -or $_.Status -eq "WARN") }).Count -gt 0
     $dnsPass = @($results | Where-Object { $_.Tag -eq "dns" -and $_.Status -eq "PASS" }).Count -gt 0
     $tcpPass = @($results | Where-Object { $_.Tag -eq "tcp" -and $_.Status -eq "PASS" }).Count -gt 0
-    $qualityTags = @("ping-target", "ping-gateway", "tcp-retransmissions", "adapter-errors")
+    $qualityTags = @("ping-target", "ping-gateway", "ping-near-end", "tcp-retransmissions", "adapter-errors")
     $qualityIssue = @($results | Where-Object { ($qualityTags -contains $_.Tag) -and ($_.Status -eq "WARN" -or $_.Status -eq "FAIL") }).Count -gt 0
     $otherProblem = @($results | Where-Object { [string]$_.Scope -ne "IT" -and ($_.Status -eq "WARN" -or $_.Status -eq "FAIL") -and ($qualityTags -notcontains $_.Tag) }).Count -gt 0
 
@@ -4179,7 +4351,16 @@ function Get-FingerprintSummary {
     $lines = @()
     switch ($key) {
         "local" { $title = "本機連線問題"; $lines = @("找不到可用的網卡或預設閘道。", "問題在這台電腦或它的連線：網路線、Wi-Fi 連線、網卡停用或 DHCP 沒有回應。", "用同一個網路上的另一台裝置測試，確認是否只有這台電腦有問題。") }
-        "gateway-unreachable" { $title = "閘道沒有回應"; $lines = @("已設定預設閘道，但閘道不回應 Ping。", "問題在這台電腦和路由器之間：連線、Wi-Fi、交換器或路由器本身。", "確認連線燈號或 Wi-Fi 訊號，以及其他裝置能否連到路由器。", "這項檢查失敗的閘道——不回應送給它自己的 Ping，或回應得很慢——是嫌疑、不是定罪：它可能一邊正常轉送流量、一邊丟棄或降低這種 Ping 的優先權。有連線成功，只有在那條連線的路由經過這個閘道時才算證明——同網段的主機、VPN 或 Proxy 都可能沒經過它就成功——所以先查到它的那段連線，把閘道當成未證實，而不是壞掉。") }
+        "gateway-unreachable" {
+            $title = "閘道沒有回應"
+            # 第二行是依近端那一階量到的結果選的（backlog #60）：近端主機有回應，就洗清了本地路徑、只剩閘道本身；
+            # 近端主機也沒回應，就把問題放在閘道之前的本地路徑；沒有近端主機，或它既沒通過、也沒丟回覆，這一行就
+            # 像以前一樣點出整段。
+            $pathLine = "問題在這台電腦和路由器之間：連線、Wi-Fi、交換器或路由器本身。"
+            if ($nearEndPass) { $pathLine = "這台電腦自己網路上的一台主機正常回應了 Ping（近端那一列），所以本地路徑——網卡、網路線或 Wi-Fi、交換器或存取點——在這次執行中是通的；沒有回應的是閘道本身。" }
+            elseif ($nearEndLost) { $pathLine = "這台電腦自己網路上的近端主機也沒有回應，所以問題在閘道之前的本地路徑：連線、Wi-Fi、交換器或存取點。" }
+            $lines = @("已設定預設閘道，但閘道沒有回應送給它的 Ping，或遺失得太多。", $pathLine, "確認連線燈號或 Wi-Fi 訊號，以及其他裝置能否連到路由器。", "這項檢查失敗的閘道——不回應送給它自己的 Ping——是嫌疑、不是定罪：它可能一邊正常轉送流量、一邊丟棄或限速這種 Ping。有連線成功，只有在那條連線的路由經過這個閘道時才算證明——同網段的主機、VPN 或 Proxy 都可能沒經過它就成功——所以先查到它的那段連線，把閘道當成未證實，而不是壞掉。")
+        }
         "gateway-up-internet-dead" { $title = "閘道正常，網際網路不通"; $lines = @("路由器有回應，但往外的連線失敗。", "問題在路由器或更外層：WAN 連線、ISP 或上游防火牆。", "查看路由器的 WAN 狀態，以及其他裝置是否同樣無法上網。") }
         "dns" { $title = "名稱解析失敗"; $lines = @("用 IP 直接連線正常，但主機名稱無法解析。", "問題在 DNS：設定的 DNS 伺服器、過濾服務或名稱本身。", "把報告中的 DNS 伺服器和公司預期設定比對。") }
         "quality" { $title = "連線正常但品質不佳"; $lines = @("連線可用，但封包遺失、延遲、重傳或網卡錯誤超過門檻。", "常見原因：Wi-Fi 訊號弱、線路壅塞、網路線或連接埠故障。", "問題發生時再跑一次並比較數字。") }
@@ -4191,7 +4372,7 @@ function Get-FingerprintSummary {
             # 不論「資訊」列裡寫了什麼，這裡都說「所有檢查都通過」，於是一個選用目標明明失敗了（依設計是 INFO 列），
             # 結語讀起來卻像什麼都沒發生，而那一列就在幾行之下（待辦 #35）。現在說的是判定真正做過的宣稱，
             # 沒有回應的選用目標也直接寫在讀者眼前。
-            $quietOptional = @($results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "INFO" -and (@("ping-target", "tcp", "http") -contains [string]$_.Tag) })
+            $quietOptional = @($results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "INFO" -and (@("ping-target", "ping-near-end", "tcp", "http") -contains [string]$_.Tag) })
             if ($quietOptional.Count -gt 0) {
                 $quietNames = @(@($quietOptional | ForEach-Object { [string]$_.Check }) | Select-Object -Unique)
                 $lines = @("本次執行的所有必要檢查都通過。", ("下列選用目標沒有回應，這不影響整體結果：{0}。" -f ($quietNames -join "、")), "若問題仍然存在，可能在應用程式或伺服器端，或是時好時壞；問題發生時再跑一次。")

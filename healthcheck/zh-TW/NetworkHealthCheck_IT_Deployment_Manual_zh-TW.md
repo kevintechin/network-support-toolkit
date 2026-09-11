@@ -1,4 +1,4 @@
-﻿# 網路健檢工具 1.2.11 — IT 部署手冊
+﻿# 網路健檢工具 1.2.12 — IT 部署手冊
 
 **寫給把工具發出去的 IT 部門。** 套件需要什麼、怎麼依你的環境設定、怎麼部署、安全政策會對它做什麼、怎麼驗證收到的東西沒被動過，以及回來的報告該怎麼處理。
 
@@ -30,14 +30,14 @@
 
 每個啟動器都以 `-NoProfile -ExecutionPolicy Bypass` 和它自己固定的參數執行 PowerShell，不會轉送任何接在 `.cmd` 後面輸入的東西。要傳參數，看第 4 節。
 
-**出廠設定會連到哪裡。** 這台電腦的預設閘道（Ping）、`1.1.1.1`（Ping、一次連接埠 443 的 TCP 連線、往它的 traceroute 前三跳）、`www.microsoft.com`（經作業系統解析器的一次名稱查詢，以及經 Windows 設定的 Proxy 的一次 HTTPS 請求，會跟隨轉址）。換掉它們的方法在第 3.3 節。不會上傳任何東西：報告是報告資料夾裡的檔案。
+**出廠設定會連到哪裡。** 這台電腦的預設閘道（Ping）、`1.1.1.1`（Ping、一次連接埠 443 的 TCP 連線、往它的 traceroute 前三跳）、`www.microsoft.com`（經作業系統解析器的一次名稱查詢，以及經 Windows 設定的 Proxy 的一次 HTTPS 請求，會跟隨轉址）。換掉它們的方法在第 3.3 節。出廠沒有近端主機：`NearEndTarget` 是空的，直到你指定一台（第 3.3 節）。不會上傳任何東西：報告是報告資料夾裡的檔案。
 
 ---
 
 ## 2 · 發出去之前
 
 1. **驗證下載的檔案**（第 6 節）：先比對 ZIP 的 SHA-256 與發行說明，再比對套件內的清單檔。
-2. **決定測試目標**（第 3.3 節）。把公網位址換成使用者實際需要的服務，並決定「能不能連外」是不是這個檢測該要求的事。
+2. **決定測試目標**（第 3.3 節）。把公網位址換成使用者實際需要的服務，並決定「能不能連外」是不是這個檢測該要求的事。如果使用者的子網段上有一台穩定、會回應 ping 的主機——同一層樓的印表機或檔案伺服器——把它指定為近端主機，報告就能把本地路徑和閘道分開。
 3. **設定公司標準**（第 3.2 節），如果你希望報告能說位址、閘道、DNS 伺服器或 DHCP 模式*對不對*。出廠狀態下，工具只顯示目前設定，並說明尚未定義標準。
 4. **依你自己的基準校正門檻**（第 3.5 節）：有線、Wi-Fi、VPN、WAN 和資料中心的線路不會共用同一組數字。
 5. **決定報告放哪裡、怎麼處理**（第 3.1 與第 7 節）。報告含電腦與使用者名稱、位址、Wi-Fi 網路、Proxy 與前幾跳的路由器；完整清單由使用手冊第 5 節「報告裡有什麼」維護。工具交到任何人手上之前，先決定處理規定。
@@ -102,7 +102,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 
 ### 3.3 · 測試目標（`Tests`）
 
-四份清單加一份群組名稱清單。每個目標可以給顯示用的 `Name`（那一列的標題）和一個 `Required` 旗標；TCP 與 HTTP 目標還可以有 `Group`。
+四份清單、一台近端主機，加一份群組名稱清單。每個目標可以給顯示用的 `Name`（那一列的標題）和一個 `Required` 旗標；TCP 與 HTTP 目標還可以有 `Group`。
 
 ```json
 "Tests": {
@@ -110,6 +110,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
     { "Name": "預設閘道", "Address": "AUTO_GATEWAY", "Required": true },
     { "Name": "檔案伺服器", "Address": "10.0.0.20", "Required": false }
   ],
+  "NearEndTarget": { "Name": "本層印表機", "Address": "10.0.0.7", "Required": false },
   "DnsNames": [
     { "Name": "DNS 名稱解析", "Host": "intranet.company.local", "Required": true }
   ],
@@ -126,10 +127,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 | 清單 | 欄位 | 省略 `Required` 時 | 說明 |
 |---|---|---|---|
 | `PingTargets` | `Name`、`Address`、`Required` | `false` | `AUTO_GATEWAY` 代表主要網卡的 IPv4 預設閘道，`AUTO_DNS` 代表它們的 DNS 伺服器，解析出的每個位址各一列。佔位符解析不出任何位址時，必要目標列為異常，選用目標列為需注意 |
+| `NearEndTarget` | `Name`、`Address`、`Required` | `false` | 一個物件，不是清單：ping 階梯的近端那一階——使用者自己子網段上、不是閘道的一個 IPv4 位址，第一個被 Ping。出廠是空的；見下面的「近端那一階」。名稱、佔位符或不在這台機器任何子網段上的位址都不會被探測，那一列會說為什麼 |
 | `DnsNames` | `Name`、`Host`、`Required` | **`true`** | 清單裡直接寫一個字串也接受，視為必要。查詢走作業系統的解析器，不會逐一查詢每台設定的伺服器 |
 | `TcpTargets` | `Name`、`Host`、`Port`、`Required`、`Group` | `false` | 對該連接埠做一次 TCP 連線，建立後立刻關閉；工具不在上面送任何資料 |
 | `HttpTargets` | `Name`、`Url`、`Required`、`Group` | `false` | 經系統 Proxy 的一次 GET，提供 TLS 1.2，跟隨轉址；4xx 或 5xx 的回應仍算連得到，並保留狀態碼。請用沒有副作用的 URL：目標的記錄會看到這個請求 |
 | `RequiredConnectivityGroups` | 名稱 | — | 整體結果所依據的群組 |
+
+**近端那一階（`NearEndTarget`）。** 出廠的 ping 階梯有兩階——閘道和 `1.1.1.1`——而每一階都包含它之前的所有東西：閘道的探測經過網卡、網路線或 Wi-Fi 連線、交換器或存取點，由閘道自己的控制平面回應；公網目標的探測經過這一切，再加上閘道和 WAN。**近端主機**加上閘道之前的那一階——使用者自己子網段上、不是閘道、由一般 IP 堆疊回應的一台主機——讓本地路徑可以單獨被量到，數字裡既沒有閘道的控制平面，也沒有 WAN。報告於是能當成一道階梯來讀，而「閘道沒有回應」的摘要會說出問題在閘道的哪一邊（第 7 節）。**怎麼挑。** 工具選不出來，因為某個候選主機是不是穩定、會不會回應 ICMP，是你的判斷：和使用者同一個 VLAN 上的印表機、檔案伺服器或 NAS，以它的 IPv4 位址指定。報告的網卡列會寫出回應租約的 DHCP 伺服器，IT 區段會寫出閘道的鄰居；兩者只有在是那個子網段上的普通主機、而且不是閘道本身時才算候選。**閘道不能當這一階**——它已經是下一階，而且它是用控制平面回應 Ping 的，設備通常會對這種流量限速——所以等於這台機器某個預設閘道的位址，在送出任何東西之前就會被拒絕；名稱也一樣（這一階必須在探測出去之前就放到位，名稱會讓它落在解析器之後）；主要網卡所在子網段之外的位址則報成「沒有探測」（帶著公司設定檔在家裡的筆電：那一列會這麼說，什麼都不送、也不算數；必要的那一種會多一列每個必要目標都會有的「沒有執行」列）。**怎麼讀各階。** 通過的一階，說明它經過的路段在那一刻是通的；第一個失敗的一階，把問題放在最後一個通過的階之外——但不會更近。兩階的數字是不同時刻送出的不同流量，所以**絕對不能相減成兩階之間那一段的遺失率**——到公網位址遺失 3 %、到閘道遺失 0 %，不等於 WAN 遺失 3 %——工具不算這種數字，也不算 TTL 限制探測的逐跳遺失率：中間節點的回覆來自限速的控制平面，會在轉送得好好的節點上顯示遺失。能把無線和有線分開的三方比較——一台有線和一台無線用戶端對同一台本地主機，再各自對同一個外部目標——需要第二台機器和綁定來源的探測，它放在 repo 的 SOP 裡，而不是放在一個只在一台機器上執行的工具裡。**代價。** 多一個 ping 目標：`PingCount` 次探測，有回覆遺失時和其他目標一樣延續（下面的遺失規則照舊），所以健康的執行只多幾毫秒，主機完全不回應時多 `PingCount` × `PingTimeoutMs`——出廠設定是 4.8 秒。
 
 **目標失敗對整體結果的影響。** 規則和執行選項（第 4 節）用的是同一套，讀報告的人需要知道：
 
@@ -176,7 +180,7 @@ IT 診斷資料（報告最下方收合區裡 IT 範圍的列，永遠不計入�
 
 ### 3.5 · 門檻值（`Thresholds`）
 
-預設值是通用的起始點，而且每一個都是**沒有外部依據的營運預設值**：這張表裡沒有任何一個值背後有標準、量測或記錄下來的決定——這件事在 2026-09-10 查清楚並寫下（backlog #56），免得讀者去推測一個 repo 裡根本沒有的出處。其中兩個值是政策而不是量值——`AdapterErrorWarningDelta` 與 `AdapterDiscardWarningDelta` 是 1，因為*有就值得顯示*——其餘是某人挑的量值。現有的標準定義的是怎麼量測，或是對某一類服務、在某個範圍內設定目標值，從來不是通用的故障門檻；檢視了哪些文件、各自的來源與查證日期，在 repo 裡對應本手冊版本的門檻頁面：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.11/docs/thresholds.md>（英文）。請對照你自己的基準（第 2 節）校準，不要把它們當成工程值。各列拿它們怎麼判定，照程式碼寫出來：
+預設值是通用的起始點，而且每一個都是**沒有外部依據的營運預設值**：這張表裡沒有任何一個值背後有標準、量測或記錄下來的決定——這件事在 2026-09-10 查清楚並寫下（backlog #56），免得讀者去推測一個 repo 裡根本沒有的出處。其中兩個值是政策而不是量值——`AdapterErrorWarningDelta` 與 `AdapterDiscardWarningDelta` 是 1，因為*有就值得顯示*——其餘是某人挑的量值。現有的標準定義的是怎麼量測，或是對某一類服務、在某個範圍內設定目標值，從來不是通用的故障門檻；檢視了哪些文件、各自的來源與查證日期，在 repo 裡對應本手冊版本的門檻頁面：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.12/docs/thresholds.md>（英文）。請對照你自己的基準（第 2 節）校準，不要把它們當成工程值。各列拿它們怎麼判定，照程式碼寫出來：
 
 | 鍵 | 預設 | 依據 | 規則 |
 |---|---|---|---|
@@ -237,7 +241,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 
 **兩種要避免的寫法。** 用空格再接第二個值（`-PingTarget a b`、`-HttpUrl u1 u2`）不是第二個目標：PowerShell 會直接拒絕繫結 ——「A positional parameter cannot be found that accepts argument 'b'」—— 腳本根本不會開始。早期版本裡它會被繫結到腳本的第一個位置參數 `-ConfigPath`，於是那次執行載入不到設定檔（「找不到設定檔：b」、一列「無法檢查」、內建預設值、整體結果為檢測未完整），而且只測第一個值，第二個目標就這樣無聲無息地不見了。另外在 PowerShell 提示字元下，沒加引號的分號會結束陳述式：`-PingTarget a;b` 只測 `a`，然後把 `b` 當成命令執行；cmd.exe 則會原樣傳入。上面的逗號寫法和加引號的寫法可以避開這兩者。
 
-**額外目標算什麼。** 額外目標都是選用的，也不屬於任何群組：沒有回應的額外 Ping，以及連不上的額外 TCP 或 HTTP 目標，是「資訊」列，不影響整體結果；品質不佳的 Ping 和解析不出來的額外 DNS 名稱是「需注意」列。格式不是 `host:port` 的額外 TCP 目標會被丟掉，並留下一列「啟動提示」警告（「已忽略額外 TCP 目標「…」：格式應為 host:port。」）。這些列的標題是「額外 Ping」、「額外 DNS」、「額外 TCP」、「額外 URL」，都帶著它拿到的值 —— Ping 那幾列接在冒號後面，另外三種寫在標題裡 —— 所以同一種的兩個額外目標在表格裡和結語裡都分得出來。
+**額外目標算什麼。** 額外目標都是選用的，也不屬於任何群組：沒有回應的額外 Ping，以及連不上的額外 TCP 或 HTTP 目標，是「資訊」列，不影響整體結果；品質不佳的 Ping 和解析不出來的額外 DNS 名稱是「需注意」列。格式不是 `host:port` 的額外 TCP 目標會被丟掉，並留下一列「啟動提示」警告（「已忽略額外 TCP 目標「…」：格式應為 host:port。」）。這些列的標題是「額外 Ping」、「額外 DNS」、「額外 TCP」、「額外 URL」，都帶著它拿到的值 —— Ping 那幾列接在冒號後面，另外三種寫在標題裡 —— 所以同一種的兩個額外目標在表格裡和結語裡都分得出來。近端主機不是額外目標：它是這個站點的屬性，只挑一次，沒有參數也沒有面板欄位——寫在設定檔裡（第 3.3 節），主控台執行可以用 `-ConfigPath` 指向候選的設定檔。
 
 **這次執行的選項記在哪裡。** 報告標頭的「執行設定」一行：`IT 入口 | 額外目標：ping 10.0.0.1, tcp fileserver:445 | Ping 次數 4 | 取樣 20 秒 | traceroute 3 跳`，關掉的檢查以「已停用：…」列出；以及 JSON 的 `RunOptions`：`EntryPoint`、`ExpandDetails`、`ExtraTargets`（接受的值）、`RawTargets`（輸入的原文）、`PingCount`、`PingCountMaximum`、`SampleSeconds`、`TracerouteHops`、`ChecksEnabled`。「執行設定」裡的 `Ping 次數` 是起始次數，旁邊的 `Ping 上限` 是延續取樣停在哪裡；每一列實際送出多少次，寫在那一列自己裡面。
 
@@ -269,10 +273,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 **下載檔。** 專案 Releases 頁面的發行說明給出 `NetworkHealthCheck-<版本>.zip` 的 SHA-256。解壓縮前先比對：
 
 ```text
-certutil -hashfile NetworkHealthCheck-1.2.11.zip SHA256
+certutil -hashfile NetworkHealthCheck-1.2.12.zip SHA256
 ```
 
-或在 PowerShell 用 `Get-FileHash NetworkHealthCheck-1.2.11.zip`。發行檔只由 repo 裡受版本控制的檔案打包，所以裡面沒有任何報告或執行輸出。
+或在 PowerShell 用 `Get-FileHash NetworkHealthCheck-1.2.12.zip`。發行檔只由 repo 裡受版本控制的檔案打包，所以裡面沒有任何報告或執行輸出。
 
 **清單檔。** 套件最上層的 `SHA256SUMS.txt` 列出每個出廠檔案的摘要，除了它自己、`VALIDATION.md` 和 `validation-matrix.html`：每個檔案一行，`<sha256>  <相對路徑>`，中間兩個空格。單一檔案可以用 `Get-FileHash <檔案>` 手動比對，全部則交給驗證程式。
 
@@ -296,9 +300,9 @@ python tools\validate_release.py .
 
 **發出去之前先定處理規定**：報告可以送到哪裡、留多久、誰能看，並在把工具交給使用者的同一則訊息裡說明；使用手冊只說請依公司對這類資訊的規定處理。報告是一般檔案：保留期限就是你對報告資料夾（或共用資料夾，第 3.1 節）套用的規定。
 
-**給你的工具用。** JSON 報告是 schema 2：`SchemaVersion`、`ToolVersion`、`RunOptions`（第 4 節）、`Fingerprint`（`Key`、`Title`、`Lines`，即「要告訴 IT 的話」）、`Overall`（`Code`、`Text`、`Description`）、`Counts`、`System`、`StartedAt`、`FinishedAt`，以及 `Results`：每一列一個物件，含 `Time`、`Category`、`Check`、`Status`（`PASS`、`WARN`、`FAIL`、`INFO`、`ERROR`）、`Message`、`Details`、`Diagnostics`、`Tag`、`Scope`（`Main` 或 `IT`）與 `Weightless`。`Tag` 是與語言無關的檢查名稱（`ping-gateway`、`dns`、`connectivity-group`、`tcp-retransmissions`、`expected-standard`……）；技術文件第 4.10 節有清單，`Scope` 則告訴你整體結果忽略了哪些列；`Weightless`（在 schema 2 下新增的欄位）為 `true` 時，代表這一列保有徽章、訊息與 `Counts` 裡的位置，卻不決定 `Overall`，也不決定 `Fingerprint`——量不到的統計、對所套用門檻來說太粗的樣本，或關於這次執行拿到什麼的事實。它就是「`Overall` 是 `PASS`，旁邊卻有 `ERROR` 或 `WARN` 列」的解釋。
+**給你的工具用。** JSON 報告是 schema 2：`SchemaVersion`、`ToolVersion`、`RunOptions`（第 4 節）、`Fingerprint`（`Key`、`Title`、`Lines`，即「要告訴 IT 的話」）、`Overall`（`Code`、`Text`、`Description`）、`Counts`、`System`、`StartedAt`、`FinishedAt`，以及 `Results`：每一列一個物件，含 `Time`、`Category`、`Check`、`Status`（`PASS`、`WARN`、`FAIL`、`INFO`、`ERROR`）、`Message`、`Details`、`Diagnostics`、`Tag`、`Scope`（`Main` 或 `IT`）、`Weightless` 與 `Rule`。`Tag` 是與語言無關的檢查名稱（`ping-gateway`、`ping-near-end`、`dns`、`connectivity-group`、`tcp-retransmissions`、`expected-standard`……）；技術文件第 4.10 節有清單，`Scope` 則告訴你整體結果忽略了哪些列；`Weightless`（在 schema 2 下新增的欄位）為 `true` 時，代表這一列保有徽章、訊息與 `Counts` 裡的位置，卻不決定 `Overall`，也不決定 `Fingerprint`——量不到的統計、對所套用門檻來說太粗的樣本，或關於這次執行拿到什麼的事實。它就是「`Overall` 是 `PASS`，旁邊卻有 `ERROR` 或 `WARN` 列」的解釋。`Rule`（同樣是 schema 2 下新增的欄位）只在 ping 的列上有值：遺失級別決定這一列狀態時是 `loss`，真的回來的那些回覆決定時是 `latency`，什麼都沒決定時是空的——摘要就是靠它分辨「回覆沒回來的閘道」和「回應得慢的閘道」。
 
-**讀報告。** 使用手冊解釋整體結果、「要告訴 IT 的話」的標題與各種標籤；技術文件解釋每一條規則。repo 的 `sop` 資料夾有支援工程師的現場手冊和把報告整理成交接文件的範本。 那本現場手冊有一條讀法也該寫在這裡，因為電話那頭的人手上沒有它：唯一的必要 ping 目標——預設閘道——是由閘道自己的 stack 回應的，而網路設備通常會對送給自己的 ICMP 限速或降低優先權——所以閘道爽快回應是「近端路徑正常」的好證據，「閘道沒有回應」則是嫌疑、不是定罪——而且不論閘道是沒回應還是回應得很慢，標題都是這一個，因為這段摘要讀的是那一列的狀態而不是它量到的數字；那一列自己會說是哪一種（repo 待辦 #67）。請讀成「先查本地路徑，同時考慮設備可能就是不回應送給自己的 ping」——同一份報告裡閘道之外的目標通過，只有在它的路由經過這個閘道時才證明它有在轉送：同網段的主機、VPN 或 Proxy 都可能沒經過它就成功，而多網卡機器上 `AUTO_GATEWAY` 會為每個閘道各寫一列。這項檢查維持必要，因為連自己閘道都到不了的機器通常真的有問題值得回報（2026-09-10 決定，backlog #58）；失敗那一列的詳細資料和「要告訴 IT 的話」現在也這麼說。
+**讀報告。** 使用手冊解釋整體結果、「要告訴 IT 的話」的標題與各種標籤；技術文件解釋每一條規則。repo 的 `sop` 資料夾有支援工程師的現場手冊和把報告整理成交接文件的範本。 那本現場手冊有一條讀法也該寫在這裡，因為電話那頭的人手上沒有它：唯一的必要 ping 目標——預設閘道——是由閘道自己的 stack 回應的，而網路設備通常會對送給自己的 ICMP 限速或降低優先權——所以閘道爽快回應是「近端路徑正常」的好證據，「閘道沒有回應」則是嫌疑、不是定罪。這個標題的意思是回覆沒有回來：每次 Ping 都有回應、只是回應得慢的閘道，是「連線正常但品質不佳」——旁邊還有別的失敗時，則是「有必要檢查未通過」——因為摘要讀的是哪一種量測決定了那一列（早期版本只讀狀態，把兩種都標成同一個標題）。有設定近端主機時（第 3.3 節），摘要的第二行會說問題在閘道的哪一邊。請讀成「先查本地路徑，同時考慮設備可能就是不回應送給自己的 ping」——同一份報告裡閘道之外的目標通過，只有在它的路由經過這個閘道時才證明它有在轉送：同網段的主機、VPN 或 Proxy 都可能沒經過它就成功，而多網卡機器上 `AUTO_GATEWAY` 會為每個閘道各寫一列。這項檢查維持必要，因為連自己閘道都到不了的機器通常真的有問題值得回報（2026-09-10 決定，backlog #58）；失敗那一列的詳細資料和「要告訴 IT 的話」現在也這麼說。
 
 ---
 
@@ -316,7 +320,7 @@ python tools\validate_release.py .
 
 **要向使用者要什麼**，使用手冊第 6 節逐列寫了；環境報告和 `LauncherError.txt` 就是為這個交接而寫的。`LauncherError.txt` 在啟動器旁邊，那個資料夾無法寫入時改寫在 `%TEMP%` 的 `NetworkHealthCheck_LauncherError.txt`，欄位較少。
 
-**放行工具。** 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：`SHA256SUMS.txt` 給出每支 `NetworkHealthCheck.ps1` 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.11/docs/application-control.md>（英文），最新版本在 `main` 分支。
+**放行工具。** 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：`SHA256SUMS.txt` 給出每支 `NetworkHealthCheck.ps1` 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.12/docs/application-control.md>（英文），最新版本在 `main` 分支。
 
 **簽章。** 用你自己的憑證授權單位做 Authenticode 簽章，要在簽署憑證也受這台電腦信任時（憑證鏈受信任，且憑證在「受信任的發行者」存放區）才滿足 *AllSigned* 原則：發行者尚未被歸為信任時，PowerShell 會先詢問使用者才執行腳本（問題會出現在啟動器的視窗裡），無法詢問的工作階段就不執行。簽章也讓應用程式控制規則能依發行者放行。簽章會在腳本後面附加一段簽章區塊，所以簽過的檔案不再符合 `SHA256SUMS.txt`；請自己記下簽過檔案的摘要。
 
@@ -347,10 +351,10 @@ python tools\validate_release.py .
 - **使用手冊**：`NetworkHealthCheck_User_Manual_zh-TW.html`（或 `.md`）：使用者看到什麼、整體結果與標籤、報告裡有什麼、跑不起來時怎麼辦。
 - **技術文件**：`NetworkHealthCheck_Technical_Guide_zh-TW.md`：設計、每一條判定規則、驗證方式、已知限制、版本歷程。
 - **驗證記錄**：`VALIDATION.md`：每一版的證據，以及在其他機器上的驗收執行。
-- **待辦清單**：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.11/docs/backlog.md>（英文）：已知還沒做的事，以及每一項要怎樣才算結案。它和第 8 節的應用程式控制那一頁一樣放在 repo 而不在套件裡，因為它在兩次發行之間就會變動。
-- **門檻依據**：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.11/docs/thresholds.md>（英文）：出貨的門檻值從哪裡來——依一個記錄下來的決定，不是任何外部來源——以及現有的公開標準給了什麼、沒給什麼，每一筆都對照來源查證並註明日期。放在 repo 的理由相同。
+- **待辦清單**：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.12/docs/backlog.md>（英文）：已知還沒做的事，以及每一項要怎樣才算結案。它和第 8 節的應用程式控制那一頁一樣放在 repo 而不在套件裡，因為它在兩次發行之間就會變動。
+- **門檻依據**：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.12/docs/thresholds.md>（英文）：出貨的門檻值從哪裡來——依一個記錄下來的決定，不是任何外部來源——以及現有的公開標準給了什麼、沒給什麼，每一筆都對照來源查證並註明日期。放在 repo 的理由相同。
 - **Repo**：<https://github.com/kevintechin/network-support-toolkit>：發行版本、驗證鏈（`tests`）、支援工程師現場手冊與報告範本（`sop`），以及第 8 節提到的應用程式控制頁面。
 
 ---
 
-*NetworkHealthCheck 1.2.11。本手冊描述的是出廠狀態的工具與本版本量測到的行為；這裡引用的規則都是程式碼的規則，技術文件有完整的陳述。*
+*NetworkHealthCheck 1.2.12。本手冊描述的是出廠狀態的工具與本版本量測到的行為；這裡引用的規則都是程式碼的規則，技術文件有完整的陳述。*

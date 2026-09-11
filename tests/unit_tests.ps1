@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -343,8 +343,10 @@ function Add-CheckResult {
     # -Weightless is bound rather than left to $args since 1.2.10: backlog #51's acceptance asks for rows that
     # differ in what they decide and not only in what they say, and a stub that swallowed the switch could not
     # tell the two apart.
-    param([string]$Category, [string]$Check, [string]$Status, [string]$Message, [string]$Details = "", [string]$Diagnostics = "", [string]$Tag = "", [string]$Scope = "Main", [switch]$Weightless)
-    $row = [pscustomobject]@{ Category = $Category; Check = $Check; Status = $Status; Message = $Message; Details = $Details; Diagnostics = $Diagnostics; Tag = $Tag; Scope = $Scope; Weightless = [bool]$Weightless }
+    # -Rule the same way since 1.2.12 (backlog #67): a row rewritten by its second pass assigns it, and a stub
+    # without the field would stop the harness there.
+    param([string]$Category, [string]$Check, [string]$Status, [string]$Message, [string]$Details = "", [string]$Diagnostics = "", [string]$Tag = "", [string]$Scope = "Main", [switch]$Weightless, [string]$Rule = "")
+    $row = [pscustomobject]@{ Category = $Category; Check = $Check; Status = $Status; Message = $Message; Details = $Details; Diagnostics = $Diagnostics; Tag = $Tag; Scope = $Scope; Weightless = [bool]$Weightless; Rule = $Rule }
     [void]$script:TcpRows.Add($row)
     return $row
 }
@@ -919,8 +921,10 @@ $scriptText = $scriptAst.Extent.Text
 $hostReads = @([regex]::Matches($scriptText, 'ConvertTo-SafeString \(Get-PropertyValue \$\w+ "(?:Host|Address)" ""\)'))
 $trimmedReads = @([regex]::Matches($scriptText, '\(ConvertTo-SafeString \(Get-PropertyValue \$\w+ "(?:Host|Address)" ""\)\)\.Trim\(\)'))
 # Seven, not six: the count is asserted so that a new read site has to be looked at rather than quietly joining
-# the untrimmed ones - which is how the traceroute target was found, a site the review did not name.
-Assert-Equal '#39 host values: the script reads seven of them' $hostReads.Count 7
+# the untrimmed ones - which is how the traceroute target was found, a site the review did not name. Nine since
+# 1.2.12: the near-end target's address is read in the configuration check and again where the probes are sent
+# (backlog #60), both trimmed, and both looked at here on the way in.
+Assert-Equal '#39 host values: the script reads nine of them' $hostReads.Count 9
 Assert-Equal '#39 host values: and every one is trimmed' $trimmedReads.Count $hostReads.Count
 Assert-Equal '#39 host values: the bare-string DNS form too' (@([regex]::Matches($scriptText, '\$hostName = \(\[string\]\$dns\w+\)\.Trim\(\)')).Count) 2
 Assert-Equal '#39 host values: and none of it is read raw' ($scriptText -match '\$hostName = \[string\]\$dns') False
@@ -1396,6 +1400,89 @@ Assert-Equal '#51 row: finishing the sample adds no second row' (@($script:TcpRo
 Assert-Equal '#51 row: the row it already had now carries the whole sample' ($provisional.Message -match '20/21') True
 Assert-Equal '#51 row: and the verdict that sample can carry' $provisional.Status 'PASS'
 Assert-Equal '#51 row: which decides the run again' $provisional.Weightless False
+
+# ---- backlog #67: which measurement decided a ping row is on the row, not only in its prose ----
+# Rule is "loss" where the loss band decided the status - a row nothing answered included, and a withheld one, since
+# the band it reached was a loss band - "latency" where the replies that did arrive did, and empty where nothing did.
+# The values are the same literals in both packages.
+Assert-Equal '#67 rule: a row that passed names none' $rowOneOfTwentyOne.Rule ''
+Assert-Equal '#67 rule: three lost of four was decided by its loss' $rowThreeOfFour.Rule 'loss'
+Assert-Equal '#67 rule: nothing answering was decided by its loss too' $rowSilent.Rule 'loss'
+Assert-Equal '#67 rule: a withheld loss verdict still names the loss band it reached' $rowOneOfFour.Rule 'loss'
+Assert-Equal '#67 rule: a gateway that answered everything slowly was decided by its latency' $rowSlowGateway.Rule 'latency'
+Assert-Equal '#67 rule: and so was the row whose loss verdict was withheld and whose latency was not' $rowSlow.Rule 'latency'
+$rowSlowOptional = Get-PingRow 4 4 300 $false
+Assert-Equal '#67 rule: an optional target answering slowly warns' $rowSlowOptional.Status 'WARN'
+Assert-Equal '#67 rule: and names its latency all the same' $rowSlowOptional.Rule 'latency'
+Assert-Equal '#67 rule: a sample that finished as a pass has its rule cleared with its status' $provisional.Rule ''
+# The fingerprint is what the field exists for: it reads it, and the row that carried the old blindness - a
+# gateway failed on latency - is kept out of the gateway-unreachable predicate by it. Asserted on the function
+# body, the way the #39 weightless rule is, because a predicate that stopped reading the field would fail no row.
+Assert-Equal '#67 fingerprint: its gateway predicate reads the rule' ((Get-FunctionBody 'Get-FingerprintSummary') -match '"ping-gateway"[^\r\n]*\$_\.Rule -ne "latency"') True
+
+# ---- backlog #60: the near-end rung ----
+# The rung line is prose in both packages. What is language-neutral: a near-end row and a gateway row each carry
+# exactly one line more than a far-end row over the same measurement; the near-end line - the third, after the
+# one attempt and the route line - names the host it places, the gateway's names no address, and a far-end row
+# goes straight from its route line to its method line, which names ICMP in both packages.
+function Get-DetailLineAt($row, $index) { return [string]@([string]$row.Details -split "`r`n|`n")[$index] }
+$script:TcpRows = New-Object System.Collections.ArrayList
+Add-PingTargetResult -Name 'Near-end host' -Target '203.0.113.9' -ConfiguredAddress '203.0.113.9' -Required $false -Measurement (New-PingFixture 4 4 5) -RouteBefore $pingRoute.Selection -RouteAfter $pingRoute -TargetIsAddress $true -TimeoutMs 1200 -NearEnd $true | Out-Null
+$rowNearEnd = @($script:TcpRows)[0]
+$script:TcpRows = New-Object System.Collections.ArrayList
+Add-PingTargetResult -Name 'Internet' -Target '203.0.113.9' -ConfiguredAddress '203.0.113.9' -Required $false -Measurement (New-PingFixture 4 4 5) -RouteBefore $pingRoute.Selection -RouteAfter $pingRoute -TargetIsAddress $true -TimeoutMs 1200 | Out-Null
+$rowFarEnd = @($script:TcpRows)[0]
+$rowGatewayPass = Get-PingRow 4 4 5 $true
+Assert-Equal '#60 rung: the near-end row carries its own tag' $rowNearEnd.Tag 'ping-near-end'
+Assert-Equal '#60 rung: a far-end target keeps the plain one' $rowFarEnd.Tag 'ping-target'
+Assert-Equal '#60 rung: the near-end row is one line longer than a far-end row over the same measurement' ((Get-DetailLineCount $rowNearEnd) - (Get-DetailLineCount $rowFarEnd)) 1
+Assert-Equal '#60 rung: and so is the gateway row' ((Get-DetailLineCount $rowGatewayPass) - (Get-DetailLineCount $rowFarEnd)) 1
+Assert-Equal '#60 rung: the near-end line names the host it places' ((Get-DetailLineAt $rowNearEnd 2) -match '203\.0\.113\.9') True
+Assert-Equal '#60 rung: the gateway line names no address' ((Get-DetailLineAt $rowGatewayPass 2) -match '\d+\.\d+\.\d+\.\d+') False
+Assert-Equal '#60 rung: the two rung lines are different sentences' ((Get-DetailLineAt $rowNearEnd 2) -eq (Get-DetailLineAt $rowGatewayPass 2)) False
+Assert-Equal '#60 rung: a far-end row goes straight to its method line' ((Get-DetailLineAt $rowFarEnd 2) -match 'ICMP') True
+Assert-Equal '#60 rung: a near-end row that passed carries no gateway sentence' (Get-DetailMatchCount $rowNearEnd 'echo') 1
+# Where the near-end target sits, decided before anything is sent: the gateway itself, inside a primary adapter's
+# IPv4 subnet, or neither. An adapter whose prefix is unknown contributes no subnet, and the gateway is refused
+# before any subnet is consulted. The subnet test underneath is asserted on its own first, because the chain's
+# result-set oracle loads it from the package as one of the converters it does not re-implement.
+Assert-Equal '#60 cidr: the last address of a /24 is inside it' (Test-IPv4InCidr -IpAddress '192.0.2.255' -Cidr '192.0.2.10/24') True
+Assert-Equal '#60 cidr: the next network is not' (Test-IPv4InCidr -IpAddress '192.0.3.1' -Cidr '192.0.2.10/24') False
+Assert-Equal '#60 cidr: a bare address is no subnet' (Test-IPv4InCidr -IpAddress '192.0.2.20' -Cidr '192.0.2.10') False
+$nearAdapters = @([pscustomobject]@{ IPv4Addresses = @('192.0.2.10'); IPv4WithPrefix = @('192.0.2.10/24'); Gateways = @('192.0.2.1'); DnsServers = @() })
+Assert-Equal '#60 placement: the gateway itself' (Test-NearEndTargetPlacement -Address '192.0.2.1' -PrimaryAdapters $nearAdapters).Placement 'gateway'
+Assert-Equal '#60 placement: a host inside the subnet' (Test-NearEndTargetPlacement -Address '192.0.2.20' -PrimaryAdapters $nearAdapters).Placement 'on-subnet'
+Assert-Equal '#60 placement: a host outside it' (Test-NearEndTargetPlacement -Address '198.51.100.5' -PrimaryAdapters $nearAdapters).Placement 'off-subnet'
+Assert-Equal '#60 placement: the subnets it judged by are reported' ((Test-NearEndTargetPlacement -Address '198.51.100.5' -PrimaryAdapters $nearAdapters).Subnets -join ',') '192.0.2.10/24'
+$twoAdapters = $nearAdapters + @([pscustomobject]@{ IPv4Addresses = @('10.0.0.5'); IPv4WithPrefix = @('10.0.0.5/8'); Gateways = @('10.0.0.254'); DnsServers = @() })
+Assert-Equal '#60 placement: on a multihomed machine any primary subnet places it' (Test-NearEndTargetPlacement -Address '10.20.30.40' -PrimaryAdapters $twoAdapters).Placement 'on-subnet'
+Assert-Equal '#60 placement: and either gateway is refused' (Test-NearEndTargetPlacement -Address '10.0.0.254' -PrimaryAdapters $twoAdapters).Placement 'gateway'
+$bareAdapters = @([pscustomobject]@{ IPv4Addresses = @('192.0.2.10'); IPv4WithPrefix = @('192.0.2.10'); Gateways = @('192.0.2.1'); DnsServers = @() })
+Assert-Equal '#60 placement: an adapter whose prefix is unknown places nothing' (Test-NearEndTargetPlacement -Address '192.0.2.20' -PrimaryAdapters $bareAdapters).Placement 'off-subnet'
+Assert-Equal '#60 placement: and says it judged by no subnet' (@((Test-NearEndTargetPlacement -Address '192.0.2.20' -PrimaryAdapters $bareAdapters).Subnets).Count) 0
+Assert-Equal '#60 placement: the gateway is refused before any subnet is consulted' (Test-NearEndTargetPlacement -Address '192.0.2.1' -PrimaryAdapters $bareAdapters).Placement 'gateway'
+# The near-end entry is built in the run and never read from the ping list, so a list entry cannot promote itself
+# to the rung, and the traceroute - which walks the list for its target - never meets it.
+Assert-Equal '#60 ladder: the near-end entry is built by the run' ((Get-FunctionBody 'Test-PingTargets') -match 'NearEnd = \$true') True
+Assert-Equal '#60 ladder: the traceroute never sees the near-end target' ((Get-FunctionBody 'Add-TracerouteResult') -match 'NearEndTarget') False
+
+# ---- backlog #32: the server that answered the lease, beside the mode on the adapter row ----
+# Four shapes, in the order the function decides them: a static address names no server whatever the configuration
+# holds, an unreadable class says so and names the class, a lease names its server, and a configuration holding no
+# server address says that. The address is the language-neutral token; the other three are compared with each other.
+$dhcpStatic = Get-DhcpServerText -DhcpEnabled $false -DhcpServer '192.0.2.1'
+$dhcpUnavailable = Get-DhcpServerText -DhcpEnabled $true -DhcpServer $null
+$dhcpLease = Get-DhcpServerText -DhcpEnabled $true -DhcpServer '192.0.2.1'
+$dhcpNone = Get-DhcpServerText -DhcpEnabled $true -DhcpServer ''
+Assert-Equal '#32 dhcp server: a lease names the server that answered it' $dhcpLease '192.0.2.1'
+Assert-Equal '#32 dhcp server: an unknown mode with a server still names it' (Get-DhcpServerText -DhcpEnabled $null -DhcpServer '192.0.2.1') '192.0.2.1'
+Assert-Equal '#32 dhcp server: a static address names no server, whatever the configuration holds' ($dhcpStatic -match '192\.0\.2\.1') False
+Assert-Equal '#32 dhcp server: an unreadable class says which class' ($dhcpUnavailable -match 'Win32_NetworkAdapterConfiguration') True
+Assert-Equal '#32 dhcp server: a static address does not borrow that sentence' ($dhcpStatic -match 'Win32_NetworkAdapterConfiguration') False
+Assert-Equal '#32 dhcp server: no server held is a sentence of its own' (@($dhcpStatic, $dhcpUnavailable, $dhcpLease) -contains $dhcpNone) False
+Assert-Equal '#32 dhcp server: and every shape says something' (($dhcpStatic.Length -gt 0) -and ($dhcpNone.Length -gt 0)) True
+Assert-Equal '#32 dhcp server: the adapter row prints it' ((Get-FunctionBody 'Add-NetworkSnapshotResults') -match 'Get-DhcpServerText') True
+Assert-Equal '#32 dhcp server: the chain''s own probe records the same field' ((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'environment_probe.ps1') -Raw) -match 'DHCPServer=\{5\}') True
 
 # ---- the TCP half: the count floor, and #63's standalone trigger removed ----
 function New-TcpPair($sent, $retransmitted) {

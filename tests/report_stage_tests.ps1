@@ -133,6 +133,50 @@ Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "ping-gateway" "PASS"; A
 Assert-Equal 'D: required group fails while another passes -> mixed, not internet-dead' (Get-FingerprintSummary).Key "mixed"
 Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "ping-gateway" "ERROR"; Add-Tagged "connectivity-group" "PASS"
 Assert-Equal 'D: gateway ping could not execute -> incomplete, not gateway-unreachable (round 5)' (Get-FingerprintSummary).Key "incomplete"
+# backlog #67: the fingerprint reads which measurement decided the gateway row. A gateway that answered every probe
+# slowly is reachable, so it is a quality finding - or mixed, beside another failure - and never "does not answer";
+# a row decided by its loss, and a failed row that names no rule at all, keep the reading they always had.
+function Add-Ruled($tag, $status, $rule) { Add-CheckResult -Category "T" -Check $tag -Status $status -Message "m" -Details "" -Tag $tag -Rule $rule | Out-Null }
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Ruled "ping-gateway" "FAIL" "latency"; Add-Tagged "connectivity-group" "PASS"
+Assert-Equal 'D: #67 a slow gateway alone -> quality, not gateway-unreachable' (Get-FingerprintSummary).Key "quality"
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Ruled "ping-gateway" "FAIL" "latency"; Add-Tagged "connectivity-group" "FAIL"
+Assert-Equal 'D: #67 a slow gateway beside a failed group -> mixed, not gateway-unreachable' (Get-FingerprintSummary).Key "mixed"
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Ruled "ping-gateway" "FAIL" "loss"; Add-Tagged "connectivity-group" "FAIL"
+Assert-Equal 'D: #67 a gateway that lost its replies -> gateway-unreachable' (Get-FingerprintSummary).Key "gateway-unreachable"
+$silentLines = @((Get-FingerprintSummary).Lines)
+Assert-Equal 'D: #67 the rule field is on every row, empty unless a row sets it' ((@($script:Results)[0].PSObject.Properties.Name -contains "Rule") -and (@($script:Results)[0].Rule -eq "")) True
+# backlog #60: the near-end rung chooses the second line of that summary and nothing else about it. A near-end host
+# that answered leaves the gateway itself; one that lost its replies puts the fault before it; one that answered
+# slowly, or that was not measured, leaves the line as it was. The lines are prose in both packages, so what is
+# asserted is which of them differ.
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Tagged "ping-near-end" "PASS"; Add-Ruled "ping-gateway" "FAIL" "loss"; Add-Tagged "connectivity-group" "FAIL"
+$nearPassSummary = Get-FingerprintSummary
+Assert-Equal 'D: #60 a near-end host that answered leaves the key' $nearPassSummary.Key "gateway-unreachable"
+Assert-Equal 'D: #60 and the line count' (@($nearPassSummary.Lines).Count) 5
+Assert-Equal 'D: #60 but chooses a second line of its own' (@($nearPassSummary.Lines)[1] -eq $silentLines[1]) False
+Assert-Equal 'D: #60 leaving the first line alone' (@($nearPassSummary.Lines)[0] -eq $silentLines[0]) True
+Assert-Equal 'D: #60 and the third' (@($nearPassSummary.Lines)[2] -eq $silentLines[2]) True
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Ruled "ping-near-end" "FAIL" "loss"; Add-Ruled "ping-gateway" "FAIL" "loss"; Add-Tagged "connectivity-group" "FAIL"
+$nearLostSummary = Get-FingerprintSummary
+Assert-Equal 'D: #60 a near-end host that did not answer either keeps the key' $nearLostSummary.Key "gateway-unreachable"
+Assert-Equal 'D: #60 and chooses a third second line' ((@($nearLostSummary.Lines)[1] -ne $silentLines[1]) -and (@($nearLostSummary.Lines)[1] -ne @($nearPassSummary.Lines)[1])) True
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Ruled "ping-near-end" "FAIL" "latency"; Add-Ruled "ping-gateway" "FAIL" "loss"; Add-Tagged "connectivity-group" "FAIL"
+Assert-Equal 'D: #60 a slow near-end host decides nothing about that line' (@((Get-FingerprintSummary).Lines)[1] -eq $silentLines[1]) True
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-CheckResult -Category "T" -Check "ping-near-end" -Status "INFO" -Message "m" -Details "" -Tag "ping-near-end" -Weightless | Out-Null; Add-Ruled "ping-gateway" "FAIL" "loss"; Add-Tagged "connectivity-group" "FAIL"
+Assert-Equal 'D: #60 a near-end host that was not probed decides nothing about it either' (@((Get-FingerprintSummary).Lines)[1] -eq $silentLines[1]) True
+# The near-end row is a quality row like the other rungs, and in a healthy run an optional one that answered nothing
+# is named as such - while one that was not probed, because it was not on this network, is named among the rows that
+# were not measured and never as one that did not answer.
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "ping-gateway" "PASS"; Add-Tagged "connectivity-group" "PASS"; Add-Tagged "ping-near-end" "WARN"
+Assert-Equal 'D: #60 a degraded near-end host is a quality finding' (Get-FingerprintSummary).Key "quality"
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "ping-gateway" "PASS"; Add-Tagged "connectivity-group" "PASS"; Add-Tagged "ping-near-end" "INFO"
+$quietNearEnd = Get-FingerprintSummary
+Assert-Equal 'D: #60 an optional near-end host that did not answer is still healthy' $quietNearEnd.Key "healthy"
+Assert-Equal 'D: #60 and is named as one that did not answer' ((@($quietNearEnd.Lines).Count -eq 4) -and (@($quietNearEnd.Lines)[1] -match 'ping-near-end')) True
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "ping-gateway" "PASS"; Add-Tagged "connectivity-group" "PASS"; Add-CheckResult -Category "T" -Check "ping-near-end" -Status "INFO" -Message "m" -Details "" -Tag "ping-near-end" -Weightless | Out-Null
+$unplacedNearEnd = Get-FingerprintSummary
+Assert-Equal 'D: #60 one that was not on this network is healthy too' $unplacedNearEnd.Key "healthy"
+Assert-Equal 'D: #60 named among the rows that were not measured, not as one that did not answer' ((@($unplacedNearEnd.Lines).Count -eq 4) -and (@($unplacedNearEnd.Lines)[1] -eq @((Get-FingerprintSummary).Lines)[1]) -and (@($unplacedNearEnd.Lines)[1] -ne @($quietNearEnd.Lines)[1]) -and (@($unplacedNearEnd.Lines)[2] -match 'ping-near-end')) True
 
 # --- Scenario E: run options / profile text ---
 $o = Set-RunOptions -Overrides @{ EntryPoint = "IT"; ExpandDetails = $true; PingTarget = @("10.0.0.1"); TcpTarget = @("host:445", "bad"); SampleSeconds = 20; TracerouteHops = 99; NoWifi = $true }
