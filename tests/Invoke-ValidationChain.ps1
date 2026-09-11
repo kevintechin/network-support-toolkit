@@ -597,7 +597,7 @@ function Test-ResultSet {
             # run reads the selection twice and this oracle once, so a route that changed during the run is the one
             # shape it cannot predict, and the resultset note is what says so.
             $nearEndSelection = Get-RouteSelection -Target $nearEndAddress
-            if (-not ($nearEndSelection.Resolved -and (Test-IPv4InCidr -IpAddress $nearEndSelection.SourceAddress -Cidr ([string]$nearEndPlacement.Subnet)))) { $nearEndRows = 0; $nearEndTargetRows = 1 }
+            if (-not ($nearEndSelection.Resolved -and $nearEndSelection.OnLink -eq $true -and (Test-IPv4InCidr -IpAddress $nearEndSelection.SourceAddress -Cidr ([string]$nearEndPlacement.Subnet)))) { $nearEndRows = 0; $nearEndTargetRows = 1 }
         }
     }
     # The two TCP counter samples are read independently (baseline, then ending): a class readable in both gives one

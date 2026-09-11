@@ -2075,7 +2075,7 @@ function Get-RouteSelection {
     # is warm, and by the time a run reaches the ping checks the adapter checks have already paid the warm-up.
     # Absence and failure are the datum being unavailable, never the row failing - closed item #5's shape.
     if (-not (Get-Command Find-NetRoute -ErrorAction SilentlyContinue)) {
-        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "cmdlet"; SourceAddress = ""; InterfaceAlias = "" }
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "cmdlet"; SourceAddress = ""; InterfaceAlias = ""; NextHop = ""; OnLink = $false }
     }
 
     # An empty result is not one outcome, and round 1 of PR #45 was right that calling it 'no route' publishes a
@@ -2091,7 +2091,7 @@ function Get-RouteSelection {
         $found = @(Find-NetRoute -RemoteIPAddress ([string]$Target) -ErrorAction SilentlyContinue -ErrorVariable lookupErrors)
     }
     catch {
-        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "error"; SourceAddress = ""; InterfaceAlias = "" }
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "error"; SourceAddress = ""; InterfaceAlias = ""; NextHop = ""; OnLink = $false }
     }
 
     $localAddress = @($found | Where-Object { -not [string]::IsNullOrWhiteSpace((ConvertTo-SafeString $_.IPAddress)) } | Select-Object -First 1)
@@ -2103,14 +2103,23 @@ function Get-RouteSelection {
         if ($errorId -match 'Error 1231') { $reason = "noroute" }
         elseif ($errorId -match 'Error 87') { $reason = "notaddress" }
         elseif ([string]::IsNullOrWhiteSpace($errorId)) { $reason = "noroute" }
-        return [pscustomobject][ordered]@{ Resolved = $false; Reason = $reason; SourceAddress = ""; InterfaceAlias = "" }
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = $reason; SourceAddress = ""; InterfaceAlias = ""; NextHop = ""; OnLink = $false }
     }
 
+    # The route object carries the next hop (PR #51, round 5): 0.0.0.0 - or :: - is an on-link route, the network the
+    # adapter is attached to; any other next hop is a router, and a probe that crosses a router has not measured the
+    # local path however local its target is. A /32 to a host on the subnet via the default gateway keeps the same
+    # source and interface, which is why the source alone cannot attest a rung.
+    $route = @($found | Where-Object { $null -ne $_.PSObject.Properties["NextHop"] } | Select-Object -First 1)
+    $nextHop = ""
+    if ($route.Count -gt 0) { $nextHop = ConvertTo-SafeString $route[0].NextHop }
     return [pscustomobject][ordered]@{
         Resolved       = $true
         Reason         = ""
         SourceAddress  = ConvertTo-SafeString $localAddress[0].IPAddress
         InterfaceAlias = ConvertTo-SafeString $localAddress[0].InterfaceAlias
+        NextHop        = $nextHop
+        OnLink         = ($nextHop -eq "0.0.0.0" -or $nextHop -eq "::")
     }
 }
 
@@ -2615,7 +2624,7 @@ function Get-PingRouteAfter {
     if (@($lookupAddresses).Count -gt 0) { $lookupAddress = ConvertTo-SafeString @($lookupAddresses)[0] }
     $routeOthers = @()
     if ([string]::IsNullOrWhiteSpace($lookupAddress)) {
-        $routeAfter = [pscustomobject][ordered]@{ Resolved = $false; Reason = "noreply"; SourceAddress = ""; InterfaceAlias = "" }
+        $routeAfter = [pscustomobject][ordered]@{ Resolved = $false; Reason = "noreply"; SourceAddress = ""; InterfaceAlias = ""; NextHop = ""; OnLink = $false }
     }
     else {
         $routeAfter = Get-RouteSelection -Target $lookupAddress
@@ -2675,11 +2684,14 @@ function Add-PingTargetResult {
     # lookups agreed, and is what the summary pairs a near-end row with a failed gateway row by. The tag assignment
     # stays a literal for backlog #33's document-fact step.
     $selectionAgreed = ($null -ne $RouteBefore -and $null -ne $RouteAfter.Selection -and $RouteBefore.Resolved -and $RouteAfter.Selection.Resolved -and
-        $RouteBefore.SourceAddress -eq $RouteAfter.Selection.SourceAddress -and $RouteBefore.InterfaceAlias -eq $RouteAfter.Selection.InterfaceAlias)
+        $RouteBefore.SourceAddress -eq $RouteAfter.Selection.SourceAddress -and $RouteBefore.InterfaceAlias -eq $RouteAfter.Selection.InterfaceAlias -and
+        [string]$RouteBefore.NextHop -eq [string]$RouteAfter.Selection.NextHop)
     $path = ""
     if ($selectionAgreed) { $path = [string]$RouteBefore.InterfaceAlias }
     $rungAttested = $false
-    if ($selectionAgreed) {
+    # On-link as well (PR #51, round 5): a next hop is a router, and a probe through a router has not measured the
+    # local path however local its target is.
+    if ($selectionAgreed -and $RouteBefore.OnLink -eq $true) {
         foreach ($rungSubnet in @($RungSubnets)) {
             if (-not [string]::IsNullOrWhiteSpace([string]$rungSubnet) -and (Test-IPv4InCidr -IpAddress $RouteBefore.SourceAddress -Cidr ([string]$rungSubnet))) { $rungAttested = $true; break }
         }
@@ -2787,16 +2799,16 @@ function Add-PingTargetResult {
     # is the row a reader looks at when they are about to subtract one rung from another. A far-end target's row does
     # not claim a rung: where an extra target sits relative to the gateway is not something this row has measured.
     if ($NearEnd -and $rungAttested) {
-        $detailLines += ("Rung: near end - {0} is on a subnet this computer is attached to and is not the gateway, so these probes crossed the local path only - this computer's adapter, its cable or Wi-Fi link, and the switch or access point - and were answered by an ordinary host rather than by the gateway's control plane; they did not cross the gateway or anything beyond it. The route table selected source {1} via {2} - an address on that subnet - before and after the probes, which is what lets this row claim the local path; the probes themselves are sent unbound. Read the ping rows as a ladder: a rung that passes clears what it crossed, at that moment; the first rung that fails puts the problem beyond the last rung that passed, and no closer than that - the figures of two rungs are separate traffic sent at separate moments, so they cannot be subtracted into a loss figure for the segment between them." -f $Target, $RouteBefore.SourceAddress, $RouteBefore.InterfaceAlias)
+        $detailLines += ("Rung: near end - {0} is on a subnet this computer is attached to and is not the gateway, so these probes crossed the local path only - this computer's adapter, its cable or Wi-Fi link, and the switch or access point - and were answered by an ordinary host rather than by the gateway's control plane; they did not cross the gateway or anything beyond it. The route table selected source {1} via {2} - an address on that subnet, on-link with no next hop - before and after the probes, which is what lets this row claim the local path; the probes themselves are sent unbound. Read the ping rows as a ladder: a rung that passes clears what it crossed, at that moment; the first rung that fails puts the problem beyond the last rung that passed, and no closer than that - the figures of two rungs are separate traffic sent at separate moments, so they cannot be subtracted into a loss figure for the segment between them." -f $Target, $RouteBefore.SourceAddress, $RouteBefore.InterfaceAlias)
     }
     elseif ($NearEnd) {
-        $detailLines += ("Rung: near end - not claimed. {0} is on a subnet this computer is attached to, but the probes are sent unbound, and the route selection above is not one address on that subnet chosen both before and after the probes - a VPN, a second connection or a more specific route may have carried them, or the lookup was unavailable - so this row cannot say which segments they crossed. It is counted as an ordinary ping target, not as the near-end rung, and the summary does not read it as a witness for the local path." -f $Target)
+        $detailLines += ("Rung: near end - not claimed. {0} is on a subnet this computer is attached to, but the probes are sent unbound, and the route selection above is not one on-link address on that subnet chosen both before and after the probes - a VPN, a second connection or a more specific route through a router may have carried them, or the lookup was unavailable - so this row cannot say which segments they crossed. It is counted as an ordinary ping target, not as the near-end rung, and the summary does not read it as a witness for the local path." -f $Target)
     }
     elseif ($pingTag -eq "ping-gateway" -and $rungAttested) {
-        $detailLines += ("Rung: gateway - these probes crossed the local path - this computer's adapter, its cable or Wi-Fi link, and the switch or access point - and were answered by the gateway's own control plane; they did not cross anything beyond the gateway. The route table selected source {0} via {1} - an address on the subnet of the adapter that supplied this gateway - before and after the probes; the probes themselves are sent unbound." -f $RouteBefore.SourceAddress, $RouteBefore.InterfaceAlias)
+        $detailLines += ("Rung: gateway - these probes crossed the local path - this computer's adapter, its cable or Wi-Fi link, and the switch or access point - and were answered by the gateway's own control plane; they did not cross anything beyond the gateway. The route table selected source {0} via {1} - an address on the subnet of the adapter that supplied this gateway, on-link with no next hop - before and after the probes; the probes themselves are sent unbound." -f $RouteBefore.SourceAddress, $RouteBefore.InterfaceAlias)
     }
     elseif ($pingTag -eq "ping-gateway") {
-        $detailLines += "Rung: gateway - not claimed. The probes are sent unbound, and the route selection above is not one address on the subnet of the adapter that supplied this gateway, chosen both before and after the probes - a VPN, a second connection or a more specific route may have carried them, or the lookup was unavailable - so this row cannot say which segments they crossed. The gateway is still the target this row measured, and the summary reads its result as it always has."
+        $detailLines += "Rung: gateway - not claimed. The probes are sent unbound, and the route selection above is not one on-link address on the subnet of the adapter that supplied this gateway, chosen both before and after the probes - a VPN, a second connection or a more specific route through a router may have carried them, or the lookup was unavailable - so this row cannot say which segments they crossed. The gateway is still the target this row measured, and the summary reads its result as it always has."
     }
     if (-not [string]::IsNullOrWhiteSpace($SampleNote)) { $detailLines += $SampleNote }
     if (-not [string]::IsNullOrWhiteSpace($coarseNote)) { $detailLines += $coarseNote }

@@ -2028,7 +2028,7 @@ function Get-RouteSelection {
     # 工具可以依賴的。成本量測：CIM 暖機後約 13 ms，而執行到 ping 檢查時，網路卡檢查早已付過暖機成本。
     # Cmdlet 不存在或查詢失敗一律是「這個資料無法取得」，絕不是讓這一列失敗 —— 這是已結案項目 #5 的形狀。
     if (-not (Get-Command Find-NetRoute -ErrorAction SilentlyContinue)) {
-        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "cmdlet"; SourceAddress = ""; InterfaceAlias = "" }
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "cmdlet"; SourceAddress = ""; InterfaceAlias = ""; NextHop = ""; OnLink = $false }
     }
 
     # An empty result is not one outcome, and round 1 of PR #45 was right that calling it 'no route' publishes a
@@ -2044,7 +2044,7 @@ function Get-RouteSelection {
         $found = @(Find-NetRoute -RemoteIPAddress ([string]$Target) -ErrorAction SilentlyContinue -ErrorVariable lookupErrors)
     }
     catch {
-        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "error"; SourceAddress = ""; InterfaceAlias = "" }
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "error"; SourceAddress = ""; InterfaceAlias = ""; NextHop = ""; OnLink = $false }
     }
 
     $localAddress = @($found | Where-Object { -not [string]::IsNullOrWhiteSpace((ConvertTo-SafeString $_.IPAddress)) } | Select-Object -First 1)
@@ -2056,14 +2056,22 @@ function Get-RouteSelection {
         if ($errorId -match 'Error 1231') { $reason = "noroute" }
         elseif ($errorId -match 'Error 87') { $reason = "notaddress" }
         elseif ([string]::IsNullOrWhiteSpace($errorId)) { $reason = "noroute" }
-        return [pscustomobject][ordered]@{ Resolved = $false; Reason = $reason; SourceAddress = ""; InterfaceAlias = "" }
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = $reason; SourceAddress = ""; InterfaceAlias = ""; NextHop = ""; OnLink = $false }
     }
 
+    # 路由物件帶著下一跳（PR #51 第 5 輪）：0.0.0.0——或 ::——是直連路由，也就是網卡接著的那個網路；其他的下一跳都是路由器，
+    # 而經過路由器的探測不論目標多近，都沒有量到本地路徑。一條經預設閘道往子網段內某台主機的 /32 路由，來源與網卡都不變，
+    # 這就是為什麼光靠來源證明不了一階。
+    $route = @($found | Where-Object { $null -ne $_.PSObject.Properties["NextHop"] } | Select-Object -First 1)
+    $nextHop = ""
+    if ($route.Count -gt 0) { $nextHop = ConvertTo-SafeString $route[0].NextHop }
     return [pscustomobject][ordered]@{
         Resolved       = $true
         Reason         = ""
         SourceAddress  = ConvertTo-SafeString $localAddress[0].IPAddress
         InterfaceAlias = ConvertTo-SafeString $localAddress[0].InterfaceAlias
+        NextHop        = $nextHop
+        OnLink         = ($nextHop -eq "0.0.0.0" -or $nextHop -eq "::")
     }
 }
 
@@ -2548,7 +2556,7 @@ function Get-PingRouteAfter {
     if (@($lookupAddresses).Count -gt 0) { $lookupAddress = ConvertTo-SafeString @($lookupAddresses)[0] }
     $routeOthers = @()
     if ([string]::IsNullOrWhiteSpace($lookupAddress)) {
-        $routeAfter = [pscustomobject][ordered]@{ Resolved = $false; Reason = "noreply"; SourceAddress = ""; InterfaceAlias = "" }
+        $routeAfter = [pscustomobject][ordered]@{ Resolved = $false; Reason = "noreply"; SourceAddress = ""; InterfaceAlias = ""; NextHop = ""; OnLink = $false }
     }
     else {
         $routeAfter = Get-RouteSelection -Target $lookupAddress
@@ -2600,11 +2608,14 @@ function Add-PingTargetResult {
     # 路徑的證人，閘道列則保留標籤，因為閘道仍然是它量測的目標。Path——兩次查詢一致的那張網卡——寫在每一列查詢一致的
     # ping 列上，摘要就是靠它把近端列和失敗的閘道列配對。標籤的指派維持常值，這是 backlog #33 文件事實步驟的要求。
     $selectionAgreed = ($null -ne $RouteBefore -and $null -ne $RouteAfter.Selection -and $RouteBefore.Resolved -and $RouteAfter.Selection.Resolved -and
-        $RouteBefore.SourceAddress -eq $RouteAfter.Selection.SourceAddress -and $RouteBefore.InterfaceAlias -eq $RouteAfter.Selection.InterfaceAlias)
+        $RouteBefore.SourceAddress -eq $RouteAfter.Selection.SourceAddress -and $RouteBefore.InterfaceAlias -eq $RouteAfter.Selection.InterfaceAlias -and
+        [string]$RouteBefore.NextHop -eq [string]$RouteAfter.Selection.NextHop)
     $path = ""
     if ($selectionAgreed) { $path = [string]$RouteBefore.InterfaceAlias }
     $rungAttested = $false
-    if ($selectionAgreed) {
+    # On-link as well (PR #51, round 5): a next hop is a router, and a probe through a router has not measured the
+    # local path however local its target is.
+    if ($selectionAgreed -and $RouteBefore.OnLink -eq $true) {
         foreach ($rungSubnet in @($RungSubnets)) {
             if (-not [string]::IsNullOrWhiteSpace([string]$rungSubnet) -and (Test-IPv4InCidr -IpAddress $RouteBefore.SourceAddress -Cidr ([string]$rungSubnet))) { $rungAttested = $true; break }
         }
@@ -2701,16 +2712,16 @@ function Add-PingTargetResult {
     # 那一列，因為讀者正要拿一階減另一階時，看的就是那一列。遠端目標的列不主張自己是哪一階：額外目標在閘道的哪一
     # 邊，不是這一列量過的東西。
     if ($NearEnd -and $rungAttested) {
-        $detailLines += ("階梯：近端——{0} 位於這台電腦所在的子網段、而且不是閘道，所以這些探測只經過本地路徑——這台電腦的網卡、它的網路線或 Wi-Fi 連線、以及交換器或存取點——並由一台普通主機回應，而不是由閘道的控制平面回應；它們沒有經過閘道，也沒有經過閘道之外的任何東西。路由表在探測前後都選了來源 {1}、經由 {2}——那是同一子網段上的位址——這是這一列能主張本地路徑的依據；探測本身沒有綁定。把各列 ping 當成一道階梯來讀：通過的一階，說明它經過的路段在那一刻是通的；第一個失敗的一階，把問題放在最後一個通過的階之外——但不會更近——因為兩階的數字是不同時刻送出的不同流量，不能相減成兩階之間那一段的遺失率。" -f $Target, $RouteBefore.SourceAddress, $RouteBefore.InterfaceAlias)
+        $detailLines += ("階梯：近端——{0} 位於這台電腦所在的子網段、而且不是閘道，所以這些探測只經過本地路徑——這台電腦的網卡、它的網路線或 Wi-Fi 連線、以及交換器或存取點——並由一台普通主機回應，而不是由閘道的控制平面回應；它們沒有經過閘道，也沒有經過閘道之外的任何東西。路由表在探測前後都選了來源 {1}、經由 {2}——那是同一子網段上的位址，直連、沒有下一跳——這是這一列能主張本地路徑的依據；探測本身沒有綁定。把各列 ping 當成一道階梯來讀：通過的一階，說明它經過的路段在那一刻是通的；第一個失敗的一階，把問題放在最後一個通過的階之外——但不會更近——因為兩階的數字是不同時刻送出的不同流量，不能相減成兩階之間那一段的遺失率。" -f $Target, $RouteBefore.SourceAddress, $RouteBefore.InterfaceAlias)
     }
     elseif ($NearEnd) {
-        $detailLines += ("階梯：近端——不主張。{0} 位於這台電腦所在的子網段，但探測沒有綁定，而上面的路由選擇不是探測前後都選中同一子網段上的同一個位址——VPN、第二條連線或更明確的路由可能帶走了探測，或查詢無法取得——所以這一列說不出它們經過了哪些路段。它算作一般的 ping 目標，不算近端這一階，摘要也不把它當成本地路徑的證人。" -f $Target)
+        $detailLines += ("階梯：近端——不主張。{0} 位於這台電腦所在的子網段，但探測沒有綁定，而上面的路由選擇不是探測前後都選中同一子網段上、直連的同一個位址——VPN、第二條連線或經過路由器的更明確路由可能帶走了探測，或查詢無法取得——所以這一列說不出它們經過了哪些路段。它算作一般的 ping 目標，不算近端這一階，摘要也不把它當成本地路徑的證人。" -f $Target)
     }
     elseif ($pingTag -eq "ping-gateway" -and $rungAttested) {
-        $detailLines += ("階梯：閘道——這些探測經過本地路徑——這台電腦的網卡、它的網路線或 Wi-Fi 連線、以及交換器或存取點——並由閘道自己的控制平面回應；它們沒有經過閘道之外的任何東西。路由表在探測前後都選了來源 {0}、經由 {1}——那是提供這個閘道的那張網卡所在子網段上的位址；探測本身沒有綁定。" -f $RouteBefore.SourceAddress, $RouteBefore.InterfaceAlias)
+        $detailLines += ("階梯：閘道——這些探測經過本地路徑——這台電腦的網卡、它的網路線或 Wi-Fi 連線、以及交換器或存取點——並由閘道自己的控制平面回應；它們沒有經過閘道之外的任何東西。路由表在探測前後都選了來源 {0}、經由 {1}——那是提供這個閘道的那張網卡所在子網段上的位址，直連、沒有下一跳；探測本身沒有綁定。" -f $RouteBefore.SourceAddress, $RouteBefore.InterfaceAlias)
     }
     elseif ($pingTag -eq "ping-gateway") {
-        $detailLines += "階梯：閘道——不主張。探測沒有綁定，而上面的路由選擇不是探測前後都選中提供這個閘道的那張網卡所在子網段上的同一個位址——VPN、第二條連線或更明確的路由可能帶走了探測，或查詢無法取得——所以這一列說不出它們經過了哪些路段。閘道仍然是這一列量測的目標，摘要照舊讀它的結果。"
+        $detailLines += "階梯：閘道——不主張。探測沒有綁定，而上面的路由選擇不是探測前後都選中提供這個閘道的那張網卡所在子網段上、直連的同一個位址——VPN、第二條連線或經過路由器的更明確路由可能帶走了探測，或查詢無法取得——所以這一列說不出它們經過了哪些路段。閘道仍然是這一列量測的目標，摘要照舊讀它的結果。"
     }
     if (-not [string]::IsNullOrWhiteSpace($SampleNote)) { $detailLines += $SampleNote }
     if (-not [string]::IsNullOrWhiteSpace($coarseNote)) { $detailLines += $coarseNote }

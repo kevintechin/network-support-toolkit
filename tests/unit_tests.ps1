@@ -1004,8 +1004,11 @@ function Find-NetRoute {
     # the reference machine's, so a selector that trusted the first object instead of the one with an IPAddress
     # fails this case rather than passing it by luck.
     $parts = $outcome.Split('|')
+    # A third part, 'onlink', models the connected route - next hop 0.0.0.0 - which is what lets a rung be claimed
+    # (PR #51, round 5); without it the stub is the default route through a router, as on the reference machine.
+    $onLink = ($parts.Count -gt 2 -and $parts[2] -eq 'onlink')
     return @(
-        [pscustomobject]@{ IPAddress = ''; InterfaceAlias = $parts[1]; NextHop = '192.168.1.1'; DestinationPrefix = '0.0.0.0/0' },
+        [pscustomobject]@{ IPAddress = ''; InterfaceAlias = $parts[1]; NextHop = $(if ($onLink) { '0.0.0.0' } else { '192.168.1.1' }); DestinationPrefix = $(if ($onLink) { '192.168.1.0/24' } else { '0.0.0.0/0' }) },
         [pscustomobject]@{ IPAddress = $parts[0]; InterfaceAlias = $parts[1] }
     )
 }
@@ -1017,6 +1020,12 @@ Assert-Equal 'route #59: resolved' $routeResolved.Resolved True
 Assert-Equal 'route #59: source is read from the object that has one, not the first' $routeResolved.SourceAddress '192.168.1.106'
 Assert-Equal 'route #59: interface' $routeResolved.InterfaceAlias 'Wi-Fi'
 Assert-Equal 'route #59: resolved carries no reason' $routeResolved.Reason ''
+Assert-Equal 'route #60: the next hop is kept' $routeResolved.NextHop '192.168.1.1'
+Assert-Equal 'route #60: a route through a router is not on-link' $routeResolved.OnLink False
+Reset-RouteStub @('192.168.1.106|Wi-Fi|onlink')
+$routeOnLink = Get-RouteSelection -Target '192.168.1.20'
+Assert-Equal 'route #60: a connected route is on-link' $routeOnLink.OnLink True
+Assert-Equal 'route #60: and its next hop is the unspecified address' $routeOnLink.NextHop '0.0.0.0'
 
 Reset-RouteStub @('none')
 $routeNone = Get-RouteSelection -Target '169.254.99.99'
@@ -1273,7 +1282,7 @@ function New-PingFixture($sent, $received, $average) {
     }
 }
 $pingRoute = [pscustomobject]@{
-    Selection     = [pscustomobject]@{ Resolved = $true; Reason = ''; SourceAddress = '192.168.1.106'; InterfaceAlias = 'Wi-Fi' }
+    Selection     = [pscustomobject]@{ Resolved = $true; Reason = ''; SourceAddress = '192.168.1.106'; InterfaceAlias = 'Wi-Fi'; NextHop = '0.0.0.0'; OnLink = $true }
     LookupAddress = '203.0.113.9'
     Others        = @()
 }
@@ -1431,7 +1440,7 @@ function Get-DetailLineAt($row, $index) { return [string]@([string]$row.Details 
 # A route selection on the target's own subnet, before and after the probes, is what lets a near-end row claim the
 # rung at all (PR #51, round 3); the fixture below is that, and $pingRoute - a source on another subnet - is not.
 $nearRoute = [pscustomobject]@{
-    Selection     = [pscustomobject]@{ Resolved = $true; Reason = ''; SourceAddress = '203.0.113.5'; InterfaceAlias = 'Ethernet' }
+    Selection     = [pscustomobject]@{ Resolved = $true; Reason = ''; SourceAddress = '203.0.113.5'; InterfaceAlias = 'Ethernet'; NextHop = '0.0.0.0'; OnLink = $true }
     LookupAddress = '203.0.113.9'
     Others        = @()
 }
@@ -1555,6 +1564,24 @@ Assert-Equal '#60 path: a selection that changed leaves it empty' $rowChanged.Pa
 Assert-Equal '#60 path: an unavailable lookup leaves it empty' $rowUnresolved.Path ''
 Assert-Equal '#60 path: the second pass rewrites it with the tag' $provisionalNear.Path ''
 Assert-Equal '#60 path: the fingerprint pairs the two rows by it' ((Get-FunctionBody 'Get-FingerprintSummary') -match '\$_\.Path -ne \$nearEndPath') True
+# Round 5: the same source and interface can still be a route through a router - a /32 to the host via the default
+# gateway - so a rung is claimed only where the selection is on-link, with no next hop, before and after the probes.
+$viaRouter = [pscustomobject]@{
+    Selection     = [pscustomobject]@{ Resolved = $true; Reason = ''; SourceAddress = '203.0.113.5'; InterfaceAlias = 'Ethernet'; NextHop = '203.0.113.1'; OnLink = $false }
+    LookupAddress = '203.0.113.9'
+    Others        = @()
+}
+$rowViaRouter = Get-NearEndRow $viaRouter.Selection $viaRouter @('203.0.113.0/24')
+Assert-Equal '#60 rung: a route through a router, same source and interface, does not claim the rung' $rowViaRouter.Tag 'ping-target'
+Assert-Equal '#60 rung: though its lookups agreed, so the row still names the adapter' $rowViaRouter.Path 'Ethernet'
+$rowHopChanged = Get-NearEndRow $nearRoute.Selection $viaRouter @('203.0.113.0/24')
+Assert-Equal '#60 rung: a next hop that changed between the lookups is a changed selection' $rowHopChanged.Path ''
+$script:TcpRows = New-Object System.Collections.ArrayList
+Add-PingTargetResult -Name 'Default Gateway' -Target '203.0.113.9' -ConfiguredAddress 'AUTO_GATEWAY' -Required $true -Measurement (New-PingFixture 4 4 5) -RouteBefore $viaRouter.Selection -RouteAfter $viaRouter -TargetIsAddress $true -TimeoutMs 1200 -RungSubnets @('203.0.113.0/24') | Out-Null
+$rowGatewayViaRouter = @($script:TcpRows)[0]
+Assert-Equal '#60 rung: a gateway reached through a router does not claim its rung' ((Get-DetailLineAt $rowGatewayViaRouter 2) -eq (Get-DetailLineAt $rowGatewayPass 2)) False
+Assert-Equal '#60 rung: and keeps its tag' $rowGatewayViaRouter.Tag 'ping-gateway'
+Assert-Equal '#60 rung: the attestation reads the on-link flag' ((Get-FunctionBody 'Add-PingTargetResult') -match '\$RouteBefore\.OnLink -eq \$true') True
 Assert-Equal '#60 placement: the subnet the target fell in is reported' (Test-NearEndTargetPlacement -Address '192.0.2.20' -PrimaryAdapters $nearAdapters).Subnet '192.0.2.10/24'
 Assert-Equal '#60 placement: and is empty where nothing placed it' (Test-NearEndTargetPlacement -Address '198.51.100.5' -PrimaryAdapters $nearAdapters).Subnet ''
 # The near-end entry is built in the run and never read from the ping list, so a list entry cannot promote itself
