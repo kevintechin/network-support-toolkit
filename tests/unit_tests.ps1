@@ -1073,5 +1073,15 @@ $allDeadText = Format-RouteSelection -Before $null -After $selNone -LookupAddres
 Assert-Equal 'route #59: several addresses that all fail the same way say so once' ($allDeadText -match '23\.39\.61\.99') False
 Assert-Equal 'route #59: and they are not the single-address sentence' ($allDeadText -eq (Format-RouteSelection -Before $null -After $selNone -LookupAddress '93.184.216.34')) False
 
+
+# PR #45 round 5: a lookup that did not answer is not the route table deciding differently. Only where every address
+# answered can the difference between them be called a routing difference.
+$othersMixed = @([pscustomobject]@{ Address = '23.39.61.99'; Selection = $selErr })
+$mixedText = Format-RouteSelection -Before $null -After $selName -LookupAddress '93.184.216.34' -Others $othersMixed
+Assert-Equal 'route #59: a failed lookup beside a good one is not a routing difference' ($mixedText -eq $differText) False
+Assert-Equal 'route #59: the mixed case still names both addresses' (($mixedText -match '93\.184\.216\.34') -and ($mixedText -match '23\.39\.61\.99')) True
+Assert-Equal 'route #59: the mixed case still refuses to attribute the measurement' ($mixedText.Length -gt 40) True
+Assert-Equal 'route #59: two resolved selections that differ are still a routing difference' ($differText -eq (Format-RouteSelection -Before $null -After $selName -LookupAddress '93.184.216.34' -Others $othersDiffer)) True
+
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

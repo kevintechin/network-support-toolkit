@@ -2056,17 +2056,26 @@ function Format-RouteSelection {
         # Method line claiming every address had been read. Whether the first one resolved decides the wording, never
         # whether the rest are consulted.
         $agree = $true
+        $primaryResolved = ($null -ne $After -and $After.Resolved)
+        $allResolved = $primaryResolved
         $eachText = @(("{0}: {1}" -f $LookupAddress, $afterText))
         foreach ($other in @($Others)) {
             $otherText = Get-RouteSelectionText $other.Selection
             $eachText += ("{0}: {1}" -f $other.Address, $otherText)
             if ($otherText -ne $afterText) { $agree = $false }
+            if ($null -eq $other.Selection -or -not $other.Selection.Resolved) { $allResolved = $false }
         }
         $addressCount = @($Others).Count + 1
-        $primaryResolved = ($null -ne $After -and $After.Resolved)
 
+        # A lookup that did not answer is not the route table deciding differently (PR #45, round 5). Only where every
+        # address got an answer can the difference between them be called a routing difference; where one of them did
+        # not, what differs is the lookups, and a transient provider failure must not be published as a conclusion
+        # about the network.
         if (-not $agree) {
-            return ("Route selection: this target is a name and its replies came from {0} addresses which the route table does not treat alike - {1}. This row cannot attribute the measurement to one adapter." -f $addressCount, ($eachText -join "; "))
+            if ($allResolved) {
+                return ("Route selection: this target is a name and its replies came from {0} addresses which the route table does not treat alike - {1}. This row cannot attribute the measurement to one adapter." -f $addressCount, ($eachText -join "; "))
+            }
+            return ("Route selection: this target is a name and its replies came from {0} addresses whose lookups did not all answer, and did not all answer the same way - {1}. This row cannot attribute the measurement to one adapter, and what differs here is the lookups rather than a decision the route table made." -f $addressCount, ($eachText -join "; "))
         }
         if ($primaryResolved) {
             $sentence = ("Route selection: {0}, looked up for {1} after the probes - this target is a name, so there was no address to ask about before them and no before-and-after pair was taken. The probes are not bound to it." -f $afterText, $LookupAddress)

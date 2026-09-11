@@ -2018,17 +2018,25 @@ function Format-RouteSelection {
         # 從來不讀其餘的 —— 把一張其實可用的網路卡藏在一次失敗的查詢後面，也讓 Method 行的「每一個都讀了」變成假的。
         # 第一個有沒有查到，只決定措辭，不決定要不要看其餘的。
         $agree = $true
+        $primaryResolved = ($null -ne $After -and $After.Resolved)
+        $allResolved = $primaryResolved
         $eachText = @(("{0}：{1}" -f $LookupAddress, $afterText))
         foreach ($other in @($Others)) {
             $otherText = Get-RouteSelectionText $other.Selection
             $eachText += ("{0}：{1}" -f $other.Address, $otherText)
             if ($otherText -ne $afterText) { $agree = $false }
+            if ($null -eq $other.Selection -or -not $other.Selection.Resolved) { $allResolved = $false }
         }
         $addressCount = @($Others).Count + 1
-        $primaryResolved = ($null -ne $After -and $After.Resolved)
 
+        # 查不到不等於「路由表做了不同的判斷」（PR #45 第 5 輪）。只有每一個位址都得到答案時，
+        # 它們之間的差異才能被稱為路由上的差異；若有一個沒有，那麼不同的是「查詢結果」，
+        # 而一次可能只是暫時性的提供者失敗，不可以被當成關於網路的結論發布。
         if (-not $agree) {
-            return ("路由選擇：這個目標是名稱，而它的回應來自 {0} 個位址，路由表並不一視同仁 —— {1}。這一列無法把這次量測歸給單一一張網路卡。" -f $addressCount, ($eachText -join "；"))
+            if ($allResolved) {
+                return ("路由選擇：這個目標是名稱，而它的回應來自 {0} 個位址，路由表並不一視同仁 —— {1}。這一列無法把這次量測歸給單一一張網路卡。" -f $addressCount, ($eachText -join "；"))
+            }
+            return ("路由選擇：這個目標是名稱，而它的回應來自 {0} 個位址，這些查詢並非每一個都有答案，也並非給出相同的答案 —— {1}。這一列無法把這次量測歸給單一一張網路卡；而這裡不同的是查詢結果，不是路由表做的判斷。" -f $addressCount, ($eachText -join "；"))
         }
         if ($primaryResolved) {
             $sentence = ("路由選擇：{0}，是在探測之後針對 {1} 查的 —— 這個目標是名稱，探測之前沒有位址可以問，因此沒有取得前後兩次的對照。探測本身沒有綁定它。" -f $afterText, $LookupAddress)
