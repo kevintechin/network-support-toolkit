@@ -1,4 +1,4 @@
-﻿# 網路健檢工具 1.2.8 — IT 部署手冊
+﻿# 網路健檢工具 1.2.9 — IT 部署手冊
 
 **寫給把工具發出去的 IT 部門。** 套件需要什麼、怎麼依你的環境設定、怎麼部署、安全政策會對它做什麼、怎麼驗證收到的東西沒被動過，以及回來的報告該怎麼處理。
 
@@ -265,10 +265,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 **下載檔。** 專案 Releases 頁面的發行說明給出 `NetworkHealthCheck-<版本>.zip` 的 SHA-256。解壓縮前先比對：
 
 ```text
-certutil -hashfile NetworkHealthCheck-1.2.8.zip SHA256
+certutil -hashfile NetworkHealthCheck-1.2.9.zip SHA256
 ```
 
-或在 PowerShell 用 `Get-FileHash NetworkHealthCheck-1.2.8.zip`。發行檔只由 repo 裡受版本控制的檔案打包，所以裡面沒有任何報告或執行輸出。
+或在 PowerShell 用 `Get-FileHash NetworkHealthCheck-1.2.9.zip`。發行檔只由 repo 裡受版本控制的檔案打包，所以裡面沒有任何報告或執行輸出。
 
 **清單檔。** 套件最上層的 `SHA256SUMS.txt` 列出每個出廠檔案的摘要，除了它自己、`VALIDATION.md` 和 `validation-matrix.html`：每個檔案一行，`<sha256>  <相對路徑>`，中間兩個空格。單一檔案可以用 `Get-FileHash <檔案>` 手動比對，全部則交給驗證程式。
 
@@ -292,7 +292,7 @@ python tools\validate_release.py .
 
 **發出去之前先定處理規定**：報告可以送到哪裡、留多久、誰能看，並在把工具交給使用者的同一則訊息裡說明；使用手冊只說請依公司對這類資訊的規定處理。報告是一般檔案：保留期限就是你對報告資料夾（或共用資料夾，第 3.1 節）套用的規定。
 
-**給你的工具用。** JSON 報告是 schema 2：`SchemaVersion`、`ToolVersion`、`RunOptions`（第 4 節）、`Fingerprint`（`Key`、`Title`、`Lines`，即「要告訴 IT 的話」）、`Overall`（`Code`、`Text`、`Description`）、`Counts`、`System`、`StartedAt`、`FinishedAt`，以及 `Results`：每一列一個物件，含 `Time`、`Category`、`Check`、`Status`（`PASS`、`WARN`、`FAIL`、`INFO`、`ERROR`）、`Message`、`Details`、`Diagnostics`、`Tag`、`Scope`（`Main` 或 `IT`）與 `Weightless`。`Tag` 是與語言無關的檢查名稱（`ping-gateway`、`dns`、`connectivity-group`、`tcp-retransmissions`、`expected-standard`……）；技術文件第 4.10 節有清單，`Scope` 則告訴你整體結果忽略了哪些列；`Weightless`（1.2.8 新增，在 schema 2 下新增欄位）為 `true` 時，代表這一列保有徽章、訊息與 `Counts` 裡的位置，卻不決定 `Overall`，也不決定 `Fingerprint`——量不到的統計、對所套用門檻來說太粗的樣本，或關於這次執行拿到什麼的事實。它就是「`Overall` 是 `PASS`，旁邊卻有 `ERROR` 或 `WARN` 列」的解釋。
+**給你的工具用。** JSON 報告是 schema 2：`SchemaVersion`、`ToolVersion`、`RunOptions`（第 4 節）、`Fingerprint`（`Key`、`Title`、`Lines`，即「要告訴 IT 的話」）、`Overall`（`Code`、`Text`、`Description`）、`Counts`、`System`、`StartedAt`、`FinishedAt`，以及 `Results`：每一列一個物件，含 `Time`、`Category`、`Check`、`Status`（`PASS`、`WARN`、`FAIL`、`INFO`、`ERROR`）、`Message`、`Details`、`Diagnostics`、`Tag`、`Scope`（`Main` 或 `IT`）與 `Weightless`。`Tag` 是與語言無關的檢查名稱（`ping-gateway`、`dns`、`connectivity-group`、`tcp-retransmissions`、`expected-standard`……）；技術文件第 4.10 節有清單，`Scope` 則告訴你整體結果忽略了哪些列；`Weightless`（在 schema 2 下新增的欄位）為 `true` 時，代表這一列保有徽章、訊息與 `Counts` 裡的位置，卻不決定 `Overall`，也不決定 `Fingerprint`——量不到的統計、對所套用門檻來說太粗的樣本，或關於這次執行拿到什麼的事實。它就是「`Overall` 是 `PASS`，旁邊卻有 `ERROR` 或 `WARN` 列」的解釋。
 
 **讀報告。** 使用手冊解釋整體結果、「要告訴 IT 的話」的標題與各種標籤；技術文件解釋每一條規則。repo 的 `sop` 資料夾有支援工程師的現場手冊和把報告整理成交接文件的範本。
 
@@ -312,7 +312,7 @@ python tools\validate_release.py .
 
 **要向使用者要什麼**，使用手冊第 6 節逐列寫了；環境報告和 `LauncherError.txt` 就是為這個交接而寫的。`LauncherError.txt` 在啟動器旁邊，那個資料夾無法寫入時改寫在 `%TEMP%` 的 `NetworkHealthCheck_LauncherError.txt`，欄位較少。
 
-**放行工具。** 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：`SHA256SUMS.txt` 給出每支 `NetworkHealthCheck.ps1` 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.8/docs/application-control.md>（英文），最新版本在 `main` 分支。
+**放行工具。** 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：`SHA256SUMS.txt` 給出每支 `NetworkHealthCheck.ps1` 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.9/docs/application-control.md>（英文），最新版本在 `main` 分支。
 
 **簽章。** 用你自己的憑證授權單位做 Authenticode 簽章，要在簽署憑證也受這台電腦信任時（憑證鏈受信任，且憑證在「受信任的發行者」存放區）才滿足 *AllSigned* 原則：發行者尚未被歸為信任時，PowerShell 會先詢問使用者才執行腳本（問題會出現在啟動器的視窗裡），無法詢問的工作階段就不執行。簽章也讓應用程式控制規則能依發行者放行。簽章會在腳本後面附加一段簽章區塊，所以簽過的檔案不再符合 `SHA256SUMS.txt`；請自己記下簽過檔案的摘要。
 
@@ -343,9 +343,9 @@ python tools\validate_release.py .
 - **使用手冊**：`NetworkHealthCheck_User_Manual_zh-TW.html`（或 `.md`）：使用者看到什麼、整體結果與標籤、報告裡有什麼、跑不起來時怎麼辦。
 - **技術文件**：`NetworkHealthCheck_Technical_Guide_zh-TW.md`：設計、每一條判定規則、驗證方式、已知限制、版本歷程。
 - **驗證記錄**：`VALIDATION.md`：每一版的證據，以及在其他機器上的驗收執行。
-- **待辦清單**：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.8/docs/backlog.md>（英文）：已知還沒做的事，以及每一項要怎樣才算結案。它和第 8 節的應用程式控制那一頁一樣放在 repo 而不在套件裡，因為它在兩次發行之間就會變動。
+- **待辦清單**：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.9/docs/backlog.md>（英文）：已知還沒做的事，以及每一項要怎樣才算結案。它和第 8 節的應用程式控制那一頁一樣放在 repo 而不在套件裡，因為它在兩次發行之間就會變動。
 - **Repo**：<https://github.com/kevintechin/network-support-toolkit>：發行版本、驗證鏈（`tests`）、支援工程師現場手冊與報告範本（`sop`），以及第 8 節提到的應用程式控制頁面。
 
 ---
 
-*NetworkHealthCheck 1.2.8。本手冊描述的是出廠狀態的工具與本版本量測到的行為；這裡引用的規則都是程式碼的規則，技術文件有完整的陳述。*
+*NetworkHealthCheck 1.2.9。本手冊描述的是出廠狀態的工具與本版本量測到的行為；這裡引用的規則都是程式碼的規則，技術文件有完整的陳述。*

@@ -1,4 +1,4 @@
-﻿# Network Health Check 1.2.8 — IT Deployment Manual
+﻿# Network Health Check 1.2.9 — IT Deployment Manual
 
 **For the IT department that hands the tool out.** What the package needs, how to configure it for your site, how to deploy it, what security policy does to it, how to verify what you received, and what to do with the reports that come back.
 
@@ -265,10 +265,10 @@ Whichever way it arrives, the person must extract the whole ZIP: a launcher doub
 **The download.** The release notes on the project's Releases page give the SHA-256 of `NetworkHealthCheck-<version>.zip`. Compare before extracting:
 
 ```text
-certutil -hashfile NetworkHealthCheck-1.2.8.zip SHA256
+certutil -hashfile NetworkHealthCheck-1.2.9.zip SHA256
 ```
 
-or in PowerShell `Get-FileHash NetworkHealthCheck-1.2.8.zip`. The asset is built from the repository's tracked files only, so it contains no report and no other output of a run.
+or in PowerShell `Get-FileHash NetworkHealthCheck-1.2.9.zip`. The asset is built from the repository's tracked files only, so it contains no report and no other output of a run.
 
 **The manifest.** `SHA256SUMS.txt` at the package root lists the digest of every shipped file except itself, `VALIDATION.md` and `validation-matrix.html` — one line per file, `<sha256>  <relative path>` with two spaces. Check one file by hand with `Get-FileHash <file>`, or all of them with the validator.
 
@@ -292,7 +292,7 @@ It prints one `[PASS]` or `[FAIL]` line per check and ends with `Summary: N pass
 
 **Decide the handling rule before rollout** — where a report may be sent, how long it is kept, who reads it — and tell the person in the same message that sends them the tool; the user manual says only that the person should handle it as the company's rules say. Reports are ordinary files: retention is whatever you apply to the report folder (or to the share, section 3.1).
 
-**For your tools.** The JSON report is schema 2: `SchemaVersion`, `ToolVersion`, `RunOptions` (section 4), `Fingerprint` (`Key`, `Title`, `Lines` — the *What to tell IT* section), `Overall` (`Code`, `Text`, `Description`), `Counts`, `System`, `StartedAt`, `FinishedAt`, and `Results`, one object per row with `Time`, `Category`, `Check`, `Status` (`PASS`, `WARN`, `FAIL`, `INFO`, `ERROR`), `Message`, `Details`, `Diagnostics`, `Tag`, `Scope` (`Main` or `IT`) and `Weightless`. `Tag` is the language-neutral name of the check (`ping-gateway`, `dns`, `connectivity-group`, `tcp-retransmissions`, `expected-standard`, …); the technical guide (section 4.10) lists them, and the `Scope` tells you which rows the verdict ignores; `Weightless` (added in 1.2.8, additive under schema 2) is `true` on a row that keeps its badge, its message and its place in `Counts` but decides neither `Overall` nor `Fingerprint` — a statistic that could not be taken, a sample too coarse for the threshold applied to it, or a fact about what this run was given. It is the field that explains an `ERROR` or `WARN` row beside an `Overall` of `PASS`.
+**For your tools.** The JSON report is schema 2: `SchemaVersion`, `ToolVersion`, `RunOptions` (section 4), `Fingerprint` (`Key`, `Title`, `Lines` — the *What to tell IT* section), `Overall` (`Code`, `Text`, `Description`), `Counts`, `System`, `StartedAt`, `FinishedAt`, and `Results`, one object per row with `Time`, `Category`, `Check`, `Status` (`PASS`, `WARN`, `FAIL`, `INFO`, `ERROR`), `Message`, `Details`, `Diagnostics`, `Tag`, `Scope` (`Main` or `IT`) and `Weightless`. `Tag` is the language-neutral name of the check (`ping-gateway`, `dns`, `connectivity-group`, `tcp-retransmissions`, `expected-standard`, …); the technical guide (section 4.10) lists them, and the `Scope` tells you which rows the verdict ignores; `Weightless` (additive under schema 2) is `true` on a row that keeps its badge, its message and its place in `Counts` but decides neither `Overall` nor `Fingerprint` — a statistic that could not be taken, a sample too coarse for the threshold applied to it, or a fact about what this run was given. It is the field that explains an `ERROR` or `WARN` row beside an `Overall` of `PASS`.
 
 **Reading them.** The user manual explains the verdicts, the *What to tell IT* titles and the badges; the technical guide explains each rule. The repository's `sop` folder holds a support engineer's field manual and a report template for turning a report into a hand-off.
 
@@ -312,7 +312,7 @@ The launchers set the execution policy for their own process (`-ExecutionPolicy 
 
 **What to ask the person for** is in the user manual's section 6, row by row; the environment report and `LauncherError.txt` are written for exactly this hand-off. `LauncherError.txt` sits beside the launcher, or — when that folder cannot be written — in `%TEMP%` as `NetworkHealthCheck_LauncherError.txt` with fewer fields.
 
-**Allowing the tool.** The two scripts are unsigned, so a policy that allows by publisher has nothing to match; what an IT department has today is the hash: `SHA256SUMS.txt` gives the digest of each `NetworkHealthCheck.ps1`, and a WDAC or AppLocker rule can allow that hash. A new version means a new hash. Which Windows builds and editions enforce AppLocker, and what has and has not been observed, changes faster than this package: the repository keeps a page on it, at the version this manual belongs to — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.8/docs/application-control.md> — and its current version on the `main` branch.
+**Allowing the tool.** The two scripts are unsigned, so a policy that allows by publisher has nothing to match; what an IT department has today is the hash: `SHA256SUMS.txt` gives the digest of each `NetworkHealthCheck.ps1`, and a WDAC or AppLocker rule can allow that hash. A new version means a new hash. Which Windows builds and editions enforce AppLocker, and what has and has not been observed, changes faster than this package: the repository keeps a page on it, at the version this manual belongs to — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.9/docs/application-control.md> — and its current version on the `main` branch.
 
 **Signing.** An Authenticode signature from your own certificate authority satisfies an *AllSigned* policy when the signing certificate is also trusted on the machine — its chain trusted, and the certificate in the Trusted Publishers store: for a publisher not yet classified as trusted, PowerShell asks the person before running the script (the launcher's window shows the question), and a session that cannot ask does not run it. A signature also lets an application-control rule allow by publisher. Signing appends a signature block to the script, so the signed file no longer matches `SHA256SUMS.txt`; record the signed files' digests yourself.
 
@@ -343,9 +343,9 @@ The launchers set the execution policy for their own process (`-ExecutionPolicy 
 - **User manual** — `NetworkHealthCheck_User_Manual_en-US.html` (or `.md`): what the person sees, the verdicts and badges, what the report contains, what to do when it does not run.
 - **Technical guide** — `NetworkHealthCheck_Technical_Guide_en-US.md`: design, every decision rule, the validation approach, known limitations, the version history.
 - **Validation record** — `VALIDATION.md`: every release's evidence and the acceptance runs on other machines.
-- **Backlog** — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.8/docs/backlog.md>: what is known and not yet done, and what would close each item. It is in the repository rather than in the package, like the application-control page of section 8, because it changes between releases.
+- **Backlog** — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.9/docs/backlog.md>: what is known and not yet done, and what would close each item. It is in the repository rather than in the package, like the application-control page of section 8, because it changes between releases.
 - **The repository** — <https://github.com/kevintechin/network-support-toolkit>: releases, the validation chain (`tests`), the support engineer's field manual and report template (`sop`), and the application-control page named in section 8.
 
 ---
 
-*NetworkHealthCheck 1.2.8. This manual describes the tool as shipped and the behaviour measured for this release; the rules quoted here are the code's, and the technical guide states them in full.*
+*NetworkHealthCheck 1.2.9. This manual describes the tool as shipped and the behaviour measured for this release; the rules quoted here are the code's, and the technical guide states them in full.*
