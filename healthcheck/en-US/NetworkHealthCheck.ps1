@@ -14,6 +14,7 @@ param(
     [string[]]$HttpUrl = @(),
     [int]$SampleSeconds = 0,
     [int]$PingCount = 0,
+    [int]$PingCountMaximum = 0,
     [int]$TracerouteHops = 0,
     [switch]$NoTraceroute,
     [switch]$NoWifi
@@ -49,7 +50,7 @@ param(
 # - Traceability: exception type, message, and inner exceptions are stored in every
 #   report; script location and call stack go to the JSON report only (Diagnostics).
 
-$script:ToolVersion = "1.2.9"
+$script:ToolVersion = "1.2.10"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -166,6 +167,7 @@ $script:RunOptions = $null
 $script:RunOptionMessages = New-Object System.Collections.ArrayList
 $script:DroppedTargets = New-Object System.Collections.ArrayList
 $script:RetransmissionRateComputed = $false
+$script:PendingPingSamples = New-Object System.Collections.ArrayList
 $script:PanelWarned = $false
 $script:PanelHints = $null
 # Script-scope variables share the script's top-level scope with the bound parameters: never reset a parameter's
@@ -691,6 +693,7 @@ function Get-DefaultConfig {
         }
         Tests = [pscustomobject][ordered]@{
             PingCount                    = 4
+            PingCountMaximum             = 21
             PingTimeoutMs                = 1200
             DnsTimeoutMs                 = 4000
             TcpTimeoutMs                 = 4000
@@ -743,6 +746,7 @@ function Get-DefaultConfig {
             TcpRetransmissionCriticalPercent  = 5
             TcpRetransmissionCriticalCount    = 50
             MinimumTcpSegmentsForRate         = 50
+            MinimumTcpRetransmissionsForVerdict = 5
             AdapterErrorWarningDelta          = 1
             AdapterErrorCriticalDelta         = 10
             AdapterDiscardWarningDelta        = 1
@@ -985,6 +989,7 @@ function Set-RunOptions {
 
     if ((ConvertTo-IntSafe $Overrides["SampleSeconds"] 0) -gt 0) { $config.Tests.RetransmissionSampleSeconds = ConvertTo-IntSafe $Overrides["SampleSeconds"] 0 }
     if ((ConvertTo-IntSafe $Overrides["PingCount"] 0) -gt 0) { $config.Tests.PingCount = ConvertTo-IntSafe $Overrides["PingCount"] 0 }
+    if ((ConvertTo-IntSafe $Overrides["PingCountMaximum"] 0) -gt 0) { $config.Tests.PingCountMaximum = ConvertTo-IntSafe $Overrides["PingCountMaximum"] 0 }
     if ((ConvertTo-IntSafe $Overrides["TracerouteHops"] 0) -gt 0) { $config.Checks.TracerouteHops = ConvertTo-IntSafe $Overrides["TracerouteHops"] 0 }
     if ($Overrides["NoTraceroute"] -eq $true) { $config.Checks.Traceroute = $false }
     if ($Overrides["NoWifi"] -eq $true) { $config.Checks.WifiRf = $false }
@@ -1008,6 +1013,11 @@ function Set-RunOptions {
         ExtraTargets   = [pscustomobject]$extra
         RawTargets     = [pscustomobject]$raw
         PingCount      = [math]::Max(1, (ConvertTo-IntSafe $config.Tests.PingCount 4))
+        # The ceiling is never below the starting count (backlog #51): PingCount is what each ping target is sent to
+        # begin with, PingCountMaximum the furthest this run will go when replies are lost. Writing the pair the
+        # wrong way round does not cut the starting count down - the configuration check says so, and this takes the
+        # larger of the two, so what the person asked to be sent is sent.
+        PingCountMaximum = [math]::Max([math]::Max(1, (ConvertTo-IntSafe $config.Tests.PingCount 4)), (ConvertTo-IntSafe $config.Tests.PingCountMaximum 21))
         SampleSeconds  = [math]::Max(1, (ConvertTo-IntSafe $config.Tests.RetransmissionSampleSeconds 8))
         TracerouteHops = $hops
         ChecksEnabled  = [pscustomobject][ordered]@{
@@ -1037,6 +1047,7 @@ function Get-RunProfileText {
     foreach ($value in @($options.ExtraTargets.Http)) { $extras += "url $value" }
     if ($extras.Count -gt 0) { $parts += ("extra targets: {0}" -f ($extras -join ", ")) }
     $parts += ("ping count {0}" -f $options.PingCount)
+    $parts += ("ping ceiling {0}" -f $options.PingCountMaximum)
     $parts += ("sample {0} s" -f $options.SampleSeconds)
     if ($options.ChecksEnabled.Traceroute) { $parts += ("traceroute {0} hops" -f $options.TracerouteHops) }
     $disabled = @()
@@ -1646,6 +1657,7 @@ function Test-ConfigurationSemantics {
 
     foreach ($setting in @(
         [pscustomobject]@{ Name = "PingCount"; Value = $tests.PingCount },
+        [pscustomobject]@{ Name = "PingCountMaximum"; Value = $tests.PingCountMaximum },
         [pscustomobject]@{ Name = "PingTimeoutMs"; Value = $tests.PingTimeoutMs },
         [pscustomobject]@{ Name = "DnsTimeoutMs"; Value = $tests.DnsTimeoutMs },
         [pscustomobject]@{ Name = "TcpTimeoutMs"; Value = $tests.TcpTimeoutMs },
@@ -1672,8 +1684,8 @@ function Test-ConfigurationSemantics {
         [void]$inputWarnings.Add("Checks.TracerouteHops must be a whole number from 1 to 10 (current value: $hopsValue); the built-in default will be used.")
     }
 
-    $countThresholdNames = @("TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")
-    foreach ($thresholdName in @("PacketLossWarningPercent", "PacketLossCriticalPercent", "LatencyWarningMs", "LatencyCriticalMs", "TcpRetransmissionWarningPercent", "TcpRetransmissionCriticalPercent", "TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")) {
+    $countThresholdNames = @("TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "MinimumTcpRetransmissionsForVerdict", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")
+    foreach ($thresholdName in @("PacketLossWarningPercent", "PacketLossCriticalPercent", "LatencyWarningMs", "LatencyCriticalMs", "TcpRetransmissionWarningPercent", "TcpRetransmissionCriticalPercent", "TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "MinimumTcpRetransmissionsForVerdict", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")) {
         $thresholdValue = Get-PropertyValue $thresholds $thresholdName
         if ($null -eq $thresholdValue) {
             continue
@@ -1684,6 +1696,15 @@ function Test-ConfigurationSemantics {
         elseif (($countThresholdNames -contains $thresholdName) -and -not (Test-IsWholeNumber $thresholdValue)) {
             [void]$warnings.Add("$thresholdName must be a whole number in the supported range (current value: $thresholdValue); the built-in default will be used.")
         }
+    }
+
+    # The two ping counts are an ordered pair like the thresholds are (backlog #51). A ceiling below the starting
+    # count does not break a run - the starting count becomes the ceiling - but it is a configuration file saying
+    # something it cannot mean, so it is reported the way the threshold pairs are.
+    $startCount = ConvertTo-IntSafe $tests.PingCount 4
+    $ceilingCount = ConvertTo-IntSafe $tests.PingCountMaximum 21
+    if ($ceilingCount -lt $startCount) {
+        [void]$warnings.Add("Ping counts are not ordered correctly: PingCount=$startCount, PingCountMaximum=$ceilingCount; the starting count will be used as the ceiling.")
     }
 
     $warningLoss = ConvertTo-DoubleSafe $thresholds.PacketLossWarningPercent 5
@@ -2112,20 +2133,169 @@ function Format-RouteSelection {
     return ("Route selection changed during this test: {0} before the probes, {1} after them. The probes are not bound to either, so this row cannot say which of them carried them." -f $beforeText, $afterText)
 }
 
+# -----------------------------------------------------------------------------
+# Adaptive ping sampling, and what a loss figure is allowed to decide (backlog #51).
+# -----------------------------------------------------------------------------
+function Get-PingCountForThreshold {
+    param([double]$WarningPercent)
+
+    # The smallest number of echo requests at which ONE lost reply is below the packet-loss warning threshold. One
+    # lost reply out of n is 100/n per cent, so what is wanted is the smallest n with 100/n < w, which is
+    # floor(100/w) + 1 - twenty-one at the shipped 5 %, because twenty is exactly 5 % and still warns. The "+ 1" is
+    # the whole of it: the same arithmetic written without it gives the count at which one reply IS the threshold,
+    # which is the defect this item is about - MinimumTcpSegmentsForRate is 50, and 100/2 is 50.
+    # A threshold of zero or less is not something a count can get under, because every loss is at or above it. No
+    # such n exists, and the caller is told so with 0 rather than with a number that would not work.
+    if ($WarningPercent -le 0) { return 0 }
+    $count = [math]::Floor(100.0 / $WarningPercent) + 1
+    if ($count -ge [int]::MaxValue) { return [int]::MaxValue }
+    return [int]$count
+}
+
+function Get-LossBand {
+    param(
+        [int]$Sent,
+        [int]$Lost,
+        [double]$WarningPercent,
+        [double]$CriticalPercent
+    )
+
+    # The band a loss figure falls in, computed from the figure the row prints - rounded to one decimal - so that
+    # the row and the verdict can never disagree about the same number.
+    if ($Sent -le 0) { return "pass" }
+    $percent = [math]::Round(([math]::Max(0, $Lost) * 100.0 / $Sent), 1)
+    if ($percent -ge $CriticalPercent) { return "critical" }
+    if ($percent -ge $WarningPercent) { return "warning" }
+    return "pass"
+}
+
+function Get-PingLossClassification {
+    param(
+        [int]$Sent,
+        [int]$Lost,
+        [double]$WarningPercent,
+        [double]$CriticalPercent
+    )
+
+    # Whether the band this sample reached is one the sample can carry. Two questions, and a verdict is withheld
+    # only where both answer yes:
+    #   Coarse    - the sample is smaller than the count at which one lost reply stops reaching the warning
+    #               threshold, so one packet is worth a whole band here. Four probes against the shipped 5 % is
+    #               the shipped instance: one lost reply is 25 %, past the critical threshold as well, and the
+    #               tool has no way to express "a little loss" at that count.
+    #   OnePacket - the band would be a different one if one fewer reply had been lost. The verdict IS that packet.
+    # Either on its own is ordinary, and a rule made of either alone would be wrong. Three lost of four is 75 % on
+    # a coarse sample and two lost is still 50 %, so nothing there rests on one packet and the row keeps its
+    # verdict; two lost of twenty-one turns on a packet, but twenty-one is a sample the threshold fits and 9.5 %
+    # is a measurement. Only the pair is what this item measured.
+    # The case where every reply was lost never reaches here: Test-PingTargets answers that before the loss
+    # thresholds, and 100 % loss is conclusive at any count - which is also why such a sample is never extended.
+    $band = Get-LossBand -Sent $Sent -Lost $Lost -WarningPercent $WarningPercent -CriticalPercent $CriticalPercent
+    $required = Get-PingCountForThreshold -WarningPercent $WarningPercent
+    $coarse = ($Sent -gt 0) -and (($required -le 0) -or ($Sent -lt $required))
+    $onePacket = $false
+    if ($Lost -ge 1) {
+        $onePacket = ($band -ne (Get-LossBand -Sent $Sent -Lost ($Lost - 1) -WarningPercent $WarningPercent -CriticalPercent $CriticalPercent))
+    }
+    return [pscustomobject][ordered]@{
+        Band          = $band
+        Coarse        = $coarse
+        OnePacket     = $onePacket
+        RequiredCount = $required
+        Weightless    = (($band -ne "pass") -and $coarse -and $onePacket)
+    }
+}
+
+function Get-PingExtensionPlan {
+    param(
+        [int]$Sent,
+        [int]$Received,
+        [int]$MaximumCount,
+        [double]$WarningPercent
+    )
+
+    # Whether to go on sampling this target, and how far. The configured count is where a target starts, not where
+    # it stops, and what the first pass established decides which of three cases this is:
+    #   every reply arrived - nothing is ambiguous, and a healthy run must not get slower than it was;
+    #   nothing answered    - 100 % loss is conclusive at four probes and no larger count makes it more so, and
+    #                         this is the one case where every extra probe costs a whole timeout;
+    #   some but not all    - the ambiguous one. It is extended to the count at which one packet can no longer
+    #                         decide the classification, or to the configured ceiling where that is lower.
+    # A ceiling below the count the threshold needs is not an error and is not overridden here: the sample stays
+    # coarse, and Get-PingLossClassification is what keeps a verdict off it.
+    $required = 0
+    $reason = "nothing-sent"
+    $target = $Sent
+    if ($Sent -gt 0) {
+        if ($Received -ge $Sent) { $reason = "complete" }
+        elseif ($Received -le 0) { $reason = "silent" }
+        else {
+            $required = Get-PingCountForThreshold -WarningPercent $WarningPercent
+            if ($required -le 0) { $reason = "no-threshold" }
+            else {
+                $target = [math]::Min($required, [math]::Max(1, $MaximumCount))
+                if ($target -le $Sent) { $reason = "at-ceiling"; $target = $Sent }
+                else { $reason = "extend" }
+            }
+        }
+    }
+    return [pscustomobject][ordered]@{
+        Extend          = ($reason -eq "extend")
+        AdditionalCount = $(if ($reason -eq "extend") { $target - $Sent } else { 0 })
+        TargetCount     = $target
+        RequiredCount   = $required
+        Reason          = $reason
+    }
+}
+
+function Get-PingSampleInterval {
+    param(
+        [double]$RemainingSeconds,
+        [int]$RemainingProbes
+    )
+
+    # How far apart the extra probes go. The seconds come out of the wait the run already owes the retransmission
+    # window - Wait-ForMinimumTcpSample was going to spend them sleeping - so spreading a sample costs no
+    # wall-clock time as long as it takes no more than that wait had left. Where nothing is left the gap is zero
+    # and the probes go back to back, which is what a run did before this existed. The division is by the number
+    # of probes and not by the gaps between them, which is one fewer, so the probes' own time has somewhere to
+    # come from and the spread ends inside its budget rather than just outside it.
+    if ($RemainingProbes -le 0) { return 0.0 }
+    if ($RemainingSeconds -le 0) { return 0.0 }
+    return [math]::Round(($RemainingSeconds / $RemainingProbes), 2)
+}
+
 function Invoke-PingMeasurement {
     param(
         [string]$Target,
         [int]$Count,
-        [int]$TimeoutMs
+        [int]$TimeoutMs,
+        [object]$Previous = $null,
+        [double]$IntervalSeconds = 0,
+        [int]$ProgressPercent = 0
     )
 
+    # -Previous and -IntervalSeconds are backlog #51's adaptive sample. A measurement handed back here is added to
+    # rather than replaced: the probes of the second pass carry on the attempt numbering, and every figure is
+    # recomputed over the whole sample, so the row reports one measurement and not two. -IntervalSeconds spreads
+    # those probes instead of sending them back to back - unlike ping.exe this sends with no delay between echoes,
+    # so twenty of them land inside a fraction of a second and measure one instant twenty times, while what a
+    # person is usually trying to catch is a connection that is intermittently unstable and needs span, not count.
     $successes = New-Object System.Collections.ArrayList
     $attemptDetails = New-Object System.Collections.ArrayList
     $repliedAddresses = New-Object System.Collections.ArrayList
+    $alreadySent = 0
+    if ($null -ne $Previous) {
+        foreach ($value in @(Get-PropertyValue $Previous "SuccessMs" @())) { [void]$successes.Add([double]$value) }
+        foreach ($value in @(Get-PropertyValue $Previous "AttemptDetails" @())) { [void]$attemptDetails.Add($value) }
+        foreach ($value in @(Get-PropertyValue $Previous "RepliedAddresses" @())) { [void]$repliedAddresses.Add($value) }
+        $alreadySent = [math]::Max(0, (ConvertTo-IntSafe (Get-PropertyValue $Previous "Sent" 0) 0))
+    }
     $ping = New-Object System.Net.NetworkInformation.Ping
 
     try {
         for ($i = 1; $i -le $Count; $i++) {
+            $attempt = $alreadySent + $i
             try {
                 $reply = $ping.Send($Target, $TimeoutMs)
                 if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
@@ -2140,17 +2310,32 @@ function Invoke-PingMeasurement {
                         [void]$repliedAddresses.Add($thisAddress)
                     }
                     [void]$successes.Add([double]$reply.RoundtripTime)
-                    [void]$attemptDetails.Add(("Attempt {0}: success, {1} ms, reply from {2}" -f $i, $reply.RoundtripTime, $reply.Address))
+                    [void]$attemptDetails.Add(("Attempt {0}: success, {1} ms, reply from {2}" -f $attempt, $reply.RoundtripTime, $reply.Address))
                 }
                 else {
-                    [void]$attemptDetails.Add(("Attempt {0}: failed, status {1}" -f $i, $reply.Status))
+                    [void]$attemptDetails.Add(("Attempt {0}: failed, status {1}" -f $attempt, $reply.Status))
                 }
             }
             catch {
-                [void]$attemptDetails.Add(("Attempt {0}: error, {1}" -f $i, (Add-NetworkErrorCause $_.Exception $_.Exception.Message -SingleLine)))
+                [void]$attemptDetails.Add(("Attempt {0}: error, {1}" -f $attempt, (Add-NetworkErrorCause $_.Exception $_.Exception.Message -SingleLine)))
             }
             if ($script:GuiAvailable) {
                 [System.Windows.Forms.Application]::DoEvents()
+            }
+            if ($IntervalSeconds -gt 0 -and $i -lt $Count) {
+                # The gap is taken in short slices so that the window goes on painting and the progress line goes
+                # on moving: a spread sample can occupy a minute of a run that used to spend that minute asleep.
+                $slices = [int][math]::Max(1, [math]::Ceiling(($IntervalSeconds / 0.25)))
+                $sliceMs = [int][math]::Round(($IntervalSeconds * 1000.0 / $slices))
+                for ($slice = 1; $slice -le $slices; $slice++) {
+                    if ($ProgressPercent -gt 0) {
+                        Set-UiProgress -Percent $ProgressPercent -Text ("Spreading the rest of the ping sample for {0}: {1} to go" -f $Target, ($Count - $i))
+                    }
+                    if ($sliceMs -gt 0) { Start-Sleep -Milliseconds $sliceMs }
+                    if ($script:GuiAvailable) {
+                        [System.Windows.Forms.Application]::DoEvents()
+                    }
+                }
             }
         }
     }
@@ -2158,11 +2343,12 @@ function Invoke-PingMeasurement {
         $ping.Dispose()
     }
 
+    $sent = $alreadySent + [math]::Max(0, $Count)
     $received = $successes.Count
-    $lost = $Count - $received
+    $lost = $sent - $received
     $lossPercent = 0
-    if ($Count -gt 0) {
-        $lossPercent = [math]::Round(($lost * 100.0 / $Count), 1)
+    if ($sent -gt 0) {
+        $lossPercent = [math]::Round(($lost * 100.0 / $sent), 1)
     }
 
     $average = $null
@@ -2176,13 +2362,14 @@ function Invoke-PingMeasurement {
 
     return [pscustomobject][ordered]@{
         Target         = $Target
-        Sent           = $Count
+        Sent           = $sent
         Received       = $received
         Lost           = $lost
         LossPercent    = $lossPercent
         AverageMs      = $average
         MinimumMs      = $minimum
         MaximumMs      = $maximum
+        SuccessMs      = @($successes)
         RepliedAddresses = @($repliedAddresses)
         AttemptDetails = @($attemptDetails)
     }
@@ -2217,15 +2404,207 @@ function Resolve-PingTargets {
     return @($Address)
 }
 
-function Test-PingTargets {
-    param([object[]]$PrimaryAdapters)
+function Get-PingRouteAfter {
+    param(
+        [string]$Target,
+        [bool]$TargetIsAddress,
+        [object]$Measurement
+    )
 
-    $count = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.PingCount 4))
-    $timeout = [math]::Max(250, (ConvertTo-IntSafe $script:Config.Tests.PingTimeoutMs 1200))
+    # The route lookup a row takes after its probes (backlog #59), in one place because two callers need it now:
+    # the row written straight after the first pass, and the row written later in the run for a target whose
+    # sample was continued (backlog #51). Both take it after the last probe, which is what "after" has to mean.
+    $lookupAddresses = @([string]$Target)
+    if (-not $TargetIsAddress) { $lookupAddresses = @(Get-PropertyValue $Measurement "RepliedAddresses" @()) }
+    $lookupAddress = ""
+    if (@($lookupAddresses).Count -gt 0) { $lookupAddress = ConvertTo-SafeString @($lookupAddresses)[0] }
+    $routeOthers = @()
+    if ([string]::IsNullOrWhiteSpace($lookupAddress)) {
+        $routeAfter = [pscustomobject][ordered]@{ Resolved = $false; Reason = "noreply"; SourceAddress = ""; InterfaceAlias = "" }
+    }
+    else {
+        $routeAfter = Get-RouteSelection -Target $lookupAddress
+        # Each further address its replies came from is looked up too, because the point of this row is which
+        # adapter carried the measurement and two addresses can answer through two of them.
+        foreach ($extra in @($lookupAddresses | Select-Object -Skip 1)) {
+            $routeOthers += [pscustomobject][ordered]@{ Address = ConvertTo-SafeString $extra; Selection = (Get-RouteSelection -Target ([string]$extra)) }
+        }
+    }
+    return [pscustomobject][ordered]@{ Selection = $routeAfter; LookupAddress = $lookupAddress; Others = @($routeOthers) }
+}
+
+function Add-PingTargetResult {
+    param(
+        [string]$Name,
+        [string]$Target,
+        [string]$ConfiguredAddress,
+        [bool]$Required,
+        [object]$Measurement,
+        [object]$RouteBefore,
+        [object]$RouteAfter,
+        [bool]$TargetIsAddress,
+        [int]$TimeoutMs,
+        [string]$SampleNote = "",
+        [object]$Row = $null
+    )
+
+    # One ping row. It is a function of its own because a target whose first pass was not conclusive has its row
+    # written twice - once where it belongs in the report, from the first pass, and again when the sample has been
+    # continued (backlog #51) - and a row written in two places would be two rows that drift apart.
+    # -Row is that second time. The report renders rows in the order they were added, so a row added late would
+    # sit below the DNS and connectivity sections instead of with the other ping rows; what moves is therefore
+    # what the row says, never where it is.
     $warningLoss = ConvertTo-DoubleSafe $script:Config.Thresholds.PacketLossWarningPercent 5
     $criticalLoss = ConvertTo-DoubleSafe $script:Config.Thresholds.PacketLossCriticalPercent 20
     $warningLatency = ConvertTo-DoubleSafe $script:Config.Thresholds.LatencyWarningMs 100
     $criticalLatency = ConvertTo-DoubleSafe $script:Config.Thresholds.LatencyCriticalMs 250
+
+        # The tag is derived here rather than handed in, and the two lines below are deliberately a copy of the
+        # ones in Test-PingTargets (backlog #33's document-fact step): it reads every -Tag argument off the AST and
+        # resolves a variable only where every assignment to it is a literal, so a tag reaching Add-CheckResult
+        # through a parameter, a property or a helper's return value would be a live tag outside every check that
+        # holds the documents to the program. A copied two-line rule is the price of that step being able to see
+        # this one.
+    $pingTag = "ping-target"
+    if ($ConfiguredAddress -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
+    $status = "PASS"
+    $weightless = $false
+    $coarseNote = ""
+
+    if ($Measurement.Received -eq 0) {
+        # An optional ICMP target may intentionally block Ping. Nothing replying at all is the one loss figure no
+        # count improves, so this branch keeps its verdict however small the sample was (backlog #51).
+        $status = if ($Required) { "FAIL" } else { "INFO" }
+    }
+    else {
+        $loss = Get-PingLossClassification -Sent $Measurement.Sent -Lost $Measurement.Lost -WarningPercent $warningLoss -CriticalPercent $criticalLoss
+        $lossStatus = "PASS"
+        if ($loss.Weightless) {
+            # backlog #51: a band was reached, and it was reached by one packet, on a sample too coarse for the
+            # threshold applied to it. The row keeps every number it measured and stops deciding the run - this
+            # item removes a verdict, never a number.
+            $lossStatus = "WARN"
+            $weightless = $true
+            $coarseNote = ("The sample is too small for this threshold: one lost reply out of {0} is {1}%, and the classification changes on that one reply. It takes {2} replies for one lost reply to stay below the {3}% warning threshold. The figures above are what was measured, and this row does not change the overall result." -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $loss.RequiredCount, $warningLoss)
+        }
+        elseif ($loss.Band -eq "critical") { $lossStatus = if ($Required) { "FAIL" } else { "WARN" } }
+        elseif ($loss.Band -eq "warning") { $lossStatus = "WARN" }
+
+        $latencyStatus = "PASS"
+        if ($null -ne $Measurement.AverageMs -and $Measurement.AverageMs -ge $criticalLatency) { $latencyStatus = if ($Required) { "FAIL" } else { "WARN" } }
+        elseif ($null -ne $Measurement.AverageMs -and $Measurement.AverageMs -ge $warningLatency) { $latencyStatus = "WARN" }
+
+        # Loss is read first and latency second, which is the order this tool has always used. What is new is that
+        # a loss figure whose verdict was withheld hands the row on to the latency rules instead of keeping it:
+        # the two are different measurements over the same probes, and only the loss half is the one #51 found too
+        # coarse. A latency threshold reached on the replies that did arrive is a measurement, and a row that
+        # reached one keeps its weight.
+        $status = $lossStatus
+        if ($latencyStatus -ne "PASS" -and ($weightless -or $lossStatus -eq "PASS")) {
+            $status = $latencyStatus
+            $weightless = $false
+        }
+    }
+
+    $latencyText = "No successful replies"
+    if ($null -ne $Measurement.AverageMs) {
+        $latencyText = ("average {0} ms (minimum {1}, maximum {2})" -f $Measurement.AverageMs, $Measurement.MinimumMs, $Measurement.MaximumMs)
+    }
+
+    $message = "Target {0}: {1}% loss ({2}/{3} successful), {4}." -f $Target, $Measurement.LossPercent, $Measurement.Received, $Measurement.Sent, $latencyText
+    $detailLines = @()
+    $detailLines += @($Measurement.AttemptDetails)
+    $detailLines += (Format-RouteSelection -Before $RouteBefore -After $RouteAfter.Selection -LookupAddress $RouteAfter.LookupAddress -Others $RouteAfter.Others)
+    if (-not [string]::IsNullOrWhiteSpace($SampleNote)) { $detailLines += $SampleNote }
+    if (-not [string]::IsNullOrWhiteSpace($coarseNote)) { $detailLines += $coarseNote }
+    # The method line counts the probes that were actually sent rather than the number configured: PingCount is a
+    # starting count since 1.2.10, so the two are different numbers whenever a sample was continued, and the
+    # manual check beside it has to be the command that reproduces what this row reports.
+    $detailLines += ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms{2}." -f $Measurement.Sent, $TimeoutMs, (Get-RouteMethodText -Target $Target -LookupAddress $RouteAfter.LookupAddress -TargetIsAddress $TargetIsAddress -ExtraCount (@($RouteAfter.Others).Count)))
+    $detailLines += ("Manual check: ping -n {0} {1}" -f $Measurement.Sent, $Target)
+    $details = (@($detailLines) -join [Environment]::NewLine)
+    if ($status -eq "INFO") {
+        $details += [Environment]::NewLine + "Informational: this optional target may simply block ICMP - see the Connectivity group for the authoritative internet verdict."
+    }
+    if ($null -eq $Row) {
+        return (Add-CheckResult -Category "Latency and Packet Loss" -Check ("{0}: {1}" -f $Name, $Target) -Status $status -Message $message -Details $details -Tag $pingTag -Weightless:$weightless)
+    }
+    $Row.Status = $status
+    $Row.Message = $message
+    $Row.Details = $details
+    $Row.Weightless = $weightless
+    # The log is a narrative of the run, so the second reading gets a line of its own rather than quietly replacing
+    # the first: a person watching the window saw the provisional figures and is owed the ones that replaced them.
+    Write-UiLog -Status $status -Text ("{0} / {1}: {2}" -f $Row.Category, $Row.Check, $message)
+    return $Row
+}
+
+function Complete-PingSamples {
+    param(
+        [datetime]$SampleStart,
+        [int]$MinimumSeconds
+    )
+
+    # The second half of an adaptive ping sample (backlog #51). These probes are sent here, late in the run,
+    # rather than back to back where the first pass ended, because the retransmission window already spans the
+    # whole run: Wait-ForMinimumTcpSample is about to sleep out whatever is left of it, and probes spread across
+    # those seconds measure a span of the network for wall-clock time the run was going to spend anyway. The
+    # budget is shared between the targets still waiting, and where it is gone the probes go back to back and the
+    # run is longer by what they cost - which is the honest price of a target that lost replies.
+    $pending = @($script:PendingPingSamples)
+    $script:PendingPingSamples = New-Object System.Collections.ArrayList
+    if ($pending.Count -eq 0) { return }
+
+    $timeout = [math]::Max(250, (ConvertTo-IntSafe $script:Config.Tests.PingTimeoutMs 1200))
+    $index = 0
+    foreach ($item in $pending) {
+        $index++
+        # The list was emptied before this loop, so nothing outside this try would ever write this target's row
+        # again: an exception here has to end in a row, the way every other check's does.
+        try {
+            $budget = 0.0
+            $elapsed = ((Get-Date) - $SampleStart).TotalSeconds
+            if ($MinimumSeconds -gt $elapsed) { $budget = ($MinimumSeconds - $elapsed) / ($pending.Count - $index + 1) }
+            $interval = Get-PingSampleInterval -RemainingSeconds $budget -RemainingProbes $item.Plan.AdditionalCount
+            $measurement = $item.Measurement
+            $note = ""
+            try {
+                $measurement = Invoke-PingMeasurement -Target $item.Target -Count $item.Plan.AdditionalCount -TimeoutMs $timeout -Previous $item.Measurement -IntervalSeconds $interval -ProgressPercent 78
+            }
+            catch {
+                # The extension is the part that can be given up: what the first pass measured is still a
+                # measurement, and a row written from it is the row this tool wrote before adaptive sampling
+                # existed. Only the note changes.
+                $note = ("The sample could not be continued, so these figures are the first {0} echo requests alone. {1}" -f $item.Measurement.Sent, (Get-ExceptionDetails $_))
+            }
+            if ($measurement.Sent -gt $item.Measurement.Sent) {
+                $note = ("Adaptive sample: the first {0} echo requests lost {1} of their replies, so {2} more were sent, spread across the rest of the run instead of back to back. Every figure above is over all {3}." -f $item.Measurement.Sent, $item.Measurement.Lost, ($measurement.Sent - $item.Measurement.Sent), $measurement.Sent)
+                if ($item.Plan.TargetCount -lt $item.Plan.RequiredCount) {
+                    $note += (" The configured ceiling stopped it at {0}, below the {1} it would take for one lost reply to stay under the warning threshold." -f $item.Plan.TargetCount, $item.Plan.RequiredCount)
+                }
+            }
+            # The route table is asked again, because "after the probes" has to mean after the last of them.
+            $routeAfter = Get-PingRouteAfter -Target $item.Target -TargetIsAddress $item.TargetIsAddress -Measurement $measurement
+            Add-PingTargetResult -Name $item.Name -Target $item.Target -ConfiguredAddress $item.Address -Required $item.Required -Measurement $measurement -RouteBefore $item.RouteBefore -RouteAfter $routeAfter -TargetIsAddress $item.TargetIsAddress -TimeoutMs $timeout -SampleNote $note -Row $item.Row | Out-Null
+        }
+        catch {
+            # The row is already in the report with what the first pass measured, so what is lost here is the
+            # extension and nothing else; what is added is why it did not happen.
+            $item.Row.Details = ([string]$item.Row.Details + [Environment]::NewLine + ("The sample could not be continued. {0}" -f (Get-ExceptionDetails $_)))
+            Write-UiLog -Status "INFO" -Text ("{0} / {1}: the sample could not be continued." -f $item.Row.Category, $item.Row.Check)
+        }
+    }
+}
+
+function Test-PingTargets {
+    param([object[]]$PrimaryAdapters)
+
+    $count = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.PingCount 4))
+    # backlog #51: the furthest an adaptive sample may go. It is never below the starting count, so a
+    # configuration that has the pair the wrong way round still sends what it asked for.
+    $maximum = [math]::Max($count, (ConvertTo-IntSafe $script:Config.Tests.PingCountMaximum 21))
+    $timeout = [math]::Max(250, (ConvertTo-IntSafe $script:Config.Tests.PingTimeoutMs 1200))
+    $warningLoss = ConvertTo-DoubleSafe $script:Config.Thresholds.PacketLossWarningPercent 5
 
     foreach ($targetConfig in @($script:Config.Tests.PingTargets)) {
         if ($null -eq $targetConfig) { continue }
@@ -2254,7 +2633,7 @@ function Test-PingTargets {
             if ($address -eq "AUTO_GATEWAY") {
                 $noTargetDetail = "Configured value: AUTO_GATEWAY - this placeholder resolves to the current IPv4 default gateway, and none exists right now (usually the local link is down)."
             }
-            Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status $status -Message "No testable target was found." -Details ($noTargetDetail + [Environment]::NewLine + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms." -f $count, $timeout) + [Environment]::NewLine + "Manual check: ping -n $count <target-ip>") -Tag $pingTag | Out-Null
+            Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status $status -Message "No testable target was found." -Details ($noTargetDetail + [Environment]::NewLine + ("Method: .NET Ping — {0} ICMP echo requests to begin with, up to {1} where replies are lost, timeout {2} ms." -f $count, $maximum, $timeout) + [Environment]::NewLine + "Manual check: ping -n $count <target-ip>") -Tag $pingTag | Out-Null
             continue
         }
 
@@ -2268,52 +2647,32 @@ function Test-PingTargets {
                 $routeBefore = $null
                 if ($targetIsAddress) { $routeBefore = Get-RouteSelection -Target ([string]$target) }
                 $measurement = Invoke-PingMeasurement -Target ([string]$target) -Count $count -TimeoutMs $timeout
-                $lookupAddresses = @([string]$target)
-                if (-not $targetIsAddress) { $lookupAddresses = @($measurement.RepliedAddresses) }
-                $lookupAddress = ""
-                if (@($lookupAddresses).Count -gt 0) { $lookupAddress = ConvertTo-SafeString @($lookupAddresses)[0] }
-                $routeOthers = @()
-                if ([string]::IsNullOrWhiteSpace($lookupAddress)) {
-                    $routeAfter = [pscustomobject][ordered]@{ Resolved = $false; Reason = "noreply"; SourceAddress = ""; InterfaceAlias = "" }
+                $plan = Get-PingExtensionPlan -Sent $measurement.Sent -Received $measurement.Received -MaximumCount $maximum -WarningPercent $warningLoss
+                $routeAfter = Get-PingRouteAfter -Target ([string]$target) -TargetIsAddress $targetIsAddress -Measurement $measurement
+                if ($plan.Extend) {
+                    # Held back rather than finished here (backlog #51): the rest of this target's probes are sent
+                    # late in the run, spread over seconds it already owes the retransmission window, so the extra
+                    # samples span the run instead of arriving inside the same fraction of a second.
+                    # The row is written here all the same, with what the first pass measured, and rewritten when
+                    # the sample is finished. That keeps it among the other ping rows - and it means a run that
+                    # never reaches the end still reports what it did measure, which a row held back until then
+                    # would not.
+                    $pendingNote = ("This sample was not conclusive: {0} of the first {1} replies were lost, so it is continued later in this run and these figures are the first {1} alone." -f $measurement.Lost, $measurement.Sent)
+                    $pendingRow = Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -SampleNote $pendingNote
+                    [void]$script:PendingPingSamples.Add([pscustomobject][ordered]@{
+                        Name            = $name
+                        Target          = [string]$target
+                        Address         = $address
+                        Required        = $required
+                        RouteBefore     = $routeBefore
+                        TargetIsAddress = $targetIsAddress
+                        Measurement     = $measurement
+                        Plan            = $plan
+                        Row             = $pendingRow
+                    })
+                    continue
                 }
-                else {
-                    $routeAfter = Get-RouteSelection -Target $lookupAddress
-                    # Each further address its replies came from is looked up too, because the point of this row is
-                    # which adapter carried the measurement and two addresses can answer through two of them.
-                    foreach ($extra in @($lookupAddresses | Select-Object -Skip 1)) {
-                        $routeOthers += [pscustomobject][ordered]@{ Address = ConvertTo-SafeString $extra; Selection = (Get-RouteSelection -Target ([string]$extra)) }
-                    }
-                }
-                $status = "PASS"
-
-                if ($measurement.Received -eq 0) {
-                    # An optional ICMP target may intentionally block Ping.
-                    $status = if ($required) { "FAIL" } else { "INFO" }
-                }
-                elseif ($measurement.LossPercent -ge $criticalLoss) {
-                    $status = if ($required) { "FAIL" } else { "WARN" }
-                }
-                elseif ($measurement.LossPercent -ge $warningLoss) {
-                    $status = "WARN"
-                }
-                elseif ($null -ne $measurement.AverageMs -and $measurement.AverageMs -ge $criticalLatency) {
-                    $status = if ($required) { "FAIL" } else { "WARN" }
-                }
-                elseif ($null -ne $measurement.AverageMs -and $measurement.AverageMs -ge $warningLatency) {
-                    $status = "WARN"
-                }
-
-                $latencyText = "No successful replies"
-                if ($null -ne $measurement.AverageMs) {
-                    $latencyText = ("average {0} ms (minimum {1}, maximum {2})" -f $measurement.AverageMs, $measurement.MinimumMs, $measurement.MaximumMs)
-                }
-
-                $message = "Target {0}: {1}% loss ({2}/{3} successful), {4}." -f $target, $measurement.LossPercent, $measurement.Received, $measurement.Sent, $latencyText
-                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter -LookupAddress $lookupAddress -Others $routeOthers) + ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms{2}." -f $count, $timeout, (Get-RouteMethodText -Target ([string]$target) -LookupAddress $lookupAddress -TargetIsAddress $targetIsAddress -ExtraCount (@($routeOthers).Count))) + ("Manual check: ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
-                if ($status -eq "INFO") {
-                    $details += [Environment]::NewLine + "Informational: this optional target may simply block ICMP - see the Connectivity group for the authoritative internet verdict."
-                }
-                Add-CheckResult -Category "Latency and Packet Loss" -Check ("{0}: {1}" -f $name, $target) -Status $status -Message $message -Details $details -Tag $pingTag | Out-Null
+                Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout | Out-Null
             }
             catch {
                 $status = if ($required) { "ERROR" } else { "INFO" }
@@ -3440,6 +3799,7 @@ function Compare-TcpCounters {
     $criticalPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalPercent" 5) 5
     $criticalCount = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalCount" 50) 50)
     $minimumSegments = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
+    $verdictFloor = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpRetransmissionsForVerdict" 5) 5)
     # The order Get-TcpCounterSnapshot reads the two protocols in, which is what decides whose window a failed read
     # lands in (backlog #38). The reads are serial and each protocol's stamp is taken when its own read returns, so a
     # window is lengthened by a read that delayed the stamp closing it without delaying the stamp opening it. In the
@@ -3511,6 +3871,9 @@ function Compare-TcpCounters {
         if ($rate -gt 100) {
             $details += [Environment]::NewLine + "Note: a rate above 100% means retransmissions of segments sent before the sample window - read it as a ratio, not a percentage."
         }
+        if ([bool](Get-PropertyValue $After "Extended" $false)) {
+            $details += [Environment]::NewLine + "The sample window was extended once: the first window ended below MinimumTcpSegmentsForRate with at least one retransmission in it, which is the one case where waiting longer settles anything."
+        }
 
         foreach ($line in $evidenceLines) {
             $details += [Environment]::NewLine + $line
@@ -3526,7 +3889,12 @@ function Compare-TcpCounters {
 
         if ($sentDelta -lt $minimumSegments) {
             if ($retransDelta -gt 0) {
-                Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "WARN" -Message ("The traffic sample is small, but {0} retransmission(s) were observed (approximately {1}%)." -f $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" -Weightless | Out-Null
+                # This was a WARN until 1.2.10. Closed item #39 made it weightless in 1.2.8, so the badge
+                # already decided nothing, and all it did was colour a row "attention" beside a sentence saying
+                # the row is not evidence - which is the contradiction a row should not carry. This is #51's
+                # answer to what a small sample carrying a retransmission means: it is the record of that
+                # retransmission, and not a verdict.
+                Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "INFO" -Message ("The traffic sample is small, but {0} retransmission(s) were observed (approximately {1}%)." -f $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" -Weightless | Out-Null
             }
             else {
                 Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "INFO" -Message ("The sample contains only {0} sent segment(s); no retransmissions were observed." -f $sentDelta) -Details $details -Tag "tcp-retransmissions" | Out-Null
@@ -3534,22 +3902,114 @@ function Compare-TcpCounters {
             continue
         }
 
-        $status = "PASS"
-        if ($rate -ge $criticalPercent -or ($retransDelta -ge $criticalCount -and $rate -ge $warningPercent)) {
-            $status = "FAIL"
-        }
-        elseif ($rate -ge $warningPercent -or $retransDelta -ge $criticalCount) {
-            $status = "WARN"
+        # backlog #51: a proportion is not a verdict until enough events went into it. At the smallest sample
+        # this tool will rate - MinimumTcpSegmentsForRate, fifty as shipped - one retransmission is 2 %, the
+        # warning threshold itself, and three are 6 %, which fails on the rate alone. The floor counts events, and
+        # it gates BOTH branches: a floor on the warning branch alone would leave the coarsest sample convicting
+        # harder than the one above it. What it costs is bounded by the same arithmetic - suppression needs a rate
+        # at or above the warning threshold with fewer events than the floor, which is
+        # sent <= (floor - 1) x 100 / warningPercent, two hundred sent segments at the shipped 5 and 2 %. That is
+        # exactly the sample size at which one retransmission is a quarter of the warning threshold, and above it
+        # nothing is ever suppressed.
+        if ($retransDelta -lt $verdictFloor -and $rate -ge $warningPercent) {
+            $details += [Environment]::NewLine + ("Fewer than {0} retransmissions went into this rate, so the rate is reported without a verdict: at this sample size one retransmission on its own is enough to carry it across a threshold. This row does not change the overall result." -f $verdictFloor)
+            Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status "INFO" -Message ("Sent {0}, retransmitted {1}, approximate retransmission rate {2}% - too few retransmissions to rate." -f $sentDelta, $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" -Weightless | Out-Null
+            continue
         }
 
+        # backlog #63, decided 2026-09-11: the count is a confidence qualifier on the rate - it may sharpen a
+        # verdict the rate has already reached, and may never create one. So the standalone count trigger in the
+        # WARN line goes and the conjunction in the FAIL line stays. The argument is a boundary,
+        # TcpRetransmissionCriticalCount / TcpRetransmissionWarningPercent, which is 2 500 sent segments at the
+        # shipped 50 and 2 %: below it, reaching fifty retransmissions means the rate is already at or above the
+        # warning threshold and the standalone trigger adds nothing; above it, all the standalone trigger adds is
+        # a warning on a sample whose rate is below the tool's own warning threshold.
+        # And every row says which of the two decided it, because until now a reader could not tell (#63's
+        # acceptance). A PASS says nothing: a row explains what happened, not what did not (backlog #40).
+        $status = "PASS"
+        $decided = ""
+        if ($rate -ge $criticalPercent) {
+            $status = "FAIL"
+            $decided = ("Decided by the rate: {0}% is at or above the critical threshold of {1}%." -f $rate, $criticalPercent)
+        }
+        elseif ($retransDelta -ge $criticalCount -and $rate -ge $warningPercent) {
+            $status = "FAIL"
+            $decided = ("Decided by the rate and the count together: {0}% is at or above the warning threshold of {1}%, and {2} retransmissions are at or above {3}." -f $rate, $warningPercent, $retransDelta, $criticalCount)
+        }
+        elseif ($rate -ge $warningPercent) {
+            $status = "WARN"
+            $decided = ("Decided by the rate: {0}% is at or above the warning threshold of {1}%." -f $rate, $warningPercent)
+        }
+        if ($decided -ne "") { $details += [Environment]::NewLine + $decided }
+
         Add-CheckResult -Category "TCP Retransmissions" -Check $protocol -Status $status -Message ("Sent {0}, retransmitted {1}, approximate retransmission rate {2}%." -f $sentDelta, $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" | Out-Null
+    }
+}
+
+function Test-TcpSampleNeedsExtension {
+    param(
+        [object]$Before,
+        [object]$After
+    )
+
+    # backlog #51: the one case a longer window can settle. Below MinimumTcpSegmentsForRate the tool does not rate
+    # the sample at all, and a sample below it that carried a retransmission is the ambiguous one - the row can
+    # say a retransmission happened and cannot say how often. A machine idle enough to send nothing, or one that
+    # sent little and retransmitted none of it, is not ambiguous: waiting longer would buy more of the same
+    # nothing. A sample already at or above the floor is not extended either - it has a rate, and too few events
+    # behind a rate is a count floor's business rather than a window's.
+    if ($null -eq $Before -or $null -eq $After) { return $false }
+    $minimumSegments = [double](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
+    foreach ($protocol in @("TCPv4", "TCPv6")) {
+        if (-not $Before.Counters.ContainsKey($protocol) -or -not $After.Counters.ContainsKey($protocol)) { continue }
+        $sentDelta = [double]$After.Counters[$protocol].SegmentsSent - [double]$Before.Counters[$protocol].SegmentsSent
+        $retransDelta = [double]$After.Counters[$protocol].Retransmitted - [double]$Before.Counters[$protocol].Retransmitted
+        # A counter that went backwards is a reset or an overflow, so the delta means nothing and cannot be the
+        # reason for spending more of the run waiting; the row for that protocol says so for itself (backlog #38).
+        if ($sentDelta -lt 0 -or $retransDelta -le 0) { continue }
+        if ($sentDelta -lt $minimumSegments) { return $true }
+    }
+    return $false
+}
+
+function Merge-TcpEndingSnapshot {
+    param(
+        [object]$Original,
+        [object]$Extended
+    )
+
+    # The ending snapshot after a window was extended (backlog #51). Per protocol the later reading wins, because
+    # it closes the longer window; where the later read failed the first one stands, so extending a window can
+    # never cost a row that had already been measured. An error is kept only for a protocol that has no reading
+    # from either read, and every failed attempt of both reads is kept, because the seconds they spent are seconds
+    # of this window like any other.
+    if ($null -eq $Extended) { return $Original }
+    if ($null -eq $Original) { return $Extended }
+    $counters = @{}
+    foreach ($protocol in @($Original.Counters.Keys)) { $counters[$protocol] = $Original.Counters[$protocol] }
+    foreach ($protocol in @($Extended.Counters.Keys)) { $counters[$protocol] = $Extended.Counters[$protocol] }
+    $errors = @()
+    foreach ($item in (@($Original.Errors) + @($Extended.Errors))) {
+        if ($null -eq $item) { continue }
+        if ($counters.ContainsKey([string]$item.Protocol)) { continue }
+        if (@($errors | Where-Object { [string]$_.Protocol -eq [string]$item.Protocol }).Count -gt 0) { continue }
+        $errors += $item
+    }
+    return [pscustomobject][ordered]@{
+        Timestamp      = $Extended.Timestamp
+        Counters       = $counters
+        Errors         = @($errors)
+        FailedAttempts = @(@(Get-PropertyValue $Original "FailedAttempts" @()) + @(Get-PropertyValue $Extended "FailedAttempts" @()))
+        WarmUpFailures = @(@(Get-PropertyValue $Original "WarmUpFailures" @()) + @(Get-PropertyValue $Extended "WarmUpFailures" @()))
+        Extended       = $true
     }
 }
 
 function Wait-ForMinimumTcpSample {
     param(
         [datetime]$StartTime,
-        [int]$MinimumSeconds
+        [int]$MinimumSeconds,
+        [int]$ProgressPercent = 87
     )
 
     $elapsed = ((Get-Date) - $StartTime).TotalSeconds
@@ -3559,7 +4019,7 @@ function Wait-ForMinimumTcpSample {
     }
 
     for ($i = $remaining; $i -gt 0; $i--) {
-        Set-UiProgress -Percent 87 -Text ("Sampling TCP retransmissions, approximately $i second(s) remaining")
+        Set-UiProgress -Percent $ProgressPercent -Text ("Sampling TCP retransmissions, approximately $i second(s) remaining")
         Start-Sleep -Seconds 1
         if ($script:GuiAvailable) {
             [System.Windows.Forms.Application]::DoEvents()
@@ -4224,6 +4684,8 @@ function Run-AllChecks {
     # Cleared with the results, not at process start: the window is reused, so a rate computed by one run would
     # otherwise still be explained in the report of a later Run Again whose counters failed (PR #35, round 1).
     $script:RetransmissionRateComputed = $false
+    # The same reason (backlog #51): a ping sample one run put aside must never be finished in a later run's report.
+    $script:PendingPingSamples = New-Object System.Collections.ArrayList
     $script:LastHtmlReport = $null
     $script:LastTextReport = $null
     $script:LastJsonReport = $null
@@ -4356,6 +4818,12 @@ function Run-AllChecks {
     } | Out-Null
 
     $minimumSampleSeconds = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.RetransmissionSampleSeconds 8))
+    # The position is the point (backlog #51): the ping samples that were put aside are finished here, before the
+    # retransmission window sleeps out the seconds it still owes, so what the spread probes spend is time the run
+    # was going to spend anyway. Anywhere else in the run and they would make it longer.
+    Invoke-CheckStep -Category "Latency and Packet Loss" -Name "Finish the ping samples that were not conclusive" -Progress 78 -Action {
+        Complete-PingSamples -SampleStart $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
+    } | Out-Null
     Wait-ForMinimumTcpSample -StartTime $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
 
     $adapterStatsAfter = Invoke-CheckStep -Category "Network Adapter Error Counters" -Name "Get Ending Network Adapter Error Values" -Progress 82 -Weightless -Action {
@@ -4374,6 +4842,17 @@ function Run-AllChecks {
     $tcpAfter = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Get Ending TCP Retransmission Values" -Progress 89 -Weightless -Action {
         return (Get-TcpCounterSnapshot)
     }
+
+    # Extended once, and only in the ambiguous case (backlog #51): a sample below the rating floor with a
+    # retransmission in it. The step itself is weightless - it is a decision about sampling rather than a
+    # measurement, and the measurement is still written by the step below. The merge is per protocol, so a second
+    # read that fails can never cost a reading the first one already had.
+    $tcpExtended = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Extend the TCP Sample Where It Was Too Small to Rate" -Progress 90 -Weightless -Action {
+        if (-not (Test-TcpSampleNeedsExtension -Before $tcpBaseline -After $tcpAfter)) { return $null }
+        Wait-ForMinimumTcpSample -StartTime (Get-Date) -MinimumSeconds $minimumSampleSeconds -ProgressPercent 90
+        return (Merge-TcpEndingSnapshot -Original $tcpAfter -Extended (Get-TcpCounterSnapshot))
+    }
+    if ($null -ne $tcpExtended) { $tcpAfter = $tcpExtended }
 
     Invoke-CheckStep -Category "TCP Retransmissions" -Name "Analyze TCP Retransmissions" -Progress 92 -Action {
         Compare-TcpCounters -Before $tcpBaseline -After $tcpAfter
@@ -4468,10 +4947,16 @@ function Set-OptionsPanelValues {
     $controls["DnsName"].Text = (@($options.RawTargets.Dns) -join ", ")
     $controls["TcpTarget"].Text = (@($options.RawTargets.Tcp) -join ", ")
     $controls["HttpUrl"].Text = (@($options.RawTargets.Http) -join " ")
-    # A configured value above the spinner's default range (20 pings, 120 s) widens the range instead of being clamped,
-    # so an untouched Start runs with the configured value (v1.2.1).
-    $controls["PingCount"].Maximum = [math]::Max(20, $options.PingCount)
+    # A configured value above the spinner's default range (120 s for the sample) widens the range instead of
+    # being clamped, so an untouched Start runs with the configured value (v1.2.1).
+    # The two ping spinners' range IS the configured ceiling (backlog #51). It opened at 20 until 1.2.9 - a number
+    # with no reason anywhere in this repository or the package - and the widening stays; what it widens from is
+    # now a value that means something.
+    $pingRange = [math]::Max($options.PingCountMaximum, $options.PingCount)
+    $controls["PingCount"].Maximum = $pingRange
     $controls["PingCount"].Value = [math]::Max(1, $options.PingCount)
+    $controls["PingCountMaximum"].Maximum = $pingRange
+    $controls["PingCountMaximum"].Value = [math]::Max(1, $options.PingCountMaximum)
     $controls["SampleSeconds"].Maximum = [math]::Max(120, $options.SampleSeconds)
     $controls["SampleSeconds"].Value = [math]::Max(1, $options.SampleSeconds)
     $controls["TracerouteHops"].Value = [math]::Min(10, [math]::Max(1, $options.TracerouteHops))
@@ -4525,6 +5010,7 @@ function Get-RunOptionsFromPanel {
         TcpTarget      = @(([string]$controls["TcpTarget"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         HttpUrl        = @(([string]$controls["HttpUrl"].Text) -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         PingCount      = [int]$controls["PingCount"].Value
+        PingCountMaximum = [int]$controls["PingCountMaximum"].Value
         SampleSeconds  = [int]$controls["SampleSeconds"].Value
         TracerouteHops = [int]$controls["TracerouteHops"].Value
         Checks         = @{
@@ -4619,7 +5105,8 @@ function Initialize-Gui {
             @{ Text = "Ping count"; X = 690; Y = 26; W = 110 },
             @{ Text = "Extra TCP (host:port)"; X = 12; Y = 58; W = 150 },
             @{ Text = "Extra URL"; X = 375; Y = 58; W = 100 },
-            @{ Text = "Sample seconds"; X = 690; Y = 58; W = 110 }
+            @{ Text = "Ping ceiling"; X = 690; Y = 58; W = 110 },
+            @{ Text = "Sample seconds"; X = 690; Y = 92; W = 110 }
         )) {
             $label = New-Object System.Windows.Forms.Label
             $label.Text = $item.Text
@@ -4642,10 +5129,16 @@ function Initialize-Gui {
         $hints.SetToolTip($controls["DnsName"], "For example www.example.com")
         $hints.SetToolTip($controls["TcpTarget"], "For example 8.8.8.8:443 - a host or address, a colon, then the port")
         $hints.SetToolTip($controls["HttpUrl"], "For example https://www.example.com/")
+        $hints.SetToolTip($controls["PingCount"], "How many ICMP echo requests each ping target is sent to begin with")
+        $hints.SetToolTip($controls["PingCountMaximum"], "The furthest this run will go for one ping target when replies are lost")
         foreach ($key in @("PingTarget", "DnsName", "TcpTarget", "HttpUrl")) {
             $controls[$key].Add_TextChanged({ $script:PanelWarned = $false; $this.BackColor = [System.Drawing.SystemColors]::Window })
         }
-        foreach ($item in @(@{ Key = "PingCount"; X = 805; Y = 23; Min = 1; Max = 20 }, @{ Key = "SampleSeconds"; X = 805; Y = 55; Min = 1; Max = 120 })) {
+        # Three spinners in one column. The two ping ranges come from the configured ceiling rather than from a
+        # number of this panel's own (backlog #51); Set-OptionsPanelValues sets them again from the run options
+        # whenever the panel is reset.
+        $pingSpinnerRange = [math]::Max(1, (ConvertTo-IntSafe (Get-PropertyValue $script:RunOptions "PingCountMaximum" 21) 21))
+        foreach ($item in @(@{ Key = "PingCount"; X = 805; Y = 23; Min = 1; Max = $pingSpinnerRange }, @{ Key = "PingCountMaximum"; X = 805; Y = 55; Min = 1; Max = $pingSpinnerRange }, @{ Key = "SampleSeconds"; X = 805; Y = 89; Min = 1; Max = 120 })) {
             $spinner = New-Object System.Windows.Forms.NumericUpDown
             $spinner.Location = New-Object System.Drawing.Point($item.X, $item.Y)
             $spinner.Size = New-Object System.Drawing.Size(70, 24)
@@ -4936,7 +5429,7 @@ try {
     Set-RunOptions -Overrides @{
         EntryPoint = $entryPoint; ExpandDetails = [bool]$ExpandDetails
         PingTarget = @($PingTarget); DnsName = @($DnsName); TcpTarget = @($TcpTarget); HttpUrl = @($HttpUrl)
-        SampleSeconds = $SampleSeconds; PingCount = $PingCount; TracerouteHops = $TracerouteHops
+        SampleSeconds = $SampleSeconds; PingCount = $PingCount; PingCountMaximum = $PingCountMaximum; TracerouteHops = $TracerouteHops
         NoTraceroute = [bool]$NoTraceroute; NoWifi = [bool]$NoWifi
     } | Out-Null
     Initialize-OutputDirectory

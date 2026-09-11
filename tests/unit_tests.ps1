@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -326,13 +326,19 @@ Assert-Equal 'archive: null path' (Test-IsRunningFromArchive $null) False
 # cases run against each of them; the prose around those tokens is not compared here.
 # ---------------------------------------------------------------------------
 $script:TcpRows = New-Object System.Collections.ArrayList
+# The window's running log, stubbed because a row that is rewritten writes one of its own (backlog #51) and
+# there is no window here. What it says is not asserted: it is the same sentence the row carries.
+function Write-UiLog { param([string]$Status, [string]$Text) }
 function Add-CheckResult {
-    param([string]$Category, [string]$Check, [string]$Status, [string]$Message, [string]$Details = "", [string]$Diagnostics = "", [string]$Tag = "", [string]$Scope = "Main")
-    $row = [pscustomobject]@{ Category = $Category; Check = $Check; Status = $Status; Message = $Message; Details = $Details; Diagnostics = $Diagnostics; Tag = $Tag; Scope = $Scope }
+    # -Weightless is bound rather than left to $args since 1.2.10: backlog #51's acceptance asks for rows that
+    # differ in what they decide and not only in what they say, and a stub that swallowed the switch could not
+    # tell the two apart.
+    param([string]$Category, [string]$Check, [string]$Status, [string]$Message, [string]$Details = "", [string]$Diagnostics = "", [string]$Tag = "", [string]$Scope = "Main", [switch]$Weightless)
+    $row = [pscustomobject]@{ Category = $Category; Check = $Check; Status = $Status; Message = $Message; Details = $Details; Diagnostics = $Diagnostics; Tag = $Tag; Scope = $Scope; Weightless = [bool]$Weightless }
     [void]$script:TcpRows.Add($row)
     return $row
 }
-$script:Config = [pscustomobject]@{ Thresholds = [pscustomobject]@{ TcpRetransmissionWarningPercent = 2; TcpRetransmissionCriticalPercent = 5; TcpRetransmissionCriticalCount = 50; MinimumTcpSegmentsForRate = 50 } }
+$script:Config = [pscustomobject]@{ Thresholds = [pscustomobject]@{ TcpRetransmissionWarningPercent = 2; TcpRetransmissionCriticalPercent = 5; TcpRetransmissionCriticalCount = 50; MinimumTcpSegmentsForRate = 50; MinimumTcpRetransmissionsForVerdict = 5; PacketLossWarningPercent = 5; PacketLossCriticalPercent = 20; LatencyWarningMs = 100; LatencyCriticalMs = 250 } }
 $script:RunOptions = [pscustomobject]@{ SampleSeconds = 8 }
 $script:RetransmissionRateComputed = $false
 
@@ -433,9 +439,14 @@ Assert-Equal '#38 warm-up: and both counters are still read' $snapOrdered.Counte
 # sample window would lengthen the very thing it is there to protect. Read off the AST, because the run itself needs
 # a machine with counters on it.
 $snapshotCalls = @($scriptAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-TcpCounterSnapshot' }, $true))
-Assert-Equal '#38 warm-up: the run takes two snapshots' $snapshotCalls.Count 2
+# Three since 1.2.10: the baseline, the ending one, and the read that closes a window extended once because the
+# sample was below the rating floor with a retransmission in it (backlog #51). The warm-up assertions are what
+# they were and are what matter here - the extra read is at the END of a window, where a warm-up would be the
+# very thing #38 removed.
+Assert-Equal '#38 warm-up: the run takes three snapshots' $snapshotCalls.Count 3
 Assert-Equal '#38 warm-up: exactly one of them warms the provider' (@($snapshotCalls | Where-Object { $_.Extent.Text -match '-WarmUp' }).Count) 1
-Assert-Equal '#38 warm-up: it is the baseline, the first of the two' ((@($snapshotCalls | Sort-Object { $_.Extent.StartOffset })[0].Extent.Text -match '-WarmUp')) True
+Assert-Equal '#38 warm-up: it is the baseline, the first of the three' ((@($snapshotCalls | Sort-Object { $_.Extent.StartOffset })[0].Extent.Text -match '-WarmUp')) True
+Assert-Equal '#51 extension: the third read is not a warm-up' ((@($snapshotCalls | Sort-Object { $_.Extent.StartOffset })[2].Extent.Text -match '-WarmUp')) False
 
 # PR #40, round 10: the chain's own fact probe (tests\Invoke-ValidationChain.ps1, Get-MachineFacts) mirrors the
 # measured read - two attempts, and these two fields - so that it never calls a class unreadable that the run reads on
@@ -819,8 +830,11 @@ function Get-StepProgress($Call) {
     return -1
 }
 $weightlessSteps = @($stepCalls | Where-Object { (Get-StepParameter $_ 'Weightless').Count -gt 0 })
-Assert-Equal '#39 steps: four of them declare the marking' $weightlessSteps.Count 4
-Assert-Equal '#39 steps: and they are the collectors, by their progress points' ((@($weightlessSteps | ForEach-Object { Get-StepProgress $_ } | Sort-Object) -join ',')) '10,13,82,89'
+# Five since 1.2.10. The fifth is the step that extends the TCP window (progress 90, backlog #51): it decides
+# how to sample rather than what the network is like, and the analysis step below it writes the measurement
+# either way - a step-error row from it must not make a run Test Incomplete.
+Assert-Equal '#39 steps: five of them declare the marking' $weightlessSteps.Count 5
+Assert-Equal '#39 steps: and they are the collectors, by their progress points' ((@($weightlessSteps | ForEach-Object { Get-StepProgress $_ } | Sort-Object) -join ',')) '10,13,82,89,90'
 Assert-Equal '#39 steps: the analysis steps beside them keep their weight' (@($stepCalls | Where-Object { (Get-StepProgress $_) -in @(85, 92) -and (Get-StepParameter $_ 'Weightless').Count -gt 0 }).Count) 0
 
 # The dropped-target rows must exist in every report this tool writes, including the two that end early - the
@@ -1094,6 +1108,255 @@ Assert-Equal 'route #59: one interface from two sources is not adapter ambiguity
 Assert-Equal 'route #59: it names the one interface they share' ($sameAliasText -match 'Wi-Fi') True
 Assert-Equal 'route #59: it still names both source addresses' (($sameAliasText -match 'fe80::1') -and ($sameAliasText -match '192\.168\.1\.106')) True
 Assert-Equal 'route #59: two interfaces are still adapter ambiguity' ($differText -match 'Ethernet') True
+
+
+# ---------------------------------------------------------------------------
+# backlog #51: a quality verdict may not rest on a single packet, and a sample
+# that is too coarse for its threshold is continued rather than convicted on.
+# backlog #63: the retransmission count qualifies the rate and may not act alone.
+# ---------------------------------------------------------------------------
+
+# The arithmetic the whole item turns on, and the off-by-one-factor its own first draft got wrong: twenty pings is
+# exactly 5 % for one lost reply, twenty-one is 4.8 %. The same slip put MinimumTcpSegmentsForRate at 100/2 = 50,
+# where one retransmission IS the 2 % warning threshold.
+Assert-Equal '#51 count: 5% warning needs 21 pings' (Get-PingCountForThreshold 5) 21
+Assert-Equal '#51 count: 20 is exactly the threshold, so it is not enough' ((Get-LossBand 20 1 5 20)) 'warning'
+Assert-Equal '#51 count: 21 is' ((Get-LossBand 21 1 5 20)) 'pass'
+Assert-Equal '#51 count: 2% would need 51' (Get-PingCountForThreshold 2) 51
+Assert-Equal '#51 count: 20% needs 6' (Get-PingCountForThreshold 20) 6
+Assert-Equal '#51 count: a threshold of zero has no such count' (Get-PingCountForThreshold 0) 0
+Assert-Equal '#51 count: nor has a negative one' (Get-PingCountForThreshold -3) 0
+Assert-Equal '#51 count: a tiny threshold does not overflow the return' ((Get-PingCountForThreshold 0.0000001) -le [int]::MaxValue) True
+
+# The band is read off the figure the row prints, rounded to one decimal.
+Assert-Equal '#51 band: 1 of 4 is 25%, critical' ((Get-LossBand 4 1 5 20)) 'critical'
+Assert-Equal '#51 band: 0 of 4 is a pass' ((Get-LossBand 4 0 5 20)) 'pass'
+Assert-Equal '#51 band: 2 of 21 is 9.5%, a warning' ((Get-LossBand 21 2 5 20)) 'warning'
+Assert-Equal '#51 band: nothing sent is a pass rather than a divide' ((Get-LossBand 0 0 5 20)) 'pass'
+
+# The rule itself: a coarse sample AND a verdict made of one packet. Either alone leaves the verdict standing.
+$lossFour = Get-PingLossClassification -Sent 4 -Lost 1 -WarningPercent 5 -CriticalPercent 20
+Assert-Equal '#51 loss: one of four reaches the critical band' $lossFour.Band 'critical'
+Assert-Equal '#51 loss: four probes is coarse for a 5% threshold' $lossFour.Coarse True
+Assert-Equal '#51 loss: and the band turns on that one reply' $lossFour.OnePacket True
+Assert-Equal '#51 loss: so the verdict is withheld' $lossFour.Weightless True
+Assert-Equal '#51 loss: the row can say what it would have taken' $lossFour.RequiredCount 21
+
+$lossTwentyOne = Get-PingLossClassification -Sent 21 -Lost 1 -WarningPercent 5 -CriticalPercent 20
+Assert-Equal '#51 loss: one of twenty-one is a pass' $lossTwentyOne.Band 'pass'
+Assert-Equal '#51 loss: twenty-one is not coarse for this threshold' $lossTwentyOne.Coarse False
+Assert-Equal '#51 loss: and nothing is withheld from a pass' $lossTwentyOne.Weightless False
+
+$lossTwoOfTwentyOne = Get-PingLossClassification -Sent 21 -Lost 2 -WarningPercent 5 -CriticalPercent 20
+Assert-Equal '#51 loss: two of twenty-one is a warning' $lossTwoOfTwentyOne.Band 'warning'
+Assert-Equal '#51 loss: it does turn on one packet' $lossTwoOfTwentyOne.OnePacket True
+Assert-Equal '#51 loss: but the sample fits the threshold, so it keeps its verdict' $lossTwoOfTwentyOne.Weightless False
+
+$lossThreeOfFour = Get-PingLossClassification -Sent 4 -Lost 3 -WarningPercent 5 -CriticalPercent 20
+Assert-Equal '#51 loss: three of four is critical' $lossThreeOfFour.Band 'critical'
+Assert-Equal '#51 loss: the sample is coarse' $lossThreeOfFour.Coarse True
+Assert-Equal '#51 loss: but 50% is still critical, so it does not rest on one packet' $lossThreeOfFour.OnePacket False
+Assert-Equal '#51 loss: and the verdict stands' $lossThreeOfFour.Weightless False
+
+$lossOneOfSix = Get-PingLossClassification -Sent 6 -Lost 1 -WarningPercent 5 -CriticalPercent 20
+Assert-Equal '#51 loss: one of six is a warning rather than critical' $lossOneOfSix.Band 'warning'
+Assert-Equal '#51 loss: and it is still one packet on a coarse sample' $lossOneOfSix.Weightless True
+Assert-Equal '#51 loss: no loss at all withholds nothing' ((Get-PingLossClassification -Sent 4 -Lost 0 -WarningPercent 5 -CriticalPercent 20).Weightless) False
+Assert-Equal '#51 loss: a warning threshold of zero leaves every sample coarse' ((Get-PingLossClassification -Sent 4 -Lost 1 -WarningPercent 0 -CriticalPercent 20).Coarse) True
+
+# The extension fires in the ambiguous case and only there.
+$planComplete = Get-PingExtensionPlan -Sent 4 -Received 4 -MaximumCount 21 -WarningPercent 5
+Assert-Equal '#51 plan: every reply arrived, so nothing is extended' $planComplete.Extend False
+Assert-Equal '#51 plan: and the row says why' $planComplete.Reason 'complete'
+$planSilent = Get-PingExtensionPlan -Sent 4 -Received 0 -MaximumCount 21 -WarningPercent 5
+Assert-Equal '#51 plan: nothing answered, which no larger count improves' $planSilent.Extend False
+Assert-Equal '#51 plan: and that is the expensive case, named' $planSilent.Reason 'silent'
+$planExtend = Get-PingExtensionPlan -Sent 4 -Received 3 -MaximumCount 21 -WarningPercent 5
+Assert-Equal '#51 plan: some but not all is the ambiguous case' $planExtend.Extend True
+Assert-Equal '#51 plan: it goes to the count the threshold needs' $planExtend.TargetCount 21
+Assert-Equal '#51 plan: which is seventeen more probes' $planExtend.AdditionalCount 17
+$planCapped = Get-PingExtensionPlan -Sent 4 -Received 3 -MaximumCount 10 -WarningPercent 5
+Assert-Equal '#51 plan: a lower ceiling caps it rather than being overridden' $planCapped.TargetCount 10
+Assert-Equal '#51 plan: and the row can say what it would have taken' $planCapped.RequiredCount 21
+Assert-Equal '#51 plan: already at the ceiling, nothing more is sent' ((Get-PingExtensionPlan -Sent 21 -Received 20 -MaximumCount 21 -WarningPercent 5).Reason) 'at-ceiling'
+Assert-Equal '#51 plan: a threshold no count escapes extends nothing' ((Get-PingExtensionPlan -Sent 4 -Received 3 -MaximumCount 21 -WarningPercent 0).Reason) 'no-threshold'
+
+# The spread takes its seconds from the wait the run already owed, and never divides by zero.
+Assert-Equal '#51 spread: eight seconds over seventeen probes' (Get-PingSampleInterval 8 17) 0.47
+Assert-Equal '#51 spread: no budget left means back to back' (Get-PingSampleInterval 0 17) 0
+Assert-Equal '#51 spread: a budget with nothing to spread is zero' (Get-PingSampleInterval 8 0) 0
+Assert-Equal '#51 spread: a negative budget is not a negative gap' (Get-PingSampleInterval -4 17) 0
+
+# The row itself, so that the rule above is not merely computed somewhere: the verdict has to leave the row.
+function New-PingFixture($sent, $received, $average) {
+    $lost = $sent - $received
+    return [pscustomobject]@{
+        Target = '203.0.113.9'; Sent = $sent; Received = $received; Lost = $lost
+        LossPercent = [math]::Round(($lost * 100.0 / $sent), 1)
+        AverageMs = $average; MinimumMs = $average; MaximumMs = $average
+        SuccessMs = @($average); RepliedAddresses = @('203.0.113.9')
+        AttemptDetails = @('Attempt 1: success, 5 ms, reply from 203.0.113.9')
+    }
+}
+$pingRoute = [pscustomobject]@{
+    Selection     = [pscustomobject]@{ Resolved = $true; Reason = ''; SourceAddress = '192.168.1.106'; InterfaceAlias = 'Wi-Fi' }
+    LookupAddress = '203.0.113.9'
+    Others        = @()
+}
+# The prose of a row is not compared here, because these cases run against both packages: what is compared is
+# statuses, markings, numbers and the shape of the details. This counts the lines of a row's details, which is how
+# a sentence that was added can be asserted without reading it.
+function Get-DetailLineCount($row) {
+    return @([string]$row.Details -split "`r`n|`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+}
+function Get-TcpDecisionLine($row) {
+    $lines = @([string]$row.Details -split "`r`n|`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    return $lines[$lines.Count - 1]
+}
+function Get-PingRow($sent, $received, $average, $required) {
+    $script:TcpRows = New-Object System.Collections.ArrayList
+    Add-PingTargetResult -Name 'Default Gateway' -Target '203.0.113.9' -ConfiguredAddress 'AUTO_GATEWAY' -Required $required -Measurement (New-PingFixture $sent $received $average) -RouteBefore $pingRoute.Selection -RouteAfter $pingRoute -TargetIsAddress $true -TimeoutMs 1200 | Out-Null
+    return @($script:TcpRows)[0]
+}
+$rowOneOfFour = Get-PingRow 4 3 5 $true
+Assert-Equal '#51 row: one lost of four on a required target no longer fails the run' $rowOneOfFour.Status 'WARN'
+Assert-Equal '#51 row: and it decides nothing' $rowOneOfFour.Weightless True
+Assert-Equal '#51 row: while keeping the figure it measured' ($rowOneOfFour.Message -match '25%') True
+Assert-Equal '#51 row: and saying what the sample would have needed' ($rowOneOfFour.Details -match '(?<![\d.])21(?![\d.])') True
+# The manual check is the same command in both packages, and since 1.2.10 its count is what was sent rather than
+# what was configured - the two are different numbers the moment a sample is continued.
+Assert-Equal '#51 row: the manual check reproduces what was actually sent' ($rowOneOfFour.Details -match 'ping -n 4 ') True
+$rowOneOfTwentyOne = Get-PingRow 21 20 5 $true
+Assert-Equal '#51 row: the same one lost reply out of twenty-one is a pass' $rowOneOfTwentyOne.Status 'PASS'
+Assert-Equal '#51 row: a pass carries no coarse-sample line, and the withheld one carries exactly one' ((Get-DetailLineCount $rowOneOfFour) - (Get-DetailLineCount $rowOneOfTwentyOne)) 1
+$rowThreeOfFour = Get-PingRow 4 1 5 $true
+Assert-Equal '#51 row: three lost of four still fails a required target' $rowThreeOfFour.Status 'FAIL'
+Assert-Equal '#51 row: and still decides the run' $rowThreeOfFour.Weightless False
+$rowSlow = Get-PingRow 4 3 300 $true
+Assert-Equal '#51 row: a withheld loss verdict does not hide a latency one' $rowSlow.Status 'FAIL'
+Assert-Equal '#51 row: which keeps its weight, because latency was measured' $rowSlow.Weightless False
+$rowSilent = Get-PingRow 4 0 $null $true
+Assert-Equal '#51 row: nothing replying at all is conclusive at any count' $rowSilent.Status 'FAIL'
+Assert-Equal '#51 row: and decides the run' $rowSilent.Weightless False
+
+# A continued sample rewrites the row it already has rather than adding a second one: the report renders rows in
+# the order they were added, so a row written late would leave the ping section in two pieces.
+$script:TcpRows = New-Object System.Collections.ArrayList
+$provisional = Add-PingTargetResult -Name 'Default Gateway' -Target '203.0.113.9' -ConfiguredAddress 'AUTO_GATEWAY' -Required $true -Measurement (New-PingFixture 4 3 5) -RouteBefore $pingRoute.Selection -RouteAfter $pingRoute -TargetIsAddress $true -TimeoutMs 1200
+Assert-Equal '#51 row: the first pass writes a row where it belongs' (@($script:TcpRows).Count) 1
+Assert-Equal '#51 row: under the tag the configured address decides' $provisional.Tag 'ping-gateway'
+Assert-Equal '#51 row: and it decides nothing while it is provisional' $provisional.Weightless True
+Add-PingTargetResult -Name 'Default Gateway' -Target '203.0.113.9' -ConfiguredAddress 'AUTO_GATEWAY' -Required $true -Measurement (New-PingFixture 21 20 5) -RouteBefore $pingRoute.Selection -RouteAfter $pingRoute -TargetIsAddress $true -TimeoutMs 1200 -Row $provisional | Out-Null
+Assert-Equal '#51 row: finishing the sample adds no second row' (@($script:TcpRows).Count) 1
+Assert-Equal '#51 row: the row it already had now carries the whole sample' ($provisional.Message -match '20/21') True
+Assert-Equal '#51 row: and the verdict that sample can carry' $provisional.Status 'PASS'
+Assert-Equal '#51 row: which decides the run again' $provisional.Weightless False
+
+# ---- the TCP half: the count floor, and #63's standalone trigger removed ----
+function New-TcpPair($sent, $retransmitted) {
+    $stamp = Get-Date '2026-09-11T09:00:00'
+    $before = [pscustomobject]@{
+        Timestamp = $stamp
+        Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $stamp 100000 1000) }
+        Errors    = @(); FailedAttempts = @(); WarmUpFailures = @()
+    }
+    $after = [pscustomobject]@{
+        Timestamp = $stamp.AddSeconds(9)
+        Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $stamp.AddSeconds(9) (100000 + $sent) (1000 + $retransmitted)) }
+        Errors    = @(); FailedAttempts = @(); WarmUpFailures = @()
+    }
+    return @($before, $after)
+}
+function Get-TcpRow($sent, $retransmitted) {
+    $pair = New-TcpPair $sent $retransmitted
+    $script:TcpRows = New-Object System.Collections.ArrayList
+    Compare-TcpCounters -Before $pair[0] -After $pair[1]
+    return @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv4' })[0]
+}
+
+# The case the acceptance names: three retransmissions in fifty segments is 6 %, which fails on the rate alone
+# today. A change that guarded only the warning branch would leave it a FAIL, so the assertion is on the status.
+$rowFloorFail = Get-TcpRow 50 3
+Assert-Equal '#51 tcp: 3 of 50 is 6% and used to FAIL on the rate alone' $rowFloorFail.Status 'INFO'
+Assert-Equal '#51 tcp: it carries no verdict' $rowFloorFail.Weightless True
+Assert-Equal '#51 tcp: and keeps its rate' ($rowFloorFail.Message -match '6%') True
+$rowTwoOfEightyFour = Get-TcpRow 84 2
+Assert-Equal '#51 tcp: 2 of 84 is 2.381% and used to WARN' $rowTwoOfEightyFour.Status 'INFO'
+Assert-Equal '#51 tcp: on too few events to rate' $rowTwoOfEightyFour.Weightless True
+$rowSmallSample = Get-TcpRow 40 1
+Assert-Equal '#51 tcp: a sample below the rating floor is information, not a warning' $rowSmallSample.Status 'INFO'
+Assert-Equal '#51 tcp: and has been weightless since 1.2.8' $rowSmallSample.Weightless True
+$rowSmallClean = Get-TcpRow 40 0
+Assert-Equal '#51 tcp: a small sample with no retransmission is unchanged' $rowSmallClean.Status 'INFO'
+$rowReal = Get-TcpRow 2906 251
+Assert-Equal '#51 tcp: 251 of 2906 is untouched' $rowReal.Status 'FAIL'
+Assert-Equal '#51 tcp: and still decides the run' $rowReal.Weightless False
+
+# #63's two measured cases: both rates are below the shipped 2 % warning threshold, and both warned only because
+# fifty retransmissions warned on their own.
+$rowBusyUser = Get-TcpRow 3832 57
+Assert-Equal '#63 tcp: 57 of 3832 is 1.487%, below both thresholds' $rowBusyUser.Status 'PASS'
+Assert-Equal '#63 tcp: 482 of 27594 is 1.747%' ((Get-TcpRow 27594 482).Status) 'PASS'
+$rowSharpened = Get-TcpRow 2000 60
+Assert-Equal '#63 tcp: the count still sharpens a verdict the rate reached' $rowSharpened.Status 'FAIL'
+$rowWarn = Get-TcpRow 400 10
+Assert-Equal '#63 tcp: a warning rate on enough events is still a warning' $rowWarn.Status 'WARN'
+
+# #63's acceptance asks that the row say which of the two decided it. The sentence itself is prose and differs
+# between the packages, so what is asserted is that there IS one and that the three cases do not share it: a pass
+# ends on the line every row ends on, and each of the other three ends on a sentence of its own.
+$tcpPassTail = Get-TcpDecisionLine $rowBusyUser
+Assert-Equal '#63 tcp: a pass adds nothing, because nothing decided it' ((Get-TcpDecisionLine (Get-TcpRow 2000 10)) -eq $tcpPassTail) True
+Assert-Equal '#63 tcp: a fail on the rate adds a sentence' ((Get-TcpDecisionLine $rowReal) -eq $tcpPassTail) False
+Assert-Equal '#63 tcp: so does a warning' ((Get-TcpDecisionLine $rowWarn) -eq $tcpPassTail) False
+Assert-Equal '#63 tcp: and the rate-and-count sentence is not the rate one' ((Get-TcpDecisionLine $rowSharpened) -eq (Get-TcpDecisionLine $rowReal)) False
+Assert-Equal '#63 tcp: the sharpened one names the count threshold it reached' ((Get-TcpDecisionLine $rowSharpened) -match '(?<![\d.])50(?!\d)') True
+Assert-Equal '#63 tcp: the rate one does not, because no count decided it' ((Get-TcpDecisionLine $rowReal) -match '(?<![\d.])50(?!\d)') False
+
+# The window is extended once, in the ambiguous case and only there.
+$extendPair = New-TcpPair 40 1
+Assert-Equal '#51 extend: a small sample carrying a retransmission is extended' (Test-TcpSampleNeedsExtension -Before $extendPair[0] -After $extendPair[1]) True
+$quietPair = New-TcpPair 40 0
+Assert-Equal '#51 extend: a small sample with no retransmission is not' (Test-TcpSampleNeedsExtension -Before $quietPair[0] -After $quietPair[1]) False
+$bigPair = New-TcpPair 2906 251
+Assert-Equal '#51 extend: a sample that already has a rate is not' (Test-TcpSampleNeedsExtension -Before $bigPair[0] -After $bigPair[1]) False
+$resetPair = New-TcpPair -20 1
+Assert-Equal '#51 extend: a counter that went backwards is not a reason to wait' (Test-TcpSampleNeedsExtension -Before $resetPair[0] -After $resetPair[1]) False
+Assert-Equal '#51 extend: a missing snapshot extends nothing' (Test-TcpSampleNeedsExtension -Before $null -After $extendPair[1]) False
+
+# Merging the second read: the later reading wins, a failed second read costs nothing that was already measured.
+$mergeStamp = Get-Date '2026-09-11T09:00:00'
+$mergeOriginal = [pscustomobject]@{
+    Timestamp = $mergeStamp.AddSeconds(9)
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $mergeStamp.AddSeconds(9) 100040 1001); 'TCPv6' = (New-CounterFixture 'TCPv6' $mergeStamp.AddSeconds(9) 200010 2000) }
+    Errors    = @(); FailedAttempts = @(); WarmUpFailures = @()
+}
+$mergeExtended = [pscustomobject]@{
+    Timestamp = $mergeStamp.AddSeconds(18)
+    Counters  = @{ 'TCPv6' = (New-CounterFixture 'TCPv6' $mergeStamp.AddSeconds(18) 200600 2003) }
+    Errors    = @([pscustomobject]@{ Protocol = 'TCPv4'; Error = 'Timed out'; Diagnostics = '' })
+    FailedAttempts = @([pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 1; Seconds = 8.0; Error = 'Timed out' })
+    WarmUpFailures = @()
+}
+$merged = Merge-TcpEndingSnapshot -Original $mergeOriginal -Extended $mergeExtended
+Assert-Equal '#51 merge: the longer window wins where it was read' $merged.Counters['TCPv6'].SegmentsSent 200600
+Assert-Equal '#51 merge: a second read that failed keeps the first reading' $merged.Counters['TCPv4'].SegmentsSent 100040
+Assert-Equal '#51 merge: so no row is lost to an extension' (@($merged.Errors).Count) 0
+Assert-Equal '#51 merge: the failed attempt is still on the record' (@($merged.FailedAttempts).Count) 1
+Assert-Equal '#51 merge: and the row can say the window was extended' $merged.Extended True
+$mergeBaseline = [pscustomobject]@{
+    Timestamp = $mergeStamp
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $mergeStamp 100000 1000); 'TCPv6' = (New-CounterFixture 'TCPv6' $mergeStamp 200000 2000) }
+    Errors    = @(); FailedAttempts = @(); WarmUpFailures = @()
+}
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $mergeBaseline -After $merged
+$mergedRow = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv6' })[0]
+Assert-Equal '#51 merge: the row says which floor the first window fell under' ($mergedRow.Details -match 'MinimumTcpSegmentsForRate') True
+Assert-Equal '#51 merge: and rates the longer window it closed' ($mergedRow.Message -match '(?<![\d.])600(?![\d.])') True
+$mergedNothing = Merge-TcpEndingSnapshot -Original $mergeOriginal -Extended $null
+Assert-Equal '#51 merge: an extension that produced nothing leaves the original alone' $mergedNothing.Counters['TCPv6'].SegmentsSent 200010
+
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

@@ -202,7 +202,7 @@ Add-Type -AssemblyName System.Windows.Forms
 function New-PanelControls {
     $c = @{}
     foreach ($key in @("PingTarget", "DnsName", "TcpTarget", "HttpUrl")) { $c[$key] = New-Object System.Windows.Forms.TextBox }
-    foreach ($item in @(@{ Key = "PingCount"; Min = 1; Max = 20 }, @{ Key = "SampleSeconds"; Min = 1; Max = 120 }, @{ Key = "TracerouteHops"; Min = 1; Max = 10 })) {
+    foreach ($item in @(@{ Key = "PingCount"; Min = 1; Max = 21 }, @{ Key = "PingCountMaximum"; Min = 1; Max = 21 }, @{ Key = "SampleSeconds"; Min = 1; Max = 120 }, @{ Key = "TracerouteHops"; Min = 1; Max = 10 })) {
         $s = New-Object System.Windows.Forms.NumericUpDown; $s.Minimum = $item.Min; $s.Maximum = $item.Max; $c[$item.Key] = $s
     }
     foreach ($key in @("WifiRf", "RouteTable", "GatewayNeighbor", "ProxySettings", "DriverInfo", "Traceroute", "ExpandDetails")) { $c[$key] = New-Object System.Windows.Forms.CheckBox }
@@ -221,7 +221,7 @@ $o = Set-RunOptions -Overrides (Get-RunOptionsFromPanel)
 Assert-Equal 'I: an untouched Start keeps ping count 30' $o.PingCount 30
 Assert-Equal 'I: an untouched Start keeps sample 300 s' $o.SampleSeconds 300
 Assert-Equal 'I: effective config carries the configured values' ("$($script:Config.Tests.PingCount)/$($script:Config.Tests.RetransmissionSampleSeconds)") "30/300"
-Assert-Equal 'I: profile text carries the configured values' ((Get-RunProfileText) -match '(ping count|Ping 次數) 30 \| (sample 300 s|取樣 300 秒)') True
+Assert-Equal 'I: profile text carries the configured values' ((Get-RunProfileText) -match '(ping count|Ping 次數) 30 \| (ping ceiling|Ping 上限) 30 \| (sample 300 s|取樣 300 秒)') True
 $script:OptionsPanel["PingCount"].Value = 12
 $script:OptionsPanel["SampleSeconds"].Value = 45
 $o = Set-RunOptions -Overrides (Get-RunOptionsFromPanel)
@@ -233,11 +233,22 @@ Assert-Equal 'I: Reset to config restores the configured sample seconds' $script
 $script:BaseConfig.Tests.PingCount = 4
 $script:BaseConfig.Tests.RetransmissionSampleSeconds = 8
 Set-RunOptions -Overrides @{ EntryPoint = "IT" } | Out-Null; Set-OptionsPanelValues
-Assert-Equal 'I: default config keeps the 1-20 ping range' $script:OptionsPanel["PingCount"].Maximum 20
+# The ping spinners' range is the configured ceiling since 1.2.10 (backlog #51), not a number of the panel's own:
+# it opened at 20 until then, and nothing in the repository or the package said why. The widening a configured
+# value above it produces is what v1.2.1 decided and is unchanged - it is what it widens from that now means
+# something, and PingCountMaximum's default is 21 because that is where one lost reply stops reaching the shipped
+# 5 % warning threshold.
+Assert-Equal 'I: the default config opens the ping spinners at the configured ceiling' $script:OptionsPanel["PingCount"].Maximum 21
+Assert-Equal 'I: and the ceiling spinner has the same range as the count' $script:OptionsPanel["PingCountMaximum"].Maximum 21
+Assert-Equal 'I: with the configured ceiling in it' $script:OptionsPanel["PingCountMaximum"].Value 21
 Assert-Equal 'I: default config keeps the 1-120 s sample range' $script:OptionsPanel["SampleSeconds"].Maximum 120
 Assert-Equal 'I: default values shown (4 / 8)' ("$($script:OptionsPanel['PingCount'].Value)/$($script:OptionsPanel['SampleSeconds'].Value)") "4/8"
 Set-RunOptions -Overrides @{ EntryPoint = "IT"; PingCount = 25 } | Out-Null; Set-OptionsPanelValues
 Assert-Equal 'I: a CLI -PingCount 25 above the default range is shown, not clamped' $script:OptionsPanel["PingCount"].Value 25
+Assert-Equal 'I: and the ceiling follows it, because a ceiling below the starting count sends nothing less' $script:OptionsPanel["PingCountMaximum"].Value 25
+Set-RunOptions -Overrides @{ EntryPoint = "IT"; PingCountMaximum = 40 } | Out-Null; Set-OptionsPanelValues
+Assert-Equal 'I: a CLI -PingCountMaximum 40 widens both spinners' $script:OptionsPanel["PingCount"].Maximum 40
+Assert-Equal 'I: and an untouched Start keeps it' ((Set-RunOptions -Overrides (Get-RunOptionsFromPanel)).PingCountMaximum) 40
 Assert-Equal 'I: traceroute hops keep the shared 1-10 rule' $script:OptionsPanel["TracerouteHops"].Maximum 10
 $script:OptionsPanel = $null
 

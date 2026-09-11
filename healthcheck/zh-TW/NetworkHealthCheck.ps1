@@ -14,6 +14,7 @@ param(
     [string[]]$HttpUrl = @(),
     [int]$SampleSeconds = 0,
     [int]$PingCount = 0,
+    [int]$PingCountMaximum = 0,
     [int]$TracerouteHops = 0,
     [switch]$NoTraceroute,
     [switch]$NoWifi
@@ -42,7 +43,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：報告保存例外類型、訊息與內部例外；腳本位置與呼叫堆疊只寫入 JSON 報告（Diagnostics）。
 
-$script:ToolVersion = "1.2.9"
+$script:ToolVersion = "1.2.10"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -155,6 +156,7 @@ $script:RunOptions = $null
 $script:RunOptionMessages = New-Object System.Collections.ArrayList
 $script:DroppedTargets = New-Object System.Collections.ArrayList
 $script:RetransmissionRateComputed = $false
+$script:PendingPingSamples = New-Object System.Collections.ArrayList
 $script:PanelWarned = $false
 $script:PanelHints = $null
 # 腳本層級變數與已繫結的參數同屬頂層作用域：這裡絕不能把參數同名變數重設為常值（v1.2.0 寫成 $false，IT 入口因此開成使用者版面；v1.2.1 修正）。
@@ -673,6 +675,7 @@ function Get-DefaultConfig {
         }
         Tests = [pscustomobject][ordered]@{
             PingCount                    = 4
+            PingCountMaximum             = 21
             PingTimeoutMs                = 1200
             DnsTimeoutMs                 = 4000
             TcpTimeoutMs                 = 4000
@@ -725,6 +728,7 @@ function Get-DefaultConfig {
             TcpRetransmissionCriticalPercent  = 5
             TcpRetransmissionCriticalCount    = 50
             MinimumTcpSegmentsForRate         = 50
+            MinimumTcpRetransmissionsForVerdict = 5
             AdapterErrorWarningDelta          = 1
             AdapterErrorCriticalDelta         = 10
             AdapterDiscardWarningDelta        = 1
@@ -954,6 +958,7 @@ function Set-RunOptions {
 
     if ((ConvertTo-IntSafe $Overrides["SampleSeconds"] 0) -gt 0) { $config.Tests.RetransmissionSampleSeconds = ConvertTo-IntSafe $Overrides["SampleSeconds"] 0 }
     if ((ConvertTo-IntSafe $Overrides["PingCount"] 0) -gt 0) { $config.Tests.PingCount = ConvertTo-IntSafe $Overrides["PingCount"] 0 }
+    if ((ConvertTo-IntSafe $Overrides["PingCountMaximum"] 0) -gt 0) { $config.Tests.PingCountMaximum = ConvertTo-IntSafe $Overrides["PingCountMaximum"] 0 }
     if ((ConvertTo-IntSafe $Overrides["TracerouteHops"] 0) -gt 0) { $config.Checks.TracerouteHops = ConvertTo-IntSafe $Overrides["TracerouteHops"] 0 }
     if ($Overrides["NoTraceroute"] -eq $true) { $config.Checks.Traceroute = $false }
     if ($Overrides["NoWifi"] -eq $true) { $config.Checks.WifiRf = $false }
@@ -977,6 +982,10 @@ function Set-RunOptions {
         ExtraTargets   = [pscustomobject]$extra
         RawTargets     = [pscustomobject]$raw
         PingCount      = [math]::Max(1, (ConvertTo-IntSafe $config.Tests.PingCount 4))
+        # 上限永遠不會低於起始次數（backlog #51）：PingCount 是每個 ping 目標一開始送出的次數，
+        # PingCountMaximum 則是回覆有遺失時這次執行最多會加到多少。兩者順序寫反不會把起始次數砍掉——
+        # 設定檢查會提出警告，而這裡取兩者的較大值，所以使用者要求送出的次數一定會送出。
+        PingCountMaximum = [math]::Max([math]::Max(1, (ConvertTo-IntSafe $config.Tests.PingCount 4)), (ConvertTo-IntSafe $config.Tests.PingCountMaximum 21))
         SampleSeconds  = [math]::Max(1, (ConvertTo-IntSafe $config.Tests.RetransmissionSampleSeconds 8))
         TracerouteHops = $hops
         ChecksEnabled  = [pscustomobject][ordered]@{
@@ -1006,6 +1015,7 @@ function Get-RunProfileText {
     foreach ($value in @($options.ExtraTargets.Http)) { $extras += "url $value" }
     if ($extras.Count -gt 0) { $parts += ("額外目標：{0}" -f ($extras -join ", ")) }
     $parts += ("Ping 次數 {0}" -f $options.PingCount)
+    $parts += ("Ping 上限 {0}" -f $options.PingCountMaximum)
     $parts += ("取樣 {0} 秒" -f $options.SampleSeconds)
     if ($options.ChecksEnabled.Traceroute) { $parts += ("traceroute {0} 跳" -f $options.TracerouteHops) }
     $disabled = @()
@@ -1613,6 +1623,7 @@ function Test-ConfigurationSemantics {
 
     foreach ($setting in @(
         [pscustomobject]@{ Name = "PingCount"; Value = $tests.PingCount },
+        [pscustomobject]@{ Name = "PingCountMaximum"; Value = $tests.PingCountMaximum },
         [pscustomobject]@{ Name = "PingTimeoutMs"; Value = $tests.PingTimeoutMs },
         [pscustomobject]@{ Name = "DnsTimeoutMs"; Value = $tests.DnsTimeoutMs },
         [pscustomobject]@{ Name = "TcpTimeoutMs"; Value = $tests.TcpTimeoutMs },
@@ -1639,8 +1650,8 @@ function Test-ConfigurationSemantics {
         [void]$inputWarnings.Add("Checks.TracerouteHops 必須是 1 到 10 的整數（目前值：$hopsValue），將改用內建預設值。")
     }
 
-    $countThresholdNames = @("TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")
-    foreach ($thresholdName in @("PacketLossWarningPercent", "PacketLossCriticalPercent", "LatencyWarningMs", "LatencyCriticalMs", "TcpRetransmissionWarningPercent", "TcpRetransmissionCriticalPercent", "TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")) {
+    $countThresholdNames = @("TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "MinimumTcpRetransmissionsForVerdict", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")
+    foreach ($thresholdName in @("PacketLossWarningPercent", "PacketLossCriticalPercent", "LatencyWarningMs", "LatencyCriticalMs", "TcpRetransmissionWarningPercent", "TcpRetransmissionCriticalPercent", "TcpRetransmissionCriticalCount", "MinimumTcpSegmentsForRate", "MinimumTcpRetransmissionsForVerdict", "AdapterErrorWarningDelta", "AdapterErrorCriticalDelta", "AdapterDiscardWarningDelta", "AdapterDiscardCriticalDelta")) {
         $thresholdValue = Get-PropertyValue $thresholds $thresholdName
         if ($null -eq $thresholdValue) {
             continue
@@ -1651,6 +1662,14 @@ function Test-ConfigurationSemantics {
         elseif (($countThresholdNames -contains $thresholdName) -and -not (Test-IsWholeNumber $thresholdValue)) {
             [void]$warnings.Add("$thresholdName 必須是支援範圍內的整數（目前值：$thresholdValue），將改用內建預設值。")
         }
+    }
+
+    # 兩個 ping 次數也是一對有順序的設定值，跟門檻一樣（backlog #51）。上限低於起始次數並不會讓執行失敗——
+    # 起始次數就是上限——但那是設定檔說了一件它做不到的事，所以這裡照門檻的成對檢查方式講出來。
+    $startCount = ConvertTo-IntSafe $tests.PingCount 4
+    $ceilingCount = ConvertTo-IntSafe $tests.PingCountMaximum 21
+    if ($ceilingCount -lt $startCount) {
+        [void]$warnings.Add("Ping 次數順序不合理：PingCount=$startCount, PingCountMaximum=$ceilingCount；將以起始次數作為上限。")
     }
 
     $warningLoss = ConvertTo-DoubleSafe $thresholds.PacketLossWarningPercent 5
@@ -2072,20 +2091,161 @@ function Format-RouteSelection {
     return ("路由選擇在這次檢測中改變了：探測前是 {0}，探測後是 {1}。探測沒有綁定其中任何一個，所以這一列無法說出實際是哪一個承載了它們。" -f $beforeText, $afterText)
 }
 
+# -----------------------------------------------------------------------------
+# 自適應 ping 取樣，以及一個遺失數字可以決定什麼（backlog #51）。
+# -----------------------------------------------------------------------------
+function Get-PingCountForThreshold {
+    param([double]$WarningPercent)
+
+    # 「單一次遺失仍低於封包遺失警告門檻」所需的最小 echo 次數。n 次裡遺失一次是 100/n 個百分點，所以要找的是
+    # 滿足 100/n < w 的最小 n，也就是 floor(100/w) + 1——在出貨的 5 % 下是 21，因為 20 剛好等於 5 % 仍會警告。
+    # 關鍵就在那個「+ 1」：同一段算式少了它，得到的是「一次遺失剛好等於門檻」的次數，而那正是本項目在講的
+    # 缺陷——MinimumTcpSegmentsForRate 是 50，而 100/2 就是 50。
+    # 門檻是 0 或更小時，沒有任何次數躲得過它，因為任何遺失都會達到門檻。這種 n 並不存在，所以回 0 告訴呼叫者，
+    # 而不是回一個其實沒用的數字。
+    if ($WarningPercent -le 0) { return 0 }
+    $count = [math]::Floor(100.0 / $WarningPercent) + 1
+    if ($count -ge [int]::MaxValue) { return [int]::MaxValue }
+    return [int]$count
+}
+
+function Get-LossBand {
+    param(
+        [int]$Sent,
+        [int]$Lost,
+        [double]$WarningPercent,
+        [double]$CriticalPercent
+    )
+
+    # 一個遺失數字落在哪一級，用的是這一列實際印出來的數字——四捨五入到小數第一位——所以列上的數字跟判定
+    # 永遠不會對同一個數字有兩種說法。
+    if ($Sent -le 0) { return "pass" }
+    $percent = [math]::Round(([math]::Max(0, $Lost) * 100.0 / $Sent), 1)
+    if ($percent -ge $CriticalPercent) { return "critical" }
+    if ($percent -ge $WarningPercent) { return "warning" }
+    return "pass"
+}
+
+function Get-PingLossClassification {
+    param(
+        [int]$Sent,
+        [int]$Lost,
+        [double]$WarningPercent,
+        [double]$CriticalPercent
+    )
+
+    # 這個取樣數撐不撐得起它達到的那一級。要問兩件事，兩件都成立才會收回判定：
+    #   Coarse    - 取樣數小於「單一次遺失不再達到警告門檻」所需的次數，也就是在這裡一個封包就值一整級。
+    #               出貨設定就是這個樣子：4 次對 5 % 的門檻，一次遺失是 25 %，連嚴重門檻都越過了，工具根本
+    #               沒有辦法在這個次數下表達「有一點點遺失」。
+    #   OnePacket - 少遺失一次，級別就會不一樣。也就是說這個判定「就是」那一個封包。
+    # 只成立一件是很平常的事，只憑其中一件寫成的規則都會是錯的。4 次遺失 3 次是 75 %，取樣雖粗，但少一次還有
+    # 50 %，沒有任何東西是靠那一個封包撐著的，所以這一列保有判定；21 次遺失 2 次確實會因一個封包而改變級別，
+    # 但 21 次是這個門檻撐得住的取樣數，9.5 % 是一次量測。只有兩件同時成立，才是本項目真正量到的那個情況。
+    # 全部都沒有回覆的情況根本不會走到這裡：Test-PingTargets 在遺失門檻之前就先回答了，而 100 % 遺失在任何
+    # 次數下都是結論——這也正是那種取樣永遠不會被延長的原因。
+    $band = Get-LossBand -Sent $Sent -Lost $Lost -WarningPercent $WarningPercent -CriticalPercent $CriticalPercent
+    $required = Get-PingCountForThreshold -WarningPercent $WarningPercent
+    $coarse = ($Sent -gt 0) -and (($required -le 0) -or ($Sent -lt $required))
+    $onePacket = $false
+    if ($Lost -ge 1) {
+        $onePacket = ($band -ne (Get-LossBand -Sent $Sent -Lost ($Lost - 1) -WarningPercent $WarningPercent -CriticalPercent $CriticalPercent))
+    }
+    return [pscustomobject][ordered]@{
+        Band          = $band
+        Coarse        = $coarse
+        OnePacket     = $onePacket
+        RequiredCount = $required
+        Weightless    = (($band -ne "pass") -and $coarse -and $onePacket)
+    }
+}
+
+function Get-PingExtensionPlan {
+    param(
+        [int]$Sent,
+        [int]$Received,
+        [int]$MaximumCount,
+        [double]$WarningPercent
+    )
+
+    # 這個目標要不要繼續取樣、要加到哪裡。設定的次數是一個目標「開始」的次數，不是它停下來的次數；第一輪量到
+    # 什麼，決定這是三種情況裡的哪一種：
+    #   全部都有回覆 - 沒有什麼模稜兩可的事要釐清，而且健康的一次執行絕不能變得比以前慢；
+    #   完全沒有回覆 - 4 次就足以斷定 100 % 遺失，再多次也不會更確定，而這正是每多一次都要付一整個逾時的情況；
+    #   有回覆但有遺失 - 這才是模稜兩可的那一種，會加到「一個封包再也決定不了分類」的次數；若設定的上限更低，
+    #                    就加到上限為止。
+    # 上限低於門檻所需的次數不是錯誤，這裡也不會蓋過它：取樣就是維持粗糙，而擋住判定的是
+    # Get-PingLossClassification。
+    $required = 0
+    $reason = "nothing-sent"
+    $target = $Sent
+    if ($Sent -gt 0) {
+        if ($Received -ge $Sent) { $reason = "complete" }
+        elseif ($Received -le 0) { $reason = "silent" }
+        else {
+            $required = Get-PingCountForThreshold -WarningPercent $WarningPercent
+            if ($required -le 0) { $reason = "no-threshold" }
+            else {
+                $target = [math]::Min($required, [math]::Max(1, $MaximumCount))
+                if ($target -le $Sent) { $reason = "at-ceiling"; $target = $Sent }
+                else { $reason = "extend" }
+            }
+        }
+    }
+    return [pscustomobject][ordered]@{
+        Extend          = ($reason -eq "extend")
+        AdditionalCount = $(if ($reason -eq "extend") { $target - $Sent } else { 0 })
+        TargetCount     = $target
+        RequiredCount   = $required
+        Reason          = $reason
+    }
+}
+
+function Get-PingSampleInterval {
+    param(
+        [double]$RemainingSeconds,
+        [int]$RemainingProbes
+    )
+
+    # 多出來的探測彼此要隔多遠。這些秒數是從「這次執行本來就欠重傳取樣視窗的等待」裡拿的——
+    # Wait-ForMinimumTcpSample 原本就要把它們睡掉——所以只要花的不超過那段等待剩下的時間，把取樣分散開來就
+    # 不佔用任何實際時間。剩餘時間歸零時間隔就是 0，探測連續送出，也就是這個功能存在之前的行為。除的是探測
+    # 次數而不是間隔數（後者少一個），讓探測本身花的時間有地方可出，分散才會在預算之內結束，而不是剛好超出。
+    if ($RemainingProbes -le 0) { return 0.0 }
+    if ($RemainingSeconds -le 0) { return 0.0 }
+    return [math]::Round(($RemainingSeconds / $RemainingProbes), 2)
+}
+
 function Invoke-PingMeasurement {
     param(
         [string]$Target,
         [int]$Count,
-        [int]$TimeoutMs
+        [int]$TimeoutMs,
+        [object]$Previous = $null,
+        [double]$IntervalSeconds = 0,
+        [int]$ProgressPercent = 0
     )
 
+    # -Previous 與 -IntervalSeconds 就是 backlog #51 的自適應取樣。傳進來的量測會被「加上去」而不是取代：第二
+    # 輪的探測沿用同一組次數編號，而所有數字都在整個取樣上重算一次，所以這一列回報的是一次量測而不是兩次。
+    # -IntervalSeconds 把那些探測分散開來，而不是連續送出——跟 ping.exe 不同，這裡的 echo 之間沒有延遲，二十
+    # 次會全部落在不到一秒之內，等於把同一個瞬間量了二十次；而使用者通常想抓的是時好時壞的連線，那需要的是
+    # 「時間跨度」而不是「次數」。
     $successes = New-Object System.Collections.ArrayList
     $attemptDetails = New-Object System.Collections.ArrayList
     $repliedAddresses = New-Object System.Collections.ArrayList
+    $alreadySent = 0
+    if ($null -ne $Previous) {
+        foreach ($value in @(Get-PropertyValue $Previous "SuccessMs" @())) { [void]$successes.Add([double]$value) }
+        foreach ($value in @(Get-PropertyValue $Previous "AttemptDetails" @())) { [void]$attemptDetails.Add($value) }
+        foreach ($value in @(Get-PropertyValue $Previous "RepliedAddresses" @())) { [void]$repliedAddresses.Add($value) }
+        $alreadySent = [math]::Max(0, (ConvertTo-IntSafe (Get-PropertyValue $Previous "Sent" 0) 0))
+    }
     $ping = New-Object System.Net.NetworkInformation.Ping
 
     try {
         for ($i = 1; $i -le $Count; $i++) {
+            $attempt = $alreadySent + $i
             try {
                 $reply = $ping.Send($Target, $TimeoutMs)
                 if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
@@ -2100,17 +2260,32 @@ function Invoke-PingMeasurement {
                         [void]$repliedAddresses.Add($thisAddress)
                     }
                     [void]$successes.Add([double]$reply.RoundtripTime)
-                    [void]$attemptDetails.Add(("第 {0} 次：成功，{1} ms，回覆 {2}" -f $i, $reply.RoundtripTime, $reply.Address))
+                    [void]$attemptDetails.Add(("第 {0} 次：成功，{1} ms，回覆 {2}" -f $attempt, $reply.RoundtripTime, $reply.Address))
                 }
                 else {
-                    [void]$attemptDetails.Add(("第 {0} 次：失敗，狀態 {1}" -f $i, $reply.Status))
+                    [void]$attemptDetails.Add(("第 {0} 次：失敗，狀態 {1}" -f $attempt, $reply.Status))
                 }
             }
             catch {
-                [void]$attemptDetails.Add(("第 {0} 次：錯誤，{1}" -f $i, (Add-NetworkErrorCause $_.Exception $_.Exception.Message -SingleLine)))
+                [void]$attemptDetails.Add(("第 {0} 次：錯誤，{1}" -f $attempt, (Add-NetworkErrorCause $_.Exception $_.Exception.Message -SingleLine)))
             }
             if ($script:GuiAvailable) {
                 [System.Windows.Forms.Application]::DoEvents()
+            }
+            if ($IntervalSeconds -gt 0 -and $i -lt $Count) {
+                # 間隔切成小片來睡，讓視窗持續重繪、進度文字持續在動：分散取樣可能佔掉一次執行裡的一分鐘，而那
+                # 一分鐘以前是睡過去的。
+                $slices = [int][math]::Max(1, [math]::Ceiling(($IntervalSeconds / 0.25)))
+                $sliceMs = [int][math]::Round(($IntervalSeconds * 1000.0 / $slices))
+                for ($slice = 1; $slice -le $slices; $slice++) {
+                    if ($ProgressPercent -gt 0) {
+                        Set-UiProgress -Percent $ProgressPercent -Text ("正在分散送出 {0} 剩下的 ping 取樣，還有 {1} 次" -f $Target, ($Count - $i))
+                    }
+                    if ($sliceMs -gt 0) { Start-Sleep -Milliseconds $sliceMs }
+                    if ($script:GuiAvailable) {
+                        [System.Windows.Forms.Application]::DoEvents()
+                    }
+                }
             }
         }
     }
@@ -2118,11 +2293,12 @@ function Invoke-PingMeasurement {
         $ping.Dispose()
     }
 
+    $sent = $alreadySent + [math]::Max(0, $Count)
     $received = $successes.Count
-    $lost = $Count - $received
+    $lost = $sent - $received
     $lossPercent = 0
-    if ($Count -gt 0) {
-        $lossPercent = [math]::Round(($lost * 100.0 / $Count), 1)
+    if ($sent -gt 0) {
+        $lossPercent = [math]::Round(($lost * 100.0 / $sent), 1)
     }
 
     $average = $null
@@ -2136,13 +2312,14 @@ function Invoke-PingMeasurement {
 
     return [pscustomobject][ordered]@{
         Target         = $Target
-        Sent           = $Count
+        Sent           = $sent
         Received       = $received
         Lost           = $lost
         LossPercent    = $lossPercent
         AverageMs      = $average
         MinimumMs      = $minimum
         MaximumMs      = $maximum
+        SuccessMs      = @($successes)
         RepliedAddresses = @($repliedAddresses)
         AttemptDetails = @($attemptDetails)
     }
@@ -2177,15 +2354,196 @@ function Resolve-PingTargets {
     return @($Address)
 }
 
-function Test-PingTargets {
-    param([object[]]$PrimaryAdapters)
+function Get-PingRouteAfter {
+    param(
+        [string]$Target,
+        [bool]$TargetIsAddress,
+        [object]$Measurement
+    )
 
-    $count = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.PingCount 4))
-    $timeout = [math]::Max(250, (ConvertTo-IntSafe $script:Config.Tests.PingTimeoutMs 1200))
+    # 一列在探測之後做的路由查詢（backlog #59），獨立成一個函式是因為現在有兩個呼叫者：第一輪之後馬上寫出來
+    # 的那一列，以及取樣被延續、在執行後段才寫出來的那一列（backlog #51）。兩者都在最後一次探測之後才查，
+    # 「之後」本來就只能是這個意思。
+    $lookupAddresses = @([string]$Target)
+    if (-not $TargetIsAddress) { $lookupAddresses = @(Get-PropertyValue $Measurement "RepliedAddresses" @()) }
+    $lookupAddress = ""
+    if (@($lookupAddresses).Count -gt 0) { $lookupAddress = ConvertTo-SafeString @($lookupAddresses)[0] }
+    $routeOthers = @()
+    if ([string]::IsNullOrWhiteSpace($lookupAddress)) {
+        $routeAfter = [pscustomobject][ordered]@{ Resolved = $false; Reason = "noreply"; SourceAddress = ""; InterfaceAlias = "" }
+    }
+    else {
+        $routeAfter = Get-RouteSelection -Target $lookupAddress
+        # Each further address its replies came from is looked up too, because the point of this row is
+        # which adapter carried the measurement and two addresses can answer through two of them.
+        foreach ($extra in @($lookupAddresses | Select-Object -Skip 1)) {
+            $routeOthers += [pscustomobject][ordered]@{ Address = ConvertTo-SafeString $extra; Selection = (Get-RouteSelection -Target ([string]$extra)) }
+        }
+    }
+    return [pscustomobject][ordered]@{ Selection = $routeAfter; LookupAddress = $lookupAddress; Others = @($routeOthers) }
+}
+
+function Add-PingTargetResult {
+    param(
+        [string]$Name,
+        [string]$Target,
+        [string]$ConfiguredAddress,
+        [bool]$Required,
+        [object]$Measurement,
+        [object]$RouteBefore,
+        [object]$RouteAfter,
+        [bool]$TargetIsAddress,
+        [int]$TimeoutMs,
+        [string]$SampleNote = "",
+        [object]$Row = $null
+    )
+
+    # 一列 ping 結果。它獨立成一個函式，是因為第一輪不足以下結論的目標，這一列會被寫兩次——一次是在報告裡它該
+    # 在的位置、用第一輪的結果寫出來，另一次是在取樣延續完成之後（backlog #51）——而寫在兩個地方的一列，遲早會
+    # 變成兩列不一樣的東西。
+    # -Row 就是第二次。報告是照加入順序呈現各列的，所以太晚加入的一列會掉到 DNS 與連線能力那些段落下面，而不是
+    # 跟其他 ping 的列在一起；因此會變的是這一列「說什麼」，絕不是它「在哪裡」。
     $warningLoss = ConvertTo-DoubleSafe $script:Config.Thresholds.PacketLossWarningPercent 5
     $criticalLoss = ConvertTo-DoubleSafe $script:Config.Thresholds.PacketLossCriticalPercent 20
     $warningLatency = ConvertTo-DoubleSafe $script:Config.Thresholds.LatencyWarningMs 100
     $criticalLatency = ConvertTo-DoubleSafe $script:Config.Thresholds.LatencyCriticalMs 250
+
+        # 標籤在這裡自己推導，而不是由外面傳進來；下面兩行是刻意複製 Test-PingTargets 裡那兩行的（backlog #33
+        # 的文件事實步驟）：它會從 AST 讀出每一個 -Tag 引數，而且只有在「對某個變數的每一次指派都是常值」時才
+        # 解析得出來，所以透過參數、屬性或輔助函式回傳值送到 Add-CheckResult 的標籤，會變成一個存在於程式裡、
+        # 卻在所有「用文件核對程式」的檢查之外的標籤。複製這兩行，是讓那個步驟看得見這一條規則的代價。
+    $pingTag = "ping-target"
+    if ($ConfiguredAddress -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
+    $status = "PASS"
+    $weightless = $false
+    $coarseNote = ""
+
+    if ($Measurement.Received -eq 0) {
+        # 非必要的 ICMP 目標本來就可能刻意封鎖 Ping。完全沒有回覆是唯一一種「再多次也不會更好」的遺失數字，
+        # 所以不論取樣多小，這個分支都保有它的判定（backlog #51）。
+        $status = if ($Required) { "FAIL" } else { "INFO" }
+    }
+    else {
+        $loss = Get-PingLossClassification -Sent $Measurement.Sent -Lost $Measurement.Lost -WarningPercent $warningLoss -CriticalPercent $criticalLoss
+        $lossStatus = "PASS"
+        if ($loss.Weightless) {
+            # backlog #51：級別是達到了，但它是靠一個封包達到的，而取樣對這個門檻來說太粗。這一列保留量到的每
+            # 一個數字，並且不再決定這次執行——本項目拿掉的是判定，從來不是數字。
+            $lossStatus = "WARN"
+            $weightless = $true
+            $coarseNote = ("此取樣數對這個門檻來說太小：{0} 次裡有一次沒有回覆就是 {1}%，而分類會因為那一次而改變。要讓單一次遺失仍低於 {3}% 的警告門檻，需要 {2} 次回覆。上面的數字就是實際量到的，而這一列不會改變整體結果。" -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $loss.RequiredCount, $warningLoss)
+        }
+        elseif ($loss.Band -eq "critical") { $lossStatus = if ($Required) { "FAIL" } else { "WARN" } }
+        elseif ($loss.Band -eq "warning") { $lossStatus = "WARN" }
+
+        $latencyStatus = "PASS"
+        if ($null -ne $Measurement.AverageMs -and $Measurement.AverageMs -ge $criticalLatency) { $latencyStatus = if ($Required) { "FAIL" } else { "WARN" } }
+        elseif ($null -ne $Measurement.AverageMs -and $Measurement.AverageMs -ge $warningLatency) { $latencyStatus = "WARN" }
+
+        # 先看遺失、再看延遲，這是這個工具一向的順序。新的地方是：判定被收回的遺失數字，會把這一列交給延遲規
+        # 則，而不是自己留著——兩者是對同一批探測做的兩種量測，而 #51 認為太粗的只有遺失那一半。真的回來的那
+        # 些回覆所達到的延遲門檻是一次量測，達到它的一列保有權重。
+        $status = $lossStatus
+        if ($latencyStatus -ne "PASS" -and ($weightless -or $lossStatus -eq "PASS")) {
+            $status = $latencyStatus
+            $weightless = $false
+        }
+    }
+
+    $latencyText = "無成功回覆"
+    if ($null -ne $Measurement.AverageMs) {
+        $latencyText = ("平均 {0} ms（最低 {1}、最高 {2}）" -f $Measurement.AverageMs, $Measurement.MinimumMs, $Measurement.MaximumMs)
+    }
+
+    $message = "目標 {0}：遺失 {1}%（{2}/{3} 成功），{4}。" -f $Target, $Measurement.LossPercent, $Measurement.Received, $Measurement.Sent, $latencyText
+    $detailLines = @()
+    $detailLines += @($Measurement.AttemptDetails)
+    $detailLines += (Format-RouteSelection -Before $RouteBefore -After $RouteAfter.Selection -LookupAddress $RouteAfter.LookupAddress -Others $RouteAfter.Others)
+    if (-not [string]::IsNullOrWhiteSpace($SampleNote)) { $detailLines += $SampleNote }
+    if (-not [string]::IsNullOrWhiteSpace($coarseNote)) { $detailLines += $coarseNote }
+    # 檢測方式這一行算的是實際送出的探測次數，而不是設定的次數：從 1.2.10 起 PingCount 是起始次數，只要取樣
+    # 被延續過，兩者就是不同的數字；而旁邊的手動驗證，必須是能重現這一列所回報內容的那一道指令。
+    $detailLines += ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms{2}。" -f $Measurement.Sent, $TimeoutMs, (Get-RouteMethodText -Target $Target -LookupAddress $RouteAfter.LookupAddress -TargetIsAddress $TargetIsAddress -ExtraCount (@($RouteAfter.Others).Count)))
+    $detailLines += ("手動驗證：ping -n {0} {1}" -f $Measurement.Sent, $Target)
+    $details = (@($detailLines) -join [Environment]::NewLine)
+    if ($status -eq "INFO") {
+        $details += [Environment]::NewLine + "補充說明：此為非必要目標，可能單純封鎖 ICMP——網際網路的權威判定請看「連線能力」群組。"
+    }
+    if ($null -eq $Row) {
+        return (Add-CheckResult -Category "延遲與封包遺失" -Check ("{0}：{1}" -f $Name, $Target) -Status $status -Message $message -Details $details -Tag $pingTag -Weightless:$weightless)
+    }
+    $Row.Status = $status
+    $Row.Message = $message
+    $Row.Details = $details
+    $Row.Weightless = $weightless
+    # 執行紀錄是這次執行的敘事，所以第二次的讀數會自己占一行，而不是悄悄把第一次蓋掉：盯著視窗看的人看過那組
+    # 暫時的數字，就該看到取代它們的那一組。
+    Write-UiLog -Status $status -Text ("{0} / {1}: {2}" -f $Row.Category, $Row.Check, $message)
+    return $Row
+}
+
+function Complete-PingSamples {
+    param(
+        [datetime]$SampleStart,
+        [int]$MinimumSeconds
+    )
+
+    # 自適應 ping 取樣的後半段（backlog #51）。這些探測在這裡、也就是執行的後段才送出，而不是接在第一輪後面
+    # 連續送完，因為重傳取樣視窗本來就橫跨整次執行：Wait-ForMinimumTcpSample 正要把剩下的秒數睡掉，而分散在
+    # 那些秒數裡的探測，用的是這次執行本來就要花掉的實際時間，量到的卻是一段時間跨度。預算由還在等的目標平
+    # 分；預算用完時探測就連續送出，執行時間會多出它們所花的時間——那是一個真的掉了回覆的目標該付的誠實代價。
+    $pending = @($script:PendingPingSamples)
+    $script:PendingPingSamples = New-Object System.Collections.ArrayList
+    if ($pending.Count -eq 0) { return }
+
+    $timeout = [math]::Max(250, (ConvertTo-IntSafe $script:Config.Tests.PingTimeoutMs 1200))
+    $index = 0
+    foreach ($item in $pending) {
+        $index++
+        # 清單在進入這個迴圈之前就已經清空，所以這個 try 以外的任何東西都不會再寫出這個目標的那一列：這裡拋出
+        # 例外一定要以一列作結，就像其他每一項檢查一樣。
+        try {
+            $budget = 0.0
+            $elapsed = ((Get-Date) - $SampleStart).TotalSeconds
+            if ($MinimumSeconds -gt $elapsed) { $budget = ($MinimumSeconds - $elapsed) / ($pending.Count - $index + 1) }
+            $interval = Get-PingSampleInterval -RemainingSeconds $budget -RemainingProbes $item.Plan.AdditionalCount
+            $measurement = $item.Measurement
+            $note = ""
+            try {
+                $measurement = Invoke-PingMeasurement -Target $item.Target -Count $item.Plan.AdditionalCount -TimeoutMs $timeout -Previous $item.Measurement -IntervalSeconds $interval -ProgressPercent 78
+            }
+            catch {
+                # 可以放棄的是延伸的那一段：第一輪量到的仍然是一次量測，用它寫出來的那一列，就是自適應取樣出
+                # 現之前這個工具會寫的那一列。只有附註會不一樣。
+                $note = ("取樣無法繼續，因此這些數字只涵蓋最前面的 {0} 次 ICMP echo。{1}" -f $item.Measurement.Sent, (Get-ExceptionDetails $_))
+            }
+            if ($measurement.Sent -gt $item.Measurement.Sent) {
+                $note = ("自適應取樣：前 {0} 次 ICMP echo 有 {1} 次沒有回覆，因此再送出 {2} 次，並分散在本次執行剩下的時間裡，而不是連續送出。上面每個數字都是這 {3} 次的合計。" -f $item.Measurement.Sent, $item.Measurement.Lost, ($measurement.Sent - $item.Measurement.Sent), $measurement.Sent)
+                if ($item.Plan.TargetCount -lt $item.Plan.RequiredCount) {
+                    $note += ("（設定的上限讓它停在 {0} 次，低於「讓單一次遺失仍低於警告門檻」所需的 {1} 次。）" -f $item.Plan.TargetCount, $item.Plan.RequiredCount)
+                }
+            }
+            # 路由表再問一次，因為「探測之後」本來就得是「最後一次探測之後」。
+            $routeAfter = Get-PingRouteAfter -Target $item.Target -TargetIsAddress $item.TargetIsAddress -Measurement $measurement
+            Add-PingTargetResult -Name $item.Name -Target $item.Target -ConfiguredAddress $item.Address -Required $item.Required -Measurement $measurement -RouteBefore $item.RouteBefore -RouteAfter $routeAfter -TargetIsAddress $item.TargetIsAddress -TimeoutMs $timeout -SampleNote $note -Row $item.Row | Out-Null
+        }
+        catch {
+            # 這一列早就帶著第一輪量到的結果在報告裡了，所以這裡失去的只有延伸的那一段；多出來的是它為什麼沒發生。
+            $item.Row.Details = ([string]$item.Row.Details + [Environment]::NewLine + ("取樣無法繼續。{0}" -f (Get-ExceptionDetails $_)))
+            Write-UiLog -Status "INFO" -Text ("{0} / {1}：取樣無法繼續。" -f $item.Row.Category, $item.Row.Check)
+        }
+    }
+}
+
+function Test-PingTargets {
+    param([object[]]$PrimaryAdapters)
+
+    $count = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.PingCount 4))
+    # backlog #51：自適應取樣最多能加到哪裡。它永遠不會低於起始次數，所以就算設定把這一對寫反了，該送出的
+    # 次數還是會送出。
+    $maximum = [math]::Max($count, (ConvertTo-IntSafe $script:Config.Tests.PingCountMaximum 21))
+    $timeout = [math]::Max(250, (ConvertTo-IntSafe $script:Config.Tests.PingTimeoutMs 1200))
+    $warningLoss = ConvertTo-DoubleSafe $script:Config.Thresholds.PacketLossWarningPercent 5
 
     foreach ($targetConfig in @($script:Config.Tests.PingTargets)) {
         if ($null -eq $targetConfig) { continue }
@@ -2213,7 +2571,7 @@ function Test-PingTargets {
             if ($address -eq "AUTO_GATEWAY") {
                 $noTargetDetail = "設定值：AUTO_GATEWAY——此為佔位符，執行時解析為目前的 IPv4 預設閘道；目前不存在（通常代表本地連線中斷）。"
             }
-            Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status $status -Message "找不到可測試的目標。" -Details ($noTargetDetail + [Environment]::NewLine + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms。" -f $count, $timeout) + [Environment]::NewLine + "手動驗證：ping -n $count <目標 IP>") -Tag $pingTag | Out-Null
+            Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status $status -Message "找不到可測試的目標。" -Details ($noTargetDetail + [Environment]::NewLine + ("檢測方式：.NET Ping — 先送 {0} 次 ICMP echo，若有回覆遺失最多加到 {1} 次，逾時 {2} ms。" -f $count, $maximum, $timeout) + [Environment]::NewLine + "手動驗證：ping -n $count <目標 IP>") -Tag $pingTag | Out-Null
             continue
         }
 
@@ -2227,52 +2585,30 @@ function Test-PingTargets {
                 $routeBefore = $null
                 if ($targetIsAddress) { $routeBefore = Get-RouteSelection -Target ([string]$target) }
                 $measurement = Invoke-PingMeasurement -Target ([string]$target) -Count $count -TimeoutMs $timeout
-                $lookupAddresses = @([string]$target)
-                if (-not $targetIsAddress) { $lookupAddresses = @($measurement.RepliedAddresses) }
-                $lookupAddress = ""
-                if (@($lookupAddresses).Count -gt 0) { $lookupAddress = ConvertTo-SafeString @($lookupAddresses)[0] }
-                $routeOthers = @()
-                if ([string]::IsNullOrWhiteSpace($lookupAddress)) {
-                    $routeAfter = [pscustomobject][ordered]@{ Resolved = $false; Reason = "noreply"; SourceAddress = ""; InterfaceAlias = "" }
+                $plan = Get-PingExtensionPlan -Sent $measurement.Sent -Received $measurement.Received -MaximumCount $maximum -WarningPercent $warningLoss
+                $routeAfter = Get-PingRouteAfter -Target ([string]$target) -TargetIsAddress $targetIsAddress -Measurement $measurement
+                if ($plan.Extend) {
+                    # 先擱著而不是在這裡送完（backlog #51）：這個目標剩下的探測會在執行後段送出，分散在它本來
+                    # 就欠重傳視窗的那些秒數裡，讓多出來的取樣橫跨整次執行，而不是擠在同一個不到一秒的瞬間。
+                    # 不過這一列照樣在這裡就寫出來，內容是第一輪量到的結果，等取樣完成之後再改寫。這樣它才會跟
+                    # 其他 ping 的列待在一起——而且一次沒能走到最後的執行，仍然會報出它確實量到的東西，這是把
+                    # 整列壓到最後才寫所做不到的。
+                    $pendingNote = ("這次取樣還不足以下結論：最前面 {1} 次裡有 {0} 次沒有回覆，因此會在本次執行的後段繼續，而這裡的數字只涵蓋那 {1} 次。" -f $measurement.Lost, $measurement.Sent)
+                    $pendingRow = Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -SampleNote $pendingNote
+                    [void]$script:PendingPingSamples.Add([pscustomobject][ordered]@{
+                        Name            = $name
+                        Target          = [string]$target
+                        Address         = $address
+                        Required        = $required
+                        RouteBefore     = $routeBefore
+                        TargetIsAddress = $targetIsAddress
+                        Measurement     = $measurement
+                        Plan            = $plan
+                        Row             = $pendingRow
+                    })
+                    continue
                 }
-                else {
-                    $routeAfter = Get-RouteSelection -Target $lookupAddress
-                    # Each further address its replies came from is looked up too, because the point of this row is
-                    # which adapter carried the measurement and two addresses can answer through two of them.
-                    foreach ($extra in @($lookupAddresses | Select-Object -Skip 1)) {
-                        $routeOthers += [pscustomobject][ordered]@{ Address = ConvertTo-SafeString $extra; Selection = (Get-RouteSelection -Target ([string]$extra)) }
-                    }
-                }
-                $status = "PASS"
-
-                if ($measurement.Received -eq 0) {
-                    # An optional ICMP target may intentionally block Ping.
-                    $status = if ($required) { "FAIL" } else { "INFO" }
-                }
-                elseif ($measurement.LossPercent -ge $criticalLoss) {
-                    $status = if ($required) { "FAIL" } else { "WARN" }
-                }
-                elseif ($measurement.LossPercent -ge $warningLoss) {
-                    $status = "WARN"
-                }
-                elseif ($null -ne $measurement.AverageMs -and $measurement.AverageMs -ge $criticalLatency) {
-                    $status = if ($required) { "FAIL" } else { "WARN" }
-                }
-                elseif ($null -ne $measurement.AverageMs -and $measurement.AverageMs -ge $warningLatency) {
-                    $status = "WARN"
-                }
-
-                $latencyText = "無成功回覆"
-                if ($null -ne $measurement.AverageMs) {
-                    $latencyText = ("平均 {0} ms（最低 {1}、最高 {2}）" -f $measurement.AverageMs, $measurement.MinimumMs, $measurement.MaximumMs)
-                }
-
-                $message = "目標 {0}：遺失 {1}%（{2}/{3} 成功），{4}。" -f $target, $measurement.LossPercent, $measurement.Received, $measurement.Sent, $latencyText
-                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter -LookupAddress $lookupAddress -Others $routeOthers) + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms{2}。" -f $count, $timeout, (Get-RouteMethodText -Target ([string]$target) -LookupAddress $lookupAddress -TargetIsAddress $targetIsAddress -ExtraCount (@($routeOthers).Count))) + ("手動驗證：ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
-                if ($status -eq "INFO") {
-                    $details += [Environment]::NewLine + "補充說明：此為非必要目標，可能單純封鎖 ICMP——網際網路的權威判定請看「連線能力」群組。"
-                }
-                Add-CheckResult -Category "延遲與封包遺失" -Check ("{0}：{1}" -f $name, $target) -Status $status -Message $message -Details $details -Tag $pingTag | Out-Null
+                Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout | Out-Null
             }
             catch {
                 $status = if ($required) { "ERROR" } else { "INFO" }
@@ -3384,6 +3720,7 @@ function Compare-TcpCounters {
     $criticalPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalPercent" 5) 5
     $criticalCount = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalCount" 50) 50)
     $minimumSegments = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
+    $verdictFloor = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpRetransmissionsForVerdict" 5) 5)
     # Get-TcpCounterSnapshot 讀取兩個通訊協定的順序，決定失敗的讀取落在誰的窗裡（backlog #38）。讀取是循序的，每個
     # 通訊協定的時間戳都在它自己的讀取回來時取得，因此會拉長某個窗的，是那些延後了它的結束時間戳、卻沒有延後它的
     # 起始時間戳的讀取。在結束快照裡，那是排在這個通訊協定之前（含自己）的每次讀取；在基準快照裡，則是排在它*之後*
@@ -3452,6 +3789,9 @@ function Compare-TcpCounters {
         if ($rate -gt 100) {
             $details += [Environment]::NewLine + "補充：比例超過 100% 代表重傳的是取樣窗之前送出的 segment——請視為比值而非百分比。"
         }
+        if ([bool](Get-PropertyValue $After "Extended" $false)) {
+            $details += [Environment]::NewLine + "取樣窗已延長一次：第一個窗結束時傳送量低於 MinimumTcpSegmentsForRate，而窗內至少有一次重傳——那是唯一一種「等久一點真的有用」的情況。"
+        }
 
         foreach ($line in $evidenceLines) {
             $details += [Environment]::NewLine + $line
@@ -3467,7 +3807,10 @@ function Compare-TcpCounters {
 
         if ($sentDelta -lt $minimumSegments) {
             if ($retransDelta -gt 0) {
-                Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "WARN" -Message ("流量樣本偏少，但觀察到 {0} 次重傳（近似 {1}%）。" -f $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" -Weightless | Out-Null
+                # 1.2.10 之前這是 WARN。1.2.8（已結案的 #39）已經把它變成 weightless，所以那個徽章不再決定任何
+                # 事情，它唯一的作用就是在一句「這不是證據」旁邊把一列標成需要注意——這正是這一列不該帶的矛盾。
+                # 這是 #51 要求「決定一個帶著重傳的小樣本代表什麼」的回答：它是那次重傳的紀錄，不是一個判定。
+                Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "INFO" -Message ("流量樣本偏少，但觀察到 {0} 次重傳（近似 {1}%）。" -f $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" -Weightless | Out-Null
             }
             else {
                 Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "INFO" -Message ("樣本只有 {0} 個傳送 segment，未觀察到重傳。" -f $sentDelta) -Details $details -Tag "tcp-retransmissions" | Out-Null
@@ -3475,22 +3818,106 @@ function Compare-TcpCounters {
             continue
         }
 
-        $status = "PASS"
-        if ($rate -ge $criticalPercent -or ($retransDelta -ge $criticalCount -and $rate -ge $warningPercent)) {
-            $status = "FAIL"
-        }
-        elseif ($rate -ge $warningPercent -or $retransDelta -ge $criticalCount) {
-            $status = "WARN"
+        # backlog #51：一個比例要有足夠多的事件撐著，才算得上一個判定。在這個工具願意評分的最小樣本
+        # （MinimumTcpSegmentsForRate，出貨值 50）上，一次重傳就是 2 %，剛好就是警告門檻本身；三次是 6 %，
+        # 光靠比例就會 FAIL。這個下限算的是事件次數，而且**兩個分支都要過**：只擋警告分支的下限，會讓最粗
+        # 的樣本判得比它上面那一階更重。它的代價也被同一段算式框住：要被壓下來，必須比例達到警告門檻、同時
+        # 事件數少於下限，也就是 sent <= (下限 - 1) x 100 / warningPercent——在出貨的 5 與 2 % 下是 200 個傳送
+        # segment，正好是「一次重傳只值警告門檻四分之一」的樣本數。超過這個數，什麼都不會被壓下來。
+        if ($retransDelta -lt $verdictFloor -and $rate -ge $warningPercent) {
+            $details += [Environment]::NewLine + ("這個比例背後的重傳次數不到 {0}，因此只報出比例而不下判定：在這個樣本數上，單單一次重傳就足以把它推過門檻。這一列不會改變整體結果。" -f $verdictFloor)
+            Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status "INFO" -Message ("傳送 {0}、重傳 {1}，近似重傳比例 {2}%——重傳次數太少，不足以評分。" -f $sentDelta, $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" -Weightless | Out-Null
+            continue
         }
 
+        # backlog #63 的決議，2026-09-11：這個次數是比例的信心修飾語——它可以把比例已經下出來的判定加重，但
+        # 永遠不能自己造出一個判定。所以 WARN 那一行的獨立次數觸發條件拿掉了，FAIL 那一行的「兩者並存」留著。
+        # 理由是一道界線：TcpRetransmissionCriticalCount ÷ TcpRetransmissionWarningPercent（出貨的 50 與 2 %
+        # 下是 2 500 個傳送 segment）。在那之下，要達到 50 次重傳，比例早就到警告門檻了，獨立觸發什麼也沒加；
+        # 在那之上，它唯一的作用就是在比例低於本工具自己門檻的樣本上發出警告。
+        # 而且每一列都要說出是哪一個規則決定的，因為在這之前讀的人分辨不出來（#63 的驗收條件）。
+        $status = "PASS"
+        $decided = ""
+        if ($rate -ge $criticalPercent) {
+            $status = "FAIL"
+            $decided = ("由比例決定：{0}% 已達或超過嚴重門檻 {1}%。" -f $rate, $criticalPercent)
+        }
+        elseif ($retransDelta -ge $criticalCount -and $rate -ge $warningPercent) {
+            $status = "FAIL"
+            $decided = ("由比例與次數共同決定：{0}% 已達或超過警告門檻 {1}%，而且 {2} 次重傳已達或超過 {3}。" -f $rate, $warningPercent, $retransDelta, $criticalCount)
+        }
+        elseif ($rate -ge $warningPercent) {
+            $status = "WARN"
+            $decided = ("由比例決定：{0}% 已達或超過警告門檻 {1}%。" -f $rate, $warningPercent)
+        }
+        if ($decided -ne "") { $details += [Environment]::NewLine + $decided }
+
         Add-CheckResult -Category "TCP 重傳" -Check $protocol -Status $status -Message ("傳送 {0}、重傳 {1}，近似重傳比例 {2}%。" -f $sentDelta, $retransDelta, $rate) -Details $details -Tag "tcp-retransmissions" | Out-Null
+    }
+}
+
+function Test-TcpSampleNeedsExtension {
+    param(
+        [object]$Before,
+        [object]$After
+    )
+
+    # backlog #51：唯一一種「窗開久一點真的能定案」的情況。傳送量低於 MinimumTcpSegmentsForRate 時，這個工具
+    # 根本不會給這個樣本評分；而在那底下又帶著重傳的樣本，就是那個模稜兩可的情況——這一列只能說「發生過重傳」，
+    # 說不出「多常發生」。閒置到什麼都沒送、或送得很少而且一次都沒重傳的機器，並不模稜兩可：等久一點只會換來
+    # 更多的「什麼都沒有」。已經到達或超過下限的樣本也不延長：它已經有比例了，而「比例背後的事件太少」是次數
+    # 下限要管的事，不是窗長要管的。
+    if ($null -eq $Before -or $null -eq $After) { return $false }
+    $minimumSegments = [double](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
+    foreach ($protocol in @("TCPv4", "TCPv6")) {
+        if (-not $Before.Counters.ContainsKey($protocol) -or -not $After.Counters.ContainsKey($protocol)) { continue }
+        $sentDelta = [double]$After.Counters[$protocol].SegmentsSent - [double]$Before.Counters[$protocol].SegmentsSent
+        $retransDelta = [double]$After.Counters[$protocol].Retransmitted - [double]$Before.Counters[$protocol].Retransmitted
+        # 計數器倒退代表重置或溢位，這個增量沒有意義，不能拿來決定要不要多等一段（backlog #38 的那一列會自己
+        # 說明這件事）。
+        if ($sentDelta -lt 0 -or $retransDelta -le 0) { continue }
+        if ($sentDelta -lt $minimumSegments) { return $true }
+    }
+    return $false
+}
+
+function Merge-TcpEndingSnapshot {
+    param(
+        [object]$Original,
+        [object]$Extended
+    )
+
+    # 延長取樣窗之後的結束快照（backlog #51）。每個通訊協定各自以「比較晚的那次讀取」為準，因為它關的是比較
+    # 長的那個窗；哪個通訊協定晚讀失敗了，就沿用第一次的讀數，所以延長一個窗永遠不會弄丟一列已經量到的結果。
+    # 只有兩次讀取都沒讀到的通訊協定才會保留錯誤，而兩次讀取裡失敗的嘗試全部保留——它們花掉的秒數，跟這個窗
+    # 裡其他任何秒數一樣，都是這個窗的秒數。
+    if ($null -eq $Extended) { return $Original }
+    if ($null -eq $Original) { return $Extended }
+    $counters = @{}
+    foreach ($protocol in @($Original.Counters.Keys)) { $counters[$protocol] = $Original.Counters[$protocol] }
+    foreach ($protocol in @($Extended.Counters.Keys)) { $counters[$protocol] = $Extended.Counters[$protocol] }
+    $errors = @()
+    foreach ($item in (@($Original.Errors) + @($Extended.Errors))) {
+        if ($null -eq $item) { continue }
+        if ($counters.ContainsKey([string]$item.Protocol)) { continue }
+        if (@($errors | Where-Object { [string]$_.Protocol -eq [string]$item.Protocol }).Count -gt 0) { continue }
+        $errors += $item
+    }
+    return [pscustomobject][ordered]@{
+        Timestamp      = $Extended.Timestamp
+        Counters       = $counters
+        Errors         = @($errors)
+        FailedAttempts = @(@(Get-PropertyValue $Original "FailedAttempts" @()) + @(Get-PropertyValue $Extended "FailedAttempts" @()))
+        WarmUpFailures = @(@(Get-PropertyValue $Original "WarmUpFailures" @()) + @(Get-PropertyValue $Extended "WarmUpFailures" @()))
+        Extended       = $true
     }
 }
 
 function Wait-ForMinimumTcpSample {
     param(
         [datetime]$StartTime,
-        [int]$MinimumSeconds
+        [int]$MinimumSeconds,
+        [int]$ProgressPercent = 87
     )
 
     $elapsed = ((Get-Date) - $StartTime).TotalSeconds
@@ -3500,7 +3927,7 @@ function Wait-ForMinimumTcpSample {
     }
 
     for ($i = $remaining; $i -gt 0; $i--) {
-        Set-UiProgress -Percent 87 -Text ("TCP 重傳取樣中，尚餘約 $i 秒")
+        Set-UiProgress -Percent $ProgressPercent -Text ("TCP 重傳取樣中，尚餘約 $i 秒")
         Start-Sleep -Seconds 1
         if ($script:GuiAvailable) {
             [System.Windows.Forms.Application]::DoEvents()
@@ -4153,6 +4580,8 @@ function Run-AllChecks {
     # 跟著結果一起清掉，而不是只在行程啟動時設定一次：視窗會被重複使用，否則某一次算出的比例，會被拿去解釋之後
     # 那次「重新檢測」的報告 —— 即使那一次的計數器根本讀失敗（PR #35 第 1 輪）。
     $script:RetransmissionRateComputed = $false
+    # 同樣的理由（backlog #51）：一次執行擱下的 ping 取樣，絕不能跑到下一次執行的報告裡。
+    $script:PendingPingSamples = New-Object System.Collections.ArrayList
     $script:LastHtmlReport = $null
     $script:LastTextReport = $null
     $script:LastJsonReport = $null
@@ -4279,6 +4708,11 @@ function Run-AllChecks {
     } | Out-Null
 
     $minimumSampleSeconds = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.RetransmissionSampleSeconds 8))
+    # 位置就是重點（backlog #51）：擱下的 ping 取樣在這裡送完，也就是在重傳視窗把剩餘秒數睡掉之前，因此那些
+    # 探測分散用掉的是本來就要花的等待時間。放在別處都會讓一次執行變長。
+    Invoke-CheckStep -Category "延遲與封包遺失" -Name "送完尚未足以下結論的 ping 取樣" -Progress 78 -Action {
+        Complete-PingSamples -SampleStart $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
+    } | Out-Null
     Wait-ForMinimumTcpSample -StartTime $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
 
     $adapterStatsAfter = Invoke-CheckStep -Category "網卡錯誤計數" -Name "取得網卡錯誤結束值" -Progress 82 -Weightless -Action {
@@ -4297,6 +4731,16 @@ function Run-AllChecks {
     $tcpAfter = Invoke-CheckStep -Category "TCP 重傳" -Name "取得 TCP 重傳結束值" -Progress 89 -Weightless -Action {
         return (Get-TcpCounterSnapshot)
     }
+
+    # 延長一次，而且只在那個模稜兩可的情況下（backlog #51）：樣本低於評分下限，而窗內有過重傳。延長步驟本身
+    # 是 weightless 的——它是一次取樣的決定，不是一次量測；真正的量測仍然由下面那一步寫出來。合併是逐通訊協定
+    # 做的，所以第二次讀取失敗絕不會弄丟第一次已經讀到的結果。
+    $tcpExtended = Invoke-CheckStep -Category "TCP 重傳" -Name "樣本太小無法評分時延長 TCP 取樣窗" -Progress 90 -Weightless -Action {
+        if (-not (Test-TcpSampleNeedsExtension -Before $tcpBaseline -After $tcpAfter)) { return $null }
+        Wait-ForMinimumTcpSample -StartTime (Get-Date) -MinimumSeconds $minimumSampleSeconds -ProgressPercent 90
+        return (Merge-TcpEndingSnapshot -Original $tcpAfter -Extended (Get-TcpCounterSnapshot))
+    }
+    if ($null -ne $tcpExtended) { $tcpAfter = $tcpExtended }
 
     Invoke-CheckStep -Category "TCP 重傳" -Name "分析 TCP 重傳" -Progress 92 -Action {
         Compare-TcpCounters -Before $tcpBaseline -After $tcpAfter
@@ -4391,9 +4835,14 @@ function Set-OptionsPanelValues {
     $controls["DnsName"].Text = (@($options.RawTargets.Dns) -join ", ")
     $controls["TcpTarget"].Text = (@($options.RawTargets.Tcp) -join ", ")
     $controls["HttpUrl"].Text = (@($options.RawTargets.Http) -join " ")
-    # 設定值超過旋轉鈕預設範圍（Ping 20 次、取樣 120 秒）時放寬範圍而不截斷，未更動就開始也會以設定值執行（v1.2.1）。
-    $controls["PingCount"].Maximum = [math]::Max(20, $options.PingCount)
+    # 設定值超過旋轉鈕預設範圍（取樣 120 秒）時放寬範圍而不截斷，未更動就開始也會以設定值執行（v1.2.1）。
+    # 兩個 ping 旋轉鈕的範圍「就是」設定的上限（backlog #51）。到 1.2.9 為止它開在 20——一個在這個儲存庫或套件
+    # 裡任何地方都找不到理由的數字；放寬的行為留著，只是現在被放寬的那個起點是一個有意義的值。
+    $pingRange = [math]::Max($options.PingCountMaximum, $options.PingCount)
+    $controls["PingCount"].Maximum = $pingRange
     $controls["PingCount"].Value = [math]::Max(1, $options.PingCount)
+    $controls["PingCountMaximum"].Maximum = $pingRange
+    $controls["PingCountMaximum"].Value = [math]::Max(1, $options.PingCountMaximum)
     $controls["SampleSeconds"].Maximum = [math]::Max(120, $options.SampleSeconds)
     $controls["SampleSeconds"].Value = [math]::Max(1, $options.SampleSeconds)
     $controls["TracerouteHops"].Value = [math]::Min(10, [math]::Max(1, $options.TracerouteHops))
@@ -4445,6 +4894,7 @@ function Get-RunOptionsFromPanel {
         TcpTarget      = @(([string]$controls["TcpTarget"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         HttpUrl        = @(([string]$controls["HttpUrl"].Text) -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         PingCount      = [int]$controls["PingCount"].Value
+        PingCountMaximum = [int]$controls["PingCountMaximum"].Value
         SampleSeconds  = [int]$controls["SampleSeconds"].Value
         TracerouteHops = [int]$controls["TracerouteHops"].Value
         Checks         = @{
@@ -4536,7 +4986,8 @@ function Initialize-Gui {
             @{ Text = "Ping 次數"; X = 690; Y = 26; W = 110 },
             @{ Text = "額外 TCP（host:port）"; X = 12; Y = 58; W = 150 },
             @{ Text = "額外 URL"; X = 375; Y = 58; W = 100 },
-            @{ Text = "取樣秒數"; X = 690; Y = 58; W = 110 }
+            @{ Text = "Ping 上限"; X = 690; Y = 58; W = 110 },
+            @{ Text = "取樣秒數"; X = 690; Y = 92; W = 110 }
         )) {
             $label = New-Object System.Windows.Forms.Label
             $label.Text = $item.Text
@@ -4559,10 +5010,15 @@ function Initialize-Gui {
         $hints.SetToolTip($controls["DnsName"], "例如 www.example.com")
         $hints.SetToolTip($controls["TcpTarget"], "例如 8.8.8.8:443 —— 主機或位址、冒號、連接埠")
         $hints.SetToolTip($controls["HttpUrl"], "例如 https://www.example.com/")
+        $hints.SetToolTip($controls["PingCount"], "每個 ping 目標一開始送出的 ICMP echo 次數")
+        $hints.SetToolTip($controls["PingCountMaximum"], "有回覆遺失時，本次執行對單一 ping 目標最多送到幾次")
         foreach ($key in @("PingTarget", "DnsName", "TcpTarget", "HttpUrl")) {
             $controls[$key].Add_TextChanged({ $script:PanelWarned = $false; $this.BackColor = [System.Drawing.SystemColors]::Window })
         }
-        foreach ($item in @(@{ Key = "PingCount"; X = 805; Y = 23; Min = 1; Max = 20 }, @{ Key = "SampleSeconds"; X = 805; Y = 55; Min = 1; Max = 120 })) {
+        # 三個旋轉鈕排成同一欄。兩個 ping 的範圍來自設定的上限，不是這個面板自己的數字（backlog #51）；面板
+        # 重設時 Set-OptionsPanelValues 會再依執行選項設定一次。
+        $pingSpinnerRange = [math]::Max(1, (ConvertTo-IntSafe (Get-PropertyValue $script:RunOptions "PingCountMaximum" 21) 21))
+        foreach ($item in @(@{ Key = "PingCount"; X = 805; Y = 23; Min = 1; Max = $pingSpinnerRange }, @{ Key = "PingCountMaximum"; X = 805; Y = 55; Min = 1; Max = $pingSpinnerRange }, @{ Key = "SampleSeconds"; X = 805; Y = 89; Min = 1; Max = 120 })) {
             $spinner = New-Object System.Windows.Forms.NumericUpDown
             $spinner.Location = New-Object System.Drawing.Point($item.X, $item.Y)
             $spinner.Size = New-Object System.Drawing.Size(70, 24)
@@ -4852,7 +5308,7 @@ try {
     Set-RunOptions -Overrides @{
         EntryPoint = $entryPoint; ExpandDetails = [bool]$ExpandDetails
         PingTarget = @($PingTarget); DnsName = @($DnsName); TcpTarget = @($TcpTarget); HttpUrl = @($HttpUrl)
-        SampleSeconds = $SampleSeconds; PingCount = $PingCount; TracerouteHops = $TracerouteHops
+        SampleSeconds = $SampleSeconds; PingCount = $PingCount; PingCountMaximum = $PingCountMaximum; TracerouteHops = $TracerouteHops
         NoTraceroute = [bool]$NoTraceroute; NoWifi = [bool]$NoWifi
     } | Out-Null
     Initialize-OutputDirectory

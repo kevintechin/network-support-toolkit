@@ -1,8 +1,8 @@
-﻿# NetworkHealthCheck Portable 1.2.9: Features, Design, Validation, and Limitations
+﻿# NetworkHealthCheck Portable 1.2.10: Features, Design, Validation, and Limitations
 
 ## 1. Purpose
 
-This document describes the features, architecture, decision rules, error handling, validation approach, known limitations, and source-comment strategy of the portable `NetworkHealthCheck` tool. It applies to version **1.2.9** and to both the Traditional Chinese and English packages. The executable logic is the same; user-visible text, default test names, and comment language are localized separately.
+This document describes the features, architecture, decision rules, error handling, validation approach, known limitations, and source-comment strategy of the portable `NetworkHealthCheck` tool. It applies to version **1.2.10** and to both the Traditional Chinese and English packages. The executable logic is the same; user-visible text, default test names, and comment language are localized separately.
 
 ## 2. Product scope
 
@@ -71,7 +71,15 @@ packet loss = (sent - received) / sent × 100%
 
 Average, minimum, and maximum latency use successful replies. The decision order is: no replies, critical loss, warning loss, critical average latency, then warning average latency. A severe condition on `Required=true` becomes `FAIL`. A completely silent optional target is normally `INFO`, because ICMP may be blocked.
 
-The default is four probes. With the default 20% critical-loss threshold, one lost reply equals 25% and is severe. Organizations that consider this too sensitive should increase `PingCount` or change thresholds.
+**`PingCount` is where a target starts, not where it stops (1.2.10, backlog #51).** Four probes against the shipped 5% warning threshold make one lost reply 25% — past the critical threshold as well — and the tool has no way to express "a little loss" at that count. The configured count is therefore the first pass, and what it found decides what happens next:
+
+- **Every reply arrived.** Nothing is ambiguous, nothing more is sent, and a healthy run is no slower than it was before this release.
+- **Nothing answered at all.** 100% loss is conclusive at four probes and no larger count makes it more so, while this is the one case where every extra probe costs a whole timeout. Nothing more is sent here either.
+- **Some replies were lost but not all.** This is the ambiguous case. The sample continues to the count at which one lost reply is below the warning threshold, or to `PingCountMaximum` where that is lower. That count is the smallest *n* with 100/*n* < the warning percentage, which is **21** at the shipped 5%: twenty is exactly 5% and still warns.
+
+The extra probes are **spread across the rest of the run rather than sent back to back**. The .NET `Ping` class used here sends with no delay between echoes, so twenty of them land inside a fraction of a second and measure one instant twenty times, while what a person is usually trying to catch — a connection that is intermittently unstable — needs span rather than count. They are sent immediately before the retransmission sample window sleeps out the seconds it still owes, so the span costs wall-clock time the run was going to spend anyway; where that budget is already gone they go back to back and the run is longer by what they cost. The row is written where it belongs when the first pass ends and rewritten when the sample is finished, so a continued sample never moves its own row out of the ping section — and the figures, the method line and the manual check all count the probes that were actually sent, not the number configured.
+
+**A verdict is withheld when it would rest on a single packet.** The row keeps every number it measured and stops deciding the overall result when **both** of these hold: the sample is smaller than the count the warning threshold needs, so one packet is worth a whole band there; **and** the classification would be a different one had one fewer reply been lost, so the verdict *is* that packet. Either on its own leaves the verdict standing — three lost of four is 75% and two lost is still 50%, so nothing there rests on one packet, while two lost of twenty-one does turn on a packet but twenty-one is a sample the 5% threshold fits and 9.5% is a measurement. A target that answered nothing at all never reaches this rule, because 100% loss is conclusive at any count. And a withheld loss verdict does not hide a latency one: the row is handed to the latency rules and keeps its weight if it reaches one of those.
 
 **Which adapter the probes left by (1.2.9, backlog #59).** Each ping row's details name the source address and the interface the route table selects for that target, read with `Find-NetRoute -RemoteIPAddress <target>` before and after that target's probes. It is a **selection, not an observation**: the lookup answers what the system would choose at the moment it is asked, and the probes are then sent unbound, so on a multi-homed machine — a dock, a Wi-Fi roam, a VPN coming up — the route can change between the two. The row therefore never claims the echoes used what the lookup returned. When the two lookups disagree — including one resolving where the other did not — the row reports the change and states that it cannot say which of them carried the probes. Where `Find-NetRoute` is absent, returns no route, or fails, the datum is reported as unavailable with its reason and the ping measurement is unaffected, which is the treatment every other NetTCPIP call in this tool gets. Binding a source, which is what would make this an observation rather than a selection, needs `ping.exe -S` and is deliberately not done.
 
@@ -126,8 +134,14 @@ Rules:
 1. Missing before/after data: `ERROR`.
 2. Ending value below baseline: reset/overflow, `ERROR`.
 3. Both sent and retransmitted deltas are zero: insufficient sample, `INFO`.
-4. Sent segments below `MinimumTcpSegmentsForRate`: retransmissions produce `WARN`; none produce `INFO`.
-5. With enough traffic, percentage and absolute count determine `PASS/WARN/FAIL`.
+4. Sent segments below `MinimumTcpSegmentsForRate`: the rate is not judged. A sample carrying retransmissions is `INFO` and decides nothing — a `WARN` until 1.2.10, weightless since 1.2.8, which left a badge saying *attention* beside a sentence saying the row is not evidence; a sample carrying none is `INFO` too. **The window is extended once (1.2.10, backlog #51)** where a sample ends below this floor with at least one retransmission in it, which is the one case where waiting longer settles anything. A machine that retransmitted nothing is not extended, because a longer window buys more of the same nothing, and a sample that already has a rate is not extended either. The second reading is merged per protocol, so a read that fails cannot cost a reading the first one already had, and the row says that its window was extended.
+5. With enough traffic the **rate** decides and the **count** qualifies it:
+   - **A rate needs enough events behind it (1.2.10, backlog #51).** Fewer than `MinimumTcpRetransmissionsForVerdict` retransmissions at or above the warning percentage is reported as `INFO` with its numbers and decides nothing. At the smallest sample this tool rates — fifty sent segments as shipped — one retransmission is 2%, the warning threshold itself, and three are 6%, which failed on the rate alone until this release. The floor gates both branches, because a floor on the warning branch alone would leave the coarsest sample convicting harder than the one above it. It suppresses nothing above two hundred sent segments at the shipped values: suppression needs a rate at the threshold with fewer events than the floor, which is `(floor − 1) × 100 ÷ warning percentage`.
+   - `rate ≥ TcpRetransmissionCriticalPercent` → `FAIL`.
+   - `rate ≥ TcpRetransmissionWarningPercent` **and** `retransmitted ≥ TcpRetransmissionCriticalCount` → `FAIL`. The count sharpens a verdict the rate has already reached.
+   - `rate ≥ TcpRetransmissionWarningPercent` → `WARN`.
+   - **The count no longer warns on its own (1.2.10, backlog #63).** Until this release `retransmitted ≥ TcpRetransmissionCriticalCount` warned whatever the rate was, so a large enough sample reached it at a rate the threshold table calls healthy: 57 retransmissions of 3 832 sent segments is 1.487% and was reported as *Attention Required*. The boundary is `TcpRetransmissionCriticalCount ÷ TcpRetransmissionWarningPercent`, 2 500 sent segments at the shipped 50 and 2% — below it, reaching fifty retransmissions means the rate is already at or above the warning threshold and the standalone trigger changed nothing; above it, all the standalone trigger added was a warning on a sample whose rate is below the tool's own warning threshold. What it gives up is the only signal that fired on a burst inside an otherwise healthy window, and section 8 records that.
+   - **Every classified row names the rule that decided it.** A `PASS` names none, because none did.
 
 Reads, attempts, and what a row says about them:
 
@@ -253,6 +267,7 @@ Acceptance should cross-check reports against `Get-NetIPConfiguration`, `Get-Net
 12. **Wi-Fi data is client-side and text-parsed.** `netsh` output is parsed by value shape; an unusual build may leave a field empty, and the RSSI is estimated when the build does not print it. The access point's client table is the stronger evidence.
 13. **Adapter classification without NetAdapter flags is heuristic** (description patterns).
 14. **Traceroute is bounded** to 10 hops and 1 s per hop; silent hops show as `*`, and the default 3 hops rarely reach a public target — the goal is to see where packets stop, not to reach it.
+15. **A whole-window average cannot tell a burst from an even spread.** The retransmission counters are read twice, at the two ends of the window, so fifty retransmissions inside ten seconds of it and fifty spread evenly across the whole of it produce the same two numbers. Until 1.2.10 the standalone count trigger fired on either and named neither, which is why it was removed; reading the counters at intervals inside the window is what would answer the question, and no release does that yet.
 
 ## 9. Release and maintenance guidance
 

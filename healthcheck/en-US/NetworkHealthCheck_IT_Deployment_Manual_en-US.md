@@ -1,4 +1,4 @@
-﻿# Network Health Check 1.2.9 — IT Deployment Manual
+﻿# Network Health Check 1.2.10 — IT Deployment Manual
 
 **For the IT department that hands the tool out.** What the package needs, how to configure it for your site, how to deploy it, what security policy does to it, how to verify what you received, and what to do with the reports that come back.
 
@@ -140,13 +140,16 @@ Four lists and one list of group names. Every target takes a display `Name` (the
 | DNS name that does not resolve | Fail | **Warning** |
 | TCP or HTTP target that cannot connect | Fail | Information |
 
+**A loss verdict that would rest on one packet is withheld (1.2.10, backlog #51).** Where the sample is smaller than the count the warning threshold needs **and** the classification would be a different one had one fewer reply been lost, the row keeps every number it measured, is marked weightless and leaves the verdict alone. Three lost of four still fails a required target — 75 %, and two lost is still 50 %, so nothing there rests on one packet — and a target that answered nothing at all is untouched, because 100 % loss is conclusive at any count. This qualifies the loss rules of section 3.5 and nothing else: a latency threshold reached on the replies that did arrive is a measurement, and a row that reaches one keeps its weight.
+
 An Information row never moves the verdict, so an optional TCP or HTTP target can fail in a report that reads **Overall Healthy** with *Everything passed* above it; the user manual tells the person to read those rows. Groups are how optional targets are made to count together: a group's row passes when **at least one** member succeeded, and when every member failed it is Fail for a group named in `RequiredConnectivityGroups` and Warning for any other group. A required group with no member at all — the name is listed but no target carries it — is an *Unable to Check* row (*This group has no executable test items.*), which on its own makes the verdict Test Incomplete.
 
 **Timeouts and counts** (whole numbers; a decimal, a word or a value of zero or less is reported in the *Configuration Thresholds* row and replaced):
 
 | Key | Default | Floor | Notes |
 |---|---|---|---|
-| `PingCount` | 4 | 1 | Echo requests per ping target. With four probes and the shipped 20 % critical-loss threshold, one lost reply is 25 % and severe; raise the count or the threshold if that is too sensitive |
+| `PingCount` | 4 | 1 | Echo requests per ping target **to begin with**. Since 1.2.10 this is a starting count: where some replies are lost but not all, the sample continues up to `PingCountMaximum`; where every reply arrives, and where none does, nothing more is sent |
+| `PingCountMaximum` | 21 | 1 | The furthest a continued sample goes for one ping target. 21 is the smallest count at which one lost reply is below the shipped 5 % warning threshold — 100 ÷ 21 is 4.76 %, while 20 is exactly 5 % and still warns. A value below `PingCount` is reported in the *Configuration Thresholds* row and the starting count is used as the ceiling. There is no upper limit: this value is the range the IT panel's two ping spinners open at, and a larger one widens them |
 | `PingTimeoutMs` | 1200 | 250 | Per echo request |
 | `DnsTimeoutMs` | 4000 | 500 | Per name |
 | `TcpTimeoutMs` | 4000 | 500 | Per connection |
@@ -177,11 +180,12 @@ The defaults are generic starting points. What the rows do with them, read off t
 
 | Key | Default | Rule |
 |---|---|---|
-| `PacketLossWarningPercent`, `PacketLossCriticalPercent` | 5, 20 | Per ping target, in this order: no reply at all → Fail if required, Information otherwise; loss ≥ critical → Fail if required, Warning otherwise; loss ≥ warning → Warning; then the latency rules |
+| `PacketLossWarningPercent`, `PacketLossCriticalPercent` | 5, 20 | Per ping target, in this order: no reply at all → Fail if required, Information otherwise; loss ≥ critical → Fail if required, Warning otherwise; loss ≥ warning → Warning; then the latency rules. The warning percentage also decides how far a continued sample goes (`PingCountMaximum`, section 3.3) and when a loss verdict is withheld for resting on one packet |
 | `LatencyWarningMs`, `LatencyCriticalMs` | 100, 250 | On the average of the replies that came back: ≥ critical → Fail if required, Warning otherwise; ≥ warning → Warning |
 | `TcpRetransmissionWarningPercent`, `TcpRetransmissionCriticalPercent` | 2, 5 | Retransmitted ÷ sent segments over the sample, computer-wide, for TCPv4 and TCPv6 separately: rate ≥ critical → Fail; rate ≥ warning → Warning |
-| `TcpRetransmissionCriticalCount` | 50 | Retransmitted segments in the sample: at or above it, Warning — and Fail when the rate is also at or above the warning percentage |
-| `MinimumTcpSegmentsForRate` | 50 | Below this many sent segments the rate is not judged: any retransmission is a Warning, none is Information. No traffic at all is Information |
+| `TcpRetransmissionCriticalCount` | 50 | Retransmitted segments in the sample: Fail **when the rate is also at or above the warning percentage**. Since 1.2.10 it no longer warns on its own — it sharpens a verdict the rate has already reached and never creates one, because above `TcpRetransmissionCriticalCount ÷ TcpRetransmissionWarningPercent` sent segments (2 500 at the shipped values) all it added was a warning on a rate below the tool's own warning threshold |
+| `MinimumTcpSegmentsForRate` | 50 | Below this many sent segments the rate is not judged: any retransmission is Information that decides nothing (a Warning until 1.2.10), none is Information too. No traffic at all is Information. A sample that ends below this floor **with** a retransmission in it has its window extended once and is read again |
+| `MinimumTcpRetransmissionsForVerdict` | 5 | Retransmissions needed before a rate becomes a verdict. Fewer than this at or above the warning percentage is Information with its numbers and decides nothing: at fifty sent segments one retransmission is 2 %, the warning threshold itself, and three are 6 %. It suppresses nothing above two hundred sent segments at the shipped values |
 | `AdapterErrorWarningDelta`, `AdapterErrorCriticalDelta` | 1, 10 | Receive plus send errors added during the sample, per adapter: ≥ critical → Fail, ≥ warning → Warning. A virtual adapter is Information whatever its counters, and so is a physical one that carried no traffic and no errors during the sample; a counter that went backwards is a Warning |
 | `AdapterDiscardWarningDelta`, `AdapterDiscardCriticalDelta` | 1, 100 | The same for discarded packets |
 
@@ -209,7 +213,7 @@ A report begins with the configuration rows — Configuration File, any Startup 
 
 Run options change one run and never the file. They come from two places.
 
-**The IT panel.** `Start-NetworkCheck-IT.cmd` opens the window with **Run options (IT)** at the top and waits: *Ready - adjust the options, then select Start Test.* The fields are **Extra ping**, **Extra DNS**, **Extra TCP (host:port)**, **Extra URL**, **Ping count** and **Sample seconds**; the boxes **Wi-Fi RF**, **Traceroute** with **Traceroute hops**, **Routes**, **Gateway ARP**, **Proxy** and **Drivers** switch the optional checks for this run; **Expand details in HTML** is ticked; **Reset to config** puts every field back to the file's values. The spinners cover 1–20 pings and 1–120 seconds; a configured value above those limits widens the range so the file's value is what an untouched Start runs with.
+**The IT panel.** `Start-NetworkCheck-IT.cmd` opens the window with **Run options (IT)** at the top and waits: *Ready - adjust the options, then select Start Test.* The fields are **Extra ping**, **Extra DNS**, **Extra TCP (host:port)**, **Extra URL**, **Ping count**, **Ping ceiling** and **Sample seconds**; the boxes **Wi-Fi RF**, **Traceroute** with **Traceroute hops**, **Routes**, **Gateway ARP**, **Proxy** and **Drivers** switch the optional checks for this run; **Expand details in HTML** is ticked; **Reset to config** puts every field back to the file's values. **Ping count** is what each ping target is sent to begin with and **Ping ceiling** is the furthest a continued sample goes (section 3.3); both spinners open at the configured `PingCountMaximum`, the sample spinner at 1–120 seconds, and a configured value above either widens the range so the file's value is what an untouched Start runs with.
 
 **What the panel checks before it starts.** Each of the four free-text fields shows an example on hover (`1.1.1.1`, `www.example.com`, `8.8.8.8:443`, `https://www.example.com/`), and on **Start Test** the extra TCP target is parsed with the same rule the run itself uses: a value that is not `host:port` marks the field, is named on the screen with an example, and the run does not start. A second press runs without that target — today's behaviour, Startup Notice and all, described under *What an extra target counts for* below. The labels also carry their own widths now: in earlier versions the extra-TCP label needed 136 px in a box of 100 (147 px in the Traditional Chinese package), so it wrapped and lost its second line, and the format the label carries was in the source rather than on the screen. The chain's headless GUI step measures every control's text against its box in both languages, so a translation that outgrows one fails there rather than on somebody's desk.
 
@@ -226,7 +230,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 | `-ExpandDetails` | Every *Show Details* open in the HTML; also marks the run as an IT-entry run |
 | `-PingTarget`, `-DnsName`, `-TcpTarget` (host:port) | Extra targets. Several values as one comma-separated list — `-PingTarget 10.0.0.1,10.0.0.2` — which works from cmd.exe (`powershell -File …`) and at a PowerShell prompt alike; inside a quoted value they may also be separated by spaces or semicolons (`-PingTarget "10.0.0.1 10.0.0.2"`). See the note below the table |
 | `-HttpUrl` | Extra URLs. Several as one quoted, space-separated value — `-HttpUrl "https://a.company.local/ https://b.company.local/"` — which works from both shells. The script splits URLs on spaces only, because commas and semicolons are legal inside a URL, so `u1,u2` from cmd.exe is one invalid URL; at a PowerShell prompt a comma makes an array and works. See the note below the table |
-| `-PingCount`, `-SampleSeconds`, `-TracerouteHops` | Override the file's values for this run; hops outside 1–10 fall back to 3 |
+| `-PingCount`, `-PingCountMaximum`, `-SampleSeconds`, `-TracerouteHops` | Override the file's values for this run; hops outside 1–10 fall back to 3, and a ceiling below the starting count is reported and the starting count used |
 | `-NoTraceroute`, `-NoWifi` | Skip those two diagnostics — the only two with a switch |
 | `-ConfigPath <file>` | Load another configuration file (section 3) |
 | `-STA` (PowerShell's own switch) | What the window launchers add; not needed for `-ConsoleOnly` |
@@ -235,7 +239,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 
 **What an extra target counts for.** Extra targets are optional and belong to no group: an extra ping that gets no reply, and an extra TCP or HTTP target that cannot connect, are Information rows and leave the verdict alone; a degraded ping and an extra DNS name that does not resolve are Warning rows. An extra TCP target that is not `host:port` is dropped with a Startup Notice warning (*Ignored extra TCP target '…': expected host:port.*). The rows are titled *Extra ping*, *Extra DNS*, *Extra TCP* and *Extra URL*, each carrying the value it was given - the ping rows after a colon, the other three in the title itself - so two added targets of the same kind are told apart in the table and in the summary.
 
-**Where a run's options are recorded.** In the report header's *Run profile* line — `IT entry | extra targets: ping 10.0.0.1, tcp fileserver:445 | ping count 4 | sample 20 s | traceroute 3 hops`, with `disabled: …` for switched-off checks — and in the JSON under `RunOptions`: `EntryPoint`, `ExpandDetails`, `ExtraTargets` (the values accepted), `RawTargets` (as typed), `PingCount`, `SampleSeconds`, `TracerouteHops`, `ChecksEnabled`.
+**Where a run's options are recorded.** In the report header's *Run profile* line — `IT entry | extra targets: ping 10.0.0.1, tcp fileserver:445 | ping count 4 | sample 20 s | traceroute 3 hops`, with `disabled: …` for switched-off checks — and in the JSON under `RunOptions`: `EntryPoint`, `ExpandDetails`, `ExtraTargets` (the values accepted), `RawTargets` (as typed), `PingCount`, `PingCountMaximum`, `SampleSeconds`, `TracerouteHops`, `ChecksEnabled`. The run profile's `ping count` is the starting count, and `ping ceiling` beside it is where a continued sample stops; what a row actually sent is in the row itself.
 
 ---
 
@@ -265,10 +269,10 @@ Whichever way it arrives, the person must extract the whole ZIP: a launcher doub
 **The download.** The release notes on the project's Releases page give the SHA-256 of `NetworkHealthCheck-<version>.zip`. Compare before extracting:
 
 ```text
-certutil -hashfile NetworkHealthCheck-1.2.9.zip SHA256
+certutil -hashfile NetworkHealthCheck-1.2.10.zip SHA256
 ```
 
-or in PowerShell `Get-FileHash NetworkHealthCheck-1.2.9.zip`. The asset is built from the repository's tracked files only, so it contains no report and no other output of a run.
+or in PowerShell `Get-FileHash NetworkHealthCheck-1.2.10.zip`. The asset is built from the repository's tracked files only, so it contains no report and no other output of a run.
 
 **The manifest.** `SHA256SUMS.txt` at the package root lists the digest of every shipped file except itself, `VALIDATION.md` and `validation-matrix.html` — one line per file, `<sha256>  <relative path>` with two spaces. Check one file by hand with `Get-FileHash <file>`, or all of them with the validator.
 
@@ -312,7 +316,7 @@ The launchers set the execution policy for their own process (`-ExecutionPolicy 
 
 **What to ask the person for** is in the user manual's section 6, row by row; the environment report and `LauncherError.txt` are written for exactly this hand-off. `LauncherError.txt` sits beside the launcher, or — when that folder cannot be written — in `%TEMP%` as `NetworkHealthCheck_LauncherError.txt` with fewer fields.
 
-**Allowing the tool.** The two scripts are unsigned, so a policy that allows by publisher has nothing to match; what an IT department has today is the hash: `SHA256SUMS.txt` gives the digest of each `NetworkHealthCheck.ps1`, and a WDAC or AppLocker rule can allow that hash. A new version means a new hash. Which Windows builds and editions enforce AppLocker, and what has and has not been observed, changes faster than this package: the repository keeps a page on it, at the version this manual belongs to — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.9/docs/application-control.md> — and its current version on the `main` branch.
+**Allowing the tool.** The two scripts are unsigned, so a policy that allows by publisher has nothing to match; what an IT department has today is the hash: `SHA256SUMS.txt` gives the digest of each `NetworkHealthCheck.ps1`, and a WDAC or AppLocker rule can allow that hash. A new version means a new hash. Which Windows builds and editions enforce AppLocker, and what has and has not been observed, changes faster than this package: the repository keeps a page on it, at the version this manual belongs to — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.10/docs/application-control.md> — and its current version on the `main` branch.
 
 **Signing.** An Authenticode signature from your own certificate authority satisfies an *AllSigned* policy when the signing certificate is also trusted on the machine — its chain trusted, and the certificate in the Trusted Publishers store: for a publisher not yet classified as trusted, PowerShell asks the person before running the script (the launcher's window shows the question), and a session that cannot ask does not run it. A signature also lets an application-control rule allow by publisher. Signing appends a signature block to the script, so the signed file no longer matches `SHA256SUMS.txt`; record the signed files' digests yourself.
 
@@ -343,9 +347,9 @@ The launchers set the execution policy for their own process (`-ExecutionPolicy 
 - **User manual** — `NetworkHealthCheck_User_Manual_en-US.html` (or `.md`): what the person sees, the verdicts and badges, what the report contains, what to do when it does not run.
 - **Technical guide** — `NetworkHealthCheck_Technical_Guide_en-US.md`: design, every decision rule, the validation approach, known limitations, the version history.
 - **Validation record** — `VALIDATION.md`: every release's evidence and the acceptance runs on other machines.
-- **Backlog** — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.9/docs/backlog.md>: what is known and not yet done, and what would close each item. It is in the repository rather than in the package, like the application-control page of section 8, because it changes between releases.
+- **Backlog** — <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.10/docs/backlog.md>: what is known and not yet done, and what would close each item. It is in the repository rather than in the package, like the application-control page of section 8, because it changes between releases.
 - **The repository** — <https://github.com/kevintechin/network-support-toolkit>: releases, the validation chain (`tests`), the support engineer's field manual and report template (`sop`), and the application-control page named in section 8.
 
 ---
 
-*NetworkHealthCheck 1.2.9. This manual describes the tool as shipped and the behaviour measured for this release; the rules quoted here are the code's, and the technical guide states them in full.*
+*NetworkHealthCheck 1.2.10. This manual describes the tool as shipped and the behaviour measured for this release; the rules quoted here are the code's, and the technical guide states them in full.*

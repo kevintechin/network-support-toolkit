@@ -11,6 +11,7 @@
   },
   "Tests": {
     "PingCount": 4,
+    "PingCountMaximum": 21,
     "PingTimeoutMs": 1200,
     "DnsTimeoutMs": 4000,
     "TcpTimeoutMs": 4000,
@@ -74,6 +75,7 @@
     "TcpRetransmissionCriticalPercent": 5,
     "TcpRetransmissionCriticalCount": 50,
     "MinimumTcpSegmentsForRate": 50,
+    "MinimumTcpRetransmissionsForVerdict": 5,
     "AdapterErrorWarningDelta": 1,
     "AdapterErrorCriticalDelta": 10,
     "AdapterDiscardWarningDelta": 1,

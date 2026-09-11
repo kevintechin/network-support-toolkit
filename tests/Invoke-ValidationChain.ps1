@@ -153,8 +153,10 @@ function New-StagedCopy {
     # A copy of healthcheck/<lang>/ (files only - never Reports/) under the work dir, refreshed from this checkout on every
     # call so that a reused work dir never runs an older revision (its Reports/ folder is kept; reports are selected by
     # start time). -WidenSampling raises PingCount to 30 and RetransmissionSampleSeconds to 125 in the copied
-    # configuration, above the IT panel's default spinner ranges (1-20 / 1-120): the 1.2.1 fix is that an untouched
-    # Start keeps those values instead of clamping them.
+    # configuration, above the IT panel's default spinner ranges: the 1.2.1 fix is that an untouched Start keeps
+    # those values instead of clamping them. PingCountMaximum is raised with the starting count and not because the
+    # sampling wants it - since 1.2.10 the two are an ordered pair, and a ceiling left below the starting count is a
+    # Configuration Thresholds warning in every staged run (backlog #51).
     param([string]$Lang, [string]$Name, [switch]$WidenSampling)
     $dst = Join-Path $WorkDir ('stage\' + $Name + '\' + $Lang)
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
@@ -165,6 +167,7 @@ function New-StagedCopy {
         $cfg = Join-Path $dst 'NetworkHealthCheck.config.json'
         $text = [IO.File]::ReadAllText($cfg)
         $text = [regex]::Replace($text, '"PingCount"\s*:\s*\d+', '"PingCount": 30')
+        $text = [regex]::Replace($text, '"PingCountMaximum"\s*:\s*\d+', '"PingCountMaximum": 30')
         $text = [regex]::Replace($text, '"RetransmissionSampleSeconds"\s*:\s*\d+', '"RetransmissionSampleSeconds": 125')
         [IO.File]::WriteAllText($cfg, $text, (New-Object System.Text.UTF8Encoding($true)))
     }
@@ -305,7 +308,7 @@ function Get-ConfigRowCount($Config, $Options, [hashtable]$Overrides) {
     # user-entry run passes no switches at all (round 9). $Expect['Overrides'] is only what was really given.
     $overridden = @{}
     if ($null -ne $Overrides) {
-        foreach ($pair in @(@('PingCount', 'PingCount'), @('RetransmissionSampleSeconds', 'SampleSeconds'), @('TracerouteHops', 'TracerouteHops'))) {
+        foreach ($pair in @(@('PingCount', 'PingCount'), @('PingCountMaximum', 'PingCountMaximum'), @('RetransmissionSampleSeconds', 'SampleSeconds'), @('TracerouteHops', 'TracerouteHops'))) {
             if ($Overrides.ContainsKey($pair[1]) -and (ConvertTo-IntSafe $Overrides[$pair[1]] 0) -gt 0) { $overridden[$pair[0]] = ConvertTo-IntSafe $Overrides[$pair[1]] 0 }
         }
     }
@@ -339,7 +342,7 @@ function Get-ConfigRowCount($Config, $Options, [hashtable]$Overrides) {
     # threshold that is not a whole number. The adapter deltas are thresholds too, and the first draft of this oracle
     # left all four out (PR #41, round 2).
     $thresholds = 0
-    foreach ($name in @('PingCount', 'PingTimeoutMs', 'DnsTimeoutMs', 'TcpTimeoutMs', 'HttpTimeoutMs', 'RetransmissionSampleSeconds')) {
+    foreach ($name in @('PingCount', 'PingCountMaximum', 'PingTimeoutMs', 'DnsTimeoutMs', 'TcpTimeoutMs', 'HttpTimeoutMs', 'RetransmissionSampleSeconds')) {
         $value = Get-Value $Config.Tests $name
         if ($overridden.ContainsKey($name)) { $value = $overridden[$name] }
         # The product's two branches, in its order: a present value that is not a whole number, or - and this is the
@@ -348,7 +351,7 @@ function Get-ConfigRowCount($Config, $Options, [hashtable]$Overrides) {
         elseif ((ConvertTo-IntSafe $value 0) -le 0) { $thresholds += 1 }
     }
     $limits = $Config.Thresholds
-    $countThresholds = @('TcpRetransmissionCriticalCount', 'MinimumTcpSegmentsForRate', 'AdapterErrorWarningDelta', 'AdapterErrorCriticalDelta', 'AdapterDiscardWarningDelta', 'AdapterDiscardCriticalDelta')
+    $countThresholds = @('TcpRetransmissionCriticalCount', 'MinimumTcpSegmentsForRate', 'MinimumTcpRetransmissionsForVerdict', 'AdapterErrorWarningDelta', 'AdapterErrorCriticalDelta', 'AdapterDiscardWarningDelta', 'AdapterDiscardCriticalDelta')
     foreach ($name in @('PacketLossWarningPercent', 'PacketLossCriticalPercent', 'LatencyWarningMs', 'LatencyCriticalMs', 'TcpRetransmissionWarningPercent', 'TcpRetransmissionCriticalPercent') + $countThresholds) {
         $value = Get-Value $limits $name
         if ($null -eq $value) { continue }
@@ -366,6 +369,13 @@ function Get-ConfigRowCount($Config, $Options, [hashtable]$Overrides) {
         $critical = ConvertTo-DoubleSafe (Get-Value $limits $pair[1]) $pair[3]
         if ($warning -lt 0 -or $critical -lt $warning) { $thresholds += 1 }
     }
+
+    # backlog #51: the two ping counts are an ordered pair, checked in the same row as the threshold pairs. Both are
+    # read after the switches, because Set-RunOptions writes them into the effective configuration before
+    # Test-ConfigurationSemantics ever sees it.
+    $startCount = ConvertTo-IntSafe $(if ($overridden.ContainsKey('PingCount')) { $overridden['PingCount'] } else { Get-Value $Config.Tests 'PingCount' }) 4
+    $ceilingCount = ConvertTo-IntSafe $(if ($overridden.ContainsKey('PingCountMaximum')) { $overridden['PingCountMaximum'] } else { Get-Value $Config.Tests 'PingCountMaximum' }) 21
+    if ($ceilingCount -lt $startCount) { $thresholds += 1 }
 
     $badTargets = 0
     foreach ($target in @($Config.Tests.TcpTargets)) { if ($null -ne $target -and -not (Test-ConfiguredTcpTarget $target)) { $badTargets += 1 } }
