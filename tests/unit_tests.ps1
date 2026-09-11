@@ -1461,6 +1461,20 @@ $bareAdapters = @([pscustomobject]@{ IPv4Addresses = @('192.0.2.10'); IPv4WithPr
 Assert-Equal '#60 placement: an adapter whose prefix is unknown places nothing' (Test-NearEndTargetPlacement -Address '192.0.2.20' -PrimaryAdapters $bareAdapters).Placement 'off-subnet'
 Assert-Equal '#60 placement: and says it judged by no subnet' (@((Test-NearEndTargetPlacement -Address '192.0.2.20' -PrimaryAdapters $bareAdapters).Subnets).Count) 0
 Assert-Equal '#60 placement: the gateway is refused before any subnet is consulted' (Test-NearEndTargetPlacement -Address '192.0.2.1' -PrimaryAdapters $bareAdapters).Placement 'gateway'
+# This computer's own address is inside its own subnet, and a probe to it is answered by this stack without crossing
+# anything (PR #51, round 1); so are the subnet's network and broadcast addresses, which no host holds. All three are
+# configuration mistakes, refused before the subnet test can call them the near-end host.
+Assert-Equal '#60 placement: this computer''s own address is refused' (Test-NearEndTargetPlacement -Address '192.0.2.10' -PrimaryAdapters $nearAdapters).Placement 'self'
+Assert-Equal '#60 placement: and refused before the subnet is consulted' (Test-NearEndTargetPlacement -Address '192.0.2.10' -PrimaryAdapters $bareAdapters).Placement 'self'
+Assert-Equal '#60 placement: on a multihomed machine either own address is refused' (Test-NearEndTargetPlacement -Address '10.0.0.5' -PrimaryAdapters $twoAdapters).Placement 'self'
+Assert-Equal '#60 placement: the subnet''s broadcast address is not a host' (Test-NearEndTargetPlacement -Address '192.0.2.255' -PrimaryAdapters $nearAdapters).Placement 'not-a-host'
+Assert-Equal '#60 placement: nor is its network address' (Test-NearEndTargetPlacement -Address '192.0.2.0' -PrimaryAdapters $nearAdapters).Placement 'not-a-host'
+Assert-Equal '#60 placement: the last host before the broadcast address is a host' (Test-NearEndTargetPlacement -Address '192.0.2.254' -PrimaryAdapters $nearAdapters).Placement 'on-subnet'
+$pointToPoint = @([pscustomobject]@{ IPv4Addresses = @('192.0.2.10'); IPv4WithPrefix = @('192.0.2.10/31'); Gateways = @('192.0.2.11'); DnsServers = @() })
+Assert-Equal '#60 placement: a /31 has no broadcast address, so its all-ones host is left to the gateway test' (Test-NearEndTargetPlacement -Address '192.0.2.11' -PrimaryAdapters $pointToPoint).Placement 'gateway'
+$wide = @([pscustomobject]@{ IPv4Addresses = @('10.1.2.3'); IPv4WithPrefix = @('10.1.2.3/8'); Gateways = @('10.0.0.1'); DnsServers = @() })
+Assert-Equal '#60 placement: the broadcast address of a /8 is found across the octets' (Test-NearEndTargetPlacement -Address '10.255.255.255' -PrimaryAdapters $wide).Placement 'not-a-host'
+Assert-Equal '#60 placement: and a host whose last octet is 255 inside a /8 is a host' (Test-NearEndTargetPlacement -Address '10.1.2.255' -PrimaryAdapters $wide).Placement 'on-subnet'
 # The near-end entry is built in the run and never read from the ping list, so a list entry cannot promote itself
 # to the rung, and the traceroute - which walks the list for its target - never meets it.
 Assert-Equal '#60 ladder: the near-end entry is built by the run' ((Get-FunctionBody 'Test-PingTargets') -match 'NearEnd = \$true') True

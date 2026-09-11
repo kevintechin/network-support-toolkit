@@ -2416,22 +2416,42 @@ function Test-NearEndTargetPlacement {
     )
 
     # 設定的近端目標相對於這台機器在哪裡（backlog #60），在送出任何東西之前就決定，因為這一列的整個主張就是它的探測
-    # 經過了哪些路段。三種答案：位址是主要網卡的某個閘道，所以不能當近端這一階——閘道是用控制平面回應的，而且它已經
-    # 是下一階了；位址在主要網卡的某個 IPv4 子網段裡，所以它就是近端主機；或兩者都不是，那麼送給它的探測會經過閘道，
-    # 量到的是錯的東西。子網段是快照本來就帶著的「位址/前綴」值；前綴未知的網卡不貢獻子網段，而一台沒有任何已知
-    # 子網段的機器什麼都放不了——那一列會照實說，而不是猜。
+    # 經過了哪些路段。五種答案：位址是主要網卡的某個閘道，所以不能當近端這一階——閘道是用控制平面回應的，而且它已經
+    # 是下一階了；位址是這台電腦自己的位址之一，所以送給它的探測是由這個堆疊自己回應的，完全沒有經過網路線、無線電
+    # 或交換器（PR #51 第 1 輪）；位址是它所在子網段的網路位址或廣播位址，沒有任何主機持有它；位址在主要網卡的某個
+    # IPv4 子網段裡，所以它就是近端主機；或以上都不是，那麼送給它的探測會經過閘道，量到的是錯的東西。子網段是快照
+    # 本來就帶著的「位址/前綴」值；前綴未知的網卡不貢獻子網段，而一台沒有任何已知子網段的機器什麼都放不了——那一列
+    # 會照實說，而不是猜。
     $subnets = @()
+    $ownAddresses = @()
     foreach ($adapter in @($PrimaryAdapters)) {
         foreach ($entry in @($adapter.IPv4WithPrefix)) {
             if (([string]$entry) -match '/\d+$') { $subnets += [string]$entry }
+        }
+        foreach ($own in @($adapter.IPv4Addresses)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$own)) { $ownAddresses += [string]$own }
         }
     }
     $gateways = @(Resolve-PingTargets -Address "AUTO_GATEWAY" -PrimaryAdapters $PrimaryAdapters)
     $placement = "off-subnet"
     if ($gateways -contains $Address) { $placement = "gateway" }
+    elseif ($ownAddresses -contains $Address) { $placement = "self" }
     else {
         foreach ($subnet in $subnets) {
-            if (Test-IPv4InCidr -IpAddress $Address -Cidr $subnet) { $placement = "on-subnet"; break }
+            if (Test-IPv4InCidr -IpAddress $Address -Cidr $subnet) {
+                $placement = "on-subnet"
+                # 主機部分全 0 與全 1 是子網段自己的網路位址與廣播位址，不是主機；/31 與 /32 兩者都沒有（RFC 3021），
+                # 所以不動它們。
+                $prefix = [int]($subnet.Split('/')[1])
+                if ($prefix -le 30) {
+                    $bytes = [System.Net.IPAddress]::Parse($Address).GetAddressBytes()
+                    $value = ([int64]$bytes[0] * 16777216) + ([int64]$bytes[1] * 65536) + ([int64]$bytes[2] * 256) + [int64]$bytes[3]
+                    $hostMax = [int64][math]::Pow(2, (32 - $prefix)) - 1
+                    $hostPart = $value -band $hostMax
+                    if ($hostPart -eq 0 -or $hostPart -eq $hostMax) { $placement = "not-a-host" }
+                }
+                break
+            }
         }
     }
     return [pscustomobject][ordered]@{
@@ -2779,8 +2799,18 @@ function Test-PingTargets {
             # 種是關於這台機器此刻在哪裡的事實——帶著公司設定檔在家裡的筆電——就照事實回報：什麼都沒送、什麼都沒
             # 主張、整體結果不動。沒有探測的必要近端目標，仍然要付每一個沒有執行的必要目標都要付的那一列有權重的列。
             $placement = Test-NearEndTargetPlacement -Address $address -PrimaryAdapters $PrimaryAdapters
-            if ($placement.Placement -eq "gateway") {
-                Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "設定的近端目標就是這台電腦的預設閘道，它不能當作近端這一階。" -Details ("設定值：{0}。閘道是用自己的控制平面回應 Ping 的，而且它已經是階梯的下一階；近端目標必須是同一子網段上的普通主機，本地路徑才能在沒有閘道參與的情況下被量到。" -f $address) -Tag $pingTag -Weightless | Out-Null
+            if ($placement.Placement -eq "gateway" -or $placement.Placement -eq "self" -or $placement.Placement -eq "not-a-host") {
+                # 三種設定錯誤，同一種形狀（第二與第三種是 PR #51 第 1 輪加的）：那一列說是哪一種，而一個會量到錯的
+                # 東西的探測不會被送出。
+                if ($placement.Placement -eq "self") {
+                    Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "設定的近端目標是這台電腦自己的位址之一，它不能當作近端這一階。" -Details ("設定值：{0}。送到這台電腦自己位址的 Ping 由它自己的堆疊回應，沒有經過任何網路線、無線電或交換器；近端目標必須是同一子網段上的另一台主機。" -f $address) -Tag $pingTag -Weightless | Out-Null
+                }
+                elseif ($placement.Placement -eq "not-a-host") {
+                    Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "設定的近端目標是這台電腦子網段的網路位址或廣播位址，不是主機。" -Details ("設定值：{0}。子網段裡全 0 與全 1 的位址不屬於任何主機；近端目標必須是同一子網段上的一台主機。" -f $address) -Tag $pingTag -Weightless | Out-Null
+                }
+                else {
+                    Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "設定的近端目標就是這台電腦的預設閘道，它不能當作近端這一階。" -Details ("設定值：{0}。閘道是用自己的控制平面回應 Ping 的，而且它已經是階梯的下一階；近端目標必須是同一子網段上的普通主機，本地路徑才能在沒有閘道參與的情況下被量到。" -f $address) -Tag $pingTag -Weightless | Out-Null
+                }
                 if ($required) {
                     Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標無法檢測。" -Details ("Configured value: $address") -Tag $pingTag | Out-Null
                 }

@@ -2477,24 +2477,44 @@ function Test-NearEndTargetPlacement {
     )
 
     # Where the configured near-end target sits relative to this machine (backlog #60), decided before anything is
-    # sent, because the row's whole claim is which segments its probes cross. Three answers: the address is one of the
+    # sent, because the row's whole claim is which segments its probes cross. Five answers: the address is one of the
     # primary adapters' gateways, so it cannot be the near-end rung - the gateway answers from its control plane and is
-    # the next rung already; it is inside one of the primary adapters' IPv4 subnets, so it is the near-end host; or it
-    # is neither, so a probe to it would go through the gateway and measure the wrong thing. The subnets are the
-    # address-with-prefix values the snapshot already carries; an adapter whose prefix is unknown contributes no subnet,
-    # and a machine with no known subnet places nothing - which the row says rather than guessing.
+    # the next rung already; it is one of this computer's own addresses, so a probe to it is answered by this stack and
+    # crosses no cable, radio or switch at all (PR #51, round 1); it is the network or the broadcast address of the
+    # subnet it falls in, which no host holds; it is inside one of the primary adapters' IPv4 subnets, so it is the
+    # near-end host; or it is none of these, so a probe to it would go through the gateway and measure the wrong thing.
+    # The subnets are the address-with-prefix values the snapshot already carries; an adapter whose prefix is unknown
+    # contributes no subnet, and a machine with no known subnet places nothing - which the row says rather than guessing.
     $subnets = @()
+    $ownAddresses = @()
     foreach ($adapter in @($PrimaryAdapters)) {
         foreach ($entry in @($adapter.IPv4WithPrefix)) {
             if (([string]$entry) -match '/\d+$') { $subnets += [string]$entry }
+        }
+        foreach ($own in @($adapter.IPv4Addresses)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$own)) { $ownAddresses += [string]$own }
         }
     }
     $gateways = @(Resolve-PingTargets -Address "AUTO_GATEWAY" -PrimaryAdapters $PrimaryAdapters)
     $placement = "off-subnet"
     if ($gateways -contains $Address) { $placement = "gateway" }
+    elseif ($ownAddresses -contains $Address) { $placement = "self" }
     else {
         foreach ($subnet in $subnets) {
-            if (Test-IPv4InCidr -IpAddress $Address -Cidr $subnet) { $placement = "on-subnet"; break }
+            if (Test-IPv4InCidr -IpAddress $Address -Cidr $subnet) {
+                $placement = "on-subnet"
+                # The all-zeros and all-ones host parts are the subnet's own network and broadcast addresses, not a
+                # host; a /31 and a /32 have neither (RFC 3021), so they are left alone.
+                $prefix = [int]($subnet.Split('/')[1])
+                if ($prefix -le 30) {
+                    $bytes = [System.Net.IPAddress]::Parse($Address).GetAddressBytes()
+                    $value = ([int64]$bytes[0] * 16777216) + ([int64]$bytes[1] * 65536) + ([int64]$bytes[2] * 256) + [int64]$bytes[3]
+                    $hostMax = [int64][math]::Pow(2, (32 - $prefix)) - 1
+                    $hostPart = $value -band $hostMax
+                    if ($hostPart -eq 0 -or $hostPart -eq $hostMax) { $placement = "not-a-host" }
+                }
+                break
+            }
         }
     }
     return [pscustomobject][ordered]@{
@@ -2869,8 +2889,18 @@ function Test-PingTargets {
             # nothing sent, nothing claimed, the overall result untouched. A required near-end target that was not
             # probed still costs the weighted row every required target costs when it did not run.
             $placement = Test-NearEndTargetPlacement -Address $address -PrimaryAdapters $PrimaryAdapters
-            if ($placement.Placement -eq "gateway") {
-                Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured near-end target is this computer's default gateway, which cannot serve as the near-end rung." -Details ("Configured value: {0}. The gateway answers pings from its own control plane and is already the next rung of the ladder; a near-end target has to be an ordinary host on the same subnet, so that the local path is measured without the gateway in it." -f $address) -Tag $pingTag -Weightless | Out-Null
+            if ($placement.Placement -eq "gateway" -or $placement.Placement -eq "self" -or $placement.Placement -eq "not-a-host") {
+                # Three configuration mistakes, one shape (PR #51, round 1 added the second and the third): the row
+                # says which, and a probe that would have measured the wrong thing is not sent.
+                if ($placement.Placement -eq "self") {
+                    Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured near-end target is one of this computer's own addresses, which cannot serve as the near-end rung." -Details ("Configured value: {0}. A ping to this computer's own address is answered by its own stack and crosses no cable, radio or switch; a near-end target has to be another host on the same subnet." -f $address) -Tag $pingTag -Weightless | Out-Null
+                }
+                elseif ($placement.Placement -eq "not-a-host") {
+                    Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured near-end target is the network or broadcast address of this computer's subnet, not a host." -Details ("Configured value: {0}. The all-zeros and all-ones addresses of a subnet belong to no host; a near-end target has to be a host on the same subnet." -f $address) -Tag $pingTag -Weightless | Out-Null
+                }
+                else {
+                    Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured near-end target is this computer's default gateway, which cannot serve as the near-end rung." -Details ("Configured value: {0}. The gateway answers pings from its own control plane and is already the next rung of the ladder; a near-end target has to be an ordinary host on the same subnet, so that the local path is measured without the gateway in it." -f $address) -Tag $pingTag -Weightless | Out-Null
+                }
                 if ($required) {
                     Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details ("Configured value: $address") -Tag $pingTag | Out-Null
                 }
