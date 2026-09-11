@@ -2459,12 +2459,12 @@ function Add-PingTargetResult {
     $warningLatency = ConvertTo-DoubleSafe $script:Config.Thresholds.LatencyWarningMs 100
     $criticalLatency = ConvertTo-DoubleSafe $script:Config.Thresholds.LatencyCriticalMs 250
 
-        # The tag is derived here rather than handed in, and the two lines below are deliberately a copy of the
-        # ones in Test-PingTargets (backlog #33's document-fact step): it reads every -Tag argument off the AST and
-        # resolves a variable only where every assignment to it is a literal, so a tag reaching Add-CheckResult
-        # through a parameter, a property or a helper's return value would be a live tag outside every check that
-        # holds the documents to the program. A copied two-line rule is the price of that step being able to see
-        # this one.
+    # The tag is derived here rather than handed in, and the two lines below are deliberately a copy of the
+    # ones in Test-PingTargets (backlog #33's document-fact step): it reads every -Tag argument off the AST and
+    # resolves a variable only where every assignment to it is a literal, so a tag reaching Add-CheckResult
+    # through a parameter, a property or a helper's return value would be a live tag outside every check that
+    # holds the documents to the program. A copied two-line rule is the price of that step being able to see
+    # this one.
     $pingTag = "ping-target"
     if ($ConfiguredAddress -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
     $status = "PASS"
@@ -2485,7 +2485,15 @@ function Add-PingTargetResult {
             # item removes a verdict, never a number.
             $lossStatus = "WARN"
             $weightless = $true
-            $coarseNote = ("The sample is too small for this threshold: one lost reply out of {0} is {1}%, and the classification changes on that one reply. It takes {2} replies for one lost reply to stay below the {3}% warning threshold. The figures above are what was measured, and this row does not change the overall result." -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $loss.RequiredCount, $warningLoss)
+            # A warning percentage of zero or less is one no count escapes, so there is no count to name and
+            # printing 0 would be advice that does not work. The configuration check permits the value, so this
+            # branch says the true thing instead of a number.
+            if ($loss.RequiredCount -le 0) {
+                $coarseNote = ("The sample is too small for this threshold: one lost reply out of {0} is {1}%, and the classification changes on that one reply. The warning threshold is {2}%, which no number of replies puts a single lost one below. The figures above are what was measured, and this row does not change the overall result." -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $warningLoss)
+            }
+            else {
+                $coarseNote = ("The sample is too small for this threshold: one lost reply out of {0} is {1}%, and the classification changes on that one reply. It takes {2} replies for one lost reply to stay below the {3}% warning threshold. The figures above are what was measured, and this row does not change the overall result." -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $loss.RequiredCount, $warningLoss)
+            }
         }
         elseif ($loss.Band -eq "critical") { $lossStatus = if ($Required) { "FAIL" } else { "WARN" } }
         elseif ($loss.Band -eq "warning") { $lossStatus = "WARN" }
@@ -2578,7 +2586,7 @@ function Complete-PingSamples {
                 $note = ("The sample could not be continued, so these figures are the first {0} echo requests alone. {1}" -f $item.Measurement.Sent, (Get-ExceptionDetails $_))
             }
             if ($measurement.Sent -gt $item.Measurement.Sent) {
-                $note = ("Adaptive sample: the first {0} echo requests lost {1} of their replies, so {2} more were sent, spread across the rest of the run instead of back to back. Every figure above is over all {3}." -f $item.Measurement.Sent, $item.Measurement.Lost, ($measurement.Sent - $item.Measurement.Sent), $measurement.Sent)
+                $note = ("Adaptive sample: the first {0} echo requests lost {1} of their replies, so {2} more were sent, spread across the rest of the run instead of back to back. Every figure above is over all {3}, and the time on this row is the end of the first pass, with the later probes falling after it." -f $item.Measurement.Sent, $item.Measurement.Lost, ($measurement.Sent - $item.Measurement.Sent), $measurement.Sent)
                 if ($item.Plan.TargetCount -lt $item.Plan.RequiredCount) {
                     $note += (" The configured ceiling stopped it at {0}, below the {1} it would take for one lost reply to stay under the warning threshold." -f $item.Plan.TargetCount, $item.Plan.RequiredCount)
                 }
@@ -3958,7 +3966,10 @@ function Test-TcpSampleNeedsExtension {
     # sent little and retransmitted none of it, is not ambiguous: waiting longer would buy more of the same
     # nothing. A sample already at or above the floor is not extended either - it has a rate, and too few events
     # behind a rate is a count floor's business rather than a window's.
+    # Since it decides whether a step runs at all, it is asked outside one, so it answers rather than throws:
+    # a snapshot without counters is a run whose reads failed, and those rows are written either way.
     if ($null -eq $Before -or $null -eq $After) { return $false }
+    if ($null -eq $Before.Counters -or $null -eq $After.Counters) { return $false }
     $minimumSegments = [double](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
     foreach ($protocol in @("TCPv4", "TCPv6")) {
         if (-not $Before.Counters.ContainsKey($protocol) -or -not $After.Counters.ContainsKey($protocol)) { continue }
@@ -4821,9 +4832,14 @@ function Run-AllChecks {
     # The position is the point (backlog #51): the ping samples that were put aside are finished here, before the
     # retransmission window sleeps out the seconds it still owes, so what the spread probes spend is time the run
     # was going to spend anyway. Anywhere else in the run and they would make it longer.
-    Invoke-CheckStep -Category "Latency and Packet Loss" -Name "Finish the ping samples that were not conclusive" -Progress 78 -Action {
-        Complete-PingSamples -SampleStart $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
-    } | Out-Null
+    # Only where something was put aside: Invoke-CheckStep writes a "Starting: ..." line and moves the progress
+    # bar on every run, and most runs put nothing aside. A line about work that did not happen is the kind of thing
+    # this project spends effort removing elsewhere.
+    if (@($script:PendingPingSamples).Count -gt 0) {
+        Invoke-CheckStep -Category "Latency and Packet Loss" -Name "Finish the ping samples that were not conclusive" -Progress 78 -Action {
+            Complete-PingSamples -SampleStart $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
+        } | Out-Null
+    }
     Wait-ForMinimumTcpSample -StartTime $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
 
     $adapterStatsAfter = Invoke-CheckStep -Category "Network Adapter Error Counters" -Name "Get Ending Network Adapter Error Values" -Progress 82 -Weightless -Action {
@@ -4847,12 +4863,13 @@ function Run-AllChecks {
     # retransmission in it. The step itself is weightless - it is a decision about sampling rather than a
     # measurement, and the measurement is still written by the step below. The merge is per protocol, so a second
     # read that fails can never cost a reading the first one already had.
-    $tcpExtended = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Extend the TCP Sample Where It Was Too Small to Rate" -Progress 90 -Weightless -Action {
-        if (-not (Test-TcpSampleNeedsExtension -Before $tcpBaseline -After $tcpAfter)) { return $null }
-        Wait-ForMinimumTcpSample -StartTime (Get-Date) -MinimumSeconds $minimumSampleSeconds -ProgressPercent 90
-        return (Merge-TcpEndingSnapshot -Original $tcpAfter -Extended (Get-TcpCounterSnapshot))
+    if (Test-TcpSampleNeedsExtension -Before $tcpBaseline -After $tcpAfter) {
+        $tcpExtended = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Extend the TCP Sample Where It Was Too Small to Rate" -Progress 90 -Weightless -Action {
+            Wait-ForMinimumTcpSample -StartTime (Get-Date) -MinimumSeconds $minimumSampleSeconds -ProgressPercent 90
+            return (Merge-TcpEndingSnapshot -Original $tcpAfter -Extended (Get-TcpCounterSnapshot))
+        }
+        if ($null -ne $tcpExtended) { $tcpAfter = $tcpExtended }
     }
-    if ($null -ne $tcpExtended) { $tcpAfter = $tcpExtended }
 
     Invoke-CheckStep -Category "TCP Retransmissions" -Name "Analyze TCP Retransmissions" -Progress 92 -Action {
         Compare-TcpCounters -Before $tcpBaseline -After $tcpAfter

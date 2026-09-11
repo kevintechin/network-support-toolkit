@@ -2408,10 +2408,10 @@ function Add-PingTargetResult {
     $warningLatency = ConvertTo-DoubleSafe $script:Config.Thresholds.LatencyWarningMs 100
     $criticalLatency = ConvertTo-DoubleSafe $script:Config.Thresholds.LatencyCriticalMs 250
 
-        # 標籤在這裡自己推導，而不是由外面傳進來；下面兩行是刻意複製 Test-PingTargets 裡那兩行的（backlog #33
-        # 的文件事實步驟）：它會從 AST 讀出每一個 -Tag 引數，而且只有在「對某個變數的每一次指派都是常值」時才
-        # 解析得出來，所以透過參數、屬性或輔助函式回傳值送到 Add-CheckResult 的標籤，會變成一個存在於程式裡、
-        # 卻在所有「用文件核對程式」的檢查之外的標籤。複製這兩行，是讓那個步驟看得見這一條規則的代價。
+    # 標籤在這裡自己推導，而不是由外面傳進來；下面兩行是刻意複製 Test-PingTargets 裡那兩行的（backlog #33
+    # 的文件事實步驟）：它會從 AST 讀出每一個 -Tag 引數，而且只有在「對某個變數的每一次指派都是常值」時才
+    # 解析得出來，所以透過參數、屬性或輔助函式回傳值送到 Add-CheckResult 的標籤，會變成一個存在於程式裡、
+    # 卻在所有「用文件核對程式」的檢查之外的標籤。複製這兩行，是讓那個步驟看得見這一條規則的代價。
     $pingTag = "ping-target"
     if ($ConfiguredAddress -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
     $status = "PASS"
@@ -2431,7 +2431,14 @@ function Add-PingTargetResult {
             # 一個數字，並且不再決定這次執行——本項目拿掉的是判定，從來不是數字。
             $lossStatus = "WARN"
             $weightless = $true
-            $coarseNote = ("此取樣數對這個門檻來說太小：{0} 次裡有一次沒有回覆就是 {1}%，而分類會因為那一次而改變。要讓單一次遺失仍低於 {3}% 的警告門檻，需要 {2} 次回覆。上面的數字就是實際量到的，而這一列不會改變整體結果。" -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $loss.RequiredCount, $warningLoss)
+            # 警告門檻是 0 或更小時，沒有任何次數躲得過它，於是也沒有「需要幾次」可以寫——寫出 0 會是一句
+            # 假的建議。設定檢查允許這個值，所以這個分支寫的是真話而不是一個數字。
+            if ($loss.RequiredCount -le 0) {
+                $coarseNote = ("此取樣數對這個門檻來說太小：{0} 次裡有一次沒有回覆就是 {1}%，而分類會因為那一次而改變。警告門檻是 {2}%，沒有任何回覆次數能讓單一次遺失低於它。上面的數字就是實際量到的，而這一列不會改變整體結果。" -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $warningLoss)
+            }
+            else {
+                $coarseNote = ("此取樣數對這個門檻來說太小：{0} 次裡有一次沒有回覆就是 {1}%，而分類會因為那一次而改變。要讓單一次遺失仍低於 {3}% 的警告門檻，需要 {2} 次回覆。上面的數字就是實際量到的，而這一列不會改變整體結果。" -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $loss.RequiredCount, $warningLoss)
+            }
         }
         elseif ($loss.Band -eq "critical") { $lossStatus = if ($Required) { "FAIL" } else { "WARN" } }
         elseif ($loss.Band -eq "warning") { $lossStatus = "WARN" }
@@ -2518,7 +2525,7 @@ function Complete-PingSamples {
                 $note = ("取樣無法繼續，因此這些數字只涵蓋最前面的 {0} 次 ICMP echo。{1}" -f $item.Measurement.Sent, (Get-ExceptionDetails $_))
             }
             if ($measurement.Sent -gt $item.Measurement.Sent) {
-                $note = ("自適應取樣：前 {0} 次 ICMP echo 有 {1} 次沒有回覆，因此再送出 {2} 次，並分散在本次執行剩下的時間裡，而不是連續送出。上面每個數字都是這 {3} 次的合計。" -f $item.Measurement.Sent, $item.Measurement.Lost, ($measurement.Sent - $item.Measurement.Sent), $measurement.Sent)
+                $note = ("自適應取樣：前 {0} 次 ICMP echo 有 {1} 次沒有回覆，因此再送出 {2} 次，並分散在本次執行剩下的時間裡，而不是連續送出。上面每個數字都是這 {3} 次的合計；這一列上的時間是第一輪結束的時刻，後面那些探測都在它之後。" -f $item.Measurement.Sent, $item.Measurement.Lost, ($measurement.Sent - $item.Measurement.Sent), $measurement.Sent)
                 if ($item.Plan.TargetCount -lt $item.Plan.RequiredCount) {
                     $note += ("（設定的上限讓它停在 {0} 次，低於「讓單一次遺失仍低於警告門檻」所需的 {1} 次。）" -f $item.Plan.TargetCount, $item.Plan.RequiredCount)
                 }
@@ -3867,7 +3874,10 @@ function Test-TcpSampleNeedsExtension {
     # 說不出「多常發生」。閒置到什麼都沒送、或送得很少而且一次都沒重傳的機器，並不模稜兩可：等久一點只會換來
     # 更多的「什麼都沒有」。已經到達或超過下限的樣本也不延長：它已經有比例了，而「比例背後的事件太少」是次數
     # 下限要管的事，不是窗長要管的。
+    # Since it decides whether a step runs at all, it is asked outside one, so it answers rather than throws:
+    # a snapshot without counters is a run whose reads failed, and those rows are written either way.
     if ($null -eq $Before -or $null -eq $After) { return $false }
+    if ($null -eq $Before.Counters -or $null -eq $After.Counters) { return $false }
     $minimumSegments = [double](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
     foreach ($protocol in @("TCPv4", "TCPv6")) {
         if (-not $Before.Counters.ContainsKey($protocol) -or -not $After.Counters.ContainsKey($protocol)) { continue }
@@ -4710,9 +4720,13 @@ function Run-AllChecks {
     $minimumSampleSeconds = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.RetransmissionSampleSeconds 8))
     # 位置就是重點（backlog #51）：擱下的 ping 取樣在這裡送完，也就是在重傳視窗把剩餘秒數睡掉之前，因此那些
     # 探測分散用掉的是本來就要花的等待時間。放在別處都會讓一次執行變長。
-    Invoke-CheckStep -Category "延遲與封包遺失" -Name "送完尚未足以下結論的 ping 取樣" -Progress 78 -Action {
-        Complete-PingSamples -SampleStart $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
-    } | Out-Null
+    # 有東西擱著才走這一步：Invoke-CheckStep 每次都會寫一行「開始：…」並推進進度列，而大多數的執行根本
+    # 沒有任何取樣被擱下，一行講一件沒發生的事的紀錄，就是這個專案在別處花力氣移除的那種東西。
+    if (@($script:PendingPingSamples).Count -gt 0) {
+        Invoke-CheckStep -Category "延遲與封包遺失" -Name "送完尚未足以下結論的 ping 取樣" -Progress 78 -Action {
+            Complete-PingSamples -SampleStart $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
+        } | Out-Null
+    }
     Wait-ForMinimumTcpSample -StartTime $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
 
     $adapterStatsAfter = Invoke-CheckStep -Category "網卡錯誤計數" -Name "取得網卡錯誤結束值" -Progress 82 -Weightless -Action {
@@ -4735,12 +4749,13 @@ function Run-AllChecks {
     # 延長一次，而且只在那個模稜兩可的情況下（backlog #51）：樣本低於評分下限，而窗內有過重傳。延長步驟本身
     # 是 weightless 的——它是一次取樣的決定，不是一次量測；真正的量測仍然由下面那一步寫出來。合併是逐通訊協定
     # 做的，所以第二次讀取失敗絕不會弄丟第一次已經讀到的結果。
-    $tcpExtended = Invoke-CheckStep -Category "TCP 重傳" -Name "樣本太小無法評分時延長 TCP 取樣窗" -Progress 90 -Weightless -Action {
-        if (-not (Test-TcpSampleNeedsExtension -Before $tcpBaseline -After $tcpAfter)) { return $null }
-        Wait-ForMinimumTcpSample -StartTime (Get-Date) -MinimumSeconds $minimumSampleSeconds -ProgressPercent 90
-        return (Merge-TcpEndingSnapshot -Original $tcpAfter -Extended (Get-TcpCounterSnapshot))
+    if (Test-TcpSampleNeedsExtension -Before $tcpBaseline -After $tcpAfter) {
+        $tcpExtended = Invoke-CheckStep -Category "TCP 重傳" -Name "樣本太小無法評分時延長 TCP 取樣窗" -Progress 90 -Weightless -Action {
+            Wait-ForMinimumTcpSample -StartTime (Get-Date) -MinimumSeconds $minimumSampleSeconds -ProgressPercent 90
+            return (Merge-TcpEndingSnapshot -Original $tcpAfter -Extended (Get-TcpCounterSnapshot))
+        }
+        if ($null -ne $tcpExtended) { $tcpAfter = $tcpExtended }
     }
-    if ($null -ne $tcpExtended) { $tcpAfter = $tcpExtended }
 
     Invoke-CheckStep -Category "TCP 重傳" -Name "分析 TCP 重傳" -Progress 92 -Action {
         Compare-TcpCounters -Before $tcpBaseline -After $tcpAfter
