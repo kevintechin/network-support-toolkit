@@ -149,19 +149,34 @@ Assert-Equal 'D: #67 the rule field is on every row, empty unless a row sets it'
 # that answered leaves the gateway itself; one that lost its replies puts the fault before it; one that answered
 # slowly, or that was not measured, leaves the line as it was. The lines are prose in both packages, so what is
 # asserted is which of them differ.
-Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Tagged "ping-near-end" "PASS"; Add-Ruled "ping-gateway" "FAIL" "loss"; Add-Tagged "connectivity-group" "FAIL"
+# Round 4: the pairing is by Path - the adapter both rows' lookups agreed on - because a near-end host reached through
+# one adapter says nothing about another adapter's cable, radio or switch. The run writes a Path on every ping row
+# whose lookups before and after the probes agreed, and a near-end row carries one whenever it carries its tag.
+function Add-Pathed($tag, $status, $rule, $path) { Add-CheckResult -Category "T" -Check $tag -Status $status -Message "m" -Details "" -Tag $tag -Rule $rule -Path $path | Out-Null }
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Pathed "ping-near-end" "PASS" "" "Wi-Fi"; Add-Pathed "ping-gateway" "FAIL" "loss" "Wi-Fi"; Add-Tagged "connectivity-group" "FAIL"
 $nearPassSummary = Get-FingerprintSummary
 Assert-Equal 'D: #60 a near-end host that answered leaves the key' $nearPassSummary.Key "gateway-unreachable"
 Assert-Equal 'D: #60 and the line count' (@($nearPassSummary.Lines).Count) 5
 Assert-Equal 'D: #60 but chooses a second line of its own' (@($nearPassSummary.Lines)[1] -eq $silentLines[1]) False
 Assert-Equal 'D: #60 leaving the first line alone' (@($nearPassSummary.Lines)[0] -eq $silentLines[0]) True
 Assert-Equal 'D: #60 and the third' (@($nearPassSummary.Lines)[2] -eq $silentLines[2]) True
-Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Ruled "ping-near-end" "FAIL" "loss"; Add-Ruled "ping-gateway" "FAIL" "loss"; Add-Tagged "connectivity-group" "FAIL"
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Pathed "ping-near-end" "FAIL" "loss" "Wi-Fi"; Add-Pathed "ping-gateway" "FAIL" "loss" "Wi-Fi"; Add-Tagged "connectivity-group" "FAIL"
 $nearLostSummary = Get-FingerprintSummary
 Assert-Equal 'D: #60 a near-end host that lost its replies too keeps the key' $nearLostSummary.Key "gateway-unreachable"
 Assert-Equal 'D: #60 and chooses a third second line' ((@($nearLostSummary.Lines)[1] -ne $silentLines[1]) -and (@($nearLostSummary.Lines)[1] -ne @($nearPassSummary.Lines)[1])) True
-Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Ruled "ping-near-end" "FAIL" "latency"; Add-Ruled "ping-gateway" "FAIL" "loss"; Add-Tagged "connectivity-group" "FAIL"
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Pathed "ping-near-end" "FAIL" "latency" "Wi-Fi"; Add-Pathed "ping-gateway" "FAIL" "loss" "Wi-Fi"; Add-Tagged "connectivity-group" "FAIL"
 Assert-Equal 'D: #60 a slow near-end host decides nothing about that line' (@((Get-FingerprintSummary).Lines)[1] -eq $silentLines[1]) True
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Pathed "ping-near-end" "PASS" "" "Wi-Fi"; Add-Pathed "ping-gateway" "FAIL" "loss" "Ethernet"; Add-Tagged "connectivity-group" "FAIL"
+Assert-Equal 'D: #60 a near-end host on another adapter than the failed gateway keeps the neutral line' (@((Get-FingerprintSummary).Lines)[1] -eq $silentLines[1]) True
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Pathed "ping-near-end" "PASS" "" "Wi-Fi"; Add-Pathed "ping-gateway" "FAIL" "loss" ""; Add-Tagged "connectivity-group" "FAIL"
+Assert-Equal 'D: #60 a failed gateway whose lookups did not agree keeps it too' (@((Get-FingerprintSummary).Lines)[1] -eq $silentLines[1]) True
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Pathed "ping-near-end" "PASS" "" "Wi-Fi"; Add-Pathed "ping-gateway" "FAIL" "loss" "Wi-Fi"; Add-Pathed "ping-gateway" "FAIL" "loss" "Ethernet"; Add-Tagged "connectivity-group" "FAIL"
+Assert-Equal 'D: #60 two failed gateways on different adapters keep it' (@((Get-FingerprintSummary).Lines)[1] -eq $silentLines[1]) True
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Pathed "ping-near-end" "PASS" "" "Wi-Fi"; Add-Pathed "ping-gateway" "FAIL" "loss" "Wi-Fi"; Add-Pathed "ping-gateway" "FAIL" "loss" "Wi-Fi"; Add-Tagged "connectivity-group" "FAIL"
+Assert-Equal 'D: #60 two failed gateways on the near-end host''s own adapter take the near-end line' (@((Get-FingerprintSummary).Lines)[1] -eq @($nearPassSummary.Lines)[1]) True
+Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Pathed "ping-near-end" "PASS" "" ""; Add-Pathed "ping-gateway" "FAIL" "loss" "Wi-Fi"; Add-Tagged "connectivity-group" "FAIL"
+Assert-Equal 'D: #60 a near-end row without a path - which the run never writes - keeps the neutral line' (@((Get-FingerprintSummary).Lines)[1] -eq $silentLines[1]) True
+Assert-Equal 'D: #60 the path field is on every row, empty unless a row sets it' ((@($script:Results)[0].PSObject.Properties.Name -contains "Path") -and (@($script:Results)[0].Path -eq "")) True
 Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-CheckResult -Category "T" -Check "ping-near-end" -Status "INFO" -Message "m" -Details "" -Tag "ping-near-end" -Weightless | Out-Null; Add-Ruled "ping-gateway" "FAIL" "loss"; Add-Tagged "connectivity-group" "FAIL"
 Assert-Equal 'D: #60 a near-end host that was not probed decides nothing about it either' (@((Get-FingerprintSummary).Lines)[1] -eq $silentLines[1]) True
 # The near-end row is a quality row like the other rungs, and in a healthy run an optional one that answered nothing

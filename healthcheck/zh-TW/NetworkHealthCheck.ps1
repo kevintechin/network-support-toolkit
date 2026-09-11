@@ -606,12 +606,16 @@ function Add-CheckResult {
         [string]$Tag = "",
         [string]$Scope = "Main",
         [switch]$Weightless,
-        [string]$Rule = ""
+        [string]$Rule = "",
+        [string]$Path = ""
     )
 
     # -Weightless 標記一種列：徽章、訊息與統計數字都照舊，但不決定整體結果，也不影響 fingerprint（backlog #39）。
     # 標記是逐一分支加上去的：說「什麼都沒量到」的列、樣本比套用的門檻還粗的列，或陳述本次執行輸入的列。其餘一律
     # 預設保有權重——後來新增的檢查不會因為漏寫什麼而變得沒有權重，那種失誤沒有人會發現。
+    # -Path 是路由表為 ping 列的探測選的那張網卡——探測前後兩次查詢一致時的介面別名——不一致、或目標以名稱給定時是空的
+    # （PR #51 第 4 輪）。摘要用它把近端列和失敗的閘道列配對：經由某張網卡到達的近端主機，說明不了另一張網卡後面的網路線、
+    # 無線電或交換器。同樣是在 JSON schema 2 之下附加的欄位。
     # -Rule 寫的是這一列的狀態是由哪一種量測決定的，只用在一列有不只一種量測的時候（backlog #67）：ping 的列由遺失
     # 或由延遲決定，而在 1.2.12 之前，除了這一列的文字之外沒有東西說得出是哪一種，於是 fingerprint 把一個每次探測
     # 都回應、只是回應得慢的閘道，標成「沒有回應」的閘道。沒有話可說的列——通過的列，或只有一種量測的列——這個欄位
@@ -628,6 +632,7 @@ function Add-CheckResult {
         Scope       = $Scope
         Weightless  = [bool]$Weightless
         Rule        = $Rule
+        Path        = $Path
     }
 
     [void]$script:Results.Add($item)
@@ -2570,7 +2575,7 @@ function Add-PingTargetResult {
         [string]$SampleNote = "",
         [object]$Row = $null,
         [bool]$NearEnd = $false,
-        [string]$NearEndSubnet = ""
+        [string[]]$RungSubnets = @()
     )
 
     # 一列 ping 結果。它獨立成一個函式，是因為第一輪不足以下結論的目標，這一列會被寫兩次——一次是在報告裡它該
@@ -2587,17 +2592,22 @@ function Add-PingTargetResult {
     # 的文件事實步驟）：它會從 AST 讀出每一個 -Tag 引數，而且只有在「對某個變數的每一次指派都是常值」時才
     # 解析得出來，所以透過參數、屬性或輔助函式回傳值送到 Add-CheckResult 的標籤，會變成一個存在於程式裡、
     # 卻在所有「用文件核對程式」的檢查之外的標籤。複製這兩行，是讓那個步驟看得見這一條規則的代價。
-    # 這一列到底能不能主張近端這一階（PR #51 第 3 輪）。在子網段內只說明主機在哪裡，不說明探測是從哪張網卡出去的：探測
-    # 沒有綁定，而 VPN、第二條連線或更明確的路由可以把送往子網段內位址的探測帶到完全不同的地方。所以只有路由表在探測前
-    # 後都選了目標所在子網段上的來源位址——也就是連接路由，接在那個子網段上的那張網卡——這一列才主張本地路徑。若不是、
-    # 或選擇變了、或查詢無法取得，這一列保留標題與量測，說明它為什麼不能主張這一階，並標成一般的 ping 目標，讓摘要永遠
-    # 不會把它當成一條它可能沒走過的路徑的證人。標籤的指派維持常值，這是 backlog #33 文件事實步驟的要求。
+    # 這一列到底能不能主張它那一階（PR #51 第 3、4 輪）。在子網段內只說明主機在哪裡，不說明探測是從哪張網卡出去的：探測
+    # 沒有綁定，而 VPN、第二條連線或更明確的路由可以把送往子網段內位址——或閘道位址——的探測帶到完全不同的地方。所以只有
+    # 路由表在探測前後都選了這一階所屬子網段之一上的來源位址——近端主機自己的子網段，或提供這個閘道的那些網卡的子網段，
+    # 也就是連接路由，接在那個子網段上的那張網卡——這一列才主張這一階。若不是、或選擇變了、或查詢無法取得，這一列保留
+    # 標題與量測並說明它為什麼不能主張這一階；近端列此時標成一般的 ping 目標，讓摘要永遠不會把它當成一條它可能沒走過的
+    # 路徑的證人，閘道列則保留標籤，因為閘道仍然是它量測的目標。Path——兩次查詢一致的那張網卡——寫在每一列查詢一致的
+    # ping 列上，摘要就是靠它把近端列和失敗的閘道列配對。標籤的指派維持常值，這是 backlog #33 文件事實步驟的要求。
+    $selectionAgreed = ($null -ne $RouteBefore -and $null -ne $RouteAfter.Selection -and $RouteBefore.Resolved -and $RouteAfter.Selection.Resolved -and
+        $RouteBefore.SourceAddress -eq $RouteAfter.Selection.SourceAddress -and $RouteBefore.InterfaceAlias -eq $RouteAfter.Selection.InterfaceAlias)
+    $path = ""
+    if ($selectionAgreed) { $path = [string]$RouteBefore.InterfaceAlias }
     $rungAttested = $false
-    if ($NearEnd -and -not [string]::IsNullOrWhiteSpace($NearEndSubnet) -and $null -ne $RouteBefore -and $null -ne $RouteAfter.Selection -and
-        $RouteBefore.Resolved -and $RouteAfter.Selection.Resolved -and
-        $RouteBefore.SourceAddress -eq $RouteAfter.Selection.SourceAddress -and $RouteBefore.InterfaceAlias -eq $RouteAfter.Selection.InterfaceAlias -and
-        (Test-IPv4InCidr -IpAddress $RouteBefore.SourceAddress -Cidr $NearEndSubnet)) {
-        $rungAttested = $true
+    if ($selectionAgreed) {
+        foreach ($rungSubnet in @($RungSubnets)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$rungSubnet) -and (Test-IPv4InCidr -IpAddress $RouteBefore.SourceAddress -Cidr ([string]$rungSubnet))) { $rungAttested = $true; break }
+        }
     }
     $pingTag = "ping-target"
     if ($ConfiguredAddress -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
@@ -2696,8 +2706,11 @@ function Add-PingTargetResult {
     elseif ($NearEnd) {
         $detailLines += ("階梯：近端——不主張。{0} 位於這台電腦所在的子網段，但探測沒有綁定，而上面的路由選擇不是探測前後都選中同一子網段上的同一個位址——VPN、第二條連線或更明確的路由可能帶走了探測，或查詢無法取得——所以這一列說不出它們經過了哪些路段。它算作一般的 ping 目標，不算近端這一階，摘要也不把它當成本地路徑的證人。" -f $Target)
     }
+    elseif ($pingTag -eq "ping-gateway" -and $rungAttested) {
+        $detailLines += ("階梯：閘道——這些探測經過本地路徑——這台電腦的網卡、它的網路線或 Wi-Fi 連線、以及交換器或存取點——並由閘道自己的控制平面回應；它們沒有經過閘道之外的任何東西。路由表在探測前後都選了來源 {0}、經由 {1}——那是提供這個閘道的那張網卡所在子網段上的位址；探測本身沒有綁定。" -f $RouteBefore.SourceAddress, $RouteBefore.InterfaceAlias)
+    }
     elseif ($pingTag -eq "ping-gateway") {
-        $detailLines += "階梯：閘道——這些探測經過本地路徑——這台電腦的網卡、它的網路線或 Wi-Fi 連線、以及交換器或存取點——並由閘道自己的控制平面回應；它們沒有經過閘道之外的任何東西。"
+        $detailLines += "階梯：閘道——不主張。探測沒有綁定，而上面的路由選擇不是探測前後都選中提供這個閘道的那張網卡所在子網段上的同一個位址——VPN、第二條連線或更明確的路由可能帶走了探測，或查詢無法取得——所以這一列說不出它們經過了哪些路段。閘道仍然是這一列量測的目標，摘要照舊讀它的結果。"
     }
     if (-not [string]::IsNullOrWhiteSpace($SampleNote)) { $detailLines += $SampleNote }
     if (-not [string]::IsNullOrWhiteSpace($coarseNote)) { $detailLines += $coarseNote }
@@ -2729,13 +2742,14 @@ function Add-PingTargetResult {
         $details += [Environment]::NewLine + "補充說明：此為非必要目標，可能單純封鎖 ICMP——網際網路的權威判定請看「連線能力」群組。"
     }
     if ($null -eq $Row) {
-        return (Add-CheckResult -Category "延遲與封包遺失" -Check ("{0}：{1}" -f $Name, $Target) -Status $status -Message $message -Details $details -Tag $pingTag -Weightless:$weightless -Rule $rule)
+        return (Add-CheckResult -Category "延遲與封包遺失" -Check ("{0}：{1}" -f $Name, $Target) -Status $status -Message $message -Details $details -Tag $pingTag -Weightless:$weightless -Rule $rule -Path $path)
     }
     $Row.Status = $status
     $Row.Message = $message
     $Row.Details = $details
     $Row.Weightless = $weightless
     $Row.Rule = $rule
+    $Row.Path = $path
     # 標籤可能隨第二輪而動：近端列在最後一次探測之後的路由選擇若不再和探測之前的一致，就不再主張這一階，而摘要必須
     # 看得到這一點（PR #51 第 3 輪）。
     $Row.Tag = $pingTag
@@ -2788,7 +2802,7 @@ function Complete-PingSamples {
             }
             # 路由表再問一次，因為「探測之後」本來就得是「最後一次探測之後」。
             $routeAfter = Get-PingRouteAfter -Target $item.Target -TargetIsAddress $item.TargetIsAddress -Measurement $measurement
-            Add-PingTargetResult -Name $item.Name -Target $item.Target -ConfiguredAddress $item.Address -Required $item.Required -Measurement $measurement -RouteBefore $item.RouteBefore -RouteAfter $routeAfter -TargetIsAddress $item.TargetIsAddress -TimeoutMs $timeout -SampleNote $note -Row $item.Row -NearEnd $item.NearEnd -NearEndSubnet $item.NearEndSubnet | Out-Null
+            Add-PingTargetResult -Name $item.Name -Target $item.Target -ConfiguredAddress $item.Address -Required $item.Required -Measurement $measurement -RouteBefore $item.RouteBefore -RouteAfter $routeAfter -TargetIsAddress $item.TargetIsAddress -TimeoutMs $timeout -SampleNote $note -Row $item.Row -NearEnd $item.NearEnd -RungSubnets $item.RungSubnets | Out-Null
         }
         catch {
             # 這一列早就帶著第一輪量到的結果在報告裡了，所以這裡失去的只有延伸的那一段；多出來的是它為什麼沒發生。
@@ -2891,8 +2905,8 @@ function Test-PingTargets {
                 continue
             }
         }
-        $nearEndSubnet = ""
-        if ($isNearEnd) { $nearEndSubnet = [string]$placement.Subnet }
+        $rungSubnets = @()
+        if ($isNearEnd) { $rungSubnets = @([string]$placement.Subnet) }
         $targets = @(Resolve-PingTargets -Address $address -PrimaryAdapters $PrimaryAdapters)
 
         if ($targets.Count -eq 0) {
@@ -2912,6 +2926,14 @@ function Test-PingTargets {
                 # all, which the row says instead of naming a route nobody took (PR #45, round 1).
                 $parsedTarget = $null
                 $targetIsAddress = [System.Net.IPAddress]::TryParse([string]$target, [ref]$parsedTarget)
+                $targetRungSubnets = @($rungSubnets)
+                if ($address -eq "AUTO_GATEWAY") {
+                    foreach ($adapter in @($PrimaryAdapters)) {
+                        if (@($adapter.Gateways) -contains [string]$target) {
+                            foreach ($entry in @($adapter.IPv4WithPrefix)) { if (([string]$entry) -match '/\d+$') { $targetRungSubnets += [string]$entry } }
+                        }
+                    }
+                }
                 $routeBefore = $null
                 if ($targetIsAddress) { $routeBefore = Get-RouteSelection -Target ([string]$target) }
                 $measurement = Invoke-PingMeasurement -Target ([string]$target) -Count $count -TimeoutMs $timeout
@@ -2924,7 +2946,7 @@ function Test-PingTargets {
                     # 其他 ping 的列待在一起——而且一次沒能走到最後的執行，仍然會報出它確實量到的東西，這是把
                     # 整列壓到最後才寫所做不到的。
                     $pendingNote = ("這次取樣還不足以下結論：最前面 {1} 次裡有 {0} 次沒有回覆，因此會在本次執行的後段繼續，而這裡的數字只涵蓋那 {1} 次。" -f $measurement.Lost, $measurement.Sent)
-                    $pendingRow = Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -SampleNote $pendingNote -NearEnd $isNearEnd -NearEndSubnet $nearEndSubnet
+                    $pendingRow = Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -SampleNote $pendingNote -NearEnd $isNearEnd -RungSubnets $targetRungSubnets
                     [void]$script:PendingPingSamples.Add([pscustomobject][ordered]@{
                         Name            = $name
                         Target          = [string]$target
@@ -2936,11 +2958,11 @@ function Test-PingTargets {
                         Plan            = $plan
                         Row             = $pendingRow
                         NearEnd         = $isNearEnd
-                        NearEndSubnet   = $nearEndSubnet
+                        RungSubnets     = $targetRungSubnets
                     })
                     continue
                 }
-                Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -NearEnd $isNearEnd -NearEndSubnet $nearEndSubnet | Out-Null
+                Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -NearEnd $isNearEnd -RungSubnets $targetRungSubnets | Out-Null
             }
             catch {
                 $status = if ($required) { "ERROR" } else { "INFO" }
@@ -4422,10 +4444,21 @@ function Get-FingerprintSummary {
     # 因為延遲而失敗的閘道列，每一次被拿來判斷的探測它都回應了（backlog #67）：那是一個「到得了的閘道」的品質問題，
     # 不是「沒有回應的閘道」，所以它走下面的品質那一條，跟其他回應得慢的目標一樣——而如果還有別的東西失敗，就走
     # mixed 那一條。只有由遺失決定的列——回覆沒有回來——才能選到 gateway-unreachable 這個鍵。
-    $gatewayPingBad = @($results | Where-Object { $_.Tag -eq "ping-gateway" -and $_.Status -eq "FAIL" -and [string]$_.Rule -ne "latency" }).Count -gt 0
-    # 近端那一階（backlog #60）不選自己的鍵：它說的是失敗在閘道的哪一邊，下面 gateway-unreachable 的摘要就是為此讀它。
-    $nearEndPass = @($results | Where-Object { $_.Tag -eq "ping-near-end" -and $_.Status -eq "PASS" }).Count -gt 0
-    $nearEndLost = @($results | Where-Object { $_.Tag -eq "ping-near-end" -and $_.Status -eq "FAIL" -and [string]$_.Rule -ne "latency" }).Count -gt 0
+    $gatewayLostRows = @($results | Where-Object { $_.Tag -eq "ping-gateway" -and $_.Status -eq "FAIL" -and [string]$_.Rule -ne "latency" })
+    $gatewayPingBad = @($gatewayLostRows).Count -gt 0
+    # 近端那一階（backlog #60）不選自己的鍵：它說的是失敗在閘道的哪一邊，下面 gateway-unreachable 的摘要就是為此讀它——
+    # 而且只讀路由表經由同一張網卡送出探測的閘道列（PR #51 第 4 輪）：多網卡機器上，經由網卡 A 到達的近端主機說明不了
+    # 網卡 B 後面的網路線、無線電或交換器。Path 是這一列兩次查詢一致的那張網卡；近端列只要帶著標籤就帶著它，而沒有它、
+    # 或帶著另一個的失敗閘道列，保留中性的那一行。
+    $nearEndPass = $false
+    $nearEndLost = $false
+    foreach ($nearEndRow in @($results | Where-Object { $_.Tag -eq "ping-near-end" })) {
+        $nearEndPath = [string]$nearEndRow.Path
+        if ([string]::IsNullOrWhiteSpace($nearEndPath)) { continue }
+        if (@($gatewayLostRows | Where-Object { [string]$_.Path -ne $nearEndPath }).Count -gt 0) { continue }
+        if ($nearEndRow.Status -eq "PASS") { $nearEndPass = $true }
+        elseif ($nearEndRow.Status -eq "FAIL" -and [string]$nearEndRow.Rule -ne "latency") { $nearEndLost = $true }
+    }
     $groupFail = @($results | Where-Object { $_.Tag -eq "connectivity-group" -and $_.Status -eq "FAIL" }).Count -gt 0
     $groupPass = @($results | Where-Object { $_.Tag -eq "connectivity-group" -and $_.Status -eq "PASS" }).Count -gt 0
     $dnsFail = @($results | Where-Object { $_.Tag -eq "dns" -and ($_.Status -eq "FAIL" -or $_.Status -eq "WARN") }).Count -gt 0
