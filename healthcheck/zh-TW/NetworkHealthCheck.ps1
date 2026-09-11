@@ -2435,6 +2435,8 @@ function Add-PingTargetResult {
     $weightless = $false
     $coarseNote = ""
     $blockedIcmpNote = $false
+    $lossStatus = ""
+    $latencyStatus = ""
     $loss = Get-PingLossClassification -Sent $Measurement.Sent -Lost $Measurement.Lost -WarningPercent $warningLoss -CriticalPercent $criticalLoss
 
     if ($Measurement.Received -eq 0) {
@@ -2519,7 +2521,16 @@ function Add-PingTargetResult {
     # 現場手冊 gateway-unreachable 那一格，讓兩邊不會各說各話。只有 FAIL 列帶這句：通過的列沒有東西要補充，判定被收回的列
     # 已經說明了原因。
     if ($pingTag -eq "ping-gateway" -and $status -eq "FAIL") {
-        $details += [Environment]::NewLine + "這個失敗能說明什麼、不能說明什麼：閘道沒有回應送到它自己位址的 echo 請求。這是先查本地路徑——連線、Wi-Fi、交換器——的理由，但不證明閘道壞了：正常轉送流量的閘道仍可能丟棄或限速送給它自己的 Ping。能證明它有在轉送的，是一個位於它之外、路由經過這個閘道而且通過的目標——不是隨便一列通過就算，因為同網段的主機、VPN 或 Proxy 都可能完全沒經過它就成功。把這一列當成嫌疑，不是定罪。"
+        # 必要閘道列失敗有兩種方式，句子要點名發生的是哪一種（PR #50 第 2 輪）：回應沒有回來，或回應回來了但平均延遲達到
+        # 嚴重門檻、而遺失判定是通過或被收回的。兩種都是設備的控制平面在回應，所以模稜兩可的方式相同；不同的是這一列能陳述
+        # 的事實——一列什麼都沒遺失的列，不能說它遺失了。
+        if ($latencyStatus -eq "FAIL" -and $lossStatus -ne "FAIL") {
+            $gatewayFact = ("閘道自己的位址回應了送給它的 {2} 次 echo 請求中的 {1} 次，但很慢——平均 {0} ms，達到嚴重延遲門檻。這是先查本地路徑——連線、Wi-Fi、交換器——的理由，但不證明閘道轉送得慢：設備是用控制平面回應送給自己的 Ping，優先權低於它轉送的流量。" -f $Measurement.AverageMs, $Measurement.Received, $Measurement.Sent)
+        }
+        else {
+            $gatewayFact = ("閘道沒有回應送到它自己位址的 {1} 次 echo 請求中的 {0} 次。這是先查本地路徑——連線、Wi-Fi、交換器——的理由，但不證明閘道壞了：正常轉送流量的閘道仍可能丟棄或限速送給它自己的 Ping。" -f $Measurement.Lost, $Measurement.Sent)
+        }
+        $details += [Environment]::NewLine + "這個失敗能說明什麼、不能說明什麼：" + $gatewayFact + "能證明它有在轉送的，是一個位於它之外、路由經過這個閘道而且通過的目標——不是隨便一列通過就算，因為同網段的主機、VPN 或 Proxy 都可能完全沒經過它就成功。把這一列當成嫌疑，不是定罪。"
     }
     # 只有在這一列真的是「非必要目標完全沒有回覆」時才加。第 5 輪之前這是看狀態判斷的，那時兩者等價 —— 但現在
     # 被收回判定的「完全沒有回覆」同樣是 INFO，就不等價了。
@@ -3859,11 +3870,21 @@ function Compare-TcpCounters {
             $script:RetransmissionRateComputed = $true
         }
 
-        $details = @(
+        # 窗內沒有任何 segment 被算成「送出」時就沒有比值，不論重傳增量是多少（PR #50 第 2 輪）：在那裡印 0% 是在描述一個
+        # 沒有定義的比值，下面那句還會宣稱做了一次根本沒發生的除法。sent 計數器不含只帶先前傳過位元組的 segment，所以這種窗
+        # 仍可能帶著重傳次數——下面的小樣本規則會報告它——這一列就說它能說的：有幾次，以及為什麼沒有比例。
+        $rateLine = "近似重傳比例：$rate%"
+        $denominatorLine = "百分比除的是什麼：這台電腦在取樣窗內送出的 segment 數，照 Segments Sent/sec 計數器的算法——含 ACK，但不含只帶重傳位元組的 segment；新位元組和重傳位元組同在一個 segment 裡時兩個計數都算到它。這是本工具自己的比值，分母和公開發表的重傳率不同，不能拿來比較。"
+        if ($sentDelta -eq 0) {
+            $rateLine = "近似重傳比例：無法計算——取樣窗內沒有任何 segment 被算成送出"
+            if ($retransDelta -gt 0) { $rateLine += ("（仍算到 {0} 個重傳 segment：sent 計數器不含只帶先前傳過位元組的 segment）" -f $retransDelta) }
+            $denominatorLine = $null
+        }
+        $details = (@(
             $durationLine,
             "傳送 TCP Segments 增量：$sentDelta",
             "重傳 Segments 增量：$retransDelta",
-            "近似重傳比例：$rate%",
+            $rateLine,
             "起始累積：Sent=$($start.SegmentsSent), Retrans=$($start.Retransmitted)",
             "結束累積：Sent=$($end.SegmentsSent), Retrans=$($end.Retransmitted)",
             "檢測方式：Win32_PerfRawData_Tcpip_$protocol 累積計數器，取樣期間增量。",
@@ -3874,8 +3895,8 @@ function Compare-TcpCounters {
             # 讀取）：Segments Sent 不含「只帶重傳位元組」的 segment，Segments Retransmitted 則算入每一個「帶有一個以上先前
             # 傳過的位元組」的 segment，所以混合的 segment 兩邊都算。這一列只說分母是什麼，不說數字偏哪一邊：裡面的 ACK 把它
             # 拉得比資料 segment 比例低、被排除的純重傳把它拉得比位元組比值高，而這兩個偏差都沒有在任何一次執行上量化過。
-            "百分比除的是什麼：這台電腦在取樣窗內送出的 segment 數，照 Segments Sent/sec 計數器的算法——含 ACK，但不含只帶重傳位元組的 segment；新位元組和重傳位元組同在一個 segment 裡時兩個計數都算到它。這是本工具自己的比值，分母和公開發表的重傳率不同，不能拿來比較。"
-        ) -join [Environment]::NewLine
+            $denominatorLine
+        ) | Where-Object { $null -ne $_ }) -join [Environment]::NewLine
 
         if ($rate -gt 100) {
             $details += [Environment]::NewLine + "補充：比例超過 100% 代表重傳的是取樣窗之前送出的 segment——請視為比值而非百分比。"
@@ -4154,7 +4175,7 @@ function Get-FingerprintSummary {
     $lines = @()
     switch ($key) {
         "local" { $title = "本機連線問題"; $lines = @("找不到可用的網卡或預設閘道。", "問題在這台電腦或它的連線：網路線、Wi-Fi 連線、網卡停用或 DHCP 沒有回應。", "用同一個網路上的另一台裝置測試，確認是否只有這台電腦有問題。") }
-        "gateway-unreachable" { $title = "閘道沒有回應"; $lines = @("已設定預設閘道，但閘道不回應 Ping。", "問題在這台電腦和路由器之間：連線、Wi-Fi、交換器或路由器本身。", "確認連線燈號或 Wi-Fi 訊號，以及其他裝置能否連到路由器。", "閘道不回應送給它自己的 Ping 是嫌疑、不是定罪：它可能一邊正常轉送流量、一邊丟棄這種 Ping。有連線成功，只有在那條連線的路由經過這個閘道時才算證明——同網段的主機、VPN 或 Proxy 都可能沒經過它就成功——所以先查到它的那段連線，把閘道當成未證實，而不是壞掉。") }
+        "gateway-unreachable" { $title = "閘道沒有回應"; $lines = @("已設定預設閘道，但閘道不回應 Ping。", "問題在這台電腦和路由器之間：連線、Wi-Fi、交換器或路由器本身。", "確認連線燈號或 Wi-Fi 訊號，以及其他裝置能否連到路由器。", "這項檢查失敗的閘道——不回應送給它自己的 Ping，或回應得很慢——是嫌疑、不是定罪：它可能一邊正常轉送流量、一邊丟棄或降低這種 Ping 的優先權。有連線成功，只有在那條連線的路由經過這個閘道時才算證明——同網段的主機、VPN 或 Proxy 都可能沒經過它就成功——所以先查到它的那段連線，把閘道當成未證實，而不是壞掉。") }
         "gateway-up-internet-dead" { $title = "閘道正常，網際網路不通"; $lines = @("路由器有回應，但往外的連線失敗。", "問題在路由器或更外層：WAN 連線、ISP 或上游防火牆。", "查看路由器的 WAN 狀態，以及其他裝置是否同樣無法上網。") }
         "dns" { $title = "名稱解析失敗"; $lines = @("用 IP 直接連線正常，但主機名稱無法解析。", "問題在 DNS：設定的 DNS 伺服器、過濾服務或名稱本身。", "把報告中的 DNS 伺服器和公司預期設定比對。") }
         "quality" { $title = "連線正常但品質不佳"; $lines = @("連線可用，但封包遺失、延遲、重傳或網卡錯誤超過門檻。", "常見原因：Wi-Fi 訊號弱、線路壅塞、網路線或連接埠故障。", "問題發生時再跑一次並比較數字。") }

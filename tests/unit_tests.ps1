@@ -552,7 +552,28 @@ Assert-Equal '#57 rate: the sent delta is the Segments Sent counter''s, 9 000 le
 Assert-Equal '#57 rate: the retransmitted delta is the other counter''s, 171 less 100' ($rateRow.Details -match '(?<![\d.])71(?![\d.])') True
 Assert-Equal '#57 rate: and the percentage is the one over the other, 1.775' ($rateRow.Details -match '(?<![\d.])1\.775%') True
 Assert-Equal '#57 rate: the row names the counter its denominator comes from' ($rateRow.Details -match 'Segments Sent/sec') True
-Assert-Equal '#57 rate: a row without traffic carries the same statement, because it prints the same figure' ($quietRow.Details -match 'Segments Sent/sec') True
+# A window in which nothing was counted as sent has no ratio (PR #50, round 2): no 0%, and no sentence about what a
+# percentage divides by. And under the documented semantics such a window can still carry retransmissions - the sent
+# counter excludes segments carrying only previously sent bytes - so that row keeps its count and still prints no rate.
+Assert-Equal '#57 rate: a row in which nothing was sent prints no denominator sentence' ($quietRow.Details -match 'Segments Sent/sec') False
+Assert-Equal '#57 rate: and no 0% either, because 0 over 0 is not a ratio' ($quietRow.Details -match '(?<![\d.])0%') False
+$pureBefore = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(1.0)
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $fixtureStart 700 3) }
+    Errors    = @(); FailedAttempts = @(); WarmUpFailures = @()
+}
+$pureAfter = [pscustomobject]@{
+    Timestamp = $fixtureStart.AddSeconds(12.0)
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $fixtureStart.AddSeconds(10.5) 700 5) }
+    Errors    = @(); FailedAttempts = @(); WarmUpFailures = @()
+}
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $pureBefore -After $pureAfter
+$pureRow = @($script:TcpRows)[0]
+Assert-Equal '#57 rate: two retransmissions and nothing counted as sent is the small-sample Information row' $pureRow.Status 'INFO'
+Assert-Equal '#57 rate: which names the two' ($pureRow.Details -match '(?<![\d.])2(?![\d.])') True
+Assert-Equal '#57 rate: prints no 0%' ($pureRow.Details -match '(?<![\d.])0%') False
+Assert-Equal '#57 rate: and no denominator sentence, since it divided nothing' ($pureRow.Details -match 'Segments Sent/sec') False
 Assert-Equal '#38 clean run: and nothing about a window that did not run long' (@(Get-TcpReadFailureLines -Snapshot $cleanBefore -Protocol 'TCPv4').Count) 0
 
 # PR #40, round 1: a baseline read that stalls delays every stamp taken after it, so it lands inside the window of
@@ -1349,6 +1370,15 @@ Add-PingTargetResult -Name 'Internet' -Target '1.1.1.1' -ConfiguredAddress '1.1.
 $rowOtherFail = @($script:TcpRows)[0]
 Assert-Equal '#58 row: a failed target that is not the gateway fails all the same' $rowOtherFail.Status 'FAIL'
 Assert-Equal '#58 row: and does not carry it, because it is not answering for itself' (Get-DetailMatchCount $rowOtherFail 'echo') 1
+# A required gateway row fails two ways (PR #50, round 2), and the sentence must name the one that happened: a row that
+# answered every probe slowly must not say the gateway did not answer. The sentence is the row's last line; the
+# average and the counts in it are the same numbers in both packages.
+$rowSlowGateway = Get-PingRow 4 4 300 $true
+Assert-Equal '#58 row: a gateway that answered everything slowly fails on latency' $rowSlowGateway.Status 'FAIL'
+Assert-Equal '#58 row: and carries the sentence' (Get-DetailMatchCount $rowSlowGateway 'echo') 2
+Assert-Equal '#58 row: which names the average it measured' ((Get-TcpDecisionLine $rowSlowGateway) -match '(?<![\d.])300(?![\d.])') True
+Assert-Equal '#58 row: while the row that lost three of four names those counts' (((Get-TcpDecisionLine $rowThreeOfFour) -match '(?<![\d.])3(?![\d.])') -and ((Get-TcpDecisionLine $rowThreeOfFour) -match '(?<![\d.])4(?![\d.])')) True
+Assert-Equal '#58 row: so the two sentences are not the same sentence' ((Get-TcpDecisionLine $rowSlowGateway) -eq (Get-TcpDecisionLine $rowThreeOfFour)) False
 
 # A continued sample rewrites the row it already has rather than adding a second one: the report renders rows in
 # the order they were added, so a row written late would leave the ping section in two pieces.
