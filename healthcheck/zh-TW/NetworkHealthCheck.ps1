@@ -2020,23 +2020,32 @@ function Format-RouteSelection {
         $agree = $true
         $primaryResolved = ($null -ne $After -and $After.Resolved)
         $allResolved = $primaryResolved
+        $sameInterface = $true
         $eachText = @(("{0}：{1}" -f $LookupAddress, $afterText))
         foreach ($other in @($Others)) {
             $otherText = Get-RouteSelectionText $other.Selection
             $eachText += ("{0}：{1}" -f $other.Address, $otherText)
             if ($otherText -ne $afterText) { $agree = $false }
             if ($null -eq $other.Selection -or -not $other.Selection.Resolved) { $allResolved = $false }
+            elseif ($primaryResolved -and $other.Selection.InterfaceAlias -ne $After.InterfaceAlias) { $sameInterface = $false }
         }
         $addressCount = @($Others).Count + 1
 
         # 查不到不等於「路由表做了不同的判斷」（PR #45 第 5 輪）。只有每一個位址都得到答案時，
         # 它們之間的差異才能被稱為路由上的差異；若有一個沒有，那麼不同的是「查詢結果」，
         # 而一次可能只是暫時性的提供者失敗，不可以被當成關於網路的結論發布。
+        #
+        # 而這一列要回答的問題是「哪一張網路卡」，所以比對的就是網路卡（第 6 輪）。兩個位址可以走同一個
+        # 介面而來源位址不同 —— IPv4 與 IPv6 各回一次就是最常見的情形 —— 把那稱為「無法確定網路卡」，
+        # 是從一個根本不是差異的差異裡發明出模糊性。
         if (-not $agree) {
-            if ($allResolved) {
-                return ("路由選擇：這個目標是名稱，而它的回應來自 {0} 個位址，路由表並不一視同仁 —— {1}。這一列無法把這次量測歸給單一一張網路卡。" -f $addressCount, ($eachText -join "；"))
+            if (-not $allResolved) {
+                return ("路由選擇：這個目標是名稱，而它的回應來自 {0} 個位址，這些查詢並非每一個都有答案，也並非給出相同的答案 —— {1}。這一列無法把這次量測歸給單一一張網路卡；而這裡不同的是查詢結果，不是路由表做的判斷。" -f $addressCount, ($eachText -join "；"))
             }
-            return ("路由選擇：這個目標是名稱，而它的回應來自 {0} 個位址，這些查詢並非每一個都有答案，也並非給出相同的答案 —— {1}。這一列無法把這次量測歸給單一一張網路卡；而這裡不同的是查詢結果，不是路由表做的判斷。" -f $addressCount, ($eachText -join "；"))
+            if ($sameInterface) {
+                return ("路由選擇：這個目標是名稱，而它的回應來自 {0} 個位址，路由表把它們都送往同一個介面 {1}，只是來源位址不同 —— {2}。網路卡沒有疑問；會選出哪個來源，取決於要抵達的是其中哪一個位址。" -f $addressCount, $After.InterfaceAlias, ($eachText -join "；"))
+            }
+            return ("路由選擇：這個目標是名稱，而它的回應來自 {0} 個位址，路由表並沒有把它們送往同一個介面 —— {1}。這一列無法把這次量測歸給單一一張網路卡。" -f $addressCount, ($eachText -join "；"))
         }
         if ($primaryResolved) {
             $sentence = ("路由選擇：{0}，是在探測之後針對 {1} 查的 —— 這個目標是名稱，探測之前沒有位址可以問，因此沒有取得前後兩次的對照。探測本身沒有綁定它。" -f $afterText, $LookupAddress)

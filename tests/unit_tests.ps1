@@ -1083,5 +1083,17 @@ Assert-Equal 'route #59: the mixed case still names both addresses' (($mixedText
 Assert-Equal 'route #59: the mixed case still refuses to attribute the measurement' ($mixedText.Length -gt 40) True
 Assert-Equal 'route #59: two resolved selections that differ are still a routing difference' ($differText -eq (Format-RouteSelection -Before $null -After $selName -LookupAddress '93.184.216.34' -Others $othersDiffer)) True
 
+
+# PR #45 round 6: the question this row answers is WHICH ADAPTER, so that is what the comparison is on. Two addresses
+# can select one interface from two source addresses - an IPv4 and an IPv6 reply over one adapter is the ordinary way
+# it happens - and that is not an adapter the row cannot identify.
+$selSameAliasOtherSource = [pscustomobject]@{ Resolved = $true; Reason = ''; SourceAddress = 'fe80::1'; InterfaceAlias = 'Wi-Fi' }
+$othersSameAlias = @([pscustomobject]@{ Address = '2606:2800::1'; Selection = $selSameAliasOtherSource })
+$sameAliasText = Format-RouteSelection -Before $null -After $selName -LookupAddress '93.184.216.34' -Others $othersSameAlias
+Assert-Equal 'route #59: one interface from two sources is not adapter ambiguity' ($sameAliasText -eq (Format-RouteSelection -Before $null -After $selName -LookupAddress '93.184.216.34' -Others $othersDiffer)) False
+Assert-Equal 'route #59: it names the one interface they share' ($sameAliasText -match 'Wi-Fi') True
+Assert-Equal 'route #59: it still names both source addresses' (($sameAliasText -match 'fe80::1') -and ($sameAliasText -match '192\.168\.1\.106')) True
+Assert-Equal 'route #59: two interfaces are still adapter ambiguity' ($differText -match 'Ethernet') True
+
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails
