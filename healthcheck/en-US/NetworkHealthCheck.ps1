@@ -2820,7 +2820,7 @@ function Test-PingTargets {
     # The ladder, in order (backlog #60): the near-end host first where one is configured, then the targets of the
     # list - the gateway, then whatever lies beyond it. The near-end entry is built here rather than read from the
     # list, so that a configuration file cannot promote a list entry to the near-end rung, and so that the traceroute
-    # - which traces toward the first literal ping target - never picks a host one hop away.
+    # - which traces toward the first literal ping target - never picks the near-end host on the strength of this key.
     $entries = @()
     $nearEnd = Get-PropertyValue $script:Config.Tests "NearEndTarget" $null
     $nearEndAddress = ""

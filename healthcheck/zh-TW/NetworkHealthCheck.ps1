@@ -2733,7 +2733,7 @@ function Test-PingTargets {
 
     # 階梯，按順序（backlog #60）：有設定近端主機時它排第一，然後是清單裡的目標——閘道，再來是閘道之外的東西。近端
     # 這一項是在這裡組出來的，而不是從清單讀出來的，這樣設定檔就不能把清單裡的某一項升格成近端這一階，而 traceroute
-    # ——它是往第一個字面 ping 目標追蹤的——也永遠不會挑到一台只有一跳遠的主機。
+    # ——它是往第一個字面 ping 目標追蹤的——也永遠不會因為這個鍵而挑到近端主機。
     $entries = @()
     $nearEnd = Get-PropertyValue $script:Config.Tests "NearEndTarget" $null
     $nearEndAddress = ""
