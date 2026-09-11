@@ -45,6 +45,7 @@ It is in the repository and not in the package, like [`application-control.md`](
 | 61 | On a Wi-Fi-only machine nothing distinguishes the air from what is behind the AP | tool |
 | 62 | The Wi-Fi row infers its connected state from the BSSID | tool / measurement |
 | 63 | A retransmission count decides the verdict without reference to how much was sent | decision / tool |
+| 64 | The shipped technical guide describes the route selection as every ping row's, and as always a pair of lookups | tool |
 
 The table is an index; each item's own paragraph below is the statement.
 
@@ -497,6 +498,16 @@ Both busy rates are **below the shipped 2 % warning threshold**, so **the rate b
 
 Acceptance: a decision recorded on what `TcpRetransmissionCriticalCount` is for, with its reason and its date, before any code moves; then whichever follows from it — if the count stays an independent trigger, the threshold tables and the IT deployment manual say plainly that a large enough sample warns even where the rate is below both thresholds, so nobody reads the verdict as a statement about the link; if it changes, unit cases for both halves of what was measured here, a rate below both thresholds at a large count and a rate above them at a small one, and a chain run on a machine sending enough to reach the old trigger; and in either case the row's own sentence saying which of the two — the rate or the count — decided it, since today a reader cannot tell. — *raised on 2026-09-11 by the validation chain of the 1.2.9 work (PR #45), which failed four cases on it; the numbers above are that run's and its re-run's, and they are in the 1.2.9 entry of the validation record.*
 
+### 64 — The shipped technical guide describes the route selection as every ping row's, and as always a pair of lookups
+
+The six copies of the technical guide — `healthcheck/docs/`, `healthcheck/en-US/` and `healthcheck/zh-TW/`, each in both languages — carry 1.2.9's route-selection paragraph in a form the code does not support, and they carry it **inside the package that shipped**. Two claims in one sentence. *Each ping row's details name the source address and the interface the route table selects for that target*: `Test-PingTargets` returns before the lookup for a configured value that cannot become a target, for a placeholder that expands to nothing on this machine (`AUTO_GATEWAY` with no default route, `AUTO_DNS` with no DNS server on the primary adapters), and in its `catch` after a probe threw — three kinds of row that carry no route line at all. *Read with `Find-NetRoute -RemoteIPAddress <target>` before and after that target's probes*: a target given as a name has no address to ask the route table about until something replies, so it is looked up afterwards, once per address its replies came from, and the row says that no before-and-after pair was taken. **That second distinction is the one PR #45's own review rounds discovered, and it is absent from the guides entirely.**
+
+**Where it came from, which is the useful part.** The same two sentences were written into the repository `README.md` by the change that closed #59 and were corrected there over three rounds of that change's own review — the name target, the rows that carry no measurement, and the placeholder that expands to nothing. The packaged guides were written first, in 1.2.9, and nothing read them again. `tests/doc_facts.ps1` cannot catch it: it checks the identifiers a document quotes against the identifiers the two scripts define, and both sentences quote `Find-NetRoute` correctly — what is wrong is the prose around the identifier, which is [#33](#33--tiers-2-and-3-of-the-document-fact-step)'s tier 2 and tier 3 territory and is why this was found by a reviewer rather than by the chain.
+
+**Why it is an item and not a fix in the change that found it.** A packaged document carries the package's version, so correcting it is a documents release and not an edit — and this repository's tree is the released 1.2.9 asset until one happens. Closed item #59 stays closed: the tool does what that item asked and the chain measured it in both languages. What is wrong is the account the guides give of it, which is this item, the way the case #28 did not cover became #37 rather than reopening #23.
+
+Acceptance: the route-selection paragraph in all six copies saying what the code does — the line on every row that reports a measurement, the three shapes that report none named as reporting none, and the before-and-after pair given as an address target's with the name target's single post-probe lookup per replying address described beside it; the same in both languages; and the release that ships it. Not in scope: any change to the tool. — *raised on 2026-09-11 by round 9 of the review of the change that closed #59, which read the packaged guides against the README sentence that same review had corrected three times.*
+
 ## Closed items
 
 One line each: what it was, and the release or the date that closed it. The evidence is that release's entry in `healthcheck/VALIDATION.md`, which says what was changed and what proved it; the wording each item carried while it was open is in this repository's history.
@@ -535,7 +546,7 @@ One line each: what it was, and the release or the date that closed it. The evid
 | 45 | The IT panel checked a typed target only after the run had started, so a typing mistake cost a run and a verdict | v1.2.7 (2026-09-09) |
 | 46 | The window named where the report was and never which file to send; the console named all three | v1.2.7 (2026-09-09) |
 | 49 | The IT panel's longest label did not fit the box the code gave it, so the format it carried was in the source and not on the screen | v1.2.7 (2026-09-09) |
-| 59 | No ping said which adapter it left by, so on a docked laptop the gateway row could not be placed | v1.2.9 (2026-09-11) |
+| 59 | No ping said which adapter it left by, so on a docked laptop the gateway row could not be placed | v1.2.9 (2026-09-11); the account the packaged guides give of what shipped is #64 |
 
 ## Adding and closing an item
 
