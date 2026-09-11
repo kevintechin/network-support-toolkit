@@ -360,6 +360,9 @@ function Get-ConfigRowCount($Config, $Options, [hashtable]$Overrides) {
         # while this machine's own TryParse reads it as twenty-five (PR #41, round 4).
         if (-not (Test-IsNumericValue $value)) { $thresholds += 1 }
         elseif (($countThresholds -contains $name) -and -not (Test-IsWholeNumber $value)) { $thresholds += 1 }
+        # A count threshold is a number of things and a negative one counts nothing; until 1.2.10 it threw at the
+        # unsigned cast instead of being reported (PR #49, round 1).
+        elseif (($countThresholds -contains $name) -and (ConvertTo-DoubleSafe $value 0) -lt 0) { $thresholds += 1 }
     }
     # A warning threshold below zero, or a critical one below its warning, is one row per pair - read through
     # ConvertTo-DoubleSafe with the product's own defaults, which is what the product falls back to for a value it

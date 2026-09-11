@@ -1696,6 +1696,12 @@ function Test-ConfigurationSemantics {
         elseif (($countThresholdNames -contains $thresholdName) -and -not (Test-IsWholeNumber $thresholdValue)) {
             [void]$warnings.Add("$thresholdName must be a whole number in the supported range (current value: $thresholdValue); the built-in default will be used.")
         }
+        elseif (($countThresholdNames -contains $thresholdName) -and (ConvertTo-DoubleSafe $thresholdValue 0) -lt 0) {
+            # A count threshold is a number of things, and a negative number of things counts nothing - while
+            # until now it took the whole analysis down at the unsigned cast (PR #49, round 1). It is treated
+            # like every other value this tool cannot use: the built-in default, and named here.
+            [void]$warnings.Add("$thresholdName must not be negative (current value: $thresholdValue); the built-in default will be used.")
+        }
     }
 
     # The two ping counts are an ordered pair like the thresholds are (backlog #51). A ceiling below the starting
@@ -2140,16 +2146,28 @@ function Get-PingCountForThreshold {
     param([double]$WarningPercent)
 
     # The smallest number of echo requests at which ONE lost reply is below the packet-loss warning threshold. One
-    # lost reply out of n is 100/n per cent, so what is wanted is the smallest n with 100/n < w, which is
-    # floor(100/w) + 1 - twenty-one at the shipped 5 %, because twenty is exactly 5 % and still warns. The "+ 1" is
-    # the whole of it: the same arithmetic written without it gives the count at which one reply IS the threshold,
-    # which is the defect this item is about - MinimumTcpSegmentsForRate is 50, and 100/2 is 50.
+    # lost reply out of n is 100/n per cent, so the first candidate is the smallest n with 100/n < w, which is
+    # floor(100/w) + 1. That is the exact arithmetic, and the exact arithmetic is not what decides a row: the band
+    # is read off the figure the row PRINTS, rounded to one decimal, which can be up to 0.05 above the exact one.
+    # At a warning threshold of 4.8 %, one reply of twenty-one is 4.7619 %, prints as 4.8 and still warns - so the
+    # candidate would have stopped the sample exactly where one packet still decides it, which is this item's own
+    # defect one layer in (PR #49, round 1). The candidate is therefore stepped up until the printed figure really
+    # is below the threshold, and the question is put to Get-LossBand so that the rule tested here can never drift
+    # from the rule the row will use. The critical threshold passed in is the warning one, because the only
+    # question is whether the printed figure stays under the warning threshold; which band it lands in above that
+    # does not matter here.
+    # The search terminates and is bounded: the printed figure reaches 0.0 at two thousand replies, and 0.0 is
+    # below every positive threshold, so no positive threshold needs more than one step past that.
     # A threshold of zero or less is not something a count can get under, because every loss is at or above it. No
     # such n exists, and the caller is told so with 0 rather than with a number that would not work.
     if ($WarningPercent -le 0) { return 0 }
-    $count = [math]::Floor(100.0 / $WarningPercent) + 1
-    if ($count -ge [int]::MaxValue) { return [int]::MaxValue }
-    return [int]$count
+    $start = [math]::Floor(100.0 / $WarningPercent) + 1
+    if ($start -gt 2000) { $start = 2000 }
+    if ($start -lt 1) { $start = 1 }
+    for ($count = [int]$start; $count -le 2001; $count++) {
+        if ((Get-LossBand -Sent $count -Lost 1 -WarningPercent $WarningPercent -CriticalPercent $WarningPercent) -eq "pass") { return $count }
+    }
+    return 0
 }
 
 function Get-LossBand {
@@ -3639,6 +3657,24 @@ function Get-CimOrWmiInstance {
     throw $lastError
 }
 
+function Get-CountThreshold {
+    param(
+        [string]$Name,
+        [int]$DefaultValue
+    )
+
+    # The one place a count threshold becomes the unsigned number the delta arithmetic compares against, because
+    # the cast is where the defect was (PR #49, round 1): [uint64] of a negative value throws, so a configuration
+    # with TcpRetransmissionCriticalCount = -1 turned the whole retransmission analysis into an Unable to Check
+    # row instead of reporting the value - the configuration check reads a count threshold's type and its
+    # integrality and never its sign. Two of the three call sites predate 1.2.10, so the fix is here rather than
+    # at the new one. A negative value falls back to the built-in default, which is what every other value this
+    # tool cannot use does, and Test-ConfigurationSemantics now says so in the Configuration Thresholds row.
+    $value = ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds $Name $DefaultValue) $DefaultValue
+    if ($value -lt 0) { $value = $DefaultValue }
+    return [uint64]$value
+}
+
 function Get-TcpCounterSnapshot {
     param([switch]$WarmUp)
 
@@ -3728,6 +3764,7 @@ function Format-TcpAttemptList {
     # taken before the window says so wherever it appears, so that its seconds are never taken for a window's.
     return ((@($Attempts) | ForEach-Object {
         if ([string]$_.Phase -eq "warm-up") { "{0} #{1} (the discarded read before the window)" -f $_.Protocol, $_.Attempt }
+        elseif ([string]$_.Phase -eq "extension") { "{0} #{1} (the read that extended the window)" -f $_.Protocol, $_.Attempt }
         else { "{0} #{1}" -f $_.Protocol, $_.Attempt }
     }) -join ", ")
 }
@@ -3806,9 +3843,9 @@ function Compare-TcpCounters {
 
     $warningPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionWarningPercent" 2) 2
     $criticalPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalPercent" 5) 5
-    $criticalCount = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalCount" 50) 50)
-    $minimumSegments = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
-    $verdictFloor = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpRetransmissionsForVerdict" 5) 5)
+    $criticalCount = Get-CountThreshold "TcpRetransmissionCriticalCount" 50
+    $minimumSegments = Get-CountThreshold "MinimumTcpSegmentsForRate" 50
+    $verdictFloor = Get-CountThreshold "MinimumTcpRetransmissionsForVerdict" 5
     # The order Get-TcpCounterSnapshot reads the two protocols in, which is what decides whose window a failed read
     # lands in (backlog #38). The reads are serial and each protocol's stamp is taken when its own read returns, so a
     # window is lengthened by a read that delayed the stamp closing it without delaying the stamp opening it. In the
@@ -3818,6 +3855,10 @@ function Compare-TcpCounters {
     # failure harmless, which is true only of the protocol read first). The pre-window reads are in neither list,
     # because they are all taken before either baseline stamp and lengthen no window (round 3).
     $readOrder = @("TCPv4", "TCPv6")
+    # The protocols whose ending stamp came from a window extended once (backlog #51). An extension's failed reads
+    # are inside those protocols' windows and outside every other protocol's, because a protocol the extension did
+    # not close kept the stamp it already had (PR #49, round 1).
+    $extendedProtocols = @(Get-PropertyValue $After "ExtendedProtocols" @())
     $configuredSeconds = [math]::Max(1, (ConvertTo-IntSafe (Get-PropertyValue $script:RunOptions "SampleSeconds" 8) 8))
 
     foreach ($protocol in @("TCPv4", "TCPv6")) {
@@ -3840,11 +3881,20 @@ function Compare-TcpCounters {
         $selfIndex = $readOrder.IndexOf($protocol)
         $windowAttempts = @()
         $windowAttempts += @(@(Get-PropertyValue $Before "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -gt $selfIndex })
-        $windowAttempts += @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $selfIndex })
+        $closedByExtension = ($extendedProtocols -contains $protocol)
+        $windowAttempts += @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $selfIndex -and (([string]$_.Phase -ne "extension") -or $closedByExtension) })
         $windowNote = ""
         if (@($windowAttempts).Count -gt 0) {
             $windowNote = ("Note: {1} of these {0} seconds went on counter reads that failed inside the window ({2}); the configured minimum is {3} seconds." -f $sampleSeconds, (Get-TcpAttemptSeconds $windowAttempts), (Format-TcpAttemptList $windowAttempts), $configuredSeconds)
             $evidenceLines += $windowNote
+        }
+        # The reads the note above must not count and the row must still name (PR #49, round 1): where the window
+        # was extended and this protocol's extended read failed, the reading kept is the first one and its window
+        # had already closed, so those seconds are outside it. Backlog #38's promise is that every attempt which
+        # failed is kept with the seconds it spent, so they get a line that says where they fall instead.
+        $outsideAttempts = @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { [string]$_.Protocol -eq $protocol -and [string]$_.Phase -eq "extension" -and -not $closedByExtension })
+        if (@($outsideAttempts).Count -gt 0) {
+            $evidenceLines += ("Counter reads of this protocol that failed while the window was being extended: {0} ({1} seconds in total). This protocol's window had already closed, so those seconds are not part of the {2} above." -f (Format-TcpAttemptList $outsideAttempts), (Get-TcpAttemptSeconds $outsideAttempts), $sampleSeconds)
         }
 
         if ($sentDeltaDouble -lt 0 -or $retransDeltaDouble -lt 0) {
@@ -3971,7 +4021,7 @@ function Test-TcpSampleNeedsExtension {
     # a snapshot without counters is a run whose reads failed, and those rows are written either way.
     if ($null -eq $Before -or $null -eq $After) { return $false }
     if ($null -eq $Before.Counters -or $null -eq $After.Counters) { return $false }
-    $minimumSegments = [double](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
+    $minimumSegments = [double](Get-CountThreshold "MinimumTcpSegmentsForRate" 50)
     foreach ($protocol in @("TCPv4", "TCPv6")) {
         if (-not $Before.Counters.ContainsKey($protocol) -or -not $After.Counters.ContainsKey($protocol)) { continue }
         $sentDelta = [double]$After.Counters[$protocol].SegmentsSent - [double]$Before.Counters[$protocol].SegmentsSent
@@ -4007,13 +4057,26 @@ function Merge-TcpEndingSnapshot {
         if (@($errors | Where-Object { [string]$_.Protocol -eq [string]$item.Protocol }).Count -gt 0) { continue }
         $errors += $item
     }
+    # A read that failed in the extension is marked as one, and the protocols the extension actually closed are
+    # named, because whose window those seconds fall inside is not the same question for every protocol (PR #49,
+    # round 1). A protocol whose extended read failed keeps the first reading and the stamp that came with it, so
+    # its window ended before the extension began: counting the extension's seconds inside it would print more
+    # failed seconds than the window is long. A protocol the extension did close has a window that really does
+    # contain them. Compare-TcpCounters asks both questions with these two fields; nothing is discarded, and the
+    # row still names every attempt that failed.
+    $extendedAttempts = @()
+    foreach ($item in @(Get-PropertyValue $Extended "FailedAttempts" @())) {
+        if ($null -eq $item) { continue }
+        $extendedAttempts += [pscustomobject][ordered]@{ Protocol = $item.Protocol; Phase = "extension"; Attempt = $item.Attempt; Seconds = $item.Seconds; Error = $item.Error }
+    }
     return [pscustomobject][ordered]@{
         Timestamp      = $Extended.Timestamp
         Counters       = $counters
         Errors         = @($errors)
-        FailedAttempts = @(@(Get-PropertyValue $Original "FailedAttempts" @()) + @(Get-PropertyValue $Extended "FailedAttempts" @()))
+        FailedAttempts = @(@(Get-PropertyValue $Original "FailedAttempts" @()) + $extendedAttempts)
         WarmUpFailures = @(@(Get-PropertyValue $Original "WarmUpFailures" @()) + @(Get-PropertyValue $Extended "WarmUpFailures" @()))
         Extended       = $true
+        ExtendedProtocols = @(@($Extended.Counters.Keys) | ForEach-Object { [string]$_ })
     }
 }
 

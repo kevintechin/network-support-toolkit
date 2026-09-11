@@ -1662,6 +1662,11 @@ function Test-ConfigurationSemantics {
         elseif (($countThresholdNames -contains $thresholdName) -and -not (Test-IsWholeNumber $thresholdValue)) {
             [void]$warnings.Add("$thresholdName 必須是支援範圍內的整數（目前值：$thresholdValue），將改用內建預設值。")
         }
+        elseif (($countThresholdNames -contains $thresholdName) -and (ConvertTo-DoubleSafe $thresholdValue 0) -lt 0) {
+            # 計數類門檻是一個次數，負的次數什麼也數不到 —— 而在這之前它會在轉型成無號數的地方把整個分析弄掉
+            # （PR #49 第 1 輪）。現在它跟其他用不了的值一樣：退回內建預設值，並且在這裡被點名。
+            [void]$warnings.Add("$thresholdName 不能是負數（目前值：$thresholdValue），將改用內建預設值。")
+        }
     }
 
     # 兩個 ping 次數也是一對有順序的設定值，跟門檻一樣（backlog #51）。上限低於起始次數並不會讓執行失敗——
@@ -2097,16 +2102,26 @@ function Format-RouteSelection {
 function Get-PingCountForThreshold {
     param([double]$WarningPercent)
 
-    # 「單一次遺失仍低於封包遺失警告門檻」所需的最小 echo 次數。n 次裡遺失一次是 100/n 個百分點，所以要找的是
-    # 滿足 100/n < w 的最小 n，也就是 floor(100/w) + 1——在出貨的 5 % 下是 21，因為 20 剛好等於 5 % 仍會警告。
-    # 關鍵就在那個「+ 1」：同一段算式少了它，得到的是「一次遺失剛好等於門檻」的次數，而那正是本項目在講的
-    # 缺陷——MinimumTcpSegmentsForRate 是 50，而 100/2 就是 50。
+    # 「單一次遺失仍低於封包遺失警告門檻」所需的最小 echo 次數。n 次裡遺失一次是 100/n 個百分點，所以第一個候選
+    # 值是滿足 100/n < w 的最小 n，也就是 floor(100/w) + 1。那是精確算術，而決定一列結果的並不是精確算術：級別
+    # 是用這一列**印出來**的數字判的，四捨五入到小數第一位，最多可能比精確值高 0.05。在警告門檻 4.8 % 下，21 次
+    # 裡遺失一次是 4.7619 %，印出來是 4.8，仍然會警告 —— 於是候選值會剛好把取樣停在「一個封包仍然決定得了」的
+    # 地方，那正是本項目自己的缺陷再往裡一層（PR #49 第 1 輪）。因此候選值會一直往上加，直到印出來的數字真的低於
+    # 門檻為止；而且這個問題是丟給 Get-LossBand 回答的，讓這裡測的規則永遠不會跟那一列將要用的規則分岔。傳進去
+    # 的嚴重門檻就用警告門檻，因為這裡唯一要問的是「印出來的數字有沒有低於警告門檻」，高於它之後落在哪一級並不
+    # 影響這個答案。
+    # 這個搜尋會結束而且有界：印出來的數字在兩千次時就變成 0.0，而 0.0 低於任何正的門檻，所以任何正門檻都不會
+    # 需要比那再多一步以上。
     # 門檻是 0 或更小時，沒有任何次數躲得過它，因為任何遺失都會達到門檻。這種 n 並不存在，所以回 0 告訴呼叫者，
     # 而不是回一個其實沒用的數字。
     if ($WarningPercent -le 0) { return 0 }
-    $count = [math]::Floor(100.0 / $WarningPercent) + 1
-    if ($count -ge [int]::MaxValue) { return [int]::MaxValue }
-    return [int]$count
+    $start = [math]::Floor(100.0 / $WarningPercent) + 1
+    if ($start -gt 2000) { $start = 2000 }
+    if ($start -lt 1) { $start = 1 }
+    for ($count = [int]$start; $count -le 2001; $count++) {
+        if ((Get-LossBand -Sent $count -Lost 1 -WarningPercent $WarningPercent -CriticalPercent $WarningPercent) -eq "pass") { return $count }
+    }
+    return 0
 }
 
 function Get-LossBand {
@@ -3565,6 +3580,22 @@ function Get-CimOrWmiInstance {
     throw $lastError
 }
 
+function Get-CountThreshold {
+    param(
+        [string]$Name,
+        [int]$DefaultValue
+    )
+
+    # 計數類門檻變成增量比較所需的無號數，就只有這一個地方，因為缺陷出在那個轉型上（PR #49 第 1 輪）：對負數做
+    # [uint64] 會拋例外，所以只要設定檔寫了 TcpRetransmissionCriticalCount = -1，整個重傳分析就會變成一列「無法
+    # 檢查」，而不是把那個值報出來 —— 設定檢查看的是計數類門檻的型別與整數性，從來沒看過正負號。三個呼叫點裡有
+    # 兩個在 1.2.10 之前就存在，所以修的是這裡，不是那個新加的鍵。負值會退回內建預設值，跟這個工具處理任何其他
+    # 用不了的值一樣，而 Test-ConfigurationSemantics 現在也會在「設定值門檻」那一列說出來。
+    $value = ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds $Name $DefaultValue) $DefaultValue
+    if ($value -lt 0) { $value = $DefaultValue }
+    return [uint64]$value
+}
+
 function Get-TcpCounterSnapshot {
     param([switch]$WarmUp)
 
@@ -3652,6 +3683,7 @@ function Format-TcpAttemptList {
     # 被當成某個窗裡的秒數。
     return ((@($Attempts) | ForEach-Object {
         if ([string]$_.Phase -eq "warm-up") { "{0} #{1}（窗前捨棄的讀取）" -f $_.Protocol, $_.Attempt }
+        elseif ([string]$_.Phase -eq "extension") { "{0} #{1}（延長取樣窗時的那次讀取）" -f $_.Protocol, $_.Attempt }
         else { "{0} #{1}" -f $_.Protocol, $_.Attempt }
     }) -join ", ")
 }
@@ -3725,9 +3757,9 @@ function Compare-TcpCounters {
 
     $warningPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionWarningPercent" 2) 2
     $criticalPercent = ConvertTo-DoubleSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalPercent" 5) 5
-    $criticalCount = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "TcpRetransmissionCriticalCount" 50) 50)
-    $minimumSegments = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
-    $verdictFloor = [uint64](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpRetransmissionsForVerdict" 5) 5)
+    $criticalCount = Get-CountThreshold "TcpRetransmissionCriticalCount" 50
+    $minimumSegments = Get-CountThreshold "MinimumTcpSegmentsForRate" 50
+    $verdictFloor = Get-CountThreshold "MinimumTcpRetransmissionsForVerdict" 5
     # Get-TcpCounterSnapshot 讀取兩個通訊協定的順序，決定失敗的讀取落在誰的窗裡（backlog #38）。讀取是循序的，每個
     # 通訊協定的時間戳都在它自己的讀取回來時取得，因此會拉長某個窗的，是那些延後了它的結束時間戳、卻沒有延後它的
     # 起始時間戳的讀取。在結束快照裡，那是排在這個通訊協定之前（含自己）的每次讀取；在基準快照裡，則是排在它*之後*
@@ -3735,6 +3767,9 @@ function Compare-TcpCounters {
     # 於是它正好落在 TCPv4 的窗內（PR #40 第 1 輪：初稿說基準快照的失敗一律無害，那只對最先讀取的通訊協定成立）。
     # 窗前讀取兩份清單都不列入，因為它們全都在兩個基準時間戳之前完成，拉長不了任何窗（第 3 輪）。
     $readOrder = @("TCPv4", "TCPv6")
+    # 結束時間戳來自「延長過一次的窗」的那些通訊協定（backlog #51）。延長那一輪失敗的讀取，落在這些通訊協定的窗
+    # 內，而落在其他每一個通訊協定的窗外，因為延長沒有關掉的那些，保留的是它原本就有的時間戳（PR #49 第 1 輪）。
+    $extendedProtocols = @(Get-PropertyValue $After "ExtendedProtocols" @())
     $configuredSeconds = [math]::Max(1, (ConvertTo-IntSafe (Get-PropertyValue $script:RunOptions "SampleSeconds" 8) 8))
 
     foreach ($protocol in @("TCPv4", "TCPv6")) {
@@ -3757,11 +3792,19 @@ function Compare-TcpCounters {
         $selfIndex = $readOrder.IndexOf($protocol)
         $windowAttempts = @()
         $windowAttempts += @(@(Get-PropertyValue $Before "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -gt $selfIndex })
-        $windowAttempts += @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $selfIndex })
+        $closedByExtension = ($extendedProtocols -contains $protocol)
+        $windowAttempts += @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $selfIndex -and (([string]$_.Phase -ne "extension") -or $closedByExtension) })
         $windowNote = ""
         if (@($windowAttempts).Count -gt 0) {
             $windowNote = ("補充：這 {0} 秒當中有 {1} 秒花在取樣窗內失敗的計數器讀取（{2}）；設定的最短時間是 {3} 秒。" -f $sampleSeconds, (Get-TcpAttemptSeconds $windowAttempts), (Format-TcpAttemptList $windowAttempts), $configuredSeconds)
             $evidenceLines += $windowNote
+        }
+        # 上面那一行不能算、但這一列仍然要寫出來的讀取（PR #49 第 1 輪）：窗被延長過、而這個通訊協定的延長讀取失敗
+        # 時，保留的是第一次的讀數，它的窗早就關了，所以那些秒數在窗外。backlog #38 的承諾是「每一次失敗的嘗試都
+        # 連同它花掉的秒數保留下來」，所以改用一行寫清楚它們落在哪裡。
+        $outsideAttempts = @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { [string]$_.Protocol -eq $protocol -and [string]$_.Phase -eq "extension" -and -not $closedByExtension })
+        if (@($outsideAttempts).Count -gt 0) {
+            $evidenceLines += ("本通訊協定在延長取樣窗時失敗的計數器讀取：{0}（合計 {1} 秒）。這個通訊協定的窗當時已經關閉，所以那些秒數不屬於上面的 {2} 秒。" -f (Format-TcpAttemptList $outsideAttempts), (Get-TcpAttemptSeconds $outsideAttempts), $sampleSeconds)
         }
 
         if ($sentDeltaDouble -lt 0 -or $retransDeltaDouble -lt 0) {
@@ -3878,7 +3921,7 @@ function Test-TcpSampleNeedsExtension {
     # a snapshot without counters is a run whose reads failed, and those rows are written either way.
     if ($null -eq $Before -or $null -eq $After) { return $false }
     if ($null -eq $Before.Counters -or $null -eq $After.Counters) { return $false }
-    $minimumSegments = [double](ConvertTo-IntSafe (Get-PropertyValue $script:Config.Thresholds "MinimumTcpSegmentsForRate" 50) 50)
+    $minimumSegments = [double](Get-CountThreshold "MinimumTcpSegmentsForRate" 50)
     foreach ($protocol in @("TCPv4", "TCPv6")) {
         if (-not $Before.Counters.ContainsKey($protocol) -or -not $After.Counters.ContainsKey($protocol)) { continue }
         $sentDelta = [double]$After.Counters[$protocol].SegmentsSent - [double]$Before.Counters[$protocol].SegmentsSent
@@ -3913,13 +3956,24 @@ function Merge-TcpEndingSnapshot {
         if (@($errors | Where-Object { [string]$_.Protocol -eq [string]$item.Protocol }).Count -gt 0) { continue }
         $errors += $item
     }
+    # 在延長那一輪失敗的讀取會被標記出來，而延長實際關掉了哪些通訊協定的窗也會寫下來，因為「那些秒數落在誰的窗
+    # 裡」對每個通訊協定並不是同一個問題（PR #49 第 1 輪）。延長讀取失敗的通訊協定，保留的是第一次的讀數與隨它而
+    # 來的時間戳，所以它的窗在延長開始之前就結束了：把延長的秒數算進去，會印出比那個窗還長的失敗秒數。而延長真的
+    # 關掉的通訊協定，它的窗確實包含那些秒數。Compare-TcpCounters 用這兩個欄位分別回答這兩個問題；什麼都沒有被
+    # 丟掉，那一列仍然會把每一次失敗的嘗試都寫出來。
+    $extendedAttempts = @()
+    foreach ($item in @(Get-PropertyValue $Extended "FailedAttempts" @())) {
+        if ($null -eq $item) { continue }
+        $extendedAttempts += [pscustomobject][ordered]@{ Protocol = $item.Protocol; Phase = "extension"; Attempt = $item.Attempt; Seconds = $item.Seconds; Error = $item.Error }
+    }
     return [pscustomobject][ordered]@{
         Timestamp      = $Extended.Timestamp
         Counters       = $counters
         Errors         = @($errors)
-        FailedAttempts = @(@(Get-PropertyValue $Original "FailedAttempts" @()) + @(Get-PropertyValue $Extended "FailedAttempts" @()))
+        FailedAttempts = @(@(Get-PropertyValue $Original "FailedAttempts" @()) + $extendedAttempts)
         WarmUpFailures = @(@(Get-PropertyValue $Original "WarmUpFailures" @()) + @(Get-PropertyValue $Extended "WarmUpFailures" @()))
         Extended       = $true
+        ExtendedProtocols = @(@($Extended.Counters.Keys) | ForEach-Object { [string]$_ })
     }
 }
 

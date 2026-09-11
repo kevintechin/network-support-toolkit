@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -28,6 +28,16 @@ trap [System.Management.Automation.CommandNotFoundException] {
 }
 
 $fails = 0; $passes = 0
+# The other direction of the hole the two guards above cover. A statement-terminating error anywhere below stops
+# this file where it stands: it ends with no Summary line at all and exits 0, so a person running it by hand sees
+# a stack of PASS lines and nothing saying it stopped. The chain's step rejects a run with no summary, but the
+# person is the one who needs telling. A mutant written for PR #49 round 1 - Compare-TcpCounters casting a
+# negative threshold to [uint64] - ended exactly that way, which is how this guard came to be written.
+trap {
+    Write-Output ("[FAIL] harness: the run stopped on an error - {0}" -f $_.Exception.Message)
+    Write-Output ("Summary: {0} passed, {1} failed" -f $script:passes, ($script:fails + 1))
+    exit ($script:fails + 1)
+}
 function Assert-Equal($name, $actual, $expected) {
     if ("$actual" -eq "$expected") { $script:passes++; Write-Output "[PASS] $name -> $actual" }
     else { $script:fails++; Write-Output "[FAIL] $name -> got '$actual', expected '$expected'" }
@@ -1122,11 +1132,21 @@ Assert-Equal 'route #59: two interfaces are still adapter ambiguity' ($differTex
 Assert-Equal '#51 count: 5% warning needs 21 pings' (Get-PingCountForThreshold 5) 21
 Assert-Equal '#51 count: 20 is exactly the threshold, so it is not enough' ((Get-LossBand 20 1 5 20)) 'warning'
 Assert-Equal '#51 count: 21 is' ((Get-LossBand 21 1 5 20)) 'pass'
-Assert-Equal '#51 count: 2% would need 51' (Get-PingCountForThreshold 2) 51
+# 51 is what the exact arithmetic gives and it is not enough: 100/51 is 1.9607 %, which prints as 2.0 and still
+# warns. The count is the smallest one whose PRINTED figure is below the threshold (PR #49, round 1).
+Assert-Equal '#51 count: 2% would need 52, not the 51 the exact arithmetic gives' (Get-PingCountForThreshold 2) 52
+Assert-Equal '#51 count: because 51 prints as the threshold itself' ((Get-LossBand 51 1 2 5)) 'warning'
+Assert-Equal '#51 count: and 52 prints below it' ((Get-LossBand 52 1 2 5)) 'pass'
+Assert-Equal '#51 count: a decimal threshold of 4.8% needs 22' (Get-PingCountForThreshold 4.8) 22
+Assert-Equal '#51 count: because one of twenty-one prints as 4.8 and still warns' ((Get-LossBand 21 1 4.8 20)) 'warning'
+Assert-Equal '#51 count: so twenty-one is coarse at 4.8%, where the exact arithmetic called it enough' ((Get-PingLossClassification -Sent 21 -Lost 1 -WarningPercent 4.8 -CriticalPercent 20).Coarse) True
+Assert-Equal '#51 count: and that one packet carries no verdict' ((Get-PingLossClassification -Sent 21 -Lost 1 -WarningPercent 4.8 -CriticalPercent 20).Weightless) True
 Assert-Equal '#51 count: 20% needs 6' (Get-PingCountForThreshold 20) 6
 Assert-Equal '#51 count: a threshold of zero has no such count' (Get-PingCountForThreshold 0) 0
 Assert-Equal '#51 count: nor has a negative one' (Get-PingCountForThreshold -3) 0
-Assert-Equal '#51 count: a tiny threshold does not overflow the return' ((Get-PingCountForThreshold 0.0000001) -le [int]::MaxValue) True
+$tinyCount = Get-PingCountForThreshold 0.0000001
+Assert-Equal '#51 count: a tiny threshold does not overflow the return' (($tinyCount -gt 0) -and ($tinyCount -le [int]::MaxValue)) True
+Assert-Equal '#51 count: and the count it gives really is below it' ((Get-LossBand $tinyCount 1 0.0000001 100)) 'pass'
 
 # The band is read off the figure the row prints, rounded to one decimal.
 Assert-Equal '#51 band: 1 of 4 is 25%, critical' ((Get-LossBand 4 1 5 20)) 'critical'
@@ -1208,6 +1228,15 @@ $pingRoute = [pscustomobject]@{
 # a sentence that was added can be asserted without reading it.
 function Get-DetailLineCount($row) {
     return @([string]$row.Details -split "`r`n|`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+}
+# Whether one line of a row's details carries both numbers. The window note pairs the seconds that went on
+# failed reads with the seconds of the window they fell inside, so what a wrong attribution looks like is a line
+# pairing more of the first than the second has room for (PR #49, round 1).
+function Test-DetailLinePairs($row, $first, $second) {
+    $lines = @([string]$row.Details -split "`r`n|`n")
+    $a = '(?<![\d.])' + $first + '(?![\d.])'
+    $b = '(?<![\d.])' + $second + '(?![\d.])'
+    return (@($lines | Where-Object { $_ -match $a -and $_ -match $b }).Count -gt 0)
 }
 function Get-TcpDecisionLine($row) {
     $lines = @([string]$row.Details -split "`r`n|`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -1357,6 +1386,67 @@ Assert-Equal '#51 merge: and rates the longer window it closed' ($mergedRow.Mess
 $mergedNothing = Merge-TcpEndingSnapshot -Original $mergeOriginal -Extended $null
 Assert-Equal '#51 merge: an extension that produced nothing leaves the original alone' $mergedNothing.Counters['TCPv6'].SegmentsSent 200010
 
+
+
+# PR #49, round 1: a count threshold is a number of things, and [uint64] of a negative one throws - which took the
+# whole retransmission analysis down as an Unable to Check row rather than reporting the value. The cast was the
+# defect, so one function does it for all three counts and a negative falls back to the built-in default.
+$script:Config.Thresholds.MinimumTcpRetransmissionsForVerdict = -1
+Assert-Equal '#49 count threshold: a negative floor falls back to its default' (Get-CountThreshold "MinimumTcpRetransmissionsForVerdict" 5) 5
+$negativeFloorRow = Get-TcpRow 50 3
+Assert-Equal '#49 count threshold: and the analysis still writes its row' $negativeFloorRow.Status 'INFO'
+$script:Config.Thresholds.TcpRetransmissionCriticalCount = -50
+Assert-Equal '#49 count threshold: the two counts that predate 1.2.10 are the same cast' (Get-CountThreshold "TcpRetransmissionCriticalCount" 50) 50
+$script:Config.Thresholds.MinimumTcpSegmentsForRate = -50
+Assert-Equal '#49 count threshold: all three of them' (Get-CountThreshold "MinimumTcpSegmentsForRate" 50) 50
+$script:Config.Thresholds.MinimumTcpSegmentsForRate = 60
+Assert-Equal '#49 count threshold: a value it can use is used' (Get-CountThreshold "MinimumTcpSegmentsForRate" 50) 60
+$script:Config.Thresholds.MinimumTcpRetransmissionsForVerdict = 5
+$script:Config.Thresholds.TcpRetransmissionCriticalCount = 50
+$script:Config.Thresholds.MinimumTcpSegmentsForRate = 50
+Assert-Equal '#49 count threshold: and the thresholds are back where the rest of this file expects them' ((Get-TcpRow 2906 251).Status) 'FAIL'
+
+# PR #49, round 1: whose window an extension's failed reads fall inside is not the same question for every
+# protocol. TCPv6 is closed by the extension and its window really does contain them; TCPv4's extended read failed,
+# so TCPv4 kept the stamp it already had and its window ended before those seconds were spent. Counting them there
+# would print more failed seconds than the window is long.
+$splitStamp = Get-Date '2026-09-11T10:00:00'
+$splitBefore = [pscustomobject]@{
+    Timestamp = $splitStamp
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $splitStamp 100000 1000); 'TCPv6' = (New-CounterFixture 'TCPv6' $splitStamp 200000 2000) }
+    Errors    = @(); FailedAttempts = @(); WarmUpFailures = @()
+}
+$splitOriginal = [pscustomobject]@{
+    Timestamp = $splitStamp.AddSeconds(9)
+    Counters  = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $splitStamp.AddSeconds(9) 100040 1001); 'TCPv6' = (New-CounterFixture 'TCPv6' $splitStamp.AddSeconds(9) 200010 2000) }
+    Errors    = @()
+    # Three seconds of TCPv4's own ending read really are inside TCPv4's nine-second window, which is what makes
+    # the numbers separate: the note on that row must say three, and nineteen - those three plus the extension's
+    # sixteen - must appear on no line of it at all, because nineteen seconds do not fit inside nine.
+    FailedAttempts = @([pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 1; Seconds = 3.0; Error = 'Timed out' })
+    WarmUpFailures = @()
+}
+$splitExtended = [pscustomobject]@{
+    Timestamp = $splitStamp.AddSeconds(26)
+    Counters  = @{ 'TCPv6' = (New-CounterFixture 'TCPv6' $splitStamp.AddSeconds(26) 200600 2003) }
+    Errors    = @([pscustomobject]@{ Protocol = 'TCPv4'; Error = 'Timed out'; Diagnostics = '' })
+    FailedAttempts = @(
+        [pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 1; Seconds = 8.0; Error = 'Timed out' },
+        [pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 2; Seconds = 8.0; Error = 'Timed out' })
+    WarmUpFailures = @()
+}
+$splitMerged = Merge-TcpEndingSnapshot -Original $splitOriginal -Extended $splitExtended
+Assert-Equal '#49 extension: the protocols the extension closed are named' ((@($splitMerged.ExtendedProtocols) -join ',')) 'TCPv6'
+Assert-Equal '#49 extension: and its failed reads are marked as the extension''s' ((@($splitMerged.FailedAttempts | Where-Object { $_.Phase -eq 'extension' }).Count)) 2
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $splitBefore -After $splitMerged
+$splitV4 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv4' })[0]
+$splitV6 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv6' })[0]
+Assert-Equal '#49 extension: the note on the protocol that kept the first reading claims three of its nine seconds' (Test-DetailLinePairs $splitV4 3 9) True
+Assert-Equal '#49 extension: and no line of it claims nineteen, which is those three plus the extension''s sixteen' ($splitV4.Details -match '(?<![\d.])19(?![\d.])') False
+Assert-Equal '#49 extension: while it still names the sixteen seconds and says where they fell' ($splitV4.Details -match '(?<![\d.])16(?![\d.])') True
+Assert-Equal '#49 extension: the protocol the extension closed has all nineteen inside its twenty-six' (Test-DetailLinePairs $splitV6 19 26) True
+Assert-Equal '#49 extension: and the reads that failed are named on the row of the protocol they belong to' ($splitV4.Details -match 'TCPv4 #1') True
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails
