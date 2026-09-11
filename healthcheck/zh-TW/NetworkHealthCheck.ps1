@@ -2507,8 +2507,8 @@ function Complete-PingSamples {
     $index = 0
     foreach ($item in $pending) {
         $index++
-        # 清單在進入這個迴圈之前就已經清空，所以這個 try 以外的任何東西都不會再寫出這個目標的那一列：這裡拋出
-        # 例外一定要以一列作結，就像其他每一項檢查一樣。
+        # 清單在進入這個迴圈之前就已經清空，而那一列早就在報告裡了，所以這個 try 以外的任何東西都不會再回到
+        # 這個目標：這裡拋出例外，一定要讓它那一列說出發生了什麼事，就像其他每一項檢查失敗時一樣。
         try {
             $budget = 0.0
             $elapsed = ((Get-Date) - $SampleStart).TotalSeconds
@@ -5025,8 +5025,6 @@ function Initialize-Gui {
         $hints.SetToolTip($controls["DnsName"], "例如 www.example.com")
         $hints.SetToolTip($controls["TcpTarget"], "例如 8.8.8.8:443 —— 主機或位址、冒號、連接埠")
         $hints.SetToolTip($controls["HttpUrl"], "例如 https://www.example.com/")
-        $hints.SetToolTip($controls["PingCount"], "每個 ping 目標一開始送出的 ICMP echo 次數")
-        $hints.SetToolTip($controls["PingCountMaximum"], "有回覆遺失時，本次執行對單一 ping 目標最多送到幾次")
         foreach ($key in @("PingTarget", "DnsName", "TcpTarget", "HttpUrl")) {
             $controls[$key].Add_TextChanged({ $script:PanelWarned = $false; $this.BackColor = [System.Drawing.SystemColors]::Window })
         }
@@ -5042,6 +5040,10 @@ function Initialize-Gui {
             $panel.Controls.Add($spinner)
             $controls[$item.Key] = $spinner
         }
+        # 放在建立它們的迴圈之後，而不是跟上面的文字欄位放在一起：對一個還不存在的控制項設 tooltip 會拋出例外，
+        # 而 headless GUI 步驟就是這樣在兩種語言下抳到這一個的。
+        $hints.SetToolTip($controls["PingCount"], "每個 ping 目標一開始送出的 ICMP echo 次數")
+        $hints.SetToolTip($controls["PingCountMaximum"], "有回覆遺失時，本次執行對單一 ping 目標最多送到幾次")
         $x = 12
         foreach ($item in @(@{ Key = "WifiRf"; Text = "Wi-Fi 無線"; Width = 110 }, @{ Key = "Traceroute"; Text = "Traceroute"; Width = 110 })) {
             $check = New-Object System.Windows.Forms.CheckBox

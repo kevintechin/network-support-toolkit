@@ -149,7 +149,7 @@ An Information row never moves the verdict, so an optional TCP or HTTP target ca
 | Key | Default | Floor | Notes |
 |---|---|---|---|
 | `PingCount` | 4 | 1 | Echo requests per ping target **to begin with**. Since 1.2.10 this is a starting count: where some replies are lost but not all, the sample continues up to `PingCountMaximum`; where every reply arrives, and where none does, nothing more is sent |
-| `PingCountMaximum` | 21 | 1 | The furthest a continued sample goes for one ping target. 21 is the smallest count at which one lost reply is below the shipped 5 % warning threshold — 100 ÷ 21 is 4.76 %, while 20 is exactly 5 % and still warns. A value below `PingCount` is reported in the *Configuration Thresholds* row and the starting count is used as the ceiling. There is no upper limit: this value is the range the IT panel's two ping spinners open at, and a larger one widens them |
+| `PingCountMaximum` | 21 | `PingCount` | The furthest a continued sample goes for one ping target. 21 is the smallest count at which one lost reply is below the shipped 5 % warning threshold — 100 ÷ 21 is 4.76 %, while 20 is exactly 5 % and still warns. A value below `PingCount` is reported in the *Configuration Thresholds* row and the starting count is used as the ceiling. There is no upper limit: the IT panel's two ping spinners open at this value, so raising it raises them |
 | `PingTimeoutMs` | 1200 | 250 | Per echo request |
 | `DnsTimeoutMs` | 4000 | 500 | Per name |
 | `TcpTimeoutMs` | 4000 | 500 | Per connection |

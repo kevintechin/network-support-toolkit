@@ -2567,8 +2567,9 @@ function Complete-PingSamples {
     $index = 0
     foreach ($item in $pending) {
         $index++
-        # The list was emptied before this loop, so nothing outside this try would ever write this target's row
-        # again: an exception here has to end in a row, the way every other check's does.
+        # The list was emptied before this loop and the row is already in the report, so nothing outside this
+        # try would ever come back to this target: an exception here has to leave its row saying what happened,
+        # the way every other check's failure does.
         try {
             $budget = 0.0
             $elapsed = ((Get-Date) - $SampleStart).TotalSeconds
@@ -5146,8 +5147,6 @@ function Initialize-Gui {
         $hints.SetToolTip($controls["DnsName"], "For example www.example.com")
         $hints.SetToolTip($controls["TcpTarget"], "For example 8.8.8.8:443 - a host or address, a colon, then the port")
         $hints.SetToolTip($controls["HttpUrl"], "For example https://www.example.com/")
-        $hints.SetToolTip($controls["PingCount"], "How many ICMP echo requests each ping target is sent to begin with")
-        $hints.SetToolTip($controls["PingCountMaximum"], "The furthest this run will go for one ping target when replies are lost")
         foreach ($key in @("PingTarget", "DnsName", "TcpTarget", "HttpUrl")) {
             $controls[$key].Add_TextChanged({ $script:PanelWarned = $false; $this.BackColor = [System.Drawing.SystemColors]::Window })
         }
@@ -5164,6 +5163,10 @@ function Initialize-Gui {
             $panel.Controls.Add($spinner)
             $controls[$item.Key] = $spinner
         }
+        # After the loop that creates them, not with the text fields above: a tooltip set on a control that does
+        # not exist yet throws, which is how the headless GUI step found this one in both languages.
+        $hints.SetToolTip($controls["PingCount"], "How many ICMP echo requests each ping target is sent to begin with")
+        $hints.SetToolTip($controls["PingCountMaximum"], "The furthest this run will go for one ping target when replies are lost")
         $x = 12
         foreach ($item in @(@{ Key = "WifiRf"; Text = "Wi-Fi RF"; Width = 110 }, @{ Key = "Traceroute"; Text = "Traceroute"; Width = 110 })) {
             $check = New-Object System.Windows.Forms.CheckBox

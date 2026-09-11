@@ -1,4 +1,4 @@
-param([string]$ScriptPath, [switch]$Interactive)
+﻿param([string]$ScriptPath, [switch]$Interactive)
 # Headless smoke test of Initialize-Gui: load every function via the AST, set the minimal script state, then run the
 # body of Initialize-Gui's main try block as a script block so an exception surfaces with its position instead of
 # being swallowed by the function's catch (which silently falls back to console mode).
@@ -50,7 +50,7 @@ try {
         exit 1
     }
     $line = "$label`: Initialize-Gui body OK (script lines $startLine-$($big.Body.Extent.EndLineNumber)); form '" + $script:Form.Text + "' " + $script:Form.Size.Width + "x" + $script:Form.Size.Height
-    if ($null -ne $script:OptionsPanel) { $line += "; panel PingCount=" + $script:OptionsPanel["PingCount"].Value + "/max " + $script:OptionsPanel["PingCount"].Maximum + ", SampleSeconds=" + $script:OptionsPanel["SampleSeconds"].Value + "/max " + $script:OptionsPanel["SampleSeconds"].Maximum }
+    if ($null -ne $script:OptionsPanel) { $line += "; panel PingCount=" + $script:OptionsPanel["PingCount"].Value + "/max " + $script:OptionsPanel["PingCount"].Maximum + ", PingCountMaximum=" + $script:OptionsPanel["PingCountMaximum"].Value + "/max " + $script:OptionsPanel["PingCountMaximum"].Maximum + ", SampleSeconds=" + $script:OptionsPanel["SampleSeconds"].Value + "/max " + $script:OptionsPanel["SampleSeconds"].Maximum }
     # A control that fits its own box is still unreachable if the window can be made narrower than the grid it sits
     # in: the options panel is anchored left and right, so its width shrinks with the form's. The narrowest form the
     # user is allowed must still show the panel's rightmost control (PR #35, round 1).

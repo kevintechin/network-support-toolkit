@@ -149,7 +149,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 | 鍵 | 預設 | 下限 | 說明 |
 |---|---|---|---|
 | `PingCount` | 4 | 1 | 每個 Ping 目標**一開始**的回應請求次數。1.2.10 起它是起始次數：有回覆但有遺失時，取樣會繼續加到 `PingCountMaximum`；全部有回覆、以及完全沒有回覆時，都不會再送 |
-| `PingCountMaximum` | 21 | 1 | 延續取樣對單一 Ping 目標最多加到幾次。21 是「單一次遺失仍低於出廠 5 % 警告門檻」的最小次數 —— 100 ÷ 21 是 4.76 %，而 20 剛好等於 5 %、仍然會警告。低於 `PingCount` 的值會在「設定值門檻」列被指出，並改以起始次數當上限。沒有上限：這個值就是 IT 面板兩個 Ping 旋轉鈕打開時的範圍，更大的設定值會把它們放寬 |
+| `PingCountMaximum` | 21 | `PingCount` | 延續取樣對單一 Ping 目標最多加到幾次。21 是「單一次遺失仍低於出廠 5 % 警告門檻」的最小次數 —— 100 ÷ 21 是 4.76 %，而 20 剛好等於 5 %、仍然會警告。低於 `PingCount` 的值會在「設定值門檻」列被指出，並改以起始次數當上限。沒有上限：IT 面板的兩個 Ping 旋轉鈕就以這個值為範圍，把它調高，它們的範圍就跟著調高 |
 | `PingTimeoutMs` | 1200 | 250 | 每次回應請求 |
 | `DnsTimeoutMs` | 4000 | 500 | 每個名稱 |
 | `TcpTimeoutMs` | 4000 | 500 | 每個連線 |
