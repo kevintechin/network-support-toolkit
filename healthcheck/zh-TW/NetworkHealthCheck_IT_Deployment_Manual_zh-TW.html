@@ -239,7 +239,7 @@
     <table>
       <tr><th>鍵</th><th>預設</th><th>下限</th><th>說明</th></tr>
       <tr><td><code>PingCount</code></td><td>4</td><td>1</td><td>每個 Ping 目標<b>一開始</b>的回應請求次數。1.2.10 起它是起始次數：有回覆但有遺失時，取樣會繼續加到 <code>PingCountMaximum</code>；全部有回覆、以及完全沒有回覆時，都不會再送</td></tr>
-      <tr><td><code>PingCountMaximum</code></td><td>21</td><td><code>PingCount</code></td><td>延續取樣對單一 Ping 目標最多加到幾次。21 是「單一次遺失仍低於出廠 5 % 警告門檻」的最小次數 &mdash; 100 ÷ 21 是 4.76 %，而 20 剛好等於 5 %、仍然會警告。低於 <code>PingCount</code> 的值會在「設定值門檻」列被指出，並改以起始次數當上限。沒有上限：IT 面板的兩個 Ping 旋轉鈕就以這個值為範圍，把它調高，它們的範圍就跟著調高</td></tr>
+      <tr><td><code>PingCountMaximum</code></td><td>21</td><td><code>PingCount</code></td><td>延續取樣對單一 Ping 目標最多加到幾次。<b>工具會自己算出需要的次數，這個值只是上限</b>，不必把它設成那個次數。21 是「單一次遺失<b>以這一列印出來的樣子</b>仍低於出廠 5 % 警告門檻」的最小次數 &mdash; 印出來的數字會四捨五入到小數第一位，所以 100 ÷ 21 印出來是 4.8 %，而 20 剛好等於 5 %、仍然會警告；校準過的門檻會讓它改變，在 4.8 % 時這個次數是 22 而不是 21。低於 <code>PingCount</code> 的值會在「設定值門檻」列被指出，並改以起始次數當上限。沒有上限：IT 面板的兩個 Ping 旋轉鈕就以這個值為範圍，把它調高，它們的範圍就跟著調高</td></tr>
       <tr><td><code>PingTimeoutMs</code></td><td>1200</td><td>250</td><td>每次回應請求</td></tr>
       <tr><td><code>DnsTimeoutMs</code></td><td>4000</td><td>500</td><td>每個名稱</td></tr>
       <tr><td><code>TcpTimeoutMs</code></td><td>4000</td><td>500</td><td>每個連線</td></tr>

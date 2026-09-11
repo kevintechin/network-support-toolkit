@@ -2507,10 +2507,10 @@ function Add-PingTargetResult {
             # printing 0 would be advice that does not work. The configuration check permits the value, so this
             # branch says the true thing instead of a number.
             if ($loss.RequiredCount -le 0) {
-                $coarseNote = ("The sample is too small for this threshold: one lost reply out of {0} is {1}%, and the classification changes on that one reply. The warning threshold is {2}%, which no number of replies puts a single lost one below. The figures above are what was measured, and this row does not change the overall result." -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $warningLoss)
+                $coarseNote = ("The sample is too small for this threshold: one lost reply out of {0} is {1}%, and the classification changes on that one reply. The warning threshold is {2}%, which no number of replies puts a single lost one below. " -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $warningLoss)
             }
             else {
-                $coarseNote = ("The sample is too small for this threshold: one lost reply out of {0} is {1}%, and the classification changes on that one reply. It takes {2} replies for one lost reply to stay below the {3}% warning threshold. The figures above are what was measured, and this row does not change the overall result." -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $loss.RequiredCount, $warningLoss)
+                $coarseNote = ("The sample is too small for this threshold: one lost reply out of {0} is {1}%, and the classification changes on that one reply. It takes {2} replies for one lost reply to stay below the {3}% warning threshold. " -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $loss.RequiredCount, $warningLoss)
             }
         }
         elseif ($loss.Band -eq "critical") { $lossStatus = if ($Required) { "FAIL" } else { "WARN" } }
@@ -2529,6 +2529,14 @@ function Add-PingTargetResult {
         if ($latencyStatus -ne "PASS" -and ($weightless -or $lossStatus -eq "PASS")) {
             $status = $latencyStatus
             $weightless = $false
+        }
+        # The sentence above is about the loss classification alone; what follows from it is only known once this
+        # row's status is (PR #49, round 2). One lost reply of four at an average of 300 ms on a required target
+        # has its loss verdict withheld and its row decided by latency - and that row DOES change the overall
+        # result, so a fixed "this row does not change the overall result" would be false exactly there.
+        if ($coarseNote -ne "") {
+            if ($weightless) { $coarseNote += "The figures above are what was measured, and this row does not change the overall result." }
+            else { $coarseNote += "The figures above are what was measured; what decides this row is its latency, which is a measurement over the replies that did arrive." }
         }
     }
 
@@ -3930,7 +3938,10 @@ function Compare-TcpCounters {
         if ($rate -gt 100) {
             $details += [Environment]::NewLine + "Note: a rate above 100% means retransmissions of segments sent before the sample window - read it as a ratio, not a percentage."
         }
-        if ([bool](Get-PropertyValue $After "Extended" $false)) {
+        # Per protocol rather than per snapshot (PR #49, round 2): a protocol whose extended read failed kept the
+        # first reading, its window was not extended, and the line below would go on to say its window had already
+        # closed - one row contradicting itself.
+        if ($closedByExtension) {
             $details += [Environment]::NewLine + "The sample window was extended once: the first window ended below MinimumTcpSegmentsForRate with at least one retransmission in it, which is the one case where waiting longer settles anything."
         }
 

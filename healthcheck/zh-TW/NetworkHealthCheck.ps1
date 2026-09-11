@@ -2449,10 +2449,10 @@ function Add-PingTargetResult {
             # 警告門檻是 0 或更小時，沒有任何次數躲得過它，於是也沒有「需要幾次」可以寫——寫出 0 會是一句
             # 假的建議。設定檢查允許這個值，所以這個分支寫的是真話而不是一個數字。
             if ($loss.RequiredCount -le 0) {
-                $coarseNote = ("此取樣數對這個門檻來說太小：{0} 次裡有一次沒有回覆就是 {1}%，而分類會因為那一次而改變。警告門檻是 {2}%，沒有任何回覆次數能讓單一次遺失低於它。上面的數字就是實際量到的，而這一列不會改變整體結果。" -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $warningLoss)
+                $coarseNote = ("此取樣數對這個門檻來說太小：{0} 次裡有一次沒有回覆就是 {1}%，而分類會因為那一次而改變。警告門檻是 {2}%，沒有任何回覆次數能讓單一次遺失低於它。" -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $warningLoss)
             }
             else {
-                $coarseNote = ("此取樣數對這個門檻來說太小：{0} 次裡有一次沒有回覆就是 {1}%，而分類會因為那一次而改變。要讓單一次遺失仍低於 {3}% 的警告門檻，需要 {2} 次回覆。上面的數字就是實際量到的，而這一列不會改變整體結果。" -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $loss.RequiredCount, $warningLoss)
+                $coarseNote = ("此取樣數對這個門檻來說太小：{0} 次裡有一次沒有回覆就是 {1}%，而分類會因為那一次而改變。要讓單一次遺失仍低於 {3}% 的警告門檻，需要 {2} 次回覆。" -f $Measurement.Sent, ([math]::Round((100.0 / $Measurement.Sent), 1)), $loss.RequiredCount, $warningLoss)
             }
         }
         elseif ($loss.Band -eq "critical") { $lossStatus = if ($Required) { "FAIL" } else { "WARN" } }
@@ -2469,6 +2469,13 @@ function Add-PingTargetResult {
         if ($latencyStatus -ne "PASS" -and ($weightless -or $lossStatus -eq "PASS")) {
             $status = $latencyStatus
             $weightless = $false
+        }
+        # 上面那句話只講遺失的分類，後果這一句要等這一列的狀態定下來才寫（PR #49 第 2 輪）：4 次掉 1 次、平均
+        # 300 ms 的必要目標，遺失判定被收回，決定這一列的是延遲，而這一列**會**改變整體結果。一句寫死的「這一列
+        # 不會改變整體結果」在那裡就是假的。
+        if ($coarseNote -ne "") {
+            if ($weightless) { $coarseNote += "上面的數字就是實際量到的，而這一列不會改變整體結果。" }
+            else { $coarseNote += "上面的數字就是實際量到的；決定這一列的是它的延遲——那是對真的回來的那些回覆所做的量測。" }
         }
     }
 
@@ -3839,7 +3846,9 @@ function Compare-TcpCounters {
         if ($rate -gt 100) {
             $details += [Environment]::NewLine + "補充：比例超過 100% 代表重傳的是取樣窗之前送出的 segment——請視為比值而非百分比。"
         }
-        if ([bool](Get-PropertyValue $After "Extended" $false)) {
+        # 逐通訊協定判斷，不看快照層級的旗標（PR #49 第 2 輪）：延長讀取失敗的通訊協定保留的是第一次的讀數，
+        # 它的窗並沒有被延長，而下面那一行還會說它的窗當時已經關閉——同一列自相矛盾。
+        if ($closedByExtension) {
             $details += [Environment]::NewLine + "取樣窗已延長一次：第一個窗結束時傳送量低於 MinimumTcpSegmentsForRate，而窗內至少有一次重傳——那是唯一一種「等久一點真的有用」的情況。"
         }
 

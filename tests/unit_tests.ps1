@@ -1232,6 +1232,12 @@ function Get-DetailLineCount($row) {
 # Whether one line of a row's details carries both numbers. The window note pairs the seconds that went on
 # failed reads with the seconds of the window they fell inside, so what a wrong attribution looks like is a line
 # pairing more of the first than the second has room for (PR #49, round 1).
+# The one line of a row's details that matches - used to compare the same sentence between two rows without
+# reading either of them, because the prose differs between the packages and the numbers in it do not.
+function Get-DetailLine($row, $pattern) {
+    $lines = @([string]$row.Details -split "`r`n|`n")
+    return [string]@($lines | Where-Object { $_ -match $pattern })[0]
+}
 function Test-DetailLinePairs($row, $first, $second) {
     $lines = @([string]$row.Details -split "`r`n|`n")
     $a = '(?<![\d.])' + $first + '(?![\d.])'
@@ -1264,6 +1270,14 @@ Assert-Equal '#51 row: and still decides the run' $rowThreeOfFour.Weightless Fal
 $rowSlow = Get-PingRow 4 3 300 $true
 Assert-Equal '#51 row: a withheld loss verdict does not hide a latency one' $rowSlow.Status 'FAIL'
 Assert-Equal '#51 row: which keeps its weight, because latency was measured' $rowSlow.Weightless False
+# And the sentence about the coarse sample may only claim what is true of the row it ends up on (PR #49, round 2).
+# The line is found by the count it names - twenty-one - which is the same number in both packages; what it says
+# after that is prose, so the two rows are compared with each other rather than read.
+$coarseLineWeightless = Get-DetailLine $rowOneOfFour '(?<![\d.])21(?![\d.])'
+$coarseLineWeighted = Get-DetailLine $rowSlow '(?<![\d.])21(?![\d.])'
+Assert-Equal '#49 note: both rows explain the sample that was too coarse' (($coarseLineWeightless.Length -gt 40) -and ($coarseLineWeighted.Length -gt 40)) True
+Assert-Equal '#49 note: they say the same thing about the measurement' ($coarseLineWeighted.Substring(0, 40) -eq $coarseLineWeightless.Substring(0, 40)) True
+Assert-Equal '#49 note: and a different thing about what the row decides' ($coarseLineWeighted -eq $coarseLineWeightless) False
 $rowSilent = Get-PingRow 4 0 $null $true
 Assert-Equal '#51 row: nothing replying at all is conclusive at any count' $rowSilent.Status 'FAIL'
 Assert-Equal '#51 row: and decides the run' $rowSilent.Weightless False
@@ -1447,6 +1461,11 @@ Assert-Equal '#49 extension: and no line of it claims nineteen, which is those t
 Assert-Equal '#49 extension: while it still names the sixteen seconds and says where they fell' ($splitV4.Details -match '(?<![\d.])16(?![\d.])') True
 Assert-Equal '#49 extension: the protocol the extension closed has all nineteen inside its twenty-six' (Test-DetailLinePairs $splitV6 19 26) True
 Assert-Equal '#49 extension: and the reads that failed are named on the row of the protocol they belong to' ($splitV4.Details -match 'TCPv4 #1') True
+# The sentence that says a window was extended belongs to the protocols the extension closed, and to no others -
+# the snapshot carries one flag, and the row that kept the first reading would otherwise claim an extension and
+# then say its window had already closed (PR #49, round 2).
+Assert-Equal '#49 extension: the protocol the extension closed says its window was extended' ($splitV6.Details -match 'MinimumTcpSegmentsForRate') True
+Assert-Equal '#49 extension: the one that kept the first reading does not, because its window was not' ($splitV4.Details -match 'MinimumTcpSegmentsForRate') False
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails
