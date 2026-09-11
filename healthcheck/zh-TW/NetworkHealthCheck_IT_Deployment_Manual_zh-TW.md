@@ -1,4 +1,4 @@
-﻿# 網路健檢工具 1.2.9 — IT 部署手冊
+﻿# 網路健檢工具 1.2.10 — IT 部署手冊
 
 **寫給把工具發出去的 IT 部門。** 套件需要什麼、怎麼依你的環境設定、怎麼部署、安全政策會對它做什麼、怎麼驗證收到的東西沒被動過，以及回來的報告該怎麼處理。
 
@@ -140,13 +140,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 | 解析不出來的 DNS 名稱 | 異常 | **需注意** |
 | 連不上的 TCP 或 HTTP 目標 | 異常 | 資訊 |
 
+**會靠單一個封包撐著的遺失判定會被收回（1.2.10、backlog #51）。** 取樣數小於警告門檻所需的次數，**而且**少遺失一次分類就會不一樣時，這一列保留量到的每一個數字、被標成不計權重，並且不去動整體結果。四次掉三次仍然會讓必要目標異常 —— 75 %，少一次還有 50 %，沒有任何東西是靠那一個封包撐著的 —— 完全沒有回應的目標也用同一條規則判，而在出貨的次數下它會通過 —— 4 次掉 3 次仍然是嚴重 —— 所以只有整個取樣就只有一次探測時判定才會被收回，這也是為什麼 `PingCount` 設成 1 時，一次逾時不再讓必要目標異常。它只修飾第 3.5 節的遺失規則，其他都不動：真的回來的那些回覆所達到的延遲門檻是一次量測，達到它的一列保有權重。
+
 「資訊」列永遠不影響整體結果，所以一個選用的 TCP 或 HTTP 目標可以在一份寫著「**整體正常**」、上方還有「全部通過」的報告裡失敗；使用手冊要求使用者去讀那幾列。群組是讓選用目標一起計入的方法：群組那一列在**至少一個**成員成功時通過；成員全部失敗時，列在 `RequiredConnectivityGroups` 的群組為異常，其他群組為需注意。一個必要群組完全沒有成員（名稱有列，但沒有目標帶這個名稱）時，會是一列「無法檢查」（「此群組沒有可執行的測試項目。」），光是這一列就會讓整體結果變成「檢測未完整」。
 
 **逾時與次數**（整數；小數、文字或零以下的值會在「設定值門檻」列裡被指出並取代）：
 
 | 鍵 | 預設 | 下限 | 說明 |
 |---|---|---|---|
-| `PingCount` | 4 | 1 | 每個 Ping 目標的回應請求次數。四次探測配出廠的 20 % 嚴重遺失門檻，掉一次就是 25 %、算嚴重；覺得太敏感就提高次數或門檻 |
+| `PingCount` | 4 | 1 | 每個 Ping 目標**一開始**的回應請求次數。1.2.10 起它是起始次數：有回覆但有遺失時，取樣會繼續加到 `PingCountMaximum`；全部有回覆、以及完全沒有回覆時，都不會再送 |
+| `PingCountMaximum` | 21 | `PingCount` | 延續取樣對單一 Ping 目標最多加到幾次。**工具會自己算出需要的次數，這個值只是上限**，不必把它設成那個次數。21 是「單一次遺失**以這一列印出來的樣子**仍低於出廠 5 % 警告門檻」的最小次數 —— 印出來的數字會四捨五入到小數第一位，所以 100 ÷ 21 印出來是 4.8 %，而 20 剛好等於 5 %、仍然會警告；校準過的門檻會讓它改變，在 4.8 % 時這個次數是 22 而不是 21。低於 `PingCount` 的值會在「設定值門檻」列被指出，並改以起始次數當上限。沒有上限：IT 面板的兩個 Ping 旋轉鈕就以這個值為範圍，把它調高，它們的範圍就跟著調高 |
 | `PingTimeoutMs` | 1200 | 250 | 每次回應請求 |
 | `DnsTimeoutMs` | 4000 | 500 | 每個名稱 |
 | `TcpTimeoutMs` | 4000 | 500 | 每個連線 |
@@ -177,11 +180,12 @@ IT 診斷資料（報告最下方收合區裡 IT 範圍的列，永遠不計入�
 
 | 鍵 | 預設 | 規則 |
 |---|---|---|
-| `PacketLossWarningPercent`、`PacketLossCriticalPercent` | 5、20 | 每個 Ping 目標，依這個順序：完全沒有回應 → 必要為異常、選用為資訊；遺失 ≥ 嚴重 → 必要為異常、選用為需注意；遺失 ≥ 警告 → 需注意；接著才是延遲規則 |
+| `PacketLossWarningPercent`、`PacketLossCriticalPercent` | 5、20 | 每個 Ping 目標，依這個順序：完全沒有回應 → 必要為異常、選用為資訊；遺失 ≥ 嚴重 → 必要為異常、選用為需注意；遺失 ≥ 警告 → 需注意；接著才是延遲規則。警告百分比同時決定延續取樣要加到哪裡（`PingCountMaximum`，第 3.3 節），以及什麼時候要收回一個靠單一封包撐著的遺失判定 |
 | `LatencyWarningMs`、`LatencyCriticalMs` | 100、250 | 以有回應的探測平均值判定：≥ 嚴重 → 必要為異常、選用為需注意；≥ 警告 → 需注意 |
 | `TcpRetransmissionWarningPercent`、`TcpRetransmissionCriticalPercent` | 2、5 | 取樣期間重傳 ÷ 傳送的 segment 數，整台電腦、TCPv4 與 TCPv6 分開算：比例 ≥ 嚴重 → 異常；≥ 警告 → 需注意 |
-| `TcpRetransmissionCriticalCount` | 50 | 取樣期間的重傳 segment 數：達到就是需注意；若比例同時達到警告百分比，則為異常 |
-| `MinimumTcpSegmentsForRate` | 50 | 傳送的 segment 少於這個數時不判比例：有任何重傳就是需注意，沒有就是資訊。完全沒有流量也是資訊 |
+| `TcpRetransmissionCriticalCount` | 50 | 取樣期間的重傳 segment 數：**比例同時達到警告百分比**時為異常。1.2.10 起它不再自己發出警告 —— 它只把比例已經下出來的判定加重，永遠不會自己造出一個判定，因為在 `TcpRetransmissionCriticalCount ÷ TcpRetransmissionWarningPercent` 個傳送 segment（出廠值下是 2 500）以上，它唯一加上的就是在低於本工具自己警告門檻的比例上發出警告 |
+| `MinimumTcpSegmentsForRate` | 50 | 傳送的 segment 少於這個數時不判比例：有任何重傳是資訊、不決定任何事（1.2.10 之前是需注意），沒有重傳同樣是資訊。完全沒有流量也是資訊。樣本結束時低於這個下限、**而且**窗內有重傳時，取樣窗會延長一次並重讀 |
+| `MinimumTcpRetransmissionsForVerdict` | 5 | 一個比例要成為判定所需的重傳次數。比例達到警告百分比、但重傳次數少於這個數時，是帶著數字的資訊，不決定任何事：在 50 個傳送 segment 上，一次重傳就是 2 %、剛好是警告門檻，三次是 6 %。出廠值下，超過 200 個傳送 segment 就不會壓下任何東西 |
 | `AdapterErrorWarningDelta`、`AdapterErrorCriticalDelta` | 1、10 | 取樣期間每張網卡新增的接收加傳送錯誤數：≥ 嚴重 → 異常，≥ 警告 → 需注意。虛擬網卡不論計數一律資訊，取樣期間沒有流量也沒有錯誤的實體網卡也是資訊；計數器倒退是需注意 |
 | `AdapterDiscardWarningDelta`、`AdapterDiscardCriticalDelta` | 1、100 | 丟棄封包的同一套規則 |
 
@@ -209,7 +213,7 @@ IT 診斷資料（報告最下方收合區裡 IT 範圍的列，永遠不計入�
 
 執行選項只改一次執行，永遠不改檔案。來源有兩個。
 
-**IT 面板。** `Start-NetworkCheck-IT.cmd` 開啟的視窗上方有「**執行選項（IT）**」並停下來等：「就緒，調整選項後按「開始檢測」」。欄位有「**額外 Ping**」、「**額外 DNS**」、「**額外 TCP（host:port）**」、「**額外 URL**」、「**Ping 次數**」、「**取樣秒數**」；核取方塊「**Wi-Fi 無線**」、「**Traceroute**」與「**Traceroute 跳數**」、「**路由**」、「**閘道 ARP**」、「**Proxy**」、「**驅動程式**」為這次執行切換可選檢查；「**HTML 預設展開細節**」預設勾選；「**還原設定檔**」把每個欄位放回設定檔的值。旋轉鈕涵蓋 1–20 次 Ping 與 1–120 秒；設定檔的值超過這個範圍時範圍會跟著放寬，所以不動面板直接按開始，跑的就是設定檔的值。
+**IT 面板。** `Start-NetworkCheck-IT.cmd` 開啟的視窗上方有「**執行選項（IT）**」並停下來等：「就緒，調整選項後按「開始檢測」」。欄位有「**額外 Ping**」、「**額外 DNS**」、「**額外 TCP（host:port）**」、「**額外 URL**」、「**Ping 次數**」、「**Ping 上限**」、「**取樣秒數**」；核取方塊「**Wi-Fi 無線**」、「**Traceroute**」與「**Traceroute 跳數**」、「**路由**」、「**閘道 ARP**」、「**Proxy**」、「**驅動程式**」為這次執行切換可選檢查；「**HTML 預設展開細節**」預設勾選；「**還原設定檔**」把每個欄位放回設定檔的值。「**Ping 次數**」是每個 Ping 目標一開始送出的次數，「**Ping 上限**」是延續取樣最多加到哪裡（第 3.3 節）；兩個 Ping 旋轉鈕都以設定的 `PingCountMaximum` 為範圍，取樣旋轉鈕為 1–120 秒，設定檔的值超過其中任一個時範圍會跟著放寬，所以不動面板直接按開始，跑的就是設定檔的值。
 
 **面板在開始之前會先檢查。** 四個自由輸入欄位滑鼠移上去都會出現範例（`1.1.1.1`、`www.example.com`、`8.8.8.8:443`、`https://www.example.com/`），按下 **開始檢測** 時，額外 TCP 目標會用實際執行所用的同一條規則檢查：不是 `host:port` 的值會讓欄位被標記、在畫面上被點名並附上範例，而且不會開始執行。再按一次就不帶那個目標執行 —— 也就是今天的行為，啟動提示照舊，細節寫在下面的「額外目標算什麼」。標籤現在也各自帶著自己的寬度：早期版本裡，額外 TCP 的標籤在 100 px 的框裡需要 147 px（英文套件 136 px），因此換行、第二行被裁掉，標籤上那個格式其實只存在於原始碼裡，不在螢幕上。鏈上的 headless GUI 步驟會在兩種語言下量每個控制項的文字與它的框，翻譯長出框會在那裡失敗，而不是在某個人的桌上。
 
@@ -226,7 +230,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 | `-ExpandDetails` | HTML 裡每個「顯示詳細資料」預設展開；同時把這次執行標記為 IT 入口 |
 | `-PingTarget`、`-DnsName`、`-TcpTarget`（host:port） | 額外目標。多個值寫成一個逗號分隔的清單：`-PingTarget 10.0.0.1,10.0.0.2`，從 cmd.exe（`powershell -File …`）和 PowerShell 提示字元都可以；加了引號的值裡也可以用空格或分號分隔（`-PingTarget "10.0.0.1 10.0.0.2"`）。見表格下方的說明 |
 | `-HttpUrl` | 額外 URL。多個寫成一個加引號、以空格分隔的值：`-HttpUrl "https://a.company.local/ https://b.company.local/"`，兩種 shell 都可以。腳本只用空格切開 URL，因為逗號和分號在 URL 裡是合法字元，所以從 cmd.exe 傳 `u1,u2` 會變成一個無效的 URL；在 PowerShell 提示字元下逗號會組成陣列，可以用。見表格下方的說明 |
-| `-PingCount`、`-SampleSeconds`、`-TracerouteHops` | 這次執行覆蓋設定檔的值；跳數不在 1–10 內退回 3 |
+| `-PingCount`、`-PingCountMaximum`、`-SampleSeconds`、`-TracerouteHops` | 這次執行覆蓋設定檔的值；跳數不在 1–10 內退回 3，上限低於起始次數時會被指出並改用起始次數 |
 | `-NoTraceroute`、`-NoWifi` | 略過這兩項診斷，也只有這兩項有參數 |
 | `-ConfigPath <檔案>` | 載入另一個設定檔（第 3 節） |
 | `-STA`（PowerShell 自己的參數） | 視窗啟動器會加的；`-ConsoleOnly` 不需要 |
@@ -235,7 +239,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 
 **額外目標算什麼。** 額外目標都是選用的，也不屬於任何群組：沒有回應的額外 Ping，以及連不上的額外 TCP 或 HTTP 目標，是「資訊」列，不影響整體結果；品質不佳的 Ping 和解析不出來的額外 DNS 名稱是「需注意」列。格式不是 `host:port` 的額外 TCP 目標會被丟掉，並留下一列「啟動提示」警告（「已忽略額外 TCP 目標「…」：格式應為 host:port。」）。這些列的標題是「額外 Ping」、「額外 DNS」、「額外 TCP」、「額外 URL」，都帶著它拿到的值 —— Ping 那幾列接在冒號後面，另外三種寫在標題裡 —— 所以同一種的兩個額外目標在表格裡和結語裡都分得出來。
 
-**這次執行的選項記在哪裡。** 報告標頭的「執行設定」一行：`IT 入口 | 額外目標：ping 10.0.0.1, tcp fileserver:445 | Ping 次數 4 | 取樣 20 秒 | traceroute 3 跳`，關掉的檢查以「已停用：…」列出；以及 JSON 的 `RunOptions`：`EntryPoint`、`ExpandDetails`、`ExtraTargets`（接受的值）、`RawTargets`（輸入的原文）、`PingCount`、`SampleSeconds`、`TracerouteHops`、`ChecksEnabled`。
+**這次執行的選項記在哪裡。** 報告標頭的「執行設定」一行：`IT 入口 | 額外目標：ping 10.0.0.1, tcp fileserver:445 | Ping 次數 4 | 取樣 20 秒 | traceroute 3 跳`，關掉的檢查以「已停用：…」列出；以及 JSON 的 `RunOptions`：`EntryPoint`、`ExpandDetails`、`ExtraTargets`（接受的值）、`RawTargets`（輸入的原文）、`PingCount`、`PingCountMaximum`、`SampleSeconds`、`TracerouteHops`、`ChecksEnabled`。「執行設定」裡的 `Ping 次數` 是起始次數，旁邊的 `Ping 上限` 是延續取樣停在哪裡；每一列實際送出多少次，寫在那一列自己裡面。
 
 ---
 
@@ -265,10 +269,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 **下載檔。** 專案 Releases 頁面的發行說明給出 `NetworkHealthCheck-<版本>.zip` 的 SHA-256。解壓縮前先比對：
 
 ```text
-certutil -hashfile NetworkHealthCheck-1.2.9.zip SHA256
+certutil -hashfile NetworkHealthCheck-1.2.10.zip SHA256
 ```
 
-或在 PowerShell 用 `Get-FileHash NetworkHealthCheck-1.2.9.zip`。發行檔只由 repo 裡受版本控制的檔案打包，所以裡面沒有任何報告或執行輸出。
+或在 PowerShell 用 `Get-FileHash NetworkHealthCheck-1.2.10.zip`。發行檔只由 repo 裡受版本控制的檔案打包，所以裡面沒有任何報告或執行輸出。
 
 **清單檔。** 套件最上層的 `SHA256SUMS.txt` 列出每個出廠檔案的摘要，除了它自己、`VALIDATION.md` 和 `validation-matrix.html`：每個檔案一行，`<sha256>  <相對路徑>`，中間兩個空格。單一檔案可以用 `Get-FileHash <檔案>` 手動比對，全部則交給驗證程式。
 
@@ -312,7 +316,7 @@ python tools\validate_release.py .
 
 **要向使用者要什麼**，使用手冊第 6 節逐列寫了；環境報告和 `LauncherError.txt` 就是為這個交接而寫的。`LauncherError.txt` 在啟動器旁邊，那個資料夾無法寫入時改寫在 `%TEMP%` 的 `NetworkHealthCheck_LauncherError.txt`，欄位較少。
 
-**放行工具。** 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：`SHA256SUMS.txt` 給出每支 `NetworkHealthCheck.ps1` 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.9/docs/application-control.md>（英文），最新版本在 `main` 分支。
+**放行工具。** 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：`SHA256SUMS.txt` 給出每支 `NetworkHealthCheck.ps1` 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.10/docs/application-control.md>（英文），最新版本在 `main` 分支。
 
 **簽章。** 用你自己的憑證授權單位做 Authenticode 簽章，要在簽署憑證也受這台電腦信任時（憑證鏈受信任，且憑證在「受信任的發行者」存放區）才滿足 *AllSigned* 原則：發行者尚未被歸為信任時，PowerShell 會先詢問使用者才執行腳本（問題會出現在啟動器的視窗裡），無法詢問的工作階段就不執行。簽章也讓應用程式控制規則能依發行者放行。簽章會在腳本後面附加一段簽章區塊，所以簽過的檔案不再符合 `SHA256SUMS.txt`；請自己記下簽過檔案的摘要。
 
@@ -343,9 +347,9 @@ python tools\validate_release.py .
 - **使用手冊**：`NetworkHealthCheck_User_Manual_zh-TW.html`（或 `.md`）：使用者看到什麼、整體結果與標籤、報告裡有什麼、跑不起來時怎麼辦。
 - **技術文件**：`NetworkHealthCheck_Technical_Guide_zh-TW.md`：設計、每一條判定規則、驗證方式、已知限制、版本歷程。
 - **驗證記錄**：`VALIDATION.md`：每一版的證據，以及在其他機器上的驗收執行。
-- **待辦清單**：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.9/docs/backlog.md>（英文）：已知還沒做的事，以及每一項要怎樣才算結案。它和第 8 節的應用程式控制那一頁一樣放在 repo 而不在套件裡，因為它在兩次發行之間就會變動。
+- **待辦清單**：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.10/docs/backlog.md>（英文）：已知還沒做的事，以及每一項要怎樣才算結案。它和第 8 節的應用程式控制那一頁一樣放在 repo 而不在套件裡，因為它在兩次發行之間就會變動。
 - **Repo**：<https://github.com/kevintechin/network-support-toolkit>：發行版本、驗證鏈（`tests`）、支援工程師現場手冊與報告範本（`sop`），以及第 8 節提到的應用程式控制頁面。
 
 ---
 
-*NetworkHealthCheck 1.2.9。本手冊描述的是出廠狀態的工具與本版本量測到的行為；這裡引用的規則都是程式碼的規則，技術文件有完整的陳述。*
+*NetworkHealthCheck 1.2.10。本手冊描述的是出廠狀態的工具與本版本量測到的行為；這裡引用的規則都是程式碼的規則，技術文件有完整的陳述。*

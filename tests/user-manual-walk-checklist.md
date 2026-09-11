@@ -1,4 +1,4 @@
-# Walking the user manual on a machine
+﻿# Walking the user manual on a machine
 
 The end-user manual ships inside the package, so it makes claims a person can check by doing what it says. This checklist is that walk: one row per claim the manual makes about what happens on the screen, in the folder or in the report, with the manual's own words in the **Expected** column so that a mismatch is a finding rather than an impression.
 
@@ -170,8 +170,8 @@ Produce at least the first row; the rest are recorded as *produced* or *not prod
 | # | Do this | Expected — the manual's words | Observed | Evidence |
 |---|---|---|---|---|
 | W32 | Double-click `en-US\Start-NetworkCheck-IT.cmd` | A **Run options (IT)** panel at the top; it does **not** start by itself; the line above the progress bar reads *Ready - adjust the options, then select Start Test* | | screenshot |
-| W33 | Give **all six** controls the manual names a recognizable value — **Extra ping**, **Extra TCP (host:port)**, **Extra DNS**, **Extra URL**, **Ping count**, **Sample seconds** — then click **Start Test** and open the report | Every one of the six reached the run: the report's run information names the ping count, the sample length and the typed targets, and there is a row for each extra target. And in the report **every detail is already expanded** | | the report |
-| W34 | Click **Reset to config** | **All six** controls return to the configured values, not only the one you changed last | | screenshot |
+| W33 | Give **all seven** controls the manual names a recognizable value — **Extra ping**, **Extra TCP (host:port)**, **Extra DNS**, **Extra URL**, **Ping count**, **Ping ceiling**, **Sample seconds** — then click **Start Test** and open the report | Every one of the seven reached the run: the report's run information names the ping count, the ping ceiling, the sample length and the typed targets, and there is a row for each extra target. And in the report **every detail is already expanded** | | the report |
+| W34 | Click **Reset to config** | **All seven** controls return to the configured values, not only the one you changed last | | screenshot |
 | W35 | Open the configuration file afterwards | It is unchanged — "whatever is typed there applies to that run only" | | |
 
 ---

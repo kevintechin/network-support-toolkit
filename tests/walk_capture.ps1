@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Captures the evidence the user-manual walk asks for (backlog #48), so that the person walks the questions a
     person has to answer.
@@ -863,15 +863,15 @@ if ((Owns 'W32') -or (Owns 'W34') -or (Owns 'W33')) {
                 Start-Sleep -Seconds 2
                 $shot = Save-Screen 'W34-after-reset.png'
                 [void](Save-Text 'W34-after-reset.txt' (Get-WindowText $win))
-                # The row is about all six controls returning, and the three spinners were never moved: their edit
+                # The row is about all seven controls returning, and the four spinners were never moved: their edit
                 # takes WM_SETTEXT while the control's Value does not follow it, and this panel's controls expose no
                 # value pattern to UI Automation at all (measured: every field is a Pane with no supported patterns).
                 # Changing their text and clicking Reset would put a stale number in the picture and read as a defect
                 # that is the harness's. So the pictures go into the bundle and the row is not claimed.
-                Add-Answer 'W34' 'not produced' ((Split-Path -Leaf $shotBefore) + ', ' + (Split-Path -Leaf $shot)) ($changed.ToString() + ' text field(s) were changed and restored, which the two pictures show; the ' + $skippedNumeric + ' numeric spinner(s) cannot be moved from here, so the row''s claim about all six controls is the person''s to finish - it is a quick comparison with the pictures in hand')
+                Add-Answer 'W34' 'not produced' ((Split-Path -Leaf $shotBefore) + ', ' + (Split-Path -Leaf $shot)) ($changed.ToString() + ' text field(s) were changed and restored, which the two pictures show; the ' + $skippedNumeric + ' numeric spinner(s) cannot be moved from here, so the row''s claim about all seven controls is the person''s to finish - it is a quick comparison with the pictures in hand')
             }
         }
-        if (Owns 'W33') { Add-NotProduced 'W33' 'this script does not type into the panel''s six controls; the row belongs to the person, who is the one whose typing the row is about' }
+        if (Owns 'W33') { Add-NotProduced 'W33' 'this script does not type into the panel''s seven controls; the row belongs to the person, who is the one whose typing the row is about' }
         $close = Find-ByName $win $names.Close
         if ($null -ne $close) { Send-Click $close; [void]$itRun.Process.WaitForExit(15000) }
         if (-not $itRun.Process.HasExited) { $itRun.Process.Kill() }
