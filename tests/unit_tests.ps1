@@ -1234,6 +1234,11 @@ function Get-DetailLineCount($row) {
 # pairing more of the first than the second has room for (PR #49, round 1).
 # The one line of a row's details that matches - used to compare the same sentence between two rows without
 # reading either of them, because the prose differs between the packages and the numbers in it do not.
+# How many times a row's details match - the ICMP sentence is prose, but the token ICMP is in both packages and
+# the method line carries one of its own, so the count separates a row that has the sentence from one that does not.
+function Get-DetailMatchCount($row, $pattern) {
+    return ([regex]::Matches([string]$row.Details, $pattern)).Count
+}
 function Get-DetailLine($row, $pattern) {
     $lines = @([string]$row.Details -split "`r`n|`n")
     return [string]@($lines | Where-Object { $_ -match $pattern })[0]
@@ -1279,8 +1284,25 @@ Assert-Equal '#49 note: both rows explain the sample that was too coarse' (($coa
 Assert-Equal '#49 note: they say the same thing about the measurement' ($coarseLineWeighted.Substring(0, 40) -eq $coarseLineWeightless.Substring(0, 40)) True
 Assert-Equal '#49 note: and a different thing about what the row decides' ($coarseLineWeighted -eq $coarseLineWeightless) False
 $rowSilent = Get-PingRow 4 0 $null $true
-Assert-Equal '#51 row: nothing replying at all is conclusive at any count' $rowSilent.Status 'FAIL'
+Assert-Equal '#51 row: nothing replying at all still fails a required target at four probes' $rowSilent.Status 'FAIL'
 Assert-Equal '#51 row: and decides the run' $rowSilent.Weightless False
+# "100 % loss is conclusive" is an argument about four probes, and it was applied to one (PR #49, round 5).
+# PingCount 1 is a value the configuration check and the panel both permit, and there the verdict IS the single
+# packet: the rule this release already has says so without a new number, and nothing more is sent either way.
+$rowSilentOne = Get-PingRow 1 0 $null $true
+Assert-Equal '#49 silent: one probe and one timeout no longer fails a required target' $rowSilentOne.Status 'INFO'
+Assert-Equal '#49 silent: because that verdict would be the one packet' $rowSilentOne.Weightless True
+Assert-Equal '#49 silent: and the row still reports the loss it measured' ($rowSilentOne.Message -match '100%') True
+$rowSilentTwo = Get-PingRow 2 0 $null $true
+Assert-Equal '#49 silent: two probes is already past it, because one reply back is still critical' $rowSilentTwo.Status 'FAIL'
+Assert-Equal '#49 silent: so that row decides the run' $rowSilentTwo.Weightless False
+# The sentence about an optional target that may simply be blocking ICMP belongs to that case alone - it was
+# gated on the status, which was the same thing until a withheld silent verdict became INFO as well.
+$rowSilentOptional = Get-PingRow 4 0 $null $false
+# Two matches: the method line names the probes as ICMP echo requests in both packages, and the sentence about a
+# target that may simply be blocking ICMP is the second. One match is that sentence absent.
+Assert-Equal '#49 silent: an optional target that answered nothing keeps its ICMP sentence' (Get-DetailMatchCount $rowSilentOptional 'ICMP') 2
+Assert-Equal '#49 silent: a required one whose verdict was withheld does not' (Get-DetailMatchCount $rowSilentOne 'ICMP') 1
 
 # A continued sample rewrites the row it already has rather than adding a second one: the report renders rows in
 # the order they were added, so a row written late would leave the ping section in two pieces.

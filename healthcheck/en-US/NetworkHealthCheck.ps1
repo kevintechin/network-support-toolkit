@@ -2206,8 +2206,11 @@ function Get-PingLossClassification {
     # a coarse sample and two lost is still 50 %, so nothing there rests on one packet and the row keeps its
     # verdict; two lost of twenty-one turns on a packet, but twenty-one is a sample the threshold fits and 9.5 %
     # is a measurement. Only the pair is what this item measured.
-    # The case where every reply was lost never reaches here: Test-PingTargets answers that before the loss
-    # thresholds, and 100 % loss is conclusive at any count - which is also why such a sample is never extended.
+    # The case where every reply was lost reaches here too, since PR #49 round 5: it used to be answered before
+    # the loss thresholds on the ground that 100 % loss is conclusive, which is an argument about four probes and
+    # was being applied to one. At one probe the two conditions below are both true and the verdict is withheld;
+    # at four the second is false - three of four is still critical - and it stands. Nothing more is sent either
+    # way, because no count makes 100 % loss more certain than it already is.
     $band = Get-LossBand -Sent $Sent -Lost $Lost -WarningPercent $WarningPercent -CriticalPercent $CriticalPercent
     $required = Get-PingCountForThreshold -WarningPercent $WarningPercent
     $coarse = ($Sent -gt 0) -and (($required -le 0) -or ($Sent -lt $required))
@@ -2488,14 +2491,30 @@ function Add-PingTargetResult {
     $status = "PASS"
     $weightless = $false
     $coarseNote = ""
+    $blockedIcmpNote = $false
+    $loss = Get-PingLossClassification -Sent $Measurement.Sent -Lost $Measurement.Lost -WarningPercent $warningLoss -CriticalPercent $criticalLoss
 
     if ($Measurement.Received -eq 0) {
-        # An optional ICMP target may intentionally block Ping. Nothing replying at all is the one loss figure no
-        # count improves, so this branch keeps its verdict however small the sample was (backlog #51).
-        $status = if ($Required) { "FAIL" } else { "INFO" }
+        # An optional ICMP target may intentionally block Ping. Nothing replying at all used to keep its verdict
+        # however small the sample was, on the ground that 100 % loss is conclusive at four probes and no larger
+        # count makes it more so - which is an argument about four and was applied to one (PR #49, round 5).
+        # PingCount 1 is a value the configuration check and the IT panel both permit, and there "100 % loss" and
+        # "one lost packet" are the same event: a required target was failed on a single timeout. The rule this
+        # release already has settles it without inventing a number, because it asks the right question - the
+        # verdict is withheld where the sample is too coarse for the threshold AND the classification would be a
+        # different one had one fewer reply been lost. At four probes it would not (three of four is still
+        # critical) and at one it would. Nothing more is sent either way: the expensive case stays the cheap one.
+        if ($loss.Weightless) {
+            $status = "INFO"
+            $weightless = $true
+            $coarseNote = ("Nothing replied to {0} echo request(s), and the classification would have been a different one had a single one of them come back, so this row is that one packet. " -f $Measurement.Sent)
+        }
+        else {
+            $status = if ($Required) { "FAIL" } else { "INFO" }
+            $blockedIcmpNote = (-not $Required)
+        }
     }
     else {
-        $loss = Get-PingLossClassification -Sent $Measurement.Sent -Lost $Measurement.Lost -WarningPercent $warningLoss -CriticalPercent $criticalLoss
         $lossStatus = "PASS"
         if ($loss.Weightless) {
             # backlog #51: a band was reached, and it was reached by one packet, on a sample too coarse for the
@@ -2530,14 +2549,16 @@ function Add-PingTargetResult {
             $status = $latencyStatus
             $weightless = $false
         }
-        # The sentence above is about the loss classification alone; what follows from it is only known once this
-        # row's status is (PR #49, round 2). One lost reply of four at an average of 300 ms on a required target
-        # has its loss verdict withheld and its row decided by latency - and that row DOES change the overall
-        # result, so a fixed "this row does not change the overall result" would be false exactly there.
-        if ($coarseNote -ne "") {
-            if ($weightless) { $coarseNote += "The figures above are what was measured, and this row does not change the overall result." }
-            else { $coarseNote += "The figures above are what was measured; what decides this row is its latency, which is a measurement over the replies that did arrive." }
-        }
+    }
+
+    # The sentence above is about the classification alone; what follows from it is only known once this row's
+    # status is (PR #49, round 2). One lost reply of four at an average of 300 ms on a required target has its loss
+    # verdict withheld and its row decided by latency - and that row DOES change the overall result, so a fixed
+    # "this row does not change the overall result" would be false exactly there. It sits outside the branch above
+    # because the silent case can be withheld too since round 5.
+    if ($coarseNote -ne "") {
+        if ($weightless) { $coarseNote += "The figures above are what was measured, and this row does not change the overall result." }
+        else { $coarseNote += "The figures above are what was measured; what decides this row is its latency, which is a measurement over the replies that did arrive." }
     }
 
     $latencyText = "No successful replies"
@@ -2557,7 +2578,9 @@ function Add-PingTargetResult {
     $detailLines += ("Method: .NET Ping — {0} ICMP echo requests, timeout {1} ms{2}." -f $Measurement.Sent, $TimeoutMs, (Get-RouteMethodText -Target $Target -LookupAddress $RouteAfter.LookupAddress -TargetIsAddress $TargetIsAddress -ExtraCount (@($RouteAfter.Others).Count)))
     $detailLines += ("Manual check: ping -n {0} {1}" -f $Measurement.Sent, $Target)
     $details = (@($detailLines) -join [Environment]::NewLine)
-    if ($status -eq "INFO") {
+    # Only where the row really is an optional target that answered nothing. Until round 5 this read the status,
+    # which was the same thing - and is not, now that a withheld silent verdict is INFO as well.
+    if ($blockedIcmpNote) {
         $details += [Environment]::NewLine + "Informational: this optional target may simply block ICMP - see the Connectivity group for the authoritative internet verdict."
     }
     if ($null -eq $Row) {

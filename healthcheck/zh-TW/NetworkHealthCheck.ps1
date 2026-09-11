@@ -2157,8 +2157,10 @@ function Get-PingLossClassification {
     # 只成立一件是很平常的事，只憑其中一件寫成的規則都會是錯的。4 次遺失 3 次是 75 %，取樣雖粗，但少一次還有
     # 50 %，沒有任何東西是靠那一個封包撐著的，所以這一列保有判定；21 次遺失 2 次確實會因一個封包而改變級別，
     # 但 21 次是這個門檻撐得住的取樣數，9.5 % 是一次量測。只有兩件同時成立，才是本項目真正量到的那個情況。
-    # 全部都沒有回覆的情況根本不會走到這裡：Test-PingTargets 在遺失門檻之前就先回答了，而 100 % 遺失在任何
-    # 次數下都是結論——這也正是那種取樣永遠不會被延長的原因。
+    # 全部都沒有回覆的情況，從 PR #49 第 5 輪起也會走到這裡：它以前在遺失門檻之前就被回答掉了，理由是
+    # 「100 % 遺失就是結論」—— 那是一個關於四次探測的論證，卻被套用在一次上。一次探測時，下面兩個條件都成立，
+    # 判定會被收回；四次時第二個不成立（四次掉三次仍然是嚴重），判定照樣算數。兩種情況都不會多送，因為再多的
+    # 次數也不會讓 100 % 遺失比現在更確定。
     $band = Get-LossBand -Sent $Sent -Lost $Lost -WarningPercent $WarningPercent -CriticalPercent $CriticalPercent
     $required = Get-PingCountForThreshold -WarningPercent $WarningPercent
     $coarse = ($Sent -gt 0) -and (($required -le 0) -or ($Sent -lt $required))
@@ -2432,14 +2434,27 @@ function Add-PingTargetResult {
     $status = "PASS"
     $weightless = $false
     $coarseNote = ""
+    $blockedIcmpNote = $false
+    $loss = Get-PingLossClassification -Sent $Measurement.Sent -Lost $Measurement.Lost -WarningPercent $warningLoss -CriticalPercent $criticalLoss
 
     if ($Measurement.Received -eq 0) {
-        # 非必要的 ICMP 目標本來就可能刻意封鎖 Ping。完全沒有回覆是唯一一種「再多次也不會更好」的遺失數字，
-        # 所以不論取樣多小，這個分支都保有它的判定（backlog #51）。
-        $status = if ($Required) { "FAIL" } else { "INFO" }
+        # 非必要的 ICMP 目標本來就可能刻意封鎖 Ping。完全沒有回覆以前不論取樣多小都保有判定，理由是「四次探測
+        # 下 100 % 遺失就是結論，再多次也不會更確定」—— 那是一個關於「四」的論證，卻被套用在「一」上（PR #49
+        # 第 5 輪）。PingCount 設成 1 是設定檢查與 IT 面板都允許的值，而在那裡「100 % 遺失」和「掉了一個封包」
+        # 是同一件事：一次逾時就讓必要目標異常。這個版本已經有的規則不必發明新數字就能解決它，因為它問的正是
+        # 對的問題 —— 取樣對門檻來說太粗，「而且」少遺失一次分類就會不一樣時，才收回判定。四次探測不會（四次
+        # 掉三次仍然是嚴重），一次會。而且兩種情況都不會多送：最貴的那一種仍然是最便宜的那一種。
+        if ($loss.Weightless) {
+            $status = "INFO"
+            $weightless = $true
+            $coarseNote = ("{0} 次探測全部沒有回覆，而只要其中任何一次回來，分類就會不一樣，所以這一列就是那一個封包。" -f $Measurement.Sent)
+        }
+        else {
+            $status = if ($Required) { "FAIL" } else { "INFO" }
+            $blockedIcmpNote = (-not $Required)
+        }
     }
     else {
-        $loss = Get-PingLossClassification -Sent $Measurement.Sent -Lost $Measurement.Lost -WarningPercent $warningLoss -CriticalPercent $criticalLoss
         $lossStatus = "PASS"
         if ($loss.Weightless) {
             # backlog #51：級別是達到了，但它是靠一個封包達到的，而取樣對這個門檻來說太粗。這一列保留量到的每
@@ -2470,13 +2485,14 @@ function Add-PingTargetResult {
             $status = $latencyStatus
             $weightless = $false
         }
-        # 上面那句話只講遺失的分類，後果這一句要等這一列的狀態定下來才寫（PR #49 第 2 輪）：4 次掉 1 次、平均
-        # 300 ms 的必要目標，遺失判定被收回，決定這一列的是延遲，而這一列**會**改變整體結果。一句寫死的「這一列
-        # 不會改變整體結果」在那裡就是假的。
-        if ($coarseNote -ne "") {
-            if ($weightless) { $coarseNote += "上面的數字就是實際量到的，而這一列不會改變整體結果。" }
-            else { $coarseNote += "上面的數字就是實際量到的；決定這一列的是它的延遲——那是對真的回來的那些回覆所做的量測。" }
-        }
+    }
+
+    # 上面那句話只講分類本身，後果這一句要等這一列的狀態定下來才寫（PR #49 第 2 輪）：4 次掉 1 次、平均 300 ms
+    # 的必要目標，遺失判定被收回，決定這一列的是延遲，而這一列**會**改變整體結果。一句寫死的「這一列不會改變整體
+    # 結果」在那裡就是假的。它放在那個分支外面，是因為從第 5 輪起，完全沒有回覆的情況也可能被收回判定。
+    if ($coarseNote -ne "") {
+        if ($weightless) { $coarseNote += "上面的數字就是實際量到的，而這一列不會改變整體結果。" }
+        else { $coarseNote += "上面的數字就是實際量到的；決定這一列的是它的延遲——那是對真的回來的那些回覆所做的量測。" }
     }
 
     $latencyText = "無成功回覆"
@@ -2495,7 +2511,9 @@ function Add-PingTargetResult {
     $detailLines += ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms{2}。" -f $Measurement.Sent, $TimeoutMs, (Get-RouteMethodText -Target $Target -LookupAddress $RouteAfter.LookupAddress -TargetIsAddress $TargetIsAddress -ExtraCount (@($RouteAfter.Others).Count)))
     $detailLines += ("手動驗證：ping -n {0} {1}" -f $Measurement.Sent, $Target)
     $details = (@($detailLines) -join [Environment]::NewLine)
-    if ($status -eq "INFO") {
+    # 只有在這一列真的是「非必要目標完全沒有回覆」時才加。第 5 輪之前這是看狀態判斷的，那時兩者等價 —— 但現在
+    # 被收回判定的「完全沒有回覆」同樣是 INFO，就不等價了。
+    if ($blockedIcmpNote) {
         $details += [Environment]::NewLine + "補充說明：此為非必要目標，可能單純封鎖 ICMP——網際網路的權威判定請看「連線能力」群組。"
     }
     if ($null -eq $Row) {
