@@ -1690,8 +1690,8 @@ function Test-ConfigurationSemantics {
     $nearEnd = Get-PropertyValue $tests "NearEndTarget" $null
     if ($null -ne $nearEnd) {
         $nearEndAddress = (ConvertTo-SafeString (Get-PropertyValue $nearEnd "Address" "")).Trim()
-        if (-not [string]::IsNullOrWhiteSpace($nearEndAddress) -and -not (Test-IsValidIPv4Address $nearEndAddress)) {
-            [void]$inputErrors.Add("The address for NearEndTarget cannot be used as the near-end target, which has to be an IPv4 address on this computer's own subnet and not the gateway: $nearEndAddress")
+        if (-not [string]::IsNullOrWhiteSpace($nearEndAddress) -and -not (Test-NearEndAddressSyntax $nearEndAddress)) {
+            [void]$inputErrors.Add("The address for NearEndTarget cannot be used as the near-end target, which has to be an IPv4 address in dotted-decimal form on this computer's own subnet and not the gateway: $nearEndAddress")
         }
     }
 
@@ -2470,6 +2470,32 @@ function Invoke-PingMeasurement {
     }
 }
 
+function Get-CanonicalIPv4Text {
+    param([string]$Value)
+
+    # The dotted-decimal spelling of an IPv4 address, or the trimmed text as given where it is not one. .NET's parser
+    # accepts a single number, hexadecimal parts, fewer than four parts and leading zeros read as octal - 3221225994,
+    # 0xC0.0.2.10, 192.0.2 and 192.0.2.010 all parse, the last one to 192.0.2.8 - so a comparison between a configured
+    # spelling and an address the operating system reports has to be made on the parsed form (PR #51, round 2).
+    $text = ([string]$Value).Trim()
+    $parsed = $null
+    if ([System.Net.IPAddress]::TryParse($text, [ref]$parsed) -and $parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { return $parsed.ToString() }
+    return $text
+}
+
+function Test-NearEndAddressSyntax {
+    param([string]$Value)
+
+    # The near-end target's rule (backlog #60): an IPv4 address spelled the one way every parser reads alike - four
+    # decimal numbers with dots and nothing else. The other forms .NET accepts mean different addresses to different
+    # readers (192.0.2.010 is 192.0.2.8 to .NET and 192.0.2.10 to a person), and a row that probed one address while
+    # the file named another would be the confusion this key exists to prevent. What the file says and what the probe
+    # is sent to are therefore required to be the same string, here and in the configuration check.
+    $text = ([string]$Value).Trim()
+    if (-not (Test-IsValidIPv4Address $text)) { return $false }
+    return ((Get-CanonicalIPv4Text $text) -eq $text)
+}
+
 function Test-NearEndTargetPlacement {
     param(
         [string]$Address,
@@ -2485,6 +2511,10 @@ function Test-NearEndTargetPlacement {
     # near-end host; or it is none of these, so a probe to it would go through the gateway and measure the wrong thing.
     # The subnets are the address-with-prefix values the snapshot already carries; an adapter whose prefix is unknown
     # contributes no subnet, and a machine with no known subnet places nothing - which the row says rather than guessing.
+    # Every comparison is made on the parsed, dotted-decimal form (PR #51, round 2): the rule the configuration check
+    # applies refuses any other spelling, but the placement does not rely on that - a caller handing it 3221225994
+    # gets the same answer as one handing it 192.0.2.10, and the row is told which form was placed.
+    $canonical = Get-CanonicalIPv4Text $Address
     $subnets = @()
     $ownAddresses = @()
     foreach ($adapter in @($PrimaryAdapters)) {
@@ -2492,22 +2522,22 @@ function Test-NearEndTargetPlacement {
             if (([string]$entry) -match '/\d+$') { $subnets += [string]$entry }
         }
         foreach ($own in @($adapter.IPv4Addresses)) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$own)) { $ownAddresses += [string]$own }
+            if (-not [string]::IsNullOrWhiteSpace([string]$own)) { $ownAddresses += (Get-CanonicalIPv4Text $own) }
         }
     }
-    $gateways = @(Resolve-PingTargets -Address "AUTO_GATEWAY" -PrimaryAdapters $PrimaryAdapters)
+    $gateways = @(@(Resolve-PingTargets -Address "AUTO_GATEWAY" -PrimaryAdapters $PrimaryAdapters) | ForEach-Object { Get-CanonicalIPv4Text $_ })
     $placement = "off-subnet"
-    if ($gateways -contains $Address) { $placement = "gateway" }
-    elseif ($ownAddresses -contains $Address) { $placement = "self" }
+    if ($gateways -contains $canonical) { $placement = "gateway" }
+    elseif ($ownAddresses -contains $canonical) { $placement = "self" }
     else {
         foreach ($subnet in $subnets) {
-            if (Test-IPv4InCidr -IpAddress $Address -Cidr $subnet) {
+            if (Test-IPv4InCidr -IpAddress $canonical -Cidr $subnet) {
                 $placement = "on-subnet"
                 # The all-zeros and all-ones host parts are the subnet's own network and broadcast addresses, not a
                 # host; a /31 and a /32 have neither (RFC 3021), so they are left alone.
                 $prefix = [int]($subnet.Split('/')[1])
                 if ($prefix -le 30) {
-                    $bytes = [System.Net.IPAddress]::Parse($Address).GetAddressBytes()
+                    $bytes = [System.Net.IPAddress]::Parse($canonical).GetAddressBytes()
                     $value = ([int64]$bytes[0] * 16777216) + ([int64]$bytes[1] * 65536) + ([int64]$bytes[2] * 256) + [int64]$bytes[3]
                     $hostMax = [int64][math]::Pow(2, (32 - $prefix)) - 1
                     $hostPart = $value -band $hostMax
@@ -2519,6 +2549,7 @@ function Test-NearEndTargetPlacement {
     }
     return [pscustomobject][ordered]@{
         Placement = $placement
+        Canonical = $canonical
         Subnets   = @($subnets | Select-Object -Unique)
     }
 }
@@ -2866,12 +2897,13 @@ function Test-PingTargets {
         # run's input, and attempting it anyway would turn a typo into a measurement - 'http://example.com' resolves
         # to nothing and reports 100% loss, which reads as a network that dropped every packet. What remains below,
         # where a well-formed address resolved to nothing, is a measurement and keeps its weight.
-        # The near-end target has the narrower rule the configuration check applies: an IPv4 address, never a name or
-        # a placeholder, because the run has to place it before anything is sent (backlog #60).
-        $usable = $(if ($isNearEnd) { Test-IsValidIPv4Address $address } else { Test-PingTargetSyntax $address })
+        # The near-end target has the narrower rule the configuration check applies: an IPv4 address in dotted-decimal
+        # form, never a name, a placeholder or another spelling, because the run has to place it before anything is
+        # sent and the probe has to go to the address the file names (backlog #60; PR #51, round 2).
+        $usable = $(if ($isNearEnd) { Test-NearEndAddressSyntax $address } else { Test-PingTargetSyntax $address })
         if (-not $usable) {
             if ($isNearEnd) {
-                Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured near-end target cannot be used: it has to be an IPv4 address." -Details ("Configured value: {0}. A near-end target is an IPv4 address on one of this computer's subnets that is not the gateway, given as an address rather than a name, because the check has to know it is on the local subnet before anything is sent and a name would put the near-end rung behind the resolver." -f $address) -Tag $pingTag -Weightless | Out-Null
+                Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured near-end target cannot be used: it has to be an IPv4 address in dotted-decimal form." -Details ("Configured value: {0}. A near-end target is an IPv4 address on one of this computer's subnets that is not the gateway, given as four decimal numbers with dots - not as a single number, in hexadecimal or with leading zeros, which different parsers read as different addresses - and as an address rather than a name, because the check has to know it is on the local subnet before anything is sent and a name would put the near-end rung behind the resolver." -f $address) -Tag $pingTag -Weightless | Out-Null
             }
             else {
                 Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured address cannot be used as a ping target." -Details ("Configured value: $address") -Tag $pingTag -Weightless | Out-Null
@@ -4530,7 +4562,9 @@ function Get-FingerprintSummary {
             # the line names the whole stretch as it always did.
             $pathLine = "The fault is between this computer and the router: link, Wi-Fi, switch, or the router itself."
             if ($nearEndPass) { $pathLine = "A host on this computer's own network answered its pings normally (the near-end row), so the local path - adapter, cable or Wi-Fi, switch or access point - carried traffic during this run; what did not answer is the gateway itself." }
-            elseif ($nearEndLost) { $pathLine = "The near-end host on this computer's own network did not answer either, so the fault is on the local path before the gateway: link, Wi-Fi, switch or access point." }
+            # "Lost its replies" and not "did not answer" (PR #51, round 2): a required near-end row fails on its loss
+            # band with some replies back as well as with none, and the line must not say the host was silent.
+            elseif ($nearEndLost) { $pathLine = "The near-end host on this computer's own network lost its replies too - all of them, or too many - which points at the local path before the gateway: link, Wi-Fi, switch or access point. The host itself is the other possibility, so check it as well." }
             $lines = @("The default gateway is configured but did not answer the pings sent to it, or lost too many of them.", $pathLine, "Check the link light or Wi-Fi signal and whether other devices reach the router.", "A gateway that fails this check - not answering pings sent to itself - is a suspect, not a conviction: it may be forwarding traffic normally while dropping or rate-limiting those pings. A connection that succeeded proves that only if its route ran through this gateway - a same-subnet host, a VPN or a proxy can succeed without touching it - so check the link to it first and treat the gateway as unproven rather than broken.")
         }
         "gateway-up-internet-dead" { $title = "Gateway answers, internet does not"; $lines = @("The router answers, but connections beyond it fail.", "The fault is at or beyond the router: WAN link, ISP, or an upstream firewall.", "Check the router's WAN status and whether other devices lose the internet too.") }

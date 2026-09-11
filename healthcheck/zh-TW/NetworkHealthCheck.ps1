@@ -1650,8 +1650,8 @@ function Test-ConfigurationSemantics {
     $nearEnd = Get-PropertyValue $tests "NearEndTarget" $null
     if ($null -ne $nearEnd) {
         $nearEndAddress = (ConvertTo-SafeString (Get-PropertyValue $nearEnd "Address" "")).Trim()
-        if (-not [string]::IsNullOrWhiteSpace($nearEndAddress) -and -not (Test-IsValidIPv4Address $nearEndAddress)) {
-            [void]$inputErrors.Add("NearEndTarget 的位址無法當成近端目標——它必須是這台電腦自己子網段上、而且不是閘道的 IPv4 位址：$nearEndAddress")
+        if (-not [string]::IsNullOrWhiteSpace($nearEndAddress) -and -not (Test-NearEndAddressSyntax $nearEndAddress)) {
+            [void]$inputErrors.Add("NearEndTarget 的位址無法當成近端目標——它必須是點分十進位形式、位於這台電腦自己子網段上、而且不是閘道的 IPv4 位址：$nearEndAddress")
         }
     }
 
@@ -2409,6 +2409,30 @@ function Invoke-PingMeasurement {
     }
 }
 
+function Get-CanonicalIPv4Text {
+    param([string]$Value)
+
+    # IPv4 位址的點分十進位寫法；不是 IPv4 位址時，回傳去掉頭尾空白的原文。.NET 的解析器接受單一個數字、十六進位的
+    # 段、不足四段，以及被讀成八進位的前導零——3221225994、0xC0.0.2.10、192.0.2 和 192.0.2.010 都解析得過，最後
+    # 一個解析成 192.0.2.8——所以設定檔裡的寫法和作業系統回報的位址要比較，必須比較解析後的形式（PR #51 第 2 輪）。
+    $text = ([string]$Value).Trim()
+    $parsed = $null
+    if ([System.Net.IPAddress]::TryParse($text, [ref]$parsed) -and $parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { return $parsed.ToString() }
+    return $text
+}
+
+function Test-NearEndAddressSyntax {
+    param([string]$Value)
+
+    # 近端目標的規則（backlog #60）：以每一種解析器都讀成同一個意思的那一種寫法給定的 IPv4 位址——四個十進位數字加
+    # 點，別無其他。.NET 也接受的其他形式對不同的讀者是不同的位址（192.0.2.010 對 .NET 是 192.0.2.8、對人是
+    # 192.0.2.10），而一列探測了一個位址、設定檔卻寫著另一個，正是這個鍵存在是為了避免的混淆。所以設定檔寫的和
+    # 探測送去的必須是同一個字串，這裡和設定檢查都是。
+    $text = ([string]$Value).Trim()
+    if (-not (Test-IsValidIPv4Address $text)) { return $false }
+    return ((Get-CanonicalIPv4Text $text) -eq $text)
+}
+
 function Test-NearEndTargetPlacement {
     param(
         [string]$Address,
@@ -2422,6 +2446,9 @@ function Test-NearEndTargetPlacement {
     # IPv4 子網段裡，所以它就是近端主機；或以上都不是，那麼送給它的探測會經過閘道，量到的是錯的東西。子網段是快照
     # 本來就帶著的「位址/前綴」值；前綴未知的網卡不貢獻子網段，而一台沒有任何已知子網段的機器什麼都放不了——那一列
     # 會照實說，而不是猜。
+    # 每一次比較都用解析後的點分十進位形式（PR #51 第 2 輪）：設定檢查套用的規則會拒絕其他寫法，但這裡不倚賴那一點——
+    # 呼叫者給 3221225994 和給 192.0.2.10 得到同樣的答案，而那一列會被告知放到位的是哪一種形式。
+    $canonical = Get-CanonicalIPv4Text $Address
     $subnets = @()
     $ownAddresses = @()
     foreach ($adapter in @($PrimaryAdapters)) {
@@ -2429,22 +2456,22 @@ function Test-NearEndTargetPlacement {
             if (([string]$entry) -match '/\d+$') { $subnets += [string]$entry }
         }
         foreach ($own in @($adapter.IPv4Addresses)) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$own)) { $ownAddresses += [string]$own }
+            if (-not [string]::IsNullOrWhiteSpace([string]$own)) { $ownAddresses += (Get-CanonicalIPv4Text $own) }
         }
     }
-    $gateways = @(Resolve-PingTargets -Address "AUTO_GATEWAY" -PrimaryAdapters $PrimaryAdapters)
+    $gateways = @(@(Resolve-PingTargets -Address "AUTO_GATEWAY" -PrimaryAdapters $PrimaryAdapters) | ForEach-Object { Get-CanonicalIPv4Text $_ })
     $placement = "off-subnet"
-    if ($gateways -contains $Address) { $placement = "gateway" }
-    elseif ($ownAddresses -contains $Address) { $placement = "self" }
+    if ($gateways -contains $canonical) { $placement = "gateway" }
+    elseif ($ownAddresses -contains $canonical) { $placement = "self" }
     else {
         foreach ($subnet in $subnets) {
-            if (Test-IPv4InCidr -IpAddress $Address -Cidr $subnet) {
+            if (Test-IPv4InCidr -IpAddress $canonical -Cidr $subnet) {
                 $placement = "on-subnet"
                 # 主機部分全 0 與全 1 是子網段自己的網路位址與廣播位址，不是主機；/31 與 /32 兩者都沒有（RFC 3021），
                 # 所以不動它們。
                 $prefix = [int]($subnet.Split('/')[1])
                 if ($prefix -le 30) {
-                    $bytes = [System.Net.IPAddress]::Parse($Address).GetAddressBytes()
+                    $bytes = [System.Net.IPAddress]::Parse($canonical).GetAddressBytes()
                     $value = ([int64]$bytes[0] * 16777216) + ([int64]$bytes[1] * 65536) + ([int64]$bytes[2] * 256) + [int64]$bytes[3]
                     $hostMax = [int64][math]::Pow(2, (32 - $prefix)) - 1
                     $hostPart = $value -band $hostMax
@@ -2456,6 +2483,7 @@ function Test-NearEndTargetPlacement {
     }
     return [pscustomobject][ordered]@{
         Placement = $placement
+        Canonical = $canonical
         Subnets   = @($subnets | Select-Object -Unique)
     }
 }
@@ -2778,12 +2806,12 @@ function Test-PingTargets {
         # 在送出任何東西之前就決定（backlog #39）：無法成為 ping 目標的值是關於本次執行輸入的事實，硬要嘗試會把
         # 打錯字變成一次量測——「http://example.com」解析不到任何位址，卻回報 100% 遺失，讀起來像網路把每個封包
         # 都丟掉了。下面那個「格式正確卻解析不到」的分支則是量測，保有權重。
-        # 近端目標用的是設定檢查套用的那條較窄的規則：IPv4 位址，絕不是名稱或佔位符，因為執行時必須在送出任何東西
-        # 之前就把它放到位（backlog #60）。
-        $usable = $(if ($isNearEnd) { Test-IsValidIPv4Address $address } else { Test-PingTargetSyntax $address })
+        # 近端目標用的是設定檢查套用的那條較窄的規則：點分十進位形式的 IPv4 位址，絕不是名稱、佔位符或另一種寫法，
+        # 因為執行時必須在送出任何東西之前就把它放到位，而探測必須送到設定檔寫的那個位址（backlog #60；PR #51 第 2 輪）。
+        $usable = $(if ($isNearEnd) { Test-NearEndAddressSyntax $address } else { Test-PingTargetSyntax $address })
         if (-not $usable) {
             if ($isNearEnd) {
-                Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "設定的近端目標無法使用：它必須是一個 IPv4 位址。" -Details ("設定值：{0}。近端目標是這台電腦所在子網段上、且不是閘道的一個 IPv4 位址；它以位址而不是名稱給定，因為檢查必須在送出任何東西之前就知道它在本地子網段上，而名稱會讓近端這一階落在解析器之後。" -f $address) -Tag $pingTag -Weightless | Out-Null
+                Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "設定的近端目標無法使用：它必須是點分十進位形式的 IPv4 位址。" -Details ("設定值：{0}。近端目標是這台電腦所在子網段上、且不是閘道的一個 IPv4 位址，以四個十進位數字加點給定——不是單一個數字、不是十六進位、也不帶前導零，因為不同的解析器會把那些形式讀成不同的位址——而且以位址而不是名稱給定，因為檢查必須在送出任何東西之前就知道它在本地子網段上，而名稱會讓近端這一階落在解析器之後。" -f $address) -Tag $pingTag -Weightless | Out-Null
             }
             else {
                 Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "設定的位址無法當成 ping 目標。" -Details ("Configured value: $address") -Tag $pingTag -Weightless | Out-Null
@@ -4388,7 +4416,9 @@ function Get-FingerprintSummary {
             # 像以前一樣點出整段。
             $pathLine = "問題在這台電腦和路由器之間：連線、Wi-Fi、交換器或路由器本身。"
             if ($nearEndPass) { $pathLine = "這台電腦自己網路上的一台主機正常回應了 Ping（近端那一列），所以本地路徑——網卡、網路線或 Wi-Fi、交換器或存取點——在這次執行中是通的；沒有回應的是閘道本身。" }
-            elseif ($nearEndLost) { $pathLine = "這台電腦自己網路上的近端主機也沒有回應，所以問題在閘道之前的本地路徑：連線、Wi-Fi、交換器或存取點。" }
+            # 是「丟了回覆」而不是「沒有回應」（PR #51 第 2 輪）：必要的近端列因遺失級別失敗時，可能有部分回覆回來、也可能
+            # 一個都沒有，這一行不能說那台主機沒有出聲。
+            elseif ($nearEndLost) { $pathLine = "這台電腦自己網路上的近端主機也丟了回覆——全部，或太多——這指向閘道之前的本地路徑：連線、Wi-Fi、交換器或存取點。另一個可能是那台主機本身，也要一併查。" }
             $lines = @("已設定預設閘道，但閘道沒有回應送給它的 Ping，或遺失得太多。", $pathLine, "確認連線燈號或 Wi-Fi 訊號，以及其他裝置能否連到路由器。", "這項檢查失敗的閘道——不回應送給它自己的 Ping——是嫌疑、不是定罪：它可能一邊正常轉送流量、一邊丟棄或限速這種 Ping。有連線成功，只有在那條連線的路由經過這個閘道時才算證明——同網段的主機、VPN 或 Proxy 都可能沒經過它就成功——所以先查到它的那段連線，把閘道當成未證實，而不是壞掉。")
         }
         "gateway-up-internet-dead" { $title = "閘道正常，網際網路不通"; $lines = @("路由器有回應，但往外的連線失敗。", "問題在路由器或更外層：WAN 連線、ISP 或上游防火牆。", "查看路由器的 WAN 狀態，以及其他裝置是否同樣無法上網。") }

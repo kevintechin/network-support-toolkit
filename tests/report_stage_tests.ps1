@@ -158,7 +158,7 @@ Assert-Equal 'D: #60 leaving the first line alone' (@($nearPassSummary.Lines)[0]
 Assert-Equal 'D: #60 and the third' (@($nearPassSummary.Lines)[2] -eq $silentLines[2]) True
 Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Ruled "ping-near-end" "FAIL" "loss"; Add-Ruled "ping-gateway" "FAIL" "loss"; Add-Tagged "connectivity-group" "FAIL"
 $nearLostSummary = Get-FingerprintSummary
-Assert-Equal 'D: #60 a near-end host that did not answer either keeps the key' $nearLostSummary.Key "gateway-unreachable"
+Assert-Equal 'D: #60 a near-end host that lost its replies too keeps the key' $nearLostSummary.Key "gateway-unreachable"
 Assert-Equal 'D: #60 and chooses a third second line' ((@($nearLostSummary.Lines)[1] -ne $silentLines[1]) -and (@($nearLostSummary.Lines)[1] -ne @($nearPassSummary.Lines)[1])) True
 Reset-Results; Add-Tagged "adapters" "PASS"; Add-Tagged "gateway-config" "PASS"; Add-Ruled "ping-near-end" "FAIL" "latency"; Add-Ruled "ping-gateway" "FAIL" "loss"; Add-Tagged "connectivity-group" "FAIL"
 Assert-Equal 'D: #60 a slow near-end host decides nothing about that line' (@((Get-FingerprintSummary).Lines)[1] -eq $silentLines[1]) True

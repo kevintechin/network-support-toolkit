@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -1475,6 +1475,26 @@ Assert-Equal '#60 placement: a /31 has no broadcast address, so its all-ones hos
 $wide = @([pscustomobject]@{ IPv4Addresses = @('10.1.2.3'); IPv4WithPrefix = @('10.1.2.3/8'); Gateways = @('10.0.0.1'); DnsServers = @() })
 Assert-Equal '#60 placement: the broadcast address of a /8 is found across the octets' (Test-NearEndTargetPlacement -Address '10.255.255.255' -PrimaryAdapters $wide).Placement 'not-a-host'
 Assert-Equal '#60 placement: and a host whose last octet is 255 inside a /8 is a host' (Test-NearEndTargetPlacement -Address '10.1.2.255' -PrimaryAdapters $wide).Placement 'on-subnet'
+# .NET parses spellings a person does not mean - a single number, hexadecimal parts, three parts, a leading zero read
+# as octal - and a string comparison against the machine's own addresses misses every one of them (PR #51, round 2).
+# The rule refuses every spelling but dotted decimal, so that what the file says and what the probe is sent to are the
+# same string; the placement compares parsed forms all the same, so a caller that skipped the rule gets the same answer.
+Assert-Equal '#60 syntax: dotted decimal passes' (Test-NearEndAddressSyntax '192.0.2.10') True
+Assert-Equal '#60 syntax: a single number is refused although .NET parses it' (Test-NearEndAddressSyntax '3221225994') False
+Assert-Equal '#60 syntax: hexadecimal parts are refused' (Test-NearEndAddressSyntax '0xC0.0.2.10') False
+Assert-Equal '#60 syntax: a leading zero is refused, because .NET reads it as octal' (Test-NearEndAddressSyntax '192.0.2.010') False
+Assert-Equal '#60 syntax: three parts are refused' (Test-NearEndAddressSyntax '192.0.2') False
+Assert-Equal '#60 syntax: an IPv6 address is refused' (Test-NearEndAddressSyntax '2001:db8::1') False
+Assert-Equal '#60 syntax: a name is refused' (Test-NearEndAddressSyntax 'printer.example') False
+Assert-Equal '#60 syntax: the canonical form of a number is what the parser meant' (Get-CanonicalIPv4Text '3221225994') '192.0.2.10'
+Assert-Equal '#60 syntax: and of a leading zero, which is not what a person meant' (Get-CanonicalIPv4Text '192.0.2.010') '192.0.2.8'
+Assert-Equal '#60 syntax: text that is not an address comes back as given' (Get-CanonicalIPv4Text 'printer.example') 'printer.example'
+Assert-Equal '#60 placement: a numeric spelling of this computer''s own address is still refused' (Test-NearEndTargetPlacement -Address '3221225994' -PrimaryAdapters $nearAdapters).Placement 'self'
+Assert-Equal '#60 placement: a numeric spelling of the gateway is still the gateway' (Test-NearEndTargetPlacement -Address '3221225985' -PrimaryAdapters $nearAdapters).Placement 'gateway'
+Assert-Equal '#60 placement: a hexadecimal spelling of the broadcast address is still not a host' (Test-NearEndTargetPlacement -Address '0xC0.0.2.255' -PrimaryAdapters $nearAdapters).Placement 'not-a-host'
+Assert-Equal '#60 placement: and the form that was placed is reported' (Test-NearEndTargetPlacement -Address '3221225994' -PrimaryAdapters $nearAdapters).Canonical '192.0.2.10'
+Assert-Equal '#60 syntax: the run applies the rule' ((Get-FunctionBody 'Test-PingTargets') -match 'Test-NearEndAddressSyntax') True
+Assert-Equal '#60 syntax: and so does the configuration check' ((Get-FunctionBody 'Test-ConfigurationSemantics') -match 'Test-NearEndAddressSyntax') True
 # The near-end entry is built in the run and never read from the ping list, so a list entry cannot promote itself
 # to the rung, and the traceroute - which walks the list for its target - never meets it.
 Assert-Equal '#60 ladder: the near-end entry is built by the run' ((Get-FunctionBody 'Test-PingTargets') -match 'NearEnd = \$true') True

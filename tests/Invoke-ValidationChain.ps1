@@ -285,7 +285,7 @@ function Get-ConfigConverterSource([string]$ScriptPath) {
     # languages.
     $tokens = $null; $errors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path -LiteralPath $ScriptPath).Path, [ref]$tokens, [ref]$errors)
-    $wanted = 'ConvertTo-DoubleSafe', 'ConvertTo-IntSafe', 'Test-IsNumericValue', 'Test-IsWholeNumber', 'Test-IsValidIPv4Address', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-IPv4InCidr', 'Resolve-PingTargets', 'Test-NearEndTargetPlacement'
+    $wanted = 'ConvertTo-DoubleSafe', 'ConvertTo-IntSafe', 'Test-IsNumericValue', 'Test-IsWholeNumber', 'Test-IsValidIPv4Address', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-IPv4InCidr', 'Resolve-PingTargets', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Test-NearEndTargetPlacement'
     $found = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true))
     $loaded = @($found | ForEach-Object { $_.Name })
     $missing = @($wanted | Where-Object { $loaded -notcontains $_ })
@@ -573,7 +573,7 @@ function Test-ResultSet {
     $nearEndAddress = ([string](Get-Value $nearEndTarget 'Address')).Trim()
     if (-not [string]::IsNullOrWhiteSpace($nearEndAddress)) {
         $nearEndRows = 1
-        $placed = (Test-IsValidIPv4Address $nearEndAddress) -and ((Test-NearEndTargetPlacement -Address $nearEndAddress -PrimaryAdapters @($Machine.PrimaryAdapters)).Placement -eq 'on-subnet')
+        $placed = (Test-NearEndAddressSyntax $nearEndAddress) -and ((Test-NearEndTargetPlacement -Address $nearEndAddress -PrimaryAdapters @($Machine.PrimaryAdapters)).Placement -eq 'on-subnet')
         if ((-not $placed) -and (Test-TrueFlag (Get-Value $nearEndTarget 'Required'))) { $nearEndRows = 2 }
     }
     # The two TCP counter samples are read independently (baseline, then ending): a class readable in both gives one
