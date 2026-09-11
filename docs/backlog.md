@@ -530,7 +530,7 @@ One line each: what it was, and the release or the date that closed it. The evid
 | 28 | `LauncherError.txt` suggested extracting the ZIP whatever had stopped the launcher | v1.2.3 (2026-09-06) |
 | 35 | *All checks passed* was said whatever the Information rows held, so an optional target that failed outright read as if nothing had | v1.2.7 (2026-09-09) |
 | 36 | A stray value on the command line bound to `-ConfigPath`, so a second target was lost in silence and the run ended Test Incomplete | v1.2.7 (2026-09-09) |
-| 39 | A measurement that could not be taken outranked a measurement that failed: one unreadable quality counter turned a run in which every required check had passed into *Test Incomplete* | v1.2.8 (2026-09-10); the row was not moved until 2026-09-11, the day after the release, which is the drift #55 is about |
+| 39 | A measurement that could not be taken outranked a measurement that failed: one unreadable quality counter turned a run in which every connectivity check had passed into *Test Incomplete* | v1.2.8 (2026-09-10); the row was not moved until 2026-09-11, which is the drift #55 is about |
 | 40 | The report explained the *Unable to Check* badge, and qualified a retransmission rate, whether or not the run had produced either | v1.2.7 (2026-09-09) |
 | 45 | The IT panel checked a typed target only after the run had started, so a typing mistake cost a run and a verdict | v1.2.7 (2026-09-09) |
 | 46 | The window named where the report was and never which file to send; the console named all three | v1.2.7 (2026-09-09) |
