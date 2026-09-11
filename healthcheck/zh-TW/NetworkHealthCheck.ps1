@@ -42,7 +42,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：報告保存例外類型、訊息與內部例外；腳本位置與呼叫堆疊只寫入 JSON 報告（Diagnostics）。
 
-$script:ToolVersion = "1.2.8"
+$script:ToolVersion = "1.2.9"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -1916,6 +1916,162 @@ function Test-ExpectedNetworkConfiguration {
 # -----------------------------------------------------------------------------
 # 主動連線測試：Ping、DNS、TCP 與 HTTP/HTTPS；每項測試都有逾時及錯誤隔離。
 # -----------------------------------------------------------------------------
+function Get-RouteSelection {
+    param([string]$Target)
+
+    # backlog #59：ping 是從哪一張網路卡送出的。Find-NetRoute 回答的是「查詢當下」路由表會選哪一條，而
+    # Invoke-PingMeasurement 送出的探測並沒有綁定來源 —— 所以這裡回傳的是「被選出的路由」，永遠不是回應實際
+    # 走過的路徑。Test-PingTargets 在每個目標的探測前後各查一次，讓檢測途中改變的路由被「報告」出來而不是被
+    # 猜測；這與網路卡計數器採用的前後取樣是同一個形狀。在參考機上量到的回傳是兩個物件：本機位址（帶來源與介面）
+    # 與路由（帶 next hop）。來源取自「有 IPAddress 的那一個」而不是第一個，因為順序是該 Cmdlet 決定的，不是這個
+    # 工具可以依賴的。成本量測：CIM 暖機後約 13 ms，而執行到 ping 檢查時，網路卡檢查早已付過暖機成本。
+    # Cmdlet 不存在或查詢失敗一律是「這個資料無法取得」，絕不是讓這一列失敗 —— 這是已結案項目 #5 的形狀。
+    if (-not (Get-Command Find-NetRoute -ErrorAction SilentlyContinue)) {
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "cmdlet"; SourceAddress = ""; InterfaceAlias = "" }
+    }
+
+    # An empty result is not one outcome, and round 1 of PR #45 was right that calling it 'no route' publishes a
+    # false sentence. The cmdlet reports both by a non-terminating error, so -ErrorVariable carries the answer and
+    # the id is the discriminator, not the message - the same rule backlog #27 settled for CIM errors, and for the
+    # same reason: the message follows the machine's locale while the id does not. Measured on the reference machine
+    # on 2026-09-11: an unroutable address gives Windows System Error 1231 (the network location cannot be reached)
+    # and a name gives 87 (invalid parameter), because RemoteIPAddress is documented as an address. Anything else is
+    # a failure of the lookup itself and says so rather than borrowing either meaning.
+    $found = @()
+    $lookupErrors = $null
+    try {
+        $found = @(Find-NetRoute -RemoteIPAddress ([string]$Target) -ErrorAction SilentlyContinue -ErrorVariable lookupErrors)
+    }
+    catch {
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "error"; SourceAddress = ""; InterfaceAlias = "" }
+    }
+
+    $localAddress = @($found | Where-Object { -not [string]::IsNullOrWhiteSpace((ConvertTo-SafeString $_.IPAddress)) } | Select-Object -First 1)
+    if ($localAddress.Count -eq 0) {
+        $reason = "error"
+        $firstError = @($lookupErrors) | Select-Object -First 1
+        $errorId = ""
+        if ($null -ne $firstError) { $errorId = ConvertTo-SafeString $firstError.FullyQualifiedErrorId }
+        if ($errorId -match 'Error 1231') { $reason = "noroute" }
+        elseif ($errorId -match 'Error 87') { $reason = "notaddress" }
+        elseif ([string]::IsNullOrWhiteSpace($errorId)) { $reason = "noroute" }
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = $reason; SourceAddress = ""; InterfaceAlias = "" }
+    }
+
+    return [pscustomobject][ordered]@{
+        Resolved       = $true
+        Reason         = ""
+        SourceAddress  = ConvertTo-SafeString $localAddress[0].IPAddress
+        InterfaceAlias = ConvertTo-SafeString $localAddress[0].InterfaceAlias
+    }
+}
+
+function Get-RouteSelectionText {
+    param([object]$Selection)
+
+    # 這一對查詢的其中一側，照這一列會說出來的樣子。每一種「無法取得」都自己說明原因，因為沒有原因的「無法取得」
+    # 只會讓讀的人去猜。
+    if ($null -eq $Selection) { return "無法取得（沒有讀取路由選擇）" }
+    if ($Selection.Resolved) { return ("來源 {0}，經由 {1}" -f $Selection.SourceAddress, $Selection.InterfaceAlias) }
+    switch ([string]$Selection.Reason) {
+        "cmdlet"     { return "無法取得（這個系統沒有 Find-NetRoute）" }
+        "noroute"    { return "無法取得（路由表對這個目標沒有回傳路由）" }
+        "notaddress" { return "無法取得（路由表是用位址問的，而這個目標沒有可用的位址）" }
+        "noreply"    { return "無法取得（這個目標是名稱，而且沒有任何回應，所以沒有可以查的位址）" }
+        "error"      { return "無法取得（路由查詢失敗）" }
+    }
+    return "無法取得（沒有讀取路由選擇）"
+}
+
+function Get-RouteMethodText {
+    param([string]$Target, [string]$LookupAddress, [bool]$TargetIsAddress, [int]$ExtraCount = 0)
+
+    # 這一行必須描述「實際做了的查詢」，而不是位址目標那一種的查詢（PR #45 第 2 輪）。
+    # 名稱目標是在探測之後、用回應所來的位址只查一次；沒人回應的名稱則根本沒有查。
+    # 寫成函式而不是內嵌字串，是為了讓 unit 步驟能把它釘住。
+    if ($TargetIsAddress) {
+        return ("；路由選擇來自 Find-NetRoute -RemoteIPAddress {0}，在探測前後各讀一次" -f $Target)
+    }
+    if ([string]::IsNullOrWhiteSpace($LookupAddress)) {
+        return "；沒有做路由查詢，因為這個目標是名稱，而且沒有任何回應可以提供位址"
+    }
+    if ($ExtraCount -gt 0) {
+        return ("；路由選擇來自 Find-NetRoute -RemoteIPAddress，在探測之後對回應所來的 {0} 個位址各讀一次" -f ($ExtraCount + 1))
+    }
+    return ("；路由選擇來自 Find-NetRoute -RemoteIPAddress {0}，也就是回應所來的位址，在探測之後讀一次" -f $LookupAddress)
+}
+
+function Format-RouteSelection {
+    param([object]$Before, [object]$After, [string]$LookupAddress = "", [object[]]$Others = @())
+
+    # 兩次查詢會產生三種句子。兩次都查到而且相同，是一般情況的那一句。兩者只要不一致就報告為「改變」——
+    # 包含一次查到、另一次沒查到，因為那同樣是對「當時是哪一張網路卡」的不一致，也正是這一列存在的理由。
+    # 兩次都失敗而且原因相同時，原因只說一次。
+    $beforeText = Get-RouteSelectionText $Before
+    $afterText = Get-RouteSelectionText $After
+
+    # 以名稱給定的目標，在有回應之前沒有任何位址可以拿去問路由表，所以根本組不成一對，
+    # 這一列就直接說出來而不是暗示有一對（PR #45 第 1 輪）。工具不自己去解析名稱：那會讓 ping
+    # 檢查變成依賴解析器，而正在被診斷的機器往往就是解析器壞掉的那一台。
+    if ($null -eq $Before) {
+        # 整組位址在任何 return 之前就先組好。第 4 輪抓到舊寫法在第一個位址查不到時直接 return，
+        # 從來不讀其餘的 —— 把一張其實可用的網路卡藏在一次失敗的查詢後面，也讓 Method 行的「每一個都讀了」變成假的。
+        # 第一個有沒有查到，只決定措辭，不決定要不要看其餘的。
+        $agree = $true
+        $primaryResolved = ($null -ne $After -and $After.Resolved)
+        $allResolved = $primaryResolved
+        $sameInterface = $true
+        $eachText = @(("{0}：{1}" -f $LookupAddress, $afterText))
+        foreach ($other in @($Others)) {
+            $otherText = Get-RouteSelectionText $other.Selection
+            $eachText += ("{0}：{1}" -f $other.Address, $otherText)
+            if ($otherText -ne $afterText) { $agree = $false }
+            if ($null -eq $other.Selection -or -not $other.Selection.Resolved) { $allResolved = $false }
+            elseif ($primaryResolved -and $other.Selection.InterfaceAlias -ne $After.InterfaceAlias) { $sameInterface = $false }
+        }
+        $addressCount = @($Others).Count + 1
+
+        # 查不到不等於「路由表做了不同的判斷」（PR #45 第 5 輪）。只有每一個位址都得到答案時，
+        # 它們之間的差異才能被稱為路由上的差異；若有一個沒有，那麼不同的是「查詢結果」，
+        # 而一次可能只是暫時性的提供者失敗，不可以被當成關於網路的結論發布。
+        #
+        # 而這一列要回答的問題是「哪一張網路卡」，所以比對的就是網路卡（第 6 輪）。兩個位址可以走同一個
+        # 介面而來源位址不同 —— IPv4 與 IPv6 各回一次就是最常見的情形 —— 把那稱為「無法確定網路卡」，
+        # 是從一個根本不是差異的差異裡發明出模糊性。
+        if (-not $agree) {
+            if (-not $allResolved) {
+                return ("路由選擇：這個目標是名稱，而它的回應來自 {0} 個位址，這些查詢並非每一個都有答案，也並非給出相同的答案 —— {1}。這一列無法把這次量測歸給單一一張網路卡；而這裡不同的是查詢結果，不是路由表做的判斷。" -f $addressCount, ($eachText -join "；"))
+            }
+            if ($sameInterface) {
+                return ("路由選擇：這個目標是名稱，而它的回應來自 {0} 個位址，路由表把它們都送往同一個介面 {1}，只是來源位址不同 —— {2}。網路卡沒有疑問；會選出哪個來源，取決於要抵達的是其中哪一個位址。" -f $addressCount, $After.InterfaceAlias, ($eachText -join "；"))
+            }
+            return ("路由選擇：這個目標是名稱，而它的回應來自 {0} 個位址，路由表並沒有把它們送往同一個介面 —— {1}。這一列無法把這次量測歸給單一一張網路卡。" -f $addressCount, ($eachText -join "；"))
+        }
+        if ($primaryResolved) {
+            $sentence = ("路由選擇：{0}，是在探測之後針對 {1} 查的 —— 這個目標是名稱，探測之前沒有位址可以問，因此沒有取得前後兩次的對照。探測本身沒有綁定它。" -f $afterText, $LookupAddress)
+            if ($addressCount -gt 1) {
+                $sentence += ("它的回應來自 {0} 個位址，而路由表對每一個都選出相同的來源與介面。" -f $addressCount)
+            }
+            return $sentence
+        }
+        if ($addressCount -gt 1) {
+            return ("路由選擇：{0}，而且它回應所來的 {1} 個位址每一個都是如此。這一列無法說出這些探測是從哪一張網路卡送出的。" -f $afterText, $addressCount)
+        }
+        return ("路由選擇：{0}。這一列無法說出這些探測是從哪一張網路卡送出的。" -f $afterText)
+    }
+
+    if ($null -ne $Before -and $null -ne $After -and $Before.Resolved -and $After.Resolved -and
+        $Before.SourceAddress -eq $After.SourceAddress -and $Before.InterfaceAlias -eq $After.InterfaceAlias) {
+        return ("路由選擇：{0} —— 這是路由表為這個目標選出的路由，在探測前後各查一次。探測本身沒有綁定它，所以這是「被選出的路由」，不是回應實際走過的路徑。" -f $beforeText)
+    }
+
+    if ($beforeText -eq $afterText) {
+        return ("路由選擇：{0}。這一列無法說出這些探測是從哪一張網路卡送出的。" -f $beforeText)
+    }
+
+    return ("路由選擇在這次檢測中改變了：探測前是 {0}，探測後是 {1}。探測沒有綁定其中任何一個，所以這一列無法說出實際是哪一個承載了它們。" -f $beforeText, $afterText)
+}
+
 function Invoke-PingMeasurement {
     param(
         [string]$Target,
@@ -1925,6 +2081,7 @@ function Invoke-PingMeasurement {
 
     $successes = New-Object System.Collections.ArrayList
     $attemptDetails = New-Object System.Collections.ArrayList
+    $repliedAddresses = New-Object System.Collections.ArrayList
     $ping = New-Object System.Net.NetworkInformation.Ping
 
     try {
@@ -1932,6 +2089,16 @@ function Invoke-PingMeasurement {
             try {
                 $reply = $ping.Send($Target, $TimeoutMs)
                 if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
+                    # backlog #59: the addresses the echoes actually reached, kept because a target given as a name is
+                    # not something the route table can be asked about - these are the addresses that can be. Every
+                    # distinct one is kept, in the order they first answered: .NET resolves the name per send, so a
+                    # name behind round-robin DNS or a TTL that expires mid-run can answer from more than one, and a
+                    # row that named the first as 'the address the replies came from' would be claiming the rest
+                    # (PR #45, round 3).
+                    $thisAddress = [string]$reply.Address
+                    if (-not [string]::IsNullOrWhiteSpace($thisAddress) -and @($repliedAddresses) -notcontains $thisAddress) {
+                        [void]$repliedAddresses.Add($thisAddress)
+                    }
                     [void]$successes.Add([double]$reply.RoundtripTime)
                     [void]$attemptDetails.Add(("第 {0} 次：成功，{1} ms，回覆 {2}" -f $i, $reply.RoundtripTime, $reply.Address))
                 }
@@ -1976,6 +2143,7 @@ function Invoke-PingMeasurement {
         AverageMs      = $average
         MinimumMs      = $minimum
         MaximumMs      = $maximum
+        RepliedAddresses = @($repliedAddresses)
         AttemptDetails = @($attemptDetails)
     }
 }
@@ -2051,7 +2219,30 @@ function Test-PingTargets {
 
         foreach ($target in $targets) {
             try {
+                # Only an address can be asked of the route table, so a target given as a name is looked up by the
+                # address its replies came from, after the probes - and where nothing replied there is no address at
+                # all, which the row says instead of naming a route nobody took (PR #45, round 1).
+                $parsedTarget = $null
+                $targetIsAddress = [System.Net.IPAddress]::TryParse([string]$target, [ref]$parsedTarget)
+                $routeBefore = $null
+                if ($targetIsAddress) { $routeBefore = Get-RouteSelection -Target ([string]$target) }
                 $measurement = Invoke-PingMeasurement -Target ([string]$target) -Count $count -TimeoutMs $timeout
+                $lookupAddresses = @([string]$target)
+                if (-not $targetIsAddress) { $lookupAddresses = @($measurement.RepliedAddresses) }
+                $lookupAddress = ""
+                if (@($lookupAddresses).Count -gt 0) { $lookupAddress = ConvertTo-SafeString @($lookupAddresses)[0] }
+                $routeOthers = @()
+                if ([string]::IsNullOrWhiteSpace($lookupAddress)) {
+                    $routeAfter = [pscustomobject][ordered]@{ Resolved = $false; Reason = "noreply"; SourceAddress = ""; InterfaceAlias = "" }
+                }
+                else {
+                    $routeAfter = Get-RouteSelection -Target $lookupAddress
+                    # Each further address its replies came from is looked up too, because the point of this row is
+                    # which adapter carried the measurement and two addresses can answer through two of them.
+                    foreach ($extra in @($lookupAddresses | Select-Object -Skip 1)) {
+                        $routeOthers += [pscustomobject][ordered]@{ Address = ConvertTo-SafeString $extra; Selection = (Get-RouteSelection -Target ([string]$extra)) }
+                    }
+                }
                 $status = "PASS"
 
                 if ($measurement.Received -eq 0) {
@@ -2077,7 +2268,7 @@ function Test-PingTargets {
                 }
 
                 $message = "目標 {0}：遺失 {1}%（{2}/{3} 成功），{4}。" -f $target, $measurement.LossPercent, $measurement.Received, $measurement.Sent, $latencyText
-                $details = (@($measurement.AttemptDetails) + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms。" -f $count, $timeout) + ("手動驗證：ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
+                $details = (@($measurement.AttemptDetails) + (Format-RouteSelection -Before $routeBefore -After $routeAfter -LookupAddress $lookupAddress -Others $routeOthers) + ("檢測方式：.NET Ping — {0} 次 ICMP echo，逾時 {1} ms{2}。" -f $count, $timeout, (Get-RouteMethodText -Target ([string]$target) -LookupAddress $lookupAddress -TargetIsAddress $targetIsAddress -ExtraCount (@($routeOthers).Count))) + ("手動驗證：ping -n {0} {1}" -f $count, $target)) -join [Environment]::NewLine
                 if ($status -eq "INFO") {
                     $details += [Environment]::NewLine + "補充說明：此為非必要目標，可能單純封鎖 ICMP——網際網路的權威判定請看「連線能力」群組。"
                 }
