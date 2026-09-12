@@ -656,5 +656,57 @@ Assert-Equal 'N: and the radio row takes no sample when it is off' (@($script:Wi
 $script:BaseConfig.Checks.WifiRf = $true
 Set-RunOptions -Overrides @{} | Out-Null
 
+# --- Scenario O: the radio row where netsh printed nothing and the WLAN service says connected (backlog #62; v1.2.13) ---
+# The keeper is stubbed to hand the row a fixed sample; the row itself is the shipped function, and every row it writes
+# is an IT-scoped Information row that moves neither the verdict nor the fingerprint. The shapes: the measured refusal
+# (netsh exit 1, no block, the service refusing the connection query with error 5); netsh failing while the service
+# answers; nothing connected; and netsh missing with the service unreadable.
+$originalKeeper = ${function:Add-WifiAssociationSample}
+$refusedO = @('There is 1 interface on the system: ', 'Network shell commands need location permission to access WLAN information.', 'start ms-settings:privacy-location', 'Function WlanQueryInterface returns error 5:', 'The requested operation requires elevation (Run as administrator).')
+function New-ReadingO($state, $query, $error = '', $denied = $true) { return [pscustomobject]@{ Timestamp = (Get-Date); Interfaces = @($(if ($error) { @() } else { [pscustomobject]@{ Guid = 'e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb'; Description = 'Fixture AX211'; State = $state; Channel = 149; RadioSoftware = 'on'; RadioHardware = 'on'; ConnectionQuery = $query } })); Error = $error; ErrorText = ''; Diagnostics = ''; LocationConsent = [pscustomobject]@{ Known = $true; Denied = $denied; Build = 26200; Gated = $true; Levels = @(); Text = $(if ($denied) { 'user Deny, device Allow, desktop apps Allow, netsh (no entry)' } else { 'user Allow, device Allow, desktop apps Allow, netsh (no entry)' }) } } }
+function New-SampleO($lines, $exit, $api) { return [pscustomobject]@{ Moment = 'middle'; Timestamp = (Get-Date); Interfaces = @(ConvertFrom-NetshWlanOutput -Lines $lines); Error = ''; ErrorText = ''; Diagnostics = ''; NetshExitCode = $exit; NetshLines = @($lines); Api = $api } }
+$script:SampleO = New-SampleO $refusedO 1 (New-ReadingO 1 5)
+function Add-WifiAssociationSample { param([string]$Moment) return $script:SampleO }
+$script:Results = New-Object System.Collections.ArrayList
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+Add-WifiRfResult
+$rowsO = @($script:Results | Where-Object { $_.Tag -eq 'wifi' })
+Assert-Equal 'O: one IT Information row for the interface the service lists as connected' ("{0}/{1}/{2}" -f $rowsO.Count, $rowsO[0].Status, $rowsO[0].Scope) '1/INFO/IT'
+Assert-Equal 'O: it names error 5 and the interface GUID, and carries what netsh printed' ("{0}/{1}/{2}" -f ($rowsO[0].Message -match '\b5\b'), ($rowsO[0].Details -match 'e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb'), ($rowsO[0].Details -match 'ms-settings:privacy-location')) 'True/True/True'
+Assert-Equal 'O: and the verdict and the fingerprint do not move' ("{0}/{1}" -f (Get-OverallStatus).Code, (Get-FingerprintSummary).Key) 'PASS/healthy'
+Assert-Equal 'O r1: with the consent store at Deny the row names the setting (24H2) and carries the consent text' (("{0}/{1}" -f ($rowsO[0].Message -match '24H2'), ($rowsO[0].Details -match 'Deny'))) 'True/True'
+# Error 5 without the consent store's Deny (PR #55, round 1): access denied, the cause not named, no setting to open.
+$script:SampleO = New-SampleO $refusedO 1 (New-ReadingO 1 5 '' $false)
+$script:Results = New-Object System.Collections.ArrayList
+Add-WifiRfResult
+$rowsO5 = @($script:Results | Where-Object { $_.Tag -eq 'wifi' })
+Assert-Equal 'O r1: error 5 with the consent store at Allow is one row that names error 5 but not the location setting' ("{0}/{1}/{2}/{3}" -f $rowsO5.Count, $rowsO5[0].Status, ($rowsO5[0].Message -match '\b5\b'), ($rowsO5[0].Message -match '24H2')) '1/INFO/True/False'
+# The manual check follows the witness (round 2): the settings URI appears once more than the netsh lines carry it only on the
+# witnessed row; the unwitnessed error 5 and the plain failure carry it exactly as often as the netsh lines do.
+function Count-Uri($row) { return ([regex]::Matches([string]$row.Details, 'ms-settings:privacy-location')).Count }
+$uriInFixture = @($refusedO | Where-Object { $_ -match 'ms-settings:privacy-location' }).Count
+Assert-Equal 'O r2: the location remedy is on the witnessed row alone - the unwitnessed error 5 carries only what netsh printed' ("{0}/{1}" -f ((Count-Uri $rowsO[0]) -eq ($uriInFixture + 1)), ((Count-Uri $rowsO5[0]) -eq $uriInFixture)) 'True/True'
+$script:SampleO = New-SampleO $refusedO 1 (New-ReadingO 1 0)
+$script:Results = New-Object System.Collections.ArrayList
+Add-WifiRfResult
+$rowsO2 = @($script:Results | Where-Object { $_.Tag -eq 'wifi' })
+Assert-Equal 'O: netsh failing while the service answers the query is one row that names no error 5' ("{0}/{1}/{2}" -f $rowsO2.Count, $rowsO2[0].Status, ($rowsO2[0].Message -match '\b5\b')) '1/INFO/False'
+Assert-Equal 'O r2: and the plain failure carries the settings URI only as often as netsh printed it' ((Count-Uri $rowsO2[0]) -eq $uriInFixture) True
+$offO = @('There is 1 interface on the system: ', '', '    Name                   : Wi-Fi', '    Description            : Fixture', '    GUID                   : e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb', '    Physical address       : 10:f6:0a:db:fc:e5', '    State                  : disconnected', '')
+$script:SampleO = New-SampleO $offO 0 (New-ReadingO 4 -1)
+$script:Results = New-Object System.Collections.ArrayList
+Add-WifiRfResult
+$rowsO3 = @($script:Results | Where-Object { $_.Tag -eq 'wifi' })
+Assert-Equal 'O: no connected interface is one Information row whose details name the interface' ("{0}/{1}/{2}" -f $rowsO3.Count, $rowsO3[0].Status, ($rowsO3[0].Details -match 'Wi-Fi')) '1/INFO/True'
+$script:SampleO = [pscustomobject]@{ Moment = 'middle'; Timestamp = (Get-Date); Interfaces = @(); Error = 'netsh'; ErrorText = 'not found'; Diagnostics = ''; NetshExitCode = -1; NetshLines = @(); Api = (New-ReadingO 1 0 'addtype') }
+$script:Results = New-Object System.Collections.ArrayList
+Add-WifiRfResult
+$rowsO4 = @($script:Results | Where-Object { $_.Tag -eq 'wifi' })
+Assert-Equal 'O: netsh missing and the service unreadable is the one Information row it always was, naming the service reason' ("{0}/{1}/{2}" -f $rowsO4.Count, $rowsO4[0].Status, ($rowsO4[0].Details -match 'addtype')) '1/INFO/True'
+Assert-Equal 'O r5: the radio rows written without an interface end their WLAN-service line with the read''s own token - the reason where it failed, ok where it answered' ("{0}/{1}" -f ($rowsO4[0].Details -match '(?m)wlanapi=addtype\s*$'), ($rowsO3[0].Details -match '(?m)wlanapi=ok\s*$')) 'True/True'
+Set-Item -Path function:Add-WifiAssociationSample -Value $originalKeeper
+$script:Results = New-Object System.Collections.ArrayList
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

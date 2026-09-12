@@ -3900,29 +3900,40 @@ function Get-WifiAssociationSample {
     # BSSID 是存取點自己的位址，同一個網路名稱下 BSSID 改變就是漫遊，而漫遊正是那種能解釋「訊號好、數字卻差」的空中
     # 事件。不論內容為何都回傳整個信封，和重傳快照、TCP 快照一樣；由分析函式把列寫出來，證據附在旁邊。-Moment 記下
     # 這個樣本取自執行的哪一刻——start、middle、end——讓列能說出來。
+    # netsh 讀取旁邊，另外讀 WLAN 服務自己對介面的說法（backlog #62）：有哪些介面、各自是否已連線，走 Native Wifi API，
+    # 因為 netsh 的文字不是狀態本身。桌面應用程式不被允許存取位置時——Windows 11 24H2 及之後，設定 > 隱私權與安全性 >
+    # 位置——netsh 一個介面都不印、以 1 結束（2026-09-12 在參考機器量到），而沒有介面的輸出過去會被讀成沒有無線電的電腦。
+    # 結束碼與各行也留下來，理由相同：那時 netsh 印的是一段機器語言的句子，不該要求任何解析器去讀它。
     $sample = [pscustomobject][ordered]@{
-        Moment      = $Moment
-        Timestamp   = Get-Date
-        Interfaces  = @()
-        Error       = ""
-        ErrorText   = ""
-        Diagnostics = ""
+        Moment        = $Moment
+        Timestamp     = Get-Date
+        Interfaces    = @()
+        Error         = ""
+        ErrorText     = ""
+        Diagnostics   = ""
+        NetshExitCode = -1
+        NetshLines    = @()
+        Api           = $null
     }
     $netsh = Join-Path $env:SystemRoot "System32\netsh.exe"
     if (-not (Test-Path -LiteralPath $netsh)) {
         $sample.Error = "netsh"
         $sample.ErrorText = "找不到 netsh.exe。"
-        return $sample
     }
-    try {
-        $lines = @(& $netsh wlan show interfaces 2>&1 | ForEach-Object { [string]$_ })
-        $sample.Interfaces = @(ConvertFrom-NetshWlanOutput -Lines $lines)
+    else {
+        try {
+            $lines = @(& $netsh wlan show interfaces 2>&1 | ForEach-Object { [string]$_ })
+            $sample.NetshExitCode = ConvertTo-IntSafe $LASTEXITCODE 0
+            $sample.NetshLines = @($lines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
+            $sample.Interfaces = @(ConvertFrom-NetshWlanOutput -Lines $lines)
+        }
+        catch {
+            $sample.Error = "exception"
+            $sample.ErrorText = Get-ExceptionDetails $_
+            $sample.Diagnostics = Get-ExceptionDiagnostics $_
+        }
     }
-    catch {
-        $sample.Error = "exception"
-        $sample.ErrorText = Get-ExceptionDetails $_
-        $sample.Diagnostics = Get-ExceptionDiagnostics $_
-    }
+    $sample.Api = Get-WlanInterfaceStates
     return $sample
 }
 
@@ -3937,46 +3948,298 @@ function Add-WifiAssociationSample {
     return $sample
 }
 
+function Get-WifiInterfaceView {
+    param([object]$Sample)
+
+    # 一次樣本裡，兩個讀取來源任一方列出的每張無線介面各一筆（backlog #62），以兩者都會印的 GUID 為鍵，讓各列讀的是同一份
+    # 清單：netsh 有印出的介面用 netsh 的欄位；WLAN 服務有列出的介面帶服務給的狀態、頻道與無線電開關；Connected 由服務
+    # 決定（服務有回答時）——狀態本來就是服務知道的事，netsh 印的只是一個翻譯過的詞——服務問不到時才由 netsh 自己的
+    # 欄位決定，每一筆都寫明是哪一個（ConnectedSource：wlanapi 或 netsh）。服務有列、netsh 沒印的介面就是這個項目講的
+    # 情況（NetshListed 為 false）：netsh 對它什麼都沒印，若不是整段輸出被拒——結束碼非零，且服務對連線查詢回錯誤 5，
+    # 也就是桌面應用程式的位置設定（Refused）——就是樣本只能如實記錄的原因（NetshFailed：結束碼非零、找不到執行檔、
+    # 讀取時擲出例外）。沒有服務讀數的樣本——舊的形狀，以及測試夾具——就當作只有 netsh。
+    if ($null -eq $Sample) { return @() }
+    $views = @()
+    $api = Get-PropertyValue $Sample "Api" $null
+    $apiInterfaces = @()
+    if ($null -ne $api -and [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $api "Error" ""))) { $apiInterfaces = @(Get-PropertyValue $api "Interfaces" @()) }
+    $exitCode = ConvertTo-IntSafe (Get-PropertyValue $Sample "NetshExitCode" 0) 0
+    $netshFailed = (-not [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" ""))) -or ($exitCode -ne 0)
+    $consent = $null
+    if ($null -ne $api) { $consent = Get-PropertyValue $api "LocationConsent" $null }
+    $locationDenied = ($null -ne $consent -and [bool](Get-PropertyValue $consent "Denied" $false) -and [bool](Get-PropertyValue $consent "Gated" $false))
+    $seen = @{}
+    foreach ($wifi in @(Get-PropertyValue $Sample "Interfaces" @())) {
+        if ($null -eq $wifi) { continue }
+        $guid = ([string](Get-PropertyValue $wifi "Guid" "")).ToLowerInvariant()
+        $key = $guid
+        if ([string]::IsNullOrWhiteSpace($key)) { $key = "mac:" + ([string](Get-PropertyValue $wifi "PhysicalAddress" "")).ToLowerInvariant() }
+        $entry = $null
+        if (-not [string]::IsNullOrWhiteSpace($guid)) {
+            $found = @($apiInterfaces | Where-Object { ([string]$_.Guid).ToLowerInvariant() -eq $guid } | Select-Object -First 1)
+            if ($found.Count -gt 0) { $entry = $found[0] }
+        }
+        $state = $null
+        if ($null -ne $entry) { $state = ConvertTo-IntSafe $entry.State -1 }
+        $channel = Get-PropertyValue $wifi "Channel" $null
+        if ($null -eq $channel -and $null -ne $entry) { $channel = $entry.Channel }
+        $views += [pscustomobject][ordered]@{
+            Key              = $key
+            Guid             = $guid
+            Name             = [string](Get-PropertyValue $wifi "Name" "")
+            Description      = [string](Get-PropertyValue $wifi "Description" "")
+            PhysicalAddress  = [string](Get-PropertyValue $wifi "PhysicalAddress" "")
+            Connected        = $(if ($null -ne $state) { ($state -eq 1) } else { [bool](Get-PropertyValue $wifi "Connected" $false) })
+            ConnectedSource  = $(if ($null -ne $state) { "wlanapi" } else { "netsh" })
+            State            = $state
+            Ssid             = [string](Get-PropertyValue $wifi "Ssid" "")
+            Bssid            = [string](Get-PropertyValue $wifi "Bssid" "")
+            RadioType        = [string](Get-PropertyValue $wifi "RadioType" "")
+            Band             = [string](Get-PropertyValue $wifi "Band" "")
+            Channel          = $channel
+            ReceiveRateMbps  = Get-PropertyValue $wifi "ReceiveRateMbps" $null
+            TransmitRateMbps = Get-PropertyValue $wifi "TransmitRateMbps" $null
+            SignalPercent    = Get-PropertyValue $wifi "SignalPercent" $null
+            Rssi             = Get-PropertyValue $wifi "Rssi" $null
+            Profile          = [string](Get-PropertyValue $wifi "Profile" "")
+            RadioSoftware    = $(if ($null -ne $entry) { [string]$entry.RadioSoftware } else { "" })
+            RadioHardware    = $(if ($null -ne $entry) { [string]$entry.RadioHardware } else { "" })
+            ConnectionQuery  = $(if ($null -ne $entry) { ConvertTo-IntSafe $entry.ConnectionQuery -1 } else { -1 })
+            NetshListed      = $true
+            ApiListed        = ($null -ne $entry)
+            NetshFailed      = $netshFailed
+            AccessDenied     = $false
+            Refused          = $false
+        }
+        $seen[$key] = $true
+    }
+    foreach ($entry in $apiInterfaces) {
+        if ($null -eq $entry) { continue }
+        $guid = ([string]$entry.Guid).ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($guid) -or $seen.ContainsKey($guid)) { continue }
+        $state = ConvertTo-IntSafe $entry.State -1
+        $query = ConvertTo-IntSafe $entry.ConnectionQuery -1
+        $views += [pscustomobject][ordered]@{
+            Key              = $guid
+            Guid             = $guid
+            Name             = ""
+            Description      = [string]$entry.Description
+            PhysicalAddress  = ""
+            Connected        = ($state -eq 1)
+            ConnectedSource  = "wlanapi"
+            State            = $state
+            Ssid             = ""
+            Bssid            = ""
+            RadioType        = ""
+            Band             = ""
+            Channel          = $entry.Channel
+            ReceiveRateMbps  = $null
+            TransmitRateMbps = $null
+            SignalPercent    = $null
+            Rssi             = $null
+            Profile          = ""
+            RadioSoftware    = [string]$entry.RadioSoftware
+            RadioHardware    = [string]$entry.RadioHardware
+            ConnectionQuery  = $query
+            NetshListed      = $false
+            ApiListed        = $true
+            NetshFailed      = $netshFailed
+            AccessDenied     = ($netshFailed -and $query -eq 5)
+            Refused          = ($netshFailed -and $query -eq 5 -and $locationDenied)
+        }
+        $seen[$guid] = $true
+    }
+    return @($views)
+}
+
+function Get-WifiNetshReasonText {
+    param([object]$Sample)
+
+    # 一次樣本裡沒有任何 netsh 介面的原因，用一個片語說給需要說它的列（backlog #62）：找不到執行檔、讀取時擲出例外，或者——
+    # 量到的那種——netsh 帶著結束碼結束、一個介面都沒印。netsh 有執行且以 0 結束時是空字串，那是普通的樣本。
+    if ($null -eq $Sample) { return "" }
+    $error = [string](Get-PropertyValue $Sample "Error" "")
+    $exitCode = ConvertTo-IntSafe (Get-PropertyValue $Sample "NetshExitCode" 0) 0
+    if ($error -eq "netsh") { return "找不到 netsh.exe" }
+    if (-not [string]::IsNullOrWhiteSpace($error)) { return ("netsh wlan show interfaces 無法讀取（{0}）" -f [string](Get-PropertyValue $Sample "ErrorText" "")) }
+    if ($exitCode -ne 0) { return ("netsh wlan show interfaces 以結束碼 {0} 結束，沒有印出任何介面" -f $exitCode) }
+    return ""
+}
+
+function Get-WifiRadioSwitchText {
+    param([object]$View)
+
+    # WLAN 服務回報的無線電開關，寫成列裡的一個片語；沒讀到就不寫：無線電關閉是舊訊息用猜的原因之一，量得到的地方就直接說。
+    if ($null -eq $View) { return "" }
+    $software = [string](Get-PropertyValue $View "RadioSoftware" "")
+    $hardware = [string](Get-PropertyValue $View "RadioHardware" "")
+    $off = @()
+    if ($software -eq "off") { $off += "軟體" }
+    if ($hardware -eq "off") { $off += "硬體開關" }
+    if ($off.Count -gt 0) { return ("無線電關閉（{0}）" -f ($off -join "與")) }
+    # 兩個開關都確定是開才寫開啟（PR #55，第 9 回合）：一個開、另一個未知時寫明是哪一個，因為未知的那個開關仍可能把無線電
+    # 關著，寫成開啟的列會宣稱得比讀到的多。
+    if ($software -eq "on" -and $hardware -eq "on") { return "無線電開啟" }
+    if ($software -eq "on") { return "軟體無線電開啟，硬體開關未知" }
+    if ($hardware -eq "on") { return "硬體開關開啟，軟體狀態未知" }
+    return ""
+}
+
 function Add-WifiRfResult {
     if (-not (Test-IsTrueFlag $script:Config.Checks.WifiRf)) { return }
 
     # 這一次讀取一次做兩件事（backlog #61 的另一半）：這一列，以及存取點的中間樣本——Compare-WifiAssociation 會拿它
     # 和第一項量測之前、最後一項量測之後取的樣本比較。
+    # 這一列透過 Get-WifiInterfaceView 讀樣本（backlog #62）：WLAN 服務說有哪些介面、各自是否已連線，netsh 提供欄位；
+    # 服務列為已連線而 netsh 什麼都沒印的介面，會被寫成已連線、欄位標為未回報——絕不寫成沒有介面。
     $sample = Add-WifiAssociationSample -Moment "middle"
-    if ([string]$sample.Error -eq "netsh") {
-        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message "找不到 netsh.exe，無法取得 Wi-Fi 無線資料。" -Details "" -Tag "wifi" -Scope "IT" | Out-Null
+    $views = @(Get-WifiInterfaceView -Sample $sample)
+    $api = Get-PropertyValue $sample "Api" $null
+    $apiLine = ""
+    # 這一行以這次讀取自己的結果做記號收尾（PR #55，第 5 回合）——wlanapi=ok，或讀取器的原因代碼——因為測試鏈的 oracle 判斷沒有
+    # 介面 GUID 的無線訊號列時，看的是寫出這一列的那次讀取，而存取點列的記號由另一個樣本決定，代表不了它。
+    if ($null -eq $api) { $apiLine = "WLAN 服務：未讀取" }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$api.Error)) { $apiLine = (("WLAN 服務：未讀取——{0} {1}" -f $api.Error, $api.ErrorText).Trim() + ("; wlanapi={0}" -f $api.Error)) }
+    else { $apiLine = ("WLAN 服務：列出 {0} 個無線介面; wlanapi=ok" -f @($api.Interfaces).Count) }
+    $netshReason = Get-WifiNetshReasonText -Sample $sample
+    if ([string]$sample.Error -eq "netsh" -and $views.Count -eq 0) {
+        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message "找不到 netsh.exe，無法取得 Wi-Fi 無線資料。" -Details $apiLine -Tag "wifi" -Scope "IT" | Out-Null
         return
     }
-    if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error)) {
-        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "ERROR" -Message "無法讀取 Wi-Fi 無線資料。" -Details ([string]$sample.ErrorText) -Diagnostics ([string]$sample.Diagnostics) -Tag "wifi" -Scope "IT" | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error) -and $views.Count -eq 0) {
+        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "ERROR" -Message "無法讀取 Wi-Fi 無線資料。" -Details ((@([string]$sample.ErrorText, $apiLine) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join [Environment]::NewLine) -Diagnostics ([string]$sample.Diagnostics) -Tag "wifi" -Scope "IT" | Out-Null
         return
     }
 
-    $interfaces = @($sample.Interfaces)
-    $connected = @($interfaces | Where-Object { $_.Connected })
+    $netshCount = @($sample.Interfaces).Count
+    $connected = @($views | Where-Object { $_.Connected })
     if ($connected.Count -eq 0) {
-        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message "沒有已連線的 Wi-Fi 介面（有線連線、Wi-Fi 關閉或沒有無線網卡）。" -Details (("netsh 回報的無線介面數：{0}" -f $interfaces.Count) + [Environment]::NewLine + "手動驗證：netsh wlan show interfaces") -Tag "wifi" -Scope "IT" | Out-Null
+        # 沒有介面已連線，用讀到的說、不用猜的：WLAN 服務或 netsh 列出的每張介面各附狀態與無線電開關，再加上數量。有線
+        # 電腦、無線電被關閉、沒有無線網卡都是可能的原因；這幾行寫的是這次執行看得見的那些。
+        $lines = @()
+        foreach ($view in $views) {
+            $name = $view.Name
+            if ([string]::IsNullOrWhiteSpace($name)) { $name = $view.Description }
+            $stateText = "未連線（netsh 沒有印出關聯資料）"
+            if ($null -ne $view.State) { $stateText = Get-WifiInterfaceStateText $view.State }
+            $radio = Get-WifiRadioSwitchText -View $view
+            $lines += ("{0}：{1}{2}" -f (ConvertTo-DisplayString $name), $stateText, $(if ($radio) { "，" + $radio } else { "" }))
+        }
+        if ($views.Count -eq 0) { $message = "netsh 與 WLAN 服務都沒有列出任何無線介面——例如有線電腦；詳細資料寫著兩個讀取來源各自回報了什麼。" }
+        else { $message = "沒有已連線的無線介面：列出 {0} 個，都未連線——{1}。" -f $views.Count, ($lines -join "；") }
+        $details = @()
+        $details += $lines
+        $details += ("netsh 回報的無線介面數：{0}" -f $netshCount)
+        $details += $apiLine
+        if ($netshReason) { $details += ("netsh：" + $netshReason) }
+        $details += "檢測方式：介面與連線狀態來自 WLAN 服務（WlanEnumInterfaces），欄位來自 netsh wlan show interfaces。"
+        $details += "手動驗證：netsh wlan show interfaces"
+        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message $message -Details ($details -join [Environment]::NewLine) -Tag "wifi" -Scope "IT" | Out-Null
         return
     }
 
     foreach ($wifi in $connected) {
+        $name = $wifi.Name
+        if ([string]::IsNullOrWhiteSpace($name)) { $name = $wifi.Description }
+        $stateSource = "連線狀態來自 WLAN 服務（WlanEnumInterfaces）"
+        if ($wifi.ConnectedSource -ne "wlanapi") { $stateSource = "連線狀態來自 netsh 印出的欄位，因為無法詢問 WLAN 服務" }
+        if (-not $wifi.NetshListed) {
+            # WLAN 服務說已連線，netsh 卻什麼都沒印（backlog #62）：這一列回報連線，並把它拿不到的欄位標出來、說明原因。量到的
+            # 原因是位置設定：netsh 整段輸出被拒、結束碼 1，而服務對連線查詢回錯誤 5——netsh 拿網路名稱、存取點、訊號與速率
+            # 用的正是這個查詢。其他原因只寫樣本記錄到的內容，不指認原因。
+            $channelText = "頻道未讀取"
+            if ($null -ne $wifi.Channel) { $channelText = "頻道 {0}" -f $wifi.Channel }
+            $queryText = "未詢問"
+            if ($wifi.ConnectionQuery -eq 0) { $queryText = "已回答" }
+            elseif ($wifi.ConnectionQuery -gt 0) { $queryText = Get-Win32ErrorText $wifi.ConnectionQuery }
+            $consent = $null
+            if ($null -ne $api) { $consent = Get-PropertyValue $api "LocationConsent" $null }
+            $consentText = ""
+            if ($null -ne $consent) { $consentText = [string](Get-PropertyValue $consent "Text" "") }
+            if ($wifi.Refused) {
+                $message = "{0}：已連線（WLAN 服務），{1}；無法讀取網路名稱、存取點、訊號與速率——{2}，且 WLAN 服務拒絕了連線查詢（錯誤 5，存取被拒），而位置權限存放區顯示 Deny（{3}）：在 Windows 11 24H2 及之後的版本，連線細節需要位置設定允許桌面應用程式（設定 > 隱私權與安全性 > 位置）。" -f (ConvertTo-DisplayString $name), $channelText, $netshReason, $consentText
+            }
+            elseif ($wifi.AccessDenied) {
+                # 錯誤 5 只是存取被拒、沒有更多（PR #55，第 1 回合）：沒有權限存放區的 Deny、也沒有會擋住細節的版本，就不指認原因——
+                # 限制 WLAN 查詢的原則否則會被指向錯的設定。
+                $message = "{0}：已連線（WLAN 服務），{1}；無法讀取網路名稱、存取點、訊號與速率——{2}，且 WLAN 服務拒絕了連線查詢（錯誤 5，存取被拒），但位置權限存放區沒有顯示拒絕（{3}）{4}；原因未能確認——例如限制 WLAN 查詢的原則。" -f (ConvertTo-DisplayString $name), $channelText, $netshReason, $(if ($consentText) { $consentText } else { "未讀取" }), $(if ($null -ne $consent -and -not [bool](Get-PropertyValue $consent "Gated" $false)) { "，而且這個 Windows 早於把 Wi-Fi 細節擋在那個設定後面的版本（24H2）" } else { "" })
+            }
+            else {
+                $reason = $netshReason
+                if ([string]::IsNullOrWhiteSpace($reason)) { $reason = "netsh wlan show interfaces 沒有列出這個介面" }
+                $message = "{0}：已連線（WLAN 服務），{1}；無法讀取網路名稱、存取點、訊號與速率——{2}（連線查詢：{3}）。" -f (ConvertTo-DisplayString $name), $channelText, $reason, $queryText
+            }
+            $radio = Get-WifiRadioSwitchText -View $wifi
+            $printed = @(Get-PropertyValue $sample "NetshLines" @())
+            $netshLines = @()
+            if ($printed.Count -gt 0) {
+                $netshLines += "netsh 印出："
+                foreach ($line in @($printed | Select-Object -First 12)) { $netshLines += ("  " + $line) }
+                if ($printed.Count -gt 12) { $netshLines += ("  ……還有 {0} 行" -f ($printed.Count - 12)) }
+            }
+            $details = @()
+            $details += ("介面（WLAN 服務）：{0}" -f (ConvertTo-DisplayString $wifi.Description))
+            $details += ("介面 GUID：{0}" -f $wifi.Guid)
+            $details += ("連線狀態：{0}（WLAN 服務）；netsh 結束碼 {1}；連線查詢：{2}{3}" -f (Get-WifiInterfaceStateText $wifi.State), (ConvertTo-IntSafe (Get-PropertyValue $sample "NetshExitCode" 0) 0), $queryText, $(if ($consentText) { "；位置權限：" + $consentText } else { "" }))
+            $details += ("頻道：{0}{1}" -f $(if ($null -ne $wifi.Channel) { [string]$wifi.Channel } else { "未讀取" }), $(if ($radio) { "；" + $radio } else { "" }))
+            $details += "未回報：SSID、BSSID、頻段、無線規格、訊號、接收與傳送速率、設定檔"
+            $details += $netshLines
+            $details += "檢測方式：介面與連線狀態來自 WLAN 服務（WlanEnumInterfaces），欄位缺少的原因來自它連線查詢的回傳碼（WlanQueryInterface，目前連線），印出的欄位來自 netsh wlan show interfaces。"
+            # 手動驗證跟著見證走（PR #55，第 2 回合）：有見證的拒絕才指向位置設定，沒有見證的錯誤 5 給 WLAN 查詢的檢查，其他情況
+            # 只叫人讀 netsh 的輸出。
+            if ($wifi.Refused) { $details += "手動驗證：netsh wlan show interfaces（它會指出要開啟的設定）；start ms-settings:privacy-location（設定 > 隱私權與安全性 > 位置）" }
+            elseif ($wifi.AccessDenied) { $details += "手動驗證：netsh wlan show interfaces，並讀它印出的訊息；WLAN 服務拒絕了連線查詢（錯誤 5）——限制 WLAN 查詢的原則會造成這種結果" }
+            else { $details += "手動驗證：netsh wlan show interfaces，並讀它印出的訊息" }
+            $details += "說明：用戶端看到的數值，證據力低於 AP 的用戶端列表。"
+            Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message $message -Details ($details -join [Environment]::NewLine) -Tag "wifi" -Scope "IT" | Out-Null
+            continue
+        }
         $rssi = "?"
         if ($null -ne $wifi.SignalPercent) { $rssi = [math]::Round(($wifi.SignalPercent / 2.0) - 100, 0) }
         if ($null -ne $wifi.Rssi) { $rssi = $wifi.Rssi }
         $message = "SSID {0}：訊號 {1}%（約 {2} dBm），{3} {4}，頻道 {5}，{6}/{7} Mbps。" -f $wifi.Ssid, (ConvertTo-DisplayString $wifi.SignalPercent), $rssi, $wifi.RadioType, $wifi.Band, (ConvertTo-DisplayString $wifi.Channel), (ConvertTo-DisplayString $wifi.ReceiveRateMbps), (ConvertTo-DisplayString $wifi.TransmitRateMbps)
-        $details = @(
+        $details = (@(
             ("介面：{0}" -f $wifi.Name),
+            $(if (-not [string]::IsNullOrWhiteSpace([string]$wifi.Guid)) { "介面 GUID：{0}" -f $wifi.Guid } else { $null }),
+            ("連線狀態：{0}" -f $(if ($wifi.ConnectedSource -eq "wlanapi") { "{0}（WLAN 服務）" -f (Get-WifiInterfaceStateText $wifi.State) } else { "已連線（netsh 印出了關聯資料；無法詢問 WLAN 服務）" })),
             ("BSSID：{0}" -f (ConvertTo-DisplayString $wifi.Bssid)),
             ("無線規格：{0}，頻段 {1}，頻道 {2}" -f $wifi.RadioType, (ConvertTo-DisplayString $wifi.Band), (ConvertTo-DisplayString $wifi.Channel)),
             ("速率：接收 {0} Mbps，傳送 {1} Mbps" -f (ConvertTo-DisplayString $wifi.ReceiveRateMbps), (ConvertTo-DisplayString $wifi.TransmitRateMbps)),
             ("訊號：{0}%（約 {1} dBm）" -f (ConvertTo-DisplayString $wifi.SignalPercent), $rssi),
             ("設定檔：{0}" -f (ConvertTo-DisplayString $wifi.Profile)),
-            "檢測方式：netsh wlan show interfaces，因標籤隨語系不同而改以欄位位置解析；dBm 由訊號百分比估算。",
+            ("檢測方式：netsh wlan show interfaces，因標籤隨語系不同而改以欄位位置解析；{0}；dBm 由訊號百分比估算。" -f $stateSource),
             "手動驗證：netsh wlan show interfaces",
             "說明：用戶端看到的數值，證據力低於 AP 的用戶端列表。"
-        ) -join [Environment]::NewLine
+        ) | Where-Object { $null -ne $_ }) -join [Environment]::NewLine
         Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message $message -Details $details -Tag "wifi" -Scope "IT" | Out-Null
     }
+}
+
+function Test-WifiSampleReadable {
+    param([object]$Sample)
+
+    # 兩個讀取來源任一方有回答，樣本就算可讀（PR #55，第 6 回合）：netsh 的讀取可能整個失敗——找不到執行檔、讀取時擲出例外——
+    # 而 WLAN 服務仍然列出了介面與狀態，只因 netsh 失敗就跳過的樣本會漏掉服務看見的介面。兩個讀取來源都失敗的樣本才算
+    # 不可讀，而每次樣本都如此才是彙總失敗列。
+    if ($null -eq $Sample) { return $false }
+    # netsh 有執行且以 0 結束才算有回答（PR #55，第 10 回合）：非零結束碼、什麼都沒列，和擲出例外一樣是失敗的讀取，旁邊的
+    # 服務讀取也失敗時，得到的是彙總列，不是有線電腦那一列。
+    if ([string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" "")) -and (ConvertTo-IntSafe (Get-PropertyValue $Sample "NetshExitCode" 0) 0) -eq 0) { return $true }
+    $api = Get-PropertyValue $Sample "Api" $null
+    return ($null -ne $api -and [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $api "Error" "")))
+}
+
+function Get-WifiApiSummaryText {
+    param([object]$Sample)
+
+    # WLAN 服務對一次樣本的讀數，濃縮成一個子句，給那些在 netsh 印出的內容旁邊回報樣本的行（backlog #62）：列出了幾張介面，
+    # 或者為什麼讀不到；沒有帶服務讀數的樣本則什麼都不寫。
+    if ($null -eq $Sample) { return "" }
+    $api = Get-PropertyValue $Sample "Api" $null
+    if ($null -eq $api) { return "" }
+    $error = [string](Get-PropertyValue $api "Error" "")
+    if (-not [string]::IsNullOrWhiteSpace($error)) { return ("WLAN 服務：未讀取——{0} {1}" -f $error, [string](Get-PropertyValue $api "ErrorText" "")).Trim() }
+    return ("WLAN 服務：列出 {0} 個無線介面" -f @(Get-PropertyValue $api "Interfaces" @()).Count)
 }
 
 function Compare-WifiAssociation {
@@ -3988,10 +4251,13 @@ function Compare-WifiAssociation {
     # 排除一次繞回來的漫遊。Windows 的 WLAN 事件記錄作為替代方案量測過、沒有採用——不提權就能讀，但沒有任何事件
     # 帶 BSSID，而它記錄的安全性重新關聯，換金鑰和漫遊都會寫，所以它說不出比樣本更多的東西。IT 範圍的列，和它所延伸的
     # 無線訊號列一樣：是證據，不是判定。
+    # 介面來自每次樣本的兩個讀取來源（backlog #62，Get-WifiInterfaceView）：WLAN 服務有列出、netsh 卻什麼都沒印的介面——
+    # 桌面應用程式不被允許存取位置時整段輸出被拒——也有自己的一列，每個這樣的樣本寫成「未取樣」並附上服務給的狀態，
+    # 而不是有線電腦才會拿到的那一列「沒有介面」。
     $category = "IT 診斷資料"
     $check = "Wi-Fi 存取點"
     $samples = @(@($Samples) | Where-Object { $null -ne $_ })
-    $readable = @($samples | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.Error) })
+    $readable = @($samples | Where-Object { Test-WifiSampleReadable $_ })
     $momentText = @{ start = "第一項量測之前"; middle = "收集 IT 診斷資料時"; end = "最後一項量測之後" }
     $entries = @()
     $index = 0
@@ -4005,8 +4271,19 @@ function Compare-WifiAssociation {
     }
     $seconds = 0
     if ($samples.Count -ge 2) { try { $seconds = [math]::Round((([datetime]$samples[$samples.Count - 1].Timestamp) - ([datetime]$samples[0].Timestamp)).TotalSeconds, 0) } catch { $seconds = 0 } }
+    # 這次執行裡工具自己的 WLAN API 讀取器有沒有回答，做成彙總列在原因後面帶的記號（PR #55，第 4 回合）：wlanapi=ok，或讀取器的
+    # 原因代碼——addtype、open、enumerate、error。測試鏈的 oracle 在 netsh 被拒時讀它：讀取器答不出來，工具就沒有介面可以
+    # 寫列，彙總列這時是對的形狀、不是漏掉的列。以最後一個帶讀數的樣本為準。
+    $apiToken = ""
+    foreach ($sample in $samples) {
+        $sampleApi = Get-PropertyValue $sample "Api" $null
+        if ($null -eq $sampleApi) { continue }
+        $apiError = [string](Get-PropertyValue $sampleApi "Error" "")
+        $apiToken = $(if ([string]::IsNullOrWhiteSpace($apiError)) { "ok" } else { $apiError })
+    }
+    $apiSuffix = $(if ($apiToken) { "; wlanapi=" + $apiToken } else { "" })
     $methodLines = @(
-        ("檢測方式：netsh wlan show interfaces，本次測試共讀取 {0} 次——第一項量測之前、收集 IT 診斷資料時、最後一項量測之後——並把各次讀到的 BSSID 互相比較；存取點是取樣的，不是持續監看的。" -f $samples.Count),
+        ("檢測方式：netsh wlan show interfaces，本次測試共讀取 {0} 次——第一項量測之前、收集 IT 診斷資料時、最後一項量測之後——並把各次讀到的 BSSID 互相比較；存取點是取樣的，不是持續監看的。每次讀取旁邊另有 WLAN 服務自己列出的無線介面與各介面的連線狀態（WlanEnumInterfaces），所以 netsh 什麼都沒印的介面仍然知道存在、狀態也知道。" -f $samples.Count),
         "手動驗證：問題發生時反覆執行 netsh wlan show interfaces",
         "說明：BSSID 是存取點自己的位址，所以同一個網路名稱下 BSSID 改變就是漫遊——正是那種能解釋「訊號好、數字卻差」的空中事件——網路名稱也變了則是換到另一個網路。兩個樣本之間換出去又回到同一個存取點的變化，這裡看不見：兩個相同的樣本不能排除它。Windows 的 WLAN 事件記錄只記網路、不記存取點，所以沒有讀取。這一列不影響任何判定。"
     )
@@ -4020,31 +4297,53 @@ function Compare-WifiAssociation {
         # 分辨這個彙總列和逐介面的列。
         $first = $samples[0]
         $reason = [string]$first.Error
+        # netsh 有執行、以非零結束碼結束、什麼都沒列，旁邊的服務讀取也失敗（第 10 回合）：原因記號是 refused，訊息寫出兩個讀取來源，
+        # 因為兩邊都沒回答。
+        if ([string]::IsNullOrWhiteSpace($reason)) { $reason = "refused" }
         $message = "無法取樣 Wi-Fi 存取點：找不到 netsh.exe。"
-        if ($reason -ne "netsh") { $message = "無法取樣 Wi-Fi 存取點：netsh wlan show interfaces 無法讀取。" }
-        $lines = @(("讀取：{0}" -f $reason))
-        foreach ($entry in $entries) { $lines += ("{0}：無法讀取——{1}" -f $entry.Prefix, [string]$entry.Sample.ErrorText) }
+        if ($reason -eq "refused") { $message = "無法取樣 Wi-Fi 存取點：netsh wlan show interfaces 沒有印出任何介面，而 WLAN 服務也無法讀取。" }
+        elseif ($reason -ne "netsh") { $message = "無法取樣 Wi-Fi 存取點：netsh wlan show interfaces 無法讀取。" }
+        $lines = @(("讀取：{0}{1}" -f $reason, $apiSuffix))
+        foreach ($entry in $entries) {
+            $apiSummary = Get-WifiApiSummaryText -Sample $entry.Sample
+            $netshText = [string]$entry.Sample.ErrorText
+            if ([string]::IsNullOrWhiteSpace($netshText)) { $netshText = Get-WifiNetshReasonText -Sample $entry.Sample }
+            $lines += ("{0}：無法讀取——{1}{2}" -f $entry.Prefix, $netshText, $(if ($apiSummary) { "；" + $apiSummary } else { "" }))
+        }
         Add-CheckResult -Category $category -Check $check -Status "ERROR" -Message $message -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Diagnostics ([string]$first.Diagnostics) -Tag "wifi-association" -Scope "IT" | Out-Null
         return
     }
 
-    # 各張介面：netsh 有印 GUID 就以 GUID 為鍵，沒有就以網卡位址為鍵，依第一次出現的順序。
+    # 任何一次可讀樣本裡、兩個讀取來源任一方列出的介面：有印 GUID 就以 GUID 為鍵，沒有就以網卡位址為鍵，依第一次出現的
+    # 順序；每次樣本的檢視留給下面的迴圈用。
     $keys = New-Object System.Collections.ArrayList
     $names = @{}
-    foreach ($sample in $readable) {
-        foreach ($wifi in @($sample.Interfaces)) {
-            $key = ([string]$wifi.Guid).ToLowerInvariant()
-            if ([string]::IsNullOrWhiteSpace($key)) { $key = ("mac:" + ([string]$wifi.PhysicalAddress).ToLowerInvariant()) }
-            if (-not $names.ContainsKey($key)) { [void]$keys.Add($key); $names[$key] = [string]$wifi.Name }
+    $viewsBySample = @{}
+    for ($i = 0; $i -lt $entries.Count; $i++) {
+        $sample = $entries[$i].Sample
+        if (-not (Test-WifiSampleReadable $sample)) { continue }
+        $views = @(Get-WifiInterfaceView -Sample $sample)
+        $viewsBySample[$i] = $views
+        foreach ($view in $views) {
+            $key = [string]$view.Key
+            if (-not $names.ContainsKey($key)) {
+                [void]$keys.Add($key)
+                $names[$key] = $(if (-not [string]::IsNullOrWhiteSpace([string]$view.Name)) { [string]$view.Name } else { [string]$view.Description })
+            }
         }
     }
     if ($keys.Count -eq 0) {
-        $lines = @("讀取：none")
+        $lines = @(("讀取：none{0}" -f $apiSuffix))
         foreach ($entry in $entries) {
-            if ([string]::IsNullOrWhiteSpace([string]$entry.Sample.Error)) { $lines += ("{0}：未列出任何無線介面" -f $entry.Prefix) }
-            else { $lines += ("{0}：無法讀取——{1}" -f $entry.Prefix, [string]$entry.Sample.ErrorText) }
+            $sample = $entry.Sample
+            $apiSummary = Get-WifiApiSummaryText -Sample $sample
+            if ([string]::IsNullOrWhiteSpace([string]$sample.Error)) {
+                $reason = Get-WifiNetshReasonText -Sample $sample
+                $lines += ("{0}：未列出任何無線介面{1}{2}" -f $entry.Prefix, $(if ($reason) { "——" + $reason } else { "" }), $(if ($apiSummary) { "；" + $apiSummary } else { "" }))
+            }
+            else { $lines += ("{0}：無法讀取——{1}{2}" -f $entry.Prefix, [string]$sample.ErrorText, $(if ($apiSummary) { "；" + $apiSummary } else { "" })) }
         }
-        Add-CheckResult -Category $category -Check $check -Status "INFO" -Message ("{0} 次樣本都沒有列出任何無線介面，所以沒有存取點可以比較（有線電腦，或 WLAN 服務未執行）。" -f $samples.Count) -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
+        Add-CheckResult -Category $category -Check $check -Status "INFO" -Message ("{0} 次樣本都沒有列出任何無線介面——netsh 與 WLAN 服務都沒有——所以沒有存取點可以比較；例如有線電腦，樣本行寫著兩個讀取來源各自回報了什麼。" -f $samples.Count) -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
         return
     }
 
@@ -4052,34 +4351,74 @@ function Compare-WifiAssociation {
         $name = ConvertTo-DisplayString $names[$key]
         $readings = @()
         $lines = @()
-        foreach ($entry in $entries) {
+        for ($i = 0; $i -lt $entries.Count; $i++) {
+            $entry = $entries[$i]
             $sample = $entry.Sample
-            if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error)) {
+            if (-not (Test-WifiSampleReadable $sample)) {
                 $lines += ("{0}：無法讀取——{1}" -f $entry.Prefix, [string]$sample.ErrorText)
                 # 失敗的樣本仍然是這次執行的樣本之一（PR #54，第 1 回合）：訊息裡的每個總數都要算它，而它既不是存取點的一次
                 # 讀數，也不是介面不在場的證據。
-                $readings += [pscustomobject]@{ State = "failed"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = "" }
+                $readings += [pscustomobject]@{ State = "failed"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = ""; ApiState = $null; LocationDenied = $false }
                 continue
             }
-            $match = @(@($sample.Interfaces) | Where-Object { (([string]$_.Guid).ToLowerInvariant() -eq $key) -or ([string]::IsNullOrWhiteSpace([string]$_.Guid) -and ("mac:" + ([string]$_.PhysicalAddress).ToLowerInvariant()) -eq $key) } | Select-Object -First 1)
+            $match = @(@($viewsBySample[$i]) | Where-Object { [string]$_.Key -eq $key } | Select-Object -First 1)
             if ($match.Count -eq 0) {
                 $lines += ("{0}：介面未列出" -f $entry.Prefix)
-                $readings += [pscustomobject]@{ State = "absent"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = "" }
+                $readings += [pscustomobject]@{ State = "absent"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = ""; ApiState = $null; LocationDenied = $false }
                 continue
             }
-            $wifi = $match[0]
-            $bssid = ([string]$wifi.Bssid).Trim().ToLowerInvariant()
-            if ([string]::IsNullOrWhiteSpace($bssid)) { $lines += ("{0}：未回報 BSSID" -f $entry.Prefix) }
-            else { $lines += ("{0}：SSID {1}，BSSID {2}" -f $entry.Prefix, (ConvertTo-DisplayString $wifi.Ssid), $bssid) }
-            $readings += [pscustomobject]@{ State = $(if ([string]::IsNullOrWhiteSpace($bssid)) { "nobssid" } else { "bssid" }); Moment = [string]$sample.Moment; Bssid = $bssid; Ssid = [string]$wifi.Ssid }
+            $view = $match[0]
+            $apiState = $view.State
+            $stateSuffix = ""
+            if ($null -ne $apiState) { $stateSuffix = "；WLAN 服務：{0}" -f (Get-WifiInterfaceStateText $apiState) }
+            if ((ConvertTo-IntSafe $view.ConnectionQuery -1) -gt 0) { $stateSuffix += ("；連線查詢：{0}" -f (Get-Win32ErrorText $view.ConnectionQuery)) }
+            if (-not $view.NetshListed) {
+                # WLAN 服務有列出、netsh 什麼都沒印（backlog #62）：既不是存取點的一次讀數，也不是不在場——是介面存在卻無法
+                # 取樣的一次樣本，附上樣本記錄到的原因和服務給的狀態。
+                $reason = Get-WifiNetshReasonText -Sample $sample
+                if ([string]::IsNullOrWhiteSpace($reason)) { $reason = "netsh wlan show interfaces 沒有列出這個介面" }
+                $lines += ("{0}：未取樣——{1}{2}" -f $entry.Prefix, $reason, $stateSuffix)
+                $readings += [pscustomobject]@{ State = "refused"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = ""; ApiState = $apiState; LocationDenied = [bool]$view.Refused }
+                continue
+            }
+            $bssid = ([string]$view.Bssid).Trim().ToLowerInvariant()
+            if ([string]::IsNullOrWhiteSpace($bssid)) { $lines += ("{0}：未回報 BSSID{1}" -f $entry.Prefix, $stateSuffix) }
+            else { $lines += (("{0}：SSID {1}，BSSID {2}" -f $entry.Prefix, (ConvertTo-DisplayString $view.Ssid), $bssid) + $stateSuffix) }
+            $readings += [pscustomobject]@{ State = $(if ([string]::IsNullOrWhiteSpace($bssid)) { "nobssid" } else { "bssid" }); Moment = [string]$sample.Moment; Bssid = $bssid; Ssid = [string]$view.Ssid; ApiState = $apiState; LocationDenied = $false }
         }
         $withBssid = @($readings | Where-Object { $_.State -eq "bssid" })
         $absentCount = @($readings | Where-Object { $_.State -eq "absent" }).Count
         $failedCount = @($readings | Where-Object { $_.State -eq "failed" }).Count
-        $listedMoments = @($readings | Where-Object { $_.State -eq "bssid" -or $_.State -eq "nobssid" } | ForEach-Object { $_.Moment })
-        # 沒有 BSSID 絕不寫成「已斷線」（backlog #62）：已關聯的無線電也可能被扣住這個欄位。
+        $refused = @($readings | Where-Object { $_.State -eq "refused" })
+        $listedMoments = @($readings | Where-Object { $_.State -eq "bssid" -or $_.State -eq "nobssid" -or $_.State -eq "refused" } | ForEach-Object { $_.Moment })
+        # WLAN 服務對這張介面的說法，給需要它的句子用：在服務有列出它的樣本裡，有幾次是已連線。沒有 BSSID 絕不寫成「已斷線」
+        # （backlog #62）：已關聯的無線電也可能被扣住這個欄位，而狀態是服務說了算。
+        $apiKnown = @($readings | Where-Object { $null -ne $_.ApiState })
+        $apiConnected = @($apiKnown | Where-Object { $_.ApiState -eq 1 })
+        $stateSentence = ""
+        if ($apiKnown.Count -gt 0) {
+            if ($apiConnected.Count -eq $apiKnown.Count) { $stateSentence = "WLAN 服務回報它在列出它的 {0} 次樣本都是已連線。" -f $apiKnown.Count }
+            elseif ($apiConnected.Count -eq 0) { $stateSentence = "WLAN 服務回報它在列出它的 {0} 次樣本都不是已連線。" -f $apiKnown.Count }
+            else { $stateSentence = "WLAN 服務回報它在列出它的 {1} 次樣本中有 {0} 次已連線。" -f $apiConnected.Count, $apiKnown.Count }
+        }
+        $locationCount = @($refused | Where-Object { $_.LocationDenied }).Count
+        $refusedSentence = ""
+        if ($refused.Count -gt 0) {
+            if ($locationCount -eq $refused.Count) { $refusedSentence = "其中 {0} 次樣本 netsh 沒有印出任何介面，因為桌面應用程式不被允許存取位置（WLAN 服務以錯誤 5 拒絕了連線查詢；設定 > 隱私權與安全性 > 位置）。" -f $refused.Count }
+            else { $refusedSentence = "其中 {0} 次樣本 netsh 沒有印出任何介面；樣本行寫著記錄到的內容。" -f $refused.Count }
+        }
         if ($withBssid.Count -eq 0) {
-            $message = "{0}：{1} 次樣本都沒有回報存取點（BSSID）——介面未關聯，或 netsh 沒有印出這個欄位；請看 Wi-Fi 無線訊號那一列。" -f $name, $readings.Count
+            if ($refused.Count -gt 0 -and $refused.Count -eq $listedMoments.Count) {
+                if ($locationCount -eq $refused.Count) {
+                    $message = "{0}：{1} 次樣本都無法取樣存取點：netsh 沒有印出任何介面，因為桌面應用程式不被允許存取位置（WLAN 服務以錯誤 5 拒絕了連線查詢；設定 > 隱私權與安全性 > 位置），所以在這裡看不見漫遊。{2}" -f $name, $readings.Count, $stateSentence
+                }
+                else {
+                    $message = "{0}：{1} 次樣本都無法取樣存取點：netsh 沒有印出任何介面（樣本行寫著記錄到的內容），所以在這裡看不見漫遊。{2}" -f $name, $readings.Count, $stateSentence
+                }
+            }
+            else {
+                $message = ("{0}：{1} 次樣本都沒有回報存取點（BSSID）——介面未關聯，或 netsh 沒有印出這個欄位；請看 Wi-Fi 無線訊號那一列。" -f $name, $readings.Count) + $refusedSentence + $stateSentence
+            }
         }
         else {
             $distinctBssids = @($withBssid | ForEach-Object { $_.Bssid } | Select-Object -Unique)
@@ -4097,7 +4436,7 @@ function Compare-WifiAssociation {
                     $message = "{0}：SSID {1}，{3} 次樣本（跨 {4} 秒）都在同一個存取點（BSSID {2}）；兩個樣本之間換出去又回到它的變化看不見。" -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $readings.Count, $seconds
                 }
                 else {
-                    $message = "{0}：SSID {1}，有回報存取點的 {3} 次樣本（共 {4} 次）都是同一個（BSSID {2}）；其餘樣本沒有回報 BSSID、介面未列出，或樣本無法讀取。" -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $withBssid.Count, $readings.Count
+                    $message = "{0}：SSID {1}，有回報存取點的 {3} 次樣本（共 {4} 次）都是同一個（BSSID {2}）；其餘樣本沒有回報 BSSID、netsh 沒有印出任何介面、介面未列出，或樣本無法讀取。" -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $withBssid.Count, $readings.Count
                 }
             }
             else {
@@ -4123,11 +4462,16 @@ function Compare-WifiAssociation {
                     $message = "{0}：測試期間介面換到了另一個網路——{1}。本次執行的數字是跨著這個變化量到的。" -f $name, ($labels -join "、然後 ")
                 }
             }
+            $message += $refusedSentence
+            # netsh 印了 BSSID、服務卻說不是已連線——兩次讀取是先後進行的，無線電可能在中間掉線——要說出來，不能藏在位址後面
+            # （PR #55，第 3 回合）：只要服務的說法不是「列出它的每次樣本都已連線」，就把服務的說法接在後面。
+            if ($apiKnown.Count -gt 0 -and $apiConnected.Count -lt $apiKnown.Count) { $message += $stateSentence }
         }
         if ($absentCount -gt 0) { $message += ("介面在其中 {0} 次樣本未列出（那一刻被停用或移除）。" -f $absentCount) }
         if ($failedCount -gt 0) { $message += ("其中 {0} 次樣本無法讀取。" -f $failedCount) }
         # 身分那一行以介面被列出的樣本收尾，用不隨語言改變的記號（samples=start,middle,end）：測試鏈的 oracle 靠它分辨「只在中間
-        # 樣本出現的介面」——它的兩次讀取都不可能列出——和「寫了一張誰都沒列出的介面」的列（PR #54，第 1 回合）。
+        # 樣本出現的介面」——它的兩次讀取都不可能列出——和「寫了一張誰都沒列出的介面」的列（PR #54，第 1 回合）。WLAN 服務有
+        # 列出、netsh 什麼都沒印的樣本也算列出：介面當時就在。
         $identity = @()
         if ($key -like "mac:*") { $identity += ("介面位址：{0}；samples={1}" -f $key.Substring(4), ($listedMoments -join ",")) } else { $identity += ("介面 GUID：{0}；samples={1}" -f $key, ($listedMoments -join ",")) }
         Add-CheckResult -Category $category -Check $check -Status "INFO" -Message $message -Details ((@($lines) + $identity + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
@@ -5022,6 +5366,211 @@ function Merge-TcpEndingSnapshot {
 # 分支。這一列不決定任何結果：無線重傳率沒有任何有依據的門檻（backlog #56）。
 # ---------------------------------------------------------------------------------------------------------------------
 
+function Get-WlanApiType {
+    # 兩個無線讀取器共用的那幾行 P/Invoke——重試計數器（backlog #61）與介面狀態（backlog #62）——每個程序只編譯一次，之後
+    # 以名稱找回來。編譯不成的原因用回傳的、不用擲出的，因為發問的那個讀取器的列要寫出原因：應用程式控制原則可以拒絕
+    # Add-Type，那是這台機器的事實，不是它網路的事實。
+    $result = [pscustomobject][ordered]@{ Type = $null; Error = ""; ErrorText = ""; Diagnostics = "" }
+    $apiType = "NetworkHealthCheck.WlanApi" -as [type]
+    if ($null -ne $apiType) { $result.Type = $apiType; return $result }
+    $definition = @'
+[DllImport("wlanapi.dll")] public static extern uint WlanOpenHandle(uint dwClientVersion, IntPtr pReserved, out uint pdwNegotiatedVersion, out IntPtr phClientHandle);
+[DllImport("wlanapi.dll")] public static extern uint WlanCloseHandle(IntPtr hClientHandle, IntPtr pReserved);
+[DllImport("wlanapi.dll")] public static extern uint WlanEnumInterfaces(IntPtr hClientHandle, IntPtr pReserved, out IntPtr ppInterfaceList);
+[DllImport("wlanapi.dll")] public static extern uint WlanQueryInterface(IntPtr hClientHandle, ref Guid pInterfaceGuid, int OpCode, IntPtr pReserved, out uint pdwDataSize, out IntPtr ppData, IntPtr pWlanOpcodeValueType);
+[DllImport("wlanapi.dll")] public static extern void WlanFreeMemory(IntPtr pMemory);
+'@
+    try {
+        Add-Type -Namespace NetworkHealthCheck -Name WlanApi -MemberDefinition $definition -ErrorAction Stop
+        $apiType = "NetworkHealthCheck.WlanApi" -as [type]
+    }
+    catch {
+        $result.Error = "addtype"
+        $result.ErrorText = Get-ExceptionDetails $_
+        $result.Diagnostics = Get-ExceptionDiagnostics $_
+        return $result
+    }
+    if ($null -eq $apiType) {
+        $result.Error = "addtype"
+        $result.ErrorText = "型別已編譯但無法載入。"
+        return $result
+    }
+    $result.Type = $apiType
+    return $result
+}
+
+function Get-LocationConsentState {
+    # Windows 記錄的位置權限，讀出來當作第二個見證：連線查詢被拒之後，這一列要先有它才可以把位置設定指認為原因（PR #55，
+    # 第 1 回合）：錯誤 5 只是存取被拒、沒有更多，限制 WLAN 查詢的原則、或沒有這道閘門的 Windows，否則都會被寫成權限問題、
+    # 被指向錯的設定。權限存放區（CapabilityAccessManager\ConsentStore\location）每一層一個值——使用者、裝置、桌面應用程式，
+    # 以及 NonPackaged 底下 netsh 自己的項目——任一層是 Deny 就是拒絕（2026-09-12 在使用者層與裝置層量到）；Wi-Fi 細節被擋在
+    # 它後面，是從 Windows 11 24H2、build 26100 開始的事。讀不到的存放區不算見證。
+    $consent = [pscustomobject][ordered]@{
+        Known  = $false
+        Denied = $false
+        Build  = 0
+        Gated  = $false
+        Levels = @()
+        Text   = ""
+    }
+    try { $consent.Build = [int][Environment]::OSVersion.Version.Build } catch { $consent.Build = 0 }
+    $consent.Gated = ($consent.Build -ge 26100)
+    $store = "Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location"
+    $levels = @(
+        [pscustomobject]@{ Name = "使用者"; Path = ("HKCU:\" + $store) },
+        [pscustomobject]@{ Name = "裝置"; Path = ("HKLM:\" + $store) },
+        [pscustomobject]@{ Name = "桌面應用程式"; Path = ("HKCU:\" + $store + "\NonPackaged") },
+        [pscustomobject]@{ Name = "netsh"; Path = ("HKCU:\" + $store + "\NonPackaged\C:#Windows#System32#netsh.exe") }
+    )
+    $readings = @()
+    foreach ($level in $levels) {
+        $value = "（無項目）"
+        if (Test-Path -LiteralPath $level.Path) {
+            $value = "（空白）"
+            try {
+                $consent.Known = $true
+                $raw = [string](Get-PropertyValue (Get-ItemProperty -LiteralPath $level.Path -ErrorAction Stop) "Value" "")
+                if (-not [string]::IsNullOrWhiteSpace($raw)) { $value = $raw }
+            }
+            catch { $value = "（無法讀取）" }
+        }
+        if ($value -eq "Deny") { $consent.Denied = $true }
+        $readings += [pscustomobject]@{ Name = $level.Name; Value = $value }
+    }
+    $consent.Levels = @($readings)
+    $consent.Text = (@($readings | ForEach-Object { "{0} {1}" -f $_.Name, $_.Value }) -join "、")
+    return $consent
+}
+
+function Get-RadioSwitchState {
+    param([int]$On, [int]$Off, [int]$Read)
+
+    # 從讀到的 PHY 項目得出一個無線電開關的字（PR #55，第 8 回合）：任一 PHY 回報開就是開，讀到的每個 PHY 都回報關才是關，其餘
+    # 為未知——驅動程式把一部分 PHY 回報為關、其餘不確定，並沒有說無線電是關的，據此把開關寫成關閉的列就是宣稱得比讀到的多。
+    if ($On -gt 0) { return "on" }
+    if ($Read -gt 0 -and $Off -eq $Read) { return "off" }
+    return "unknown"
+}
+
+function Get-WlanInterfaceStates {
+    # WLAN 服務自己對每張無線介面的說法，一次讀取（backlog #62）：介面清單與各介面的連線狀態（WlanEnumInterfaces）、頻道
+    # （WlanQueryInterface，opcode 8）與無線電開關（opcode 4）——而對服務稱為已連線的介面，再問服務願不願意把連線細節交給
+    # 這個程序。最後這一問用的正是 netsh 拿網路名稱、存取點、訊號與速率的那個呼叫（opcode 7，目前連線），而且只看回傳碼：
+    # 5（存取被拒）是 Windows 11 24H2 及之後在桌面應用程式不被允許存取位置時的回答——也就是 netsh 一個介面都不印的那個
+    # 設定——2026-09-12 在參考機器量到，當時清單、狀態、頻道、無線電開關與重試計數器都仍讀得到。不論內容為何都回傳
+    # 這個信封，原因代碼和重試讀取器相同（addtype、open、enumerate、error）。
+    $reading = [pscustomobject][ordered]@{
+        Timestamp   = Get-Date
+        Interfaces  = @()
+        Error       = ""
+        ErrorText   = ""
+        Diagnostics = ""
+        LocationConsent = $null
+    }
+    $reading.LocationConsent = Get-LocationConsentState
+    $api = Get-WlanApiType
+    if ($null -eq $api.Type) {
+        $reading.Error = $api.Error
+        $reading.ErrorText = $api.ErrorText
+        $reading.Diagnostics = $api.Diagnostics
+        return $reading
+    }
+    $apiType = $api.Type
+    $handle = [IntPtr]::Zero
+    $list = [IntPtr]::Zero
+    try {
+        $version = [uint32]0
+        $code = $apiType::WlanOpenHandle(2, [IntPtr]::Zero, [ref]$version, [ref]$handle)
+        if ($code -ne 0) {
+            $reading.Error = "open"
+            $reading.ErrorText = Get-Win32ErrorText $code
+            return $reading
+        }
+        $code = $apiType::WlanEnumInterfaces($handle, [IntPtr]::Zero, [ref]$list)
+        if ($code -ne 0) {
+            $reading.Error = "enumerate"
+            $reading.ErrorText = Get-Win32ErrorText $code
+            return $reading
+        }
+        $count = [System.Runtime.InteropServices.Marshal]::ReadInt32($list, 0)
+        $interfaces = @()
+        for ($index = 0; $index -lt $count; $index++) {
+            # WLAN_INTERFACE_INFO_LIST：兩個 DWORD，接著是一筆筆 WLAN_INTERFACE_INFO——一個 GUID、256 個 WCHAR 的描述、
+            # 一個 DWORD 的狀態——每筆 532 位元組，和重試讀取器讀的版面相同。
+            $base = [IntPtr]($list.ToInt64() + 8 + ($index * 532))
+            $guidBytes = New-Object byte[] 16
+            [System.Runtime.InteropServices.Marshal]::Copy($base, $guidBytes, 0, 16)
+            $guid = New-Object System.Guid (,$guidBytes)
+            $description = ([System.Runtime.InteropServices.Marshal]::PtrToStringUni([IntPtr]($base.ToInt64() + 16), 256)).TrimEnd([char]0)
+            $state = [System.Runtime.InteropServices.Marshal]::ReadInt32($base, 528)
+            $entry = [pscustomobject][ordered]@{
+                Guid            = $guid.ToString().ToLowerInvariant()
+                Description     = $description
+                State           = $state
+                Channel         = $null
+                RadioSoftware   = ""
+                RadioHardware   = ""
+                ConnectionQuery = -1
+            }
+            $queryGuid = $guid
+            # 頻道：一個 DWORD，查詢有回答就讀，沒回答就留空。
+            $size = [uint32]0
+            $data = [IntPtr]::Zero
+            $code = $apiType::WlanQueryInterface($handle, [ref]$queryGuid, 8, [IntPtr]::Zero, [ref]$size, [ref]$data, [IntPtr]::Zero)
+            if ($code -eq 0) {
+                try { if ($size -ge 4) { $entry.Channel = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, 0) } }
+                finally { $apiType::WlanFreeMemory($data) }
+            }
+            # 無線電開關：WLAN_RADIO_STATE 是一個 DWORD 的數量，接著每個 PHY 三個 DWORD——PHY 索引、軟體狀態、硬體狀態，
+            # 各以 1 表示開、2 表示關。每個 PHY 都回報關才算關，任一個回報開就算開，其餘為未知。
+            $size = [uint32]0
+            $data = [IntPtr]::Zero
+            $code = $apiType::WlanQueryInterface($handle, [ref]$queryGuid, 4, [IntPtr]::Zero, [ref]$size, [ref]$data, [IntPtr]::Zero)
+            if ($code -eq 0) {
+                try {
+                    $phys = 0
+                    if ($size -ge 4) { $phys = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, 0) }
+                    $softwareOn = 0; $softwareOff = 0; $hardwareOn = 0; $hardwareOff = 0; $phyRead = 0
+                    for ($phy = 0; $phy -lt $phys; $phy++) {
+                        $offset = 4 + ($phy * 12)
+                        if ($size -lt ($offset + 12)) { break }
+                        $phyRead++
+                        $softwareState = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, $offset + 4)
+                        $hardwareState = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, $offset + 8)
+                        if ($softwareState -eq 1) { $softwareOn++ } elseif ($softwareState -eq 2) { $softwareOff++ }
+                        if ($hardwareState -eq 1) { $hardwareOn++ } elseif ($hardwareState -eq 2) { $hardwareOff++ }
+                    }
+                    $entry.RadioSoftware = Get-RadioSwitchState -On $softwareOn -Off $softwareOff -Read $phyRead
+                    $entry.RadioHardware = Get-RadioSwitchState -On $hardwareOn -Off $hardwareOff -Read $phyRead
+                }
+                finally { $apiType::WlanFreeMemory($data) }
+            }
+            # 連線查詢只看回傳碼，而且只在服務說已連線時才問：資料是 netsh 要印的，這個讀取器只想知道 netsh 印不印得出來。
+            if ($state -eq 1) {
+                $size = [uint32]0
+                $data = [IntPtr]::Zero
+                $code = $apiType::WlanQueryInterface($handle, [ref]$queryGuid, 7, [IntPtr]::Zero, [ref]$size, [ref]$data, [IntPtr]::Zero)
+                $entry.ConnectionQuery = [int]$code
+                if ($code -eq 0 -and $data -ne [IntPtr]::Zero) { $apiType::WlanFreeMemory($data) }
+            }
+            $interfaces += $entry
+        }
+        $reading.Interfaces = @($interfaces)
+        $reading.Timestamp = Get-Date
+        return $reading
+    }
+    catch {
+        $reading.Error = "error"
+        $reading.ErrorText = Get-ExceptionDetails $_
+        $reading.Diagnostics = Get-ExceptionDiagnostics $_
+        return $reading
+    }
+    finally {
+        if ($list -ne [IntPtr]::Zero) { $apiType::WlanFreeMemory($list) }
+        if ($handle -ne [IntPtr]::Zero) { [void]$apiType::WlanCloseHandle($handle, [IntPtr]::Zero) }
+    }
+}
+
 function Get-WifiRetrySnapshot {
     # 每個無線介面 MAC 框計數器的一次讀取，沒有的話帶著原因。不論內容為何都回傳這個信封，和 TCP 快照一樣：由分析那一步
     # 寫出那一列，並附上證據。
@@ -5032,31 +5581,14 @@ function Get-WifiRetrySnapshot {
         ErrorText   = ""
         Diagnostics = ""
     }
-    $apiType = "NetworkHealthCheck.WlanApi" -as [type]
-    if ($null -eq $apiType) {
-        $definition = @'
-[DllImport("wlanapi.dll")] public static extern uint WlanOpenHandle(uint dwClientVersion, IntPtr pReserved, out uint pdwNegotiatedVersion, out IntPtr phClientHandle);
-[DllImport("wlanapi.dll")] public static extern uint WlanCloseHandle(IntPtr hClientHandle, IntPtr pReserved);
-[DllImport("wlanapi.dll")] public static extern uint WlanEnumInterfaces(IntPtr hClientHandle, IntPtr pReserved, out IntPtr ppInterfaceList);
-[DllImport("wlanapi.dll")] public static extern uint WlanQueryInterface(IntPtr hClientHandle, ref Guid pInterfaceGuid, int OpCode, IntPtr pReserved, out uint pdwDataSize, out IntPtr ppData, IntPtr pWlanOpcodeValueType);
-[DllImport("wlanapi.dll")] public static extern void WlanFreeMemory(IntPtr pMemory);
-'@
-        try {
-            Add-Type -Namespace NetworkHealthCheck -Name WlanApi -MemberDefinition $definition -ErrorAction Stop
-            $apiType = "NetworkHealthCheck.WlanApi" -as [type]
-        }
-        catch {
-            $snapshot.Error = "addtype"
-            $snapshot.ErrorText = Get-ExceptionDetails $_
-            $snapshot.Diagnostics = Get-ExceptionDiagnostics $_
-            return $snapshot
-        }
-        if ($null -eq $apiType) {
-            $snapshot.Error = "addtype"
-            $snapshot.ErrorText = "型別已編譯但無法載入。"
-            return $snapshot
-        }
+    $api = Get-WlanApiType
+    if ($null -eq $api.Type) {
+        $snapshot.Error = $api.Error
+        $snapshot.ErrorText = $api.ErrorText
+        $snapshot.Diagnostics = $api.Diagnostics
+        return $snapshot
     }
+    $apiType = $api.Type
 
     $handle = [IntPtr]::Zero
     $list = [IntPtr]::Zero

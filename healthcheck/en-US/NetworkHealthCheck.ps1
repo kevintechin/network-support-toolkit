@@ -4025,29 +4025,42 @@ function Get-WifiAssociationSample {
     # good signal and bad numbers. The envelope is returned whatever it holds, like the retry snapshot and the TCP
     # snapshot; the analysis writes the rows, with the evidence attached. -Moment says where in the run the sample was
     # taken - start, middle, end - so that the rows can say so.
+    # Beside the netsh read, the WLAN service's own account of the interfaces (backlog #62): which ones exist and whether
+    # each is connected, through the Native Wifi API, because netsh's text is not the state. Where desktop programs may
+    # not use the location - Windows 11 24H2 and later, Settings > Privacy & security > Location - netsh prints no
+    # interface at all and exits 1 (measured on the reference machine, 2026-09-12), and an output with no interface in
+    # it read as a computer with no radio. The exit code and the lines are kept for the same reason: the text netsh
+    # prints then is a sentence in the machine's language, which no parser should be asked to read.
     $sample = [pscustomobject][ordered]@{
-        Moment      = $Moment
-        Timestamp   = Get-Date
-        Interfaces  = @()
-        Error       = ""
-        ErrorText   = ""
-        Diagnostics = ""
+        Moment        = $Moment
+        Timestamp     = Get-Date
+        Interfaces    = @()
+        Error         = ""
+        ErrorText     = ""
+        Diagnostics   = ""
+        NetshExitCode = -1
+        NetshLines    = @()
+        Api           = $null
     }
     $netsh = Join-Path $env:SystemRoot "System32\netsh.exe"
     if (-not (Test-Path -LiteralPath $netsh)) {
         $sample.Error = "netsh"
         $sample.ErrorText = "netsh.exe was not found."
-        return $sample
     }
-    try {
-        $lines = @(& $netsh wlan show interfaces 2>&1 | ForEach-Object { [string]$_ })
-        $sample.Interfaces = @(ConvertFrom-NetshWlanOutput -Lines $lines)
+    else {
+        try {
+            $lines = @(& $netsh wlan show interfaces 2>&1 | ForEach-Object { [string]$_ })
+            $sample.NetshExitCode = ConvertTo-IntSafe $LASTEXITCODE 0
+            $sample.NetshLines = @($lines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
+            $sample.Interfaces = @(ConvertFrom-NetshWlanOutput -Lines $lines)
+        }
+        catch {
+            $sample.Error = "exception"
+            $sample.ErrorText = Get-ExceptionDetails $_
+            $sample.Diagnostics = Get-ExceptionDiagnostics $_
+        }
     }
-    catch {
-        $sample.Error = "exception"
-        $sample.ErrorText = Get-ExceptionDetails $_
-        $sample.Diagnostics = Get-ExceptionDiagnostics $_
-    }
+    $sample.Api = Get-WlanInterfaceStates
     return $sample
 }
 
@@ -4063,46 +4076,309 @@ function Add-WifiAssociationSample {
     return $sample
 }
 
+function Get-WifiInterfaceView {
+    param([object]$Sample)
+
+    # One entry per wireless interface either reader of a sample listed (backlog #62), keyed by the GUID both print, so
+    # that the rows read one list: netsh's fields where netsh printed the interface; the WLAN service's state, channel
+    # and radio switches where the service listed it; and Connected decided by the service where it answered - the
+    # state is the service's to know, and what netsh prints for it is a translated word - or by netsh's own fields where
+    # the service could not be asked, said which on every entry (ConnectedSource: wlanapi or netsh). An interface the
+    # service lists and netsh does not is the case the item is about (NetshListed false): netsh printed nothing for it,
+    # either because its whole output was refused - a non-zero exit code, and from the service error 5 on the
+    # connection query, which is the location setting for desktop programs (Refused) - or for a reason the sample can
+    # only report (NetshFailed: a non-zero exit code, the executable missing, the read that threw). A sample without
+    # the service's reading - the older shape, and the test fixtures' - reads as netsh alone.
+    if ($null -eq $Sample) { return @() }
+    $views = @()
+    $api = Get-PropertyValue $Sample "Api" $null
+    $apiInterfaces = @()
+    if ($null -ne $api -and [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $api "Error" ""))) { $apiInterfaces = @(Get-PropertyValue $api "Interfaces" @()) }
+    $exitCode = ConvertTo-IntSafe (Get-PropertyValue $Sample "NetshExitCode" 0) 0
+    $netshFailed = (-not [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" ""))) -or ($exitCode -ne 0)
+    $consent = $null
+    if ($null -ne $api) { $consent = Get-PropertyValue $api "LocationConsent" $null }
+    $locationDenied = ($null -ne $consent -and [bool](Get-PropertyValue $consent "Denied" $false) -and [bool](Get-PropertyValue $consent "Gated" $false))
+    $seen = @{}
+    foreach ($wifi in @(Get-PropertyValue $Sample "Interfaces" @())) {
+        if ($null -eq $wifi) { continue }
+        $guid = ([string](Get-PropertyValue $wifi "Guid" "")).ToLowerInvariant()
+        $key = $guid
+        if ([string]::IsNullOrWhiteSpace($key)) { $key = "mac:" + ([string](Get-PropertyValue $wifi "PhysicalAddress" "")).ToLowerInvariant() }
+        $entry = $null
+        if (-not [string]::IsNullOrWhiteSpace($guid)) {
+            $found = @($apiInterfaces | Where-Object { ([string]$_.Guid).ToLowerInvariant() -eq $guid } | Select-Object -First 1)
+            if ($found.Count -gt 0) { $entry = $found[0] }
+        }
+        $state = $null
+        if ($null -ne $entry) { $state = ConvertTo-IntSafe $entry.State -1 }
+        $channel = Get-PropertyValue $wifi "Channel" $null
+        if ($null -eq $channel -and $null -ne $entry) { $channel = $entry.Channel }
+        $views += [pscustomobject][ordered]@{
+            Key              = $key
+            Guid             = $guid
+            Name             = [string](Get-PropertyValue $wifi "Name" "")
+            Description      = [string](Get-PropertyValue $wifi "Description" "")
+            PhysicalAddress  = [string](Get-PropertyValue $wifi "PhysicalAddress" "")
+            Connected        = $(if ($null -ne $state) { ($state -eq 1) } else { [bool](Get-PropertyValue $wifi "Connected" $false) })
+            ConnectedSource  = $(if ($null -ne $state) { "wlanapi" } else { "netsh" })
+            State            = $state
+            Ssid             = [string](Get-PropertyValue $wifi "Ssid" "")
+            Bssid            = [string](Get-PropertyValue $wifi "Bssid" "")
+            RadioType        = [string](Get-PropertyValue $wifi "RadioType" "")
+            Band             = [string](Get-PropertyValue $wifi "Band" "")
+            Channel          = $channel
+            ReceiveRateMbps  = Get-PropertyValue $wifi "ReceiveRateMbps" $null
+            TransmitRateMbps = Get-PropertyValue $wifi "TransmitRateMbps" $null
+            SignalPercent    = Get-PropertyValue $wifi "SignalPercent" $null
+            Rssi             = Get-PropertyValue $wifi "Rssi" $null
+            Profile          = [string](Get-PropertyValue $wifi "Profile" "")
+            RadioSoftware    = $(if ($null -ne $entry) { [string]$entry.RadioSoftware } else { "" })
+            RadioHardware    = $(if ($null -ne $entry) { [string]$entry.RadioHardware } else { "" })
+            ConnectionQuery  = $(if ($null -ne $entry) { ConvertTo-IntSafe $entry.ConnectionQuery -1 } else { -1 })
+            NetshListed      = $true
+            ApiListed        = ($null -ne $entry)
+            NetshFailed      = $netshFailed
+            AccessDenied     = $false
+            Refused          = $false
+        }
+        $seen[$key] = $true
+    }
+    foreach ($entry in $apiInterfaces) {
+        if ($null -eq $entry) { continue }
+        $guid = ([string]$entry.Guid).ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($guid) -or $seen.ContainsKey($guid)) { continue }
+        $state = ConvertTo-IntSafe $entry.State -1
+        $query = ConvertTo-IntSafe $entry.ConnectionQuery -1
+        $views += [pscustomobject][ordered]@{
+            Key              = $guid
+            Guid             = $guid
+            Name             = ""
+            Description      = [string]$entry.Description
+            PhysicalAddress  = ""
+            Connected        = ($state -eq 1)
+            ConnectedSource  = "wlanapi"
+            State            = $state
+            Ssid             = ""
+            Bssid            = ""
+            RadioType        = ""
+            Band             = ""
+            Channel          = $entry.Channel
+            ReceiveRateMbps  = $null
+            TransmitRateMbps = $null
+            SignalPercent    = $null
+            Rssi             = $null
+            Profile          = ""
+            RadioSoftware    = [string]$entry.RadioSoftware
+            RadioHardware    = [string]$entry.RadioHardware
+            ConnectionQuery  = $query
+            NetshListed      = $false
+            ApiListed        = $true
+            NetshFailed      = $netshFailed
+            AccessDenied     = ($netshFailed -and $query -eq 5)
+            Refused          = ($netshFailed -and $query -eq 5 -and $locationDenied)
+        }
+        $seen[$guid] = $true
+    }
+    return @($views)
+}
+
+function Get-WifiNetshReasonText {
+    param([object]$Sample)
+
+    # Why a sample holds no netsh interface, in one phrase for the rows that have to say it (backlog #62): the executable
+    # missing, the read that threw, or - the measured case - netsh exiting with a code and printing no interface. Empty
+    # where netsh ran and exited 0, which is the ordinary sample.
+    if ($null -eq $Sample) { return "" }
+    $error = [string](Get-PropertyValue $Sample "Error" "")
+    $exitCode = ConvertTo-IntSafe (Get-PropertyValue $Sample "NetshExitCode" 0) 0
+    if ($error -eq "netsh") { return "netsh.exe was not found" }
+    if (-not [string]::IsNullOrWhiteSpace($error)) { return ("netsh wlan show interfaces could not be read ({0})" -f [string](Get-PropertyValue $Sample "ErrorText" "")) }
+    if ($exitCode -ne 0) { return ("netsh wlan show interfaces exited with code {0} and printed no interface" -f $exitCode) }
+    return ""
+}
+
+function Get-WifiRadioSwitchText {
+    param([object]$View)
+
+    # The radio switches as the WLAN service reports them, as a phrase for the rows, or nothing where they were not read:
+    # a radio switched off is one of the causes the old message guessed at, and it can be stated where it is measured.
+    if ($null -eq $View) { return "" }
+    $software = [string](Get-PropertyValue $View "RadioSoftware" "")
+    $hardware = [string](Get-PropertyValue $View "RadioHardware" "")
+    $off = @()
+    if ($software -eq "off") { $off += "in software" }
+    if ($hardware -eq "off") { $off += "by a hardware switch" }
+    if ($off.Count -gt 0) { return ("radio off ({0})" -f ($off -join " and ")) }
+    # On only where both switches are known on (PR #55, round 9): one on beside one unknown names which is which, because
+    # the unknown switch may still hold the radio off and a row that said on would claim more than was read.
+    if ($software -eq "on" -and $hardware -eq "on") { return "radio on" }
+    if ($software -eq "on") { return "radio on in software, the hardware switch unknown" }
+    if ($hardware -eq "on") { return "radio on by the hardware switch, the software state unknown" }
+    return ""
+}
+
 function Add-WifiRfResult {
     if (-not (Test-IsTrueFlag $script:Config.Checks.WifiRf)) { return }
 
     # The one read serves twice (backlog #61's other half): this row, and the middle sample of the access point that
     # Compare-WifiAssociation reads against the samples taken before the first measurement and after the last.
+    # The row reads the sample through Get-WifiInterfaceView (backlog #62): the WLAN service says which interfaces exist
+    # and whether each is connected, netsh supplies the fields, and an interface the service lists as connected while
+    # netsh printed nothing for it is reported as connected with its fields marked not reported - never as no interface.
     $sample = Add-WifiAssociationSample -Moment "middle"
-    if ([string]$sample.Error -eq "netsh") {
-        Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message "netsh.exe was not found; Wi-Fi radio data is unavailable." -Details "" -Tag "wifi" -Scope "IT" | Out-Null
+    $views = @(Get-WifiInterfaceView -Sample $sample)
+    $api = Get-PropertyValue $sample "Api" $null
+    $apiLine = ""
+    # The line ends with this read's own outcome as a token (PR #55, round 5) - wlanapi=ok, or the reader's reason code -
+    # because the chain's oracle judges a radio row without an interface GUID by the read that row was written from,
+    # which the association rows' token, decided by another sample, cannot stand for.
+    if ($null -eq $api) { $apiLine = "WLAN service: not read" }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$api.Error)) { $apiLine = (("WLAN service: not read - {0} {1}" -f $api.Error, $api.ErrorText).Trim() + ("; wlanapi={0}" -f $api.Error)) }
+    else { $apiLine = ("WLAN service: {0} wireless interface(s) listed; wlanapi=ok" -f @($api.Interfaces).Count) }
+    $netshReason = Get-WifiNetshReasonText -Sample $sample
+    if ([string]$sample.Error -eq "netsh" -and $views.Count -eq 0) {
+        Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message "netsh.exe was not found; Wi-Fi radio data is unavailable." -Details $apiLine -Tag "wifi" -Scope "IT" | Out-Null
         return
     }
-    if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error)) {
-        Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "ERROR" -Message "Wi-Fi radio data could not be read." -Details ([string]$sample.ErrorText) -Diagnostics ([string]$sample.Diagnostics) -Tag "wifi" -Scope "IT" | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error) -and $views.Count -eq 0) {
+        Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "ERROR" -Message "Wi-Fi radio data could not be read." -Details ((@([string]$sample.ErrorText, $apiLine) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join [Environment]::NewLine) -Diagnostics ([string]$sample.Diagnostics) -Tag "wifi" -Scope "IT" | Out-Null
         return
     }
 
-    $interfaces = @($sample.Interfaces)
-    $connected = @($interfaces | Where-Object { $_.Connected })
+    $netshCount = @($sample.Interfaces).Count
+    $connected = @($views | Where-Object { $_.Connected })
     if ($connected.Count -eq 0) {
-        Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message "No connected Wi-Fi interface (wired connection, Wi-Fi off, or no wireless adapter)." -Details (("Wireless interfaces reported by netsh: {0}" -f $interfaces.Count) + [Environment]::NewLine + "Manual check: netsh wlan show interfaces") -Tag "wifi" -Scope "IT" | Out-Null
+        # No interface connected, said from what was read rather than guessed at: each interface the WLAN service or
+        # netsh listed with its state and its radio switches, and the counts. A wired computer, a radio switched off or a
+        # machine without a wireless adapter are among the causes; the lines say which of them this run can see.
+        $lines = @()
+        foreach ($view in $views) {
+            $name = $view.Name
+            if ([string]::IsNullOrWhiteSpace($name)) { $name = $view.Description }
+            $stateText = "not connected (netsh printed no association)"
+            if ($null -ne $view.State) { $stateText = Get-WifiInterfaceStateText $view.State }
+            $radio = Get-WifiRadioSwitchText -View $view
+            $lines += ("{0}: {1}{2}" -f (ConvertTo-DisplayString $name), $stateText, $(if ($radio) { ", " + $radio } else { "" }))
+        }
+        if ($views.Count -eq 0) { $message = "No wireless interface is listed by netsh or by the WLAN service - a wired computer, for example; the details say what each reader returned." }
+        else { $message = "No wireless interface is connected: {0} listed, none connected - {1}." -f $views.Count, ($lines -join "; ") }
+        $details = @()
+        $details += $lines
+        $details += ("Wireless interfaces reported by netsh: {0}" -f $netshCount)
+        $details += $apiLine
+        if ($netshReason) { $details += ("netsh: " + $netshReason) }
+        $details += "Method: the WLAN service (WlanEnumInterfaces) for the interfaces and their connection state, netsh wlan show interfaces for the fields."
+        $details += "Manual check: netsh wlan show interfaces"
+        Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message $message -Details ($details -join [Environment]::NewLine) -Tag "wifi" -Scope "IT" | Out-Null
         return
     }
 
     foreach ($wifi in $connected) {
+        $name = $wifi.Name
+        if ([string]::IsNullOrWhiteSpace($name)) { $name = $wifi.Description }
+        $stateSource = "the connection state from the WLAN service (WlanEnumInterfaces)"
+        if ($wifi.ConnectedSource -ne "wlanapi") { $stateSource = "the connection state from the fields netsh printed, because the WLAN service could not be asked" }
+        if (-not $wifi.NetshListed) {
+            # Connected per the WLAN service, and netsh printed nothing for it (backlog #62): the row reports the connection
+            # with the fields it cannot have, and names why. The measured cause is the location setting: netsh's whole
+            # output refused, exit code 1, and the service answering the connection query with error 5 - the same query
+            # netsh makes for the network name, the access point, the signal and the rates. Any other reason is said as
+            # what the sample recorded, without a cause.
+            $channelText = "channel not read"
+            if ($null -ne $wifi.Channel) { $channelText = "channel {0}" -f $wifi.Channel }
+            $queryText = "not asked"
+            if ($wifi.ConnectionQuery -eq 0) { $queryText = "answered" }
+            elseif ($wifi.ConnectionQuery -gt 0) { $queryText = Get-Win32ErrorText $wifi.ConnectionQuery }
+            $consent = $null
+            if ($null -ne $api) { $consent = Get-PropertyValue $api "LocationConsent" $null }
+            $consentText = ""
+            if ($null -ne $consent) { $consentText = [string](Get-PropertyValue $consent "Text" "") }
+            if ($wifi.Refused) {
+                $message = "{0}: connected (WLAN service), {1}; the network name, access point, signal and rates could not be read - {2}, and the WLAN service refused the connection query (error 5, access denied) while the location consent store shows Deny ({3}): on Windows 11 24H2 and later the connection's details need the location setting to allow desktop programs (Settings > Privacy & security > Location)." -f (ConvertTo-DisplayString $name), $channelText, $netshReason, $consentText
+            }
+            elseif ($wifi.AccessDenied) {
+                # Error 5 alone is access denied and no more (PR #55, round 1): without the consent store's Deny on a build that
+                # gates the details, the cause is not named - a policy that restricts WLAN queries would be sent to the wrong setting.
+                $message = "{0}: connected (WLAN service), {1}; the network name, access point, signal and rates could not be read - {2}, and the WLAN service refused the connection query (error 5, access denied) while the location consent store shows no denial ({3}){4}; the cause was not identified - a policy restricting WLAN queries, for example." -f (ConvertTo-DisplayString $name), $channelText, $netshReason, $(if ($consentText) { $consentText } else { "not read" }), $(if ($null -ne $consent -and -not [bool](Get-PropertyValue $consent "Gated" $false)) { ", and this Windows predates the gating of Wi-Fi details behind that setting (24H2)" } else { "" })
+            }
+            else {
+                $reason = $netshReason
+                if ([string]::IsNullOrWhiteSpace($reason)) { $reason = "netsh wlan show interfaces did not list this interface" }
+                $message = "{0}: connected (WLAN service), {1}; the network name, access point, signal and rates could not be read - {2} (connection query: {3})." -f (ConvertTo-DisplayString $name), $channelText, $reason, $queryText
+            }
+            $radio = Get-WifiRadioSwitchText -View $wifi
+            $printed = @(Get-PropertyValue $sample "NetshLines" @())
+            $netshLines = @()
+            if ($printed.Count -gt 0) {
+                $netshLines += "netsh printed:"
+                foreach ($line in @($printed | Select-Object -First 12)) { $netshLines += ("  " + $line) }
+                if ($printed.Count -gt 12) { $netshLines += ("  ... {0} more line(s)" -f ($printed.Count - 12)) }
+            }
+            $details = @()
+            $details += ("Interface (WLAN service): {0}" -f (ConvertTo-DisplayString $wifi.Description))
+            $details += ("Interface GUID: {0}" -f $wifi.Guid)
+            $details += ("Connection state: {0} (WLAN service); netsh exit code {1}; connection query: {2}{3}" -f (Get-WifiInterfaceStateText $wifi.State), (ConvertTo-IntSafe (Get-PropertyValue $sample "NetshExitCode" 0) 0), $queryText, $(if ($consentText) { "; location consent: " + $consentText } else { "" }))
+            $details += ("Channel: {0}{1}" -f $(if ($null -ne $wifi.Channel) { [string]$wifi.Channel } else { "not read" }), $(if ($radio) { "; " + $radio } else { "" }))
+            $details += "Not reported: SSID, BSSID, band, radio type, signal, receive and transmit rates, profile"
+            $details += $netshLines
+            $details += "Method: the WLAN service (WlanEnumInterfaces) for the interface and its connection state, the return code of its connection query (WlanQueryInterface, current connection) for why the fields are missing, netsh wlan show interfaces for the fields it printed."
+            # The manual check follows the witness (PR #55, round 2): the location setting only where the denial was witnessed,
+            # a WLAN-query check for an error 5 without it, the plain read for anything else.
+            if ($wifi.Refused) { $details += "Manual check: netsh wlan show interfaces (it names the setting to open); start ms-settings:privacy-location (Settings > Privacy & security > Location)" }
+            elseif ($wifi.AccessDenied) { $details += "Manual check: netsh wlan show interfaces, and read the message it prints; the WLAN service refused the connection query (error 5) - a policy that restricts WLAN queries would do that" }
+            else { $details += "Manual check: netsh wlan show interfaces, and read the message it prints" }
+            $details += "Note: the client-side view is weaker evidence than the access point's client table."
+            Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message $message -Details ($details -join [Environment]::NewLine) -Tag "wifi" -Scope "IT" | Out-Null
+            continue
+        }
         $rssi = "?"
         if ($null -ne $wifi.SignalPercent) { $rssi = [math]::Round(($wifi.SignalPercent / 2.0) - 100, 0) }
         if ($null -ne $wifi.Rssi) { $rssi = $wifi.Rssi }
         $message = "SSID {0}: signal {1}% (about {2} dBm), {3} {4}, channel {5}, {6}/{7} Mbps." -f $wifi.Ssid, (ConvertTo-DisplayString $wifi.SignalPercent), $rssi, $wifi.RadioType, $wifi.Band, (ConvertTo-DisplayString $wifi.Channel), (ConvertTo-DisplayString $wifi.ReceiveRateMbps), (ConvertTo-DisplayString $wifi.TransmitRateMbps)
-        $details = @(
+        $details = (@(
             ("Interface: {0}" -f $wifi.Name),
+            $(if (-not [string]::IsNullOrWhiteSpace([string]$wifi.Guid)) { "Interface GUID: {0}" -f $wifi.Guid } else { $null }),
+            ("Connection state: {0}" -f $(if ($wifi.ConnectedSource -eq "wlanapi") { "{0} (WLAN service)" -f (Get-WifiInterfaceStateText $wifi.State) } else { "connected (netsh printed an association; the WLAN service could not be asked)" })),
             ("BSSID: {0}" -f (ConvertTo-DisplayString $wifi.Bssid)),
             ("Radio: {0}, band {1}, channel {2}" -f $wifi.RadioType, (ConvertTo-DisplayString $wifi.Band), (ConvertTo-DisplayString $wifi.Channel)),
             ("Rates: receive {0} Mbps, transmit {1} Mbps" -f (ConvertTo-DisplayString $wifi.ReceiveRateMbps), (ConvertTo-DisplayString $wifi.TransmitRateMbps)),
             ("Signal: {0}% (about {1} dBm)" -f (ConvertTo-DisplayString $wifi.SignalPercent), $rssi),
             ("Profile: {0}" -f (ConvertTo-DisplayString $wifi.Profile)),
-            "Method: netsh wlan show interfaces, parsed by field position because labels are localized; dBm is estimated from the signal percentage.",
+            ("Method: netsh wlan show interfaces, parsed by field position because labels are localized; {0}; dBm is estimated from the signal percentage." -f $stateSource),
             "Manual check: netsh wlan show interfaces",
             "Note: the client-side view is weaker evidence than the access point's client table."
-        ) -join [Environment]::NewLine
+        ) | Where-Object { $null -ne $_ }) -join [Environment]::NewLine
         Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message $message -Details $details -Tag "wifi" -Scope "IT" | Out-Null
     }
+}
+
+function Test-WifiSampleReadable {
+    param([object]$Sample)
+
+    # A sample is readable where either reader answered (PR #55, round 6): netsh's read may have failed outright - the
+    # executable missing, the read that threw - while the WLAN service still listed the interfaces and their state, and a
+    # sample skipped on netsh's failure alone would have dropped an interface the service saw. Only a sample both readers
+    # failed is unreadable, and only a run of those is the aggregate failure row.
+    if ($null -eq $Sample) { return $false }
+    # netsh answered only where it ran and exited 0 (PR #55, round 10): a non-zero exit with nothing listed is a failed read as
+    # much as a thrown one, and beside a failed service reading it makes the aggregate row, not the wired computer's.
+    if ([string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" "")) -and (ConvertTo-IntSafe (Get-PropertyValue $Sample "NetshExitCode" 0) 0) -eq 0) { return $true }
+    $api = Get-PropertyValue $Sample "Api" $null
+    return ($null -ne $api -and [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $api "Error" "")))
+}
+
+function Get-WifiApiSummaryText {
+    param([object]$Sample)
+
+    # The WLAN service's reading of a sample in one clause, for the lines that report a sample beside what netsh printed
+    # (backlog #62): how many interfaces it listed, or why it could not be read; nothing for a sample taken without it.
+    if ($null -eq $Sample) { return "" }
+    $api = Get-PropertyValue $Sample "Api" $null
+    if ($null -eq $api) { return "" }
+    $error = [string](Get-PropertyValue $api "Error" "")
+    if (-not [string]::IsNullOrWhiteSpace($error)) { return ("WLAN service: not read - {0} {1}" -f $error, [string](Get-PropertyValue $api "ErrorText" "")).Trim() }
+    return ("WLAN service: {0} wireless interface(s) listed" -f @(Get-PropertyValue $api "Interfaces" @()).Count)
 }
 
 function Compare-WifiAssociation {
@@ -4116,10 +4392,14 @@ function Compare-WifiAssociation {
     # as the alternative and not read - it is readable without elevation, but none of its events carries the BSSID, and
     # the security re-association it does record is written for a key rotation as well as for a roam, so it could not
     # have said more than the samples do. An IT-scope row, like the radio row it extends: evidence, not a verdict.
+    # The interfaces come from both readers of each sample (backlog #62, Get-WifiInterfaceView): an interface the WLAN
+    # service lists while netsh printed nothing for it - the whole output refused where desktop programs may not use the
+    # location - gets its row, with each such sample said as not sampled and the service's state beside it, rather than
+    # the no-interface row a wired computer gets.
     $category = "IT Diagnostics"
     $check = "Wi-Fi association"
     $samples = @(@($Samples) | Where-Object { $null -ne $_ })
-    $readable = @($samples | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.Error) })
+    $readable = @($samples | Where-Object { Test-WifiSampleReadable $_ })
     $momentText = @{ start = "before the first measurement"; middle = "with the IT diagnostics"; end = "after the last measurement" }
     $entries = @()
     $index = 0
@@ -4133,8 +4413,20 @@ function Compare-WifiAssociation {
     }
     $seconds = 0
     if ($samples.Count -ge 2) { try { $seconds = [math]::Round((([datetime]$samples[$samples.Count - 1].Timestamp) - ([datetime]$samples[0].Timestamp)).TotalSeconds, 0) } catch { $seconds = 0 } }
+    # Whether the tool's own WLAN API reader answered in this run, as a token the aggregate rows carry after their reason
+    # (PR #55, round 4): wlanapi=ok, or the reader's reason code - addtype, open, enumerate, error. The chain's oracle reads it
+    # where netsh was refused: a reader that could not answer leaves the tool no interface to write a row for, and the
+    # aggregate rows are then the right shape rather than a missing one. The last sample that carried a reading decides.
+    $apiToken = ""
+    foreach ($sample in $samples) {
+        $sampleApi = Get-PropertyValue $sample "Api" $null
+        if ($null -eq $sampleApi) { continue }
+        $apiError = [string](Get-PropertyValue $sampleApi "Error" "")
+        $apiToken = $(if ([string]::IsNullOrWhiteSpace($apiError)) { "ok" } else { $apiError })
+    }
+    $apiSuffix = $(if ($apiToken) { "; wlanapi=" + $apiToken } else { "" })
     $methodLines = @(
-        ("Method: netsh wlan show interfaces, read {0} time(s) during the test - before the first measurement, with the IT diagnostics and after the last measurement - and the BSSID of each reading compared with the others; the access point is sampled, not watched." -f $samples.Count),
+        ("Method: netsh wlan show interfaces, read {0} time(s) during the test - before the first measurement, with the IT diagnostics and after the last measurement - and the BSSID of each reading compared with the others; the access point is sampled, not watched. Beside each read, the WLAN service's own list of the wireless interfaces and each one's connection state (WlanEnumInterfaces), so that an interface netsh printed nothing for is still known, with its state." -f $samples.Count),
         "Manual check: netsh wlan show interfaces, repeated while the problem is happening",
         "Explanation: the BSSID is the access point's own address, so a change under the same network name is a roam - the air-side event that explains a run with a good signal and bad numbers - and a change of network name is a move to another network. A change between two samples that returned to the same access point cannot be seen here: two equal samples do not exclude one. Windows' WLAN event log records the network and not the access point, so it was not read. This row decides nothing."
     )
@@ -4148,31 +4440,53 @@ function Compare-WifiAssociation {
         # token like a tag - which is how the chain's oracle tells this aggregate row from a per-interface row.
         $first = $samples[0]
         $reason = [string]$first.Error
+        # netsh that ran and exited non-zero with nothing listed, beside a service reading that failed (round 10): the reason
+        # token is refused, and the message says both readers, because neither answered.
+        if ([string]::IsNullOrWhiteSpace($reason)) { $reason = "refused" }
         $message = "The Wi-Fi association could not be sampled: netsh.exe was not found."
-        if ($reason -ne "netsh") { $message = "The Wi-Fi association could not be sampled: netsh wlan show interfaces could not be read." }
-        $lines = @(("Reading: {0}" -f $reason))
-        foreach ($entry in $entries) { $lines += ("{0}: could not be read - {1}" -f $entry.Prefix, [string]$entry.Sample.ErrorText) }
+        if ($reason -eq "refused") { $message = "The Wi-Fi association could not be sampled: netsh wlan show interfaces printed no interface, and the WLAN service could not be read." }
+        elseif ($reason -ne "netsh") { $message = "The Wi-Fi association could not be sampled: netsh wlan show interfaces could not be read." }
+        $lines = @(("Reading: {0}{1}" -f $reason, $apiSuffix))
+        foreach ($entry in $entries) {
+            $apiSummary = Get-WifiApiSummaryText -Sample $entry.Sample
+            $netshText = [string]$entry.Sample.ErrorText
+            if ([string]::IsNullOrWhiteSpace($netshText)) { $netshText = Get-WifiNetshReasonText -Sample $entry.Sample }
+            $lines += ("{0}: could not be read - {1}{2}" -f $entry.Prefix, $netshText, $(if ($apiSummary) { "; " + $apiSummary } else { "" }))
+        }
         Add-CheckResult -Category $category -Check $check -Status "ERROR" -Message $message -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Diagnostics ([string]$first.Diagnostics) -Tag "wifi-association" -Scope "IT" | Out-Null
         return
     }
 
-    # The interfaces, by GUID where netsh printed one and by adapter address where it did not, in the order first seen.
+    # The interfaces either reader listed at any readable sample, by GUID where one was printed and by adapter address
+    # where it was not, in the order first seen; the views of each sample kept for the loop below.
     $keys = New-Object System.Collections.ArrayList
     $names = @{}
-    foreach ($sample in $readable) {
-        foreach ($wifi in @($sample.Interfaces)) {
-            $key = ([string]$wifi.Guid).ToLowerInvariant()
-            if ([string]::IsNullOrWhiteSpace($key)) { $key = ("mac:" + ([string]$wifi.PhysicalAddress).ToLowerInvariant()) }
-            if (-not $names.ContainsKey($key)) { [void]$keys.Add($key); $names[$key] = [string]$wifi.Name }
+    $viewsBySample = @{}
+    for ($i = 0; $i -lt $entries.Count; $i++) {
+        $sample = $entries[$i].Sample
+        if (-not (Test-WifiSampleReadable $sample)) { continue }
+        $views = @(Get-WifiInterfaceView -Sample $sample)
+        $viewsBySample[$i] = $views
+        foreach ($view in $views) {
+            $key = [string]$view.Key
+            if (-not $names.ContainsKey($key)) {
+                [void]$keys.Add($key)
+                $names[$key] = $(if (-not [string]::IsNullOrWhiteSpace([string]$view.Name)) { [string]$view.Name } else { [string]$view.Description })
+            }
         }
     }
     if ($keys.Count -eq 0) {
-        $lines = @("Reading: none")
+        $lines = @(("Reading: none{0}" -f $apiSuffix))
         foreach ($entry in $entries) {
-            if ([string]::IsNullOrWhiteSpace([string]$entry.Sample.Error)) { $lines += ("{0}: no wireless interface listed" -f $entry.Prefix) }
-            else { $lines += ("{0}: could not be read - {1}" -f $entry.Prefix, [string]$entry.Sample.ErrorText) }
+            $sample = $entry.Sample
+            $apiSummary = Get-WifiApiSummaryText -Sample $sample
+            if ([string]::IsNullOrWhiteSpace([string]$sample.Error)) {
+                $reason = Get-WifiNetshReasonText -Sample $sample
+                $lines += ("{0}: no wireless interface listed{1}{2}" -f $entry.Prefix, $(if ($reason) { " - " + $reason } else { "" }), $(if ($apiSummary) { "; " + $apiSummary } else { "" }))
+            }
+            else { $lines += ("{0}: could not be read - {1}{2}" -f $entry.Prefix, [string]$sample.ErrorText, $(if ($apiSummary) { "; " + $apiSummary } else { "" })) }
         }
-        Add-CheckResult -Category $category -Check $check -Status "INFO" -Message ("No wireless interface was listed at any of the {0} sample(s), so there is no access point to compare (a wired computer, or the WLAN service is not running)." -f $samples.Count) -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
+        Add-CheckResult -Category $category -Check $check -Status "INFO" -Message ("No wireless interface was listed at any of the {0} sample(s), by netsh or by the WLAN service, so there is no access point to compare - a wired computer, for example; the sample lines say what each reader returned." -f $samples.Count) -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
         return
     }
 
@@ -4180,34 +4494,76 @@ function Compare-WifiAssociation {
         $name = ConvertTo-DisplayString $names[$key]
         $readings = @()
         $lines = @()
-        foreach ($entry in $entries) {
+        for ($i = 0; $i -lt $entries.Count; $i++) {
+            $entry = $entries[$i]
             $sample = $entry.Sample
-            if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error)) {
+            if (-not (Test-WifiSampleReadable $sample)) {
                 $lines += ("{0}: could not be read - {1}" -f $entry.Prefix, [string]$sample.ErrorText)
                 # A sample that failed is still one of the run's samples (PR #54, round 1): it counts in every total the
                 # message names, and it is neither a reading of the access point nor evidence that the interface was absent.
-                $readings += [pscustomobject]@{ State = "failed"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = "" }
+                $readings += [pscustomobject]@{ State = "failed"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = ""; ApiState = $null; LocationDenied = $false }
                 continue
             }
-            $match = @(@($sample.Interfaces) | Where-Object { (([string]$_.Guid).ToLowerInvariant() -eq $key) -or ([string]::IsNullOrWhiteSpace([string]$_.Guid) -and ("mac:" + ([string]$_.PhysicalAddress).ToLowerInvariant()) -eq $key) } | Select-Object -First 1)
+            $match = @(@($viewsBySample[$i]) | Where-Object { [string]$_.Key -eq $key } | Select-Object -First 1)
             if ($match.Count -eq 0) {
                 $lines += ("{0}: interface not listed" -f $entry.Prefix)
-                $readings += [pscustomobject]@{ State = "absent"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = "" }
+                $readings += [pscustomobject]@{ State = "absent"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = ""; ApiState = $null; LocationDenied = $false }
                 continue
             }
-            $wifi = $match[0]
-            $bssid = ([string]$wifi.Bssid).Trim().ToLowerInvariant()
-            if ([string]::IsNullOrWhiteSpace($bssid)) { $lines += ("{0}: no BSSID reported" -f $entry.Prefix) }
-            else { $lines += ("{0}: SSID {1}, BSSID {2}" -f $entry.Prefix, (ConvertTo-DisplayString $wifi.Ssid), $bssid) }
-            $readings += [pscustomobject]@{ State = $(if ([string]::IsNullOrWhiteSpace($bssid)) { "nobssid" } else { "bssid" }); Moment = [string]$sample.Moment; Bssid = $bssid; Ssid = [string]$wifi.Ssid }
+            $view = $match[0]
+            $apiState = $view.State
+            $stateSuffix = ""
+            if ($null -ne $apiState) { $stateSuffix = "; WLAN service: {0}" -f (Get-WifiInterfaceStateText $apiState) }
+            if ((ConvertTo-IntSafe $view.ConnectionQuery -1) -gt 0) { $stateSuffix += ("; connection query: {0}" -f (Get-Win32ErrorText $view.ConnectionQuery)) }
+            if (-not $view.NetshListed) {
+                # Listed by the WLAN service, nothing printed by netsh (backlog #62): not a reading of the access point and
+                # not an absence either - a sample at which the interface existed and could not be sampled, with the
+                # reason the sample recorded and the state the service gave.
+                $reason = Get-WifiNetshReasonText -Sample $sample
+                if ([string]::IsNullOrWhiteSpace($reason)) { $reason = "netsh wlan show interfaces did not list this interface" }
+                $lines += ("{0}: not sampled - {1}{2}" -f $entry.Prefix, $reason, $stateSuffix)
+                $readings += [pscustomobject]@{ State = "refused"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = ""; ApiState = $apiState; LocationDenied = [bool]$view.Refused }
+                continue
+            }
+            $bssid = ([string]$view.Bssid).Trim().ToLowerInvariant()
+            if ([string]::IsNullOrWhiteSpace($bssid)) { $lines += ("{0}: no BSSID reported{1}" -f $entry.Prefix, $stateSuffix) }
+            else { $lines += (("{0}: SSID {1}, BSSID {2}" -f $entry.Prefix, (ConvertTo-DisplayString $view.Ssid), $bssid) + $stateSuffix) }
+            $readings += [pscustomobject]@{ State = $(if ([string]::IsNullOrWhiteSpace($bssid)) { "nobssid" } else { "bssid" }); Moment = [string]$sample.Moment; Bssid = $bssid; Ssid = [string]$view.Ssid; ApiState = $apiState; LocationDenied = $false }
         }
         $withBssid = @($readings | Where-Object { $_.State -eq "bssid" })
         $absentCount = @($readings | Where-Object { $_.State -eq "absent" }).Count
         $failedCount = @($readings | Where-Object { $_.State -eq "failed" }).Count
-        $listedMoments = @($readings | Where-Object { $_.State -eq "bssid" -or $_.State -eq "nobssid" } | ForEach-Object { $_.Moment })
-        # Never "disconnected" from an absent BSSID (backlog #62): the field can be withheld from an associated radio.
+        $refused = @($readings | Where-Object { $_.State -eq "refused" })
+        $listedMoments = @($readings | Where-Object { $_.State -eq "bssid" -or $_.State -eq "nobssid" -or $_.State -eq "refused" } | ForEach-Object { $_.Moment })
+        # The WLAN service's account of the interface, for the sentences that carry it: at how many of the samples the
+        # service listed it was it connected. Never "disconnected" from an absent BSSID (backlog #62): the field can be
+        # withheld from an associated radio, and the state is the service's to say.
+        $apiKnown = @($readings | Where-Object { $null -ne $_.ApiState })
+        $apiConnected = @($apiKnown | Where-Object { $_.ApiState -eq 1 })
+        $stateSentence = ""
+        if ($apiKnown.Count -gt 0) {
+            if ($apiConnected.Count -eq $apiKnown.Count) { $stateSentence = " The WLAN service reported it connected at all {0} sample(s) it listed it at." -f $apiKnown.Count }
+            elseif ($apiConnected.Count -eq 0) { $stateSentence = " The WLAN service reported it not connected at any of the {0} sample(s) it listed it at." -f $apiKnown.Count }
+            else { $stateSentence = " The WLAN service reported it connected at {0} of the {1} samples it listed it at." -f $apiConnected.Count, $apiKnown.Count }
+        }
+        $locationCount = @($refused | Where-Object { $_.LocationDenied }).Count
+        $refusedSentence = ""
+        if ($refused.Count -gt 0) {
+            if ($locationCount -eq $refused.Count) { $refusedSentence = " At {0} of the samples netsh printed no interface because desktop programs may not use the location (the WLAN service refused the connection query with error 5; Settings > Privacy & security > Location)." -f $refused.Count }
+            else { $refusedSentence = " At {0} of the samples netsh printed no interface; the sample lines say what was recorded." -f $refused.Count }
+        }
         if ($withBssid.Count -eq 0) {
-            $message = "{0}: no access point (BSSID) was reported at any of the {1} sample(s) - the interface was not associated, or netsh did not print the field; see the Wi-Fi radio row." -f $name, $readings.Count
+            if ($refused.Count -gt 0 -and $refused.Count -eq $listedMoments.Count) {
+                if ($locationCount -eq $refused.Count) {
+                    $message = "{0}: the access point could not be sampled at any of the {1} sample(s): netsh printed no interface because desktop programs may not use the location (the WLAN service refused the connection query with error 5; Settings > Privacy & security > Location), so a roam cannot be seen here.{2}" -f $name, $readings.Count, $stateSentence
+                }
+                else {
+                    $message = "{0}: the access point could not be sampled at any of the {1} sample(s): netsh printed no interface (the sample lines say what was recorded), so a roam cannot be seen here.{2}" -f $name, $readings.Count, $stateSentence
+                }
+            }
+            else {
+                $message = ("{0}: no access point (BSSID) was reported at any of the {1} sample(s) - the interface was not associated, or netsh did not print the field; see the Wi-Fi radio row." -f $name, $readings.Count) + $refusedSentence + $stateSentence
+            }
         }
         else {
             $distinctBssids = @($withBssid | ForEach-Object { $_.Bssid } | Select-Object -Unique)
@@ -4225,7 +4581,7 @@ function Compare-WifiAssociation {
                     $message = "{0}: SSID {1} on the same access point (BSSID {2}) at all {3} samples over {4} seconds; a change between two samples that returned to it cannot be seen." -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $readings.Count, $seconds
                 }
                 else {
-                    $message = "{0}: SSID {1} on the same access point (BSSID {2}) at the {3} of {4} samples that reported one; at the other(s) no BSSID was reported, the interface was not listed, or the sample could not be read." -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $withBssid.Count, $readings.Count
+                    $message = "{0}: SSID {1} on the same access point (BSSID {2}) at the {3} of {4} samples that reported one; at the other(s) no BSSID was reported, netsh printed no interface, the interface was not listed, or the sample could not be read." -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $withBssid.Count, $readings.Count
                 }
             }
             else {
@@ -4251,12 +4607,18 @@ function Compare-WifiAssociation {
                     $message = "{0}: the interface moved to another network during the test - {1}. This run's figures were measured across the change." -f $name, ($labels -join ", then ")
                 }
             }
+            $message += $refusedSentence
+            # A BSSID netsh printed beside a service state that is not connected - the two reads are sequential, and the radio
+            # can drop between them - is disclosed rather than hidden behind the address (PR #55, round 3): the service's
+            # account is appended wherever it is not "connected at every sample it listed the interface at".
+            if ($apiKnown.Count -gt 0 -and $apiConnected.Count -lt $apiKnown.Count) { $message += $stateSentence }
         }
         if ($absentCount -gt 0) { $message += (" The interface was not listed at {0} of the samples (disabled or removed at that moment)." -f $absentCount) }
         if ($failedCount -gt 0) { $message += (" {0} of the samples could not be read." -f $failedCount) }
         # The identity line ends with the samples the interface was listed at, as a language-neutral token (samples=start,middle,end):
         # the chain's oracle reads it to tell an interface present at the middle sample only - which neither of its two
-        # readings can have listed - from a row naming an interface nobody listed (PR #54, round 1).
+        # readings can have listed - from a row naming an interface nobody listed (PR #54, round 1). A sample at which the
+        # WLAN service listed the interface and netsh printed nothing counts as listed: the interface was there.
         $identity = @()
         if ($key -like "mac:*") { $identity += ("Interface address: {0}; samples={1}" -f $key.Substring(4), ($listedMoments -join ",")) } else { $identity += ("Interface GUID: {0}; samples={1}" -f $key, ($listedMoments -join ",")) }
         Add-CheckResult -Category $category -Check $check -Status "INFO" -Message $message -Details ((@($lines) + $identity + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
@@ -5208,6 +5570,220 @@ function Merge-TcpEndingSnapshot {
 # as the TCP rows. This row decides nothing: no threshold for a wireless retry rate has a stated basis (backlog #56).
 # ---------------------------------------------------------------------------------------------------------------------
 
+function Get-WlanApiType {
+    # The few lines of P/Invoke the two wireless readers share - the retry counters (backlog #61) and the interface states
+    # (backlog #62) - compiled once per process and found by name afterwards. Why it could not be compiled is returned
+    # rather than thrown, because the row of whichever reader asked names the reason: an application-control policy can
+    # refuse Add-Type, and that is a fact about the machine, not about its network.
+    $result = [pscustomobject][ordered]@{ Type = $null; Error = ""; ErrorText = ""; Diagnostics = "" }
+    $apiType = "NetworkHealthCheck.WlanApi" -as [type]
+    if ($null -ne $apiType) { $result.Type = $apiType; return $result }
+    $definition = @'
+[DllImport("wlanapi.dll")] public static extern uint WlanOpenHandle(uint dwClientVersion, IntPtr pReserved, out uint pdwNegotiatedVersion, out IntPtr phClientHandle);
+[DllImport("wlanapi.dll")] public static extern uint WlanCloseHandle(IntPtr hClientHandle, IntPtr pReserved);
+[DllImport("wlanapi.dll")] public static extern uint WlanEnumInterfaces(IntPtr hClientHandle, IntPtr pReserved, out IntPtr ppInterfaceList);
+[DllImport("wlanapi.dll")] public static extern uint WlanQueryInterface(IntPtr hClientHandle, ref Guid pInterfaceGuid, int OpCode, IntPtr pReserved, out uint pdwDataSize, out IntPtr ppData, IntPtr pWlanOpcodeValueType);
+[DllImport("wlanapi.dll")] public static extern void WlanFreeMemory(IntPtr pMemory);
+'@
+    try {
+        Add-Type -Namespace NetworkHealthCheck -Name WlanApi -MemberDefinition $definition -ErrorAction Stop
+        $apiType = "NetworkHealthCheck.WlanApi" -as [type]
+    }
+    catch {
+        $result.Error = "addtype"
+        $result.ErrorText = Get-ExceptionDetails $_
+        $result.Diagnostics = Get-ExceptionDiagnostics $_
+        return $result
+    }
+    if ($null -eq $apiType) {
+        $result.Error = "addtype"
+        $result.ErrorText = "The type was compiled but could not be loaded."
+        return $result
+    }
+    $result.Type = $apiType
+    return $result
+}
+
+function Get-LocationConsentState {
+    # The location consent as Windows records it, read so that a denied connection query has a second witness before a
+    # row may name the location setting as the cause (PR #55, round 1): error 5 is access denied and no more, and a
+    # policy that restricts WLAN queries, or a Windows without the gating, would otherwise be reported as a consent
+    # problem and sent to the wrong setting. The consent store (CapabilityAccessManager\ConsentStore\location) holds one
+    # value per level - the user's, the device's, the desktop programs' and, under NonPackaged, netsh's own entry - and
+    # Deny at any of them denies (measured at the user level and at the device level on 2026-09-12); the gating of
+    # Wi-Fi details behind it exists since Windows 11 24H2, build 26100. A store that cannot be read is no witness.
+    $consent = [pscustomobject][ordered]@{
+        Known  = $false
+        Denied = $false
+        Build  = 0
+        Gated  = $false
+        Levels = @()
+        Text   = ""
+    }
+    try { $consent.Build = [int][Environment]::OSVersion.Version.Build } catch { $consent.Build = 0 }
+    $consent.Gated = ($consent.Build -ge 26100)
+    $store = "Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location"
+    $levels = @(
+        [pscustomobject]@{ Name = "user"; Path = ("HKCU:\" + $store) },
+        [pscustomobject]@{ Name = "device"; Path = ("HKLM:\" + $store) },
+        [pscustomobject]@{ Name = "desktop apps"; Path = ("HKCU:\" + $store + "\NonPackaged") },
+        [pscustomobject]@{ Name = "netsh"; Path = ("HKCU:\" + $store + "\NonPackaged\C:#Windows#System32#netsh.exe") }
+    )
+    $readings = @()
+    foreach ($level in $levels) {
+        $value = "(no entry)"
+        if (Test-Path -LiteralPath $level.Path) {
+            $value = "(empty)"
+            try {
+                $consent.Known = $true
+                $raw = [string](Get-PropertyValue (Get-ItemProperty -LiteralPath $level.Path -ErrorAction Stop) "Value" "")
+                if (-not [string]::IsNullOrWhiteSpace($raw)) { $value = $raw }
+            }
+            catch { $value = "(unreadable)" }
+        }
+        if ($value -eq "Deny") { $consent.Denied = $true }
+        $readings += [pscustomobject]@{ Name = $level.Name; Value = $value }
+    }
+    $consent.Levels = @($readings)
+    $consent.Text = (@($readings | ForEach-Object { "{0} {1}" -f $_.Name, $_.Value }) -join ", ")
+    return $consent
+}
+
+function Get-RadioSwitchState {
+    param([int]$On, [int]$Off, [int]$Read)
+
+    # One radio switch's word from the PHY entries read (PR #55, round 8): on where any PHY reports on, off only where every
+    # PHY read reports off, unknown otherwise - a driver reporting some PHYs off and the rest indeterminate has not said
+    # the radio is off, and a row that called a switch disabled on that would claim more than was read.
+    if ($On -gt 0) { return "on" }
+    if ($Read -gt 0 -and $Off -eq $Read) { return "off" }
+    return "unknown"
+}
+
+function Get-WlanInterfaceStates {
+    # One reading of what the WLAN service itself says about every wireless interface (backlog #62): the list of them
+    # and each one's connection state (WlanEnumInterfaces), its channel (WlanQueryInterface, opcode 8) and its radio
+    # switches (opcode 4) - and, for an interface the service calls connected, whether the service would hand this
+    # process the connection's details at all. That last is asked with the very call netsh makes for the network name,
+    # the access point, the signal and the rates (opcode 7, the current connection), and only for its return code: 5,
+    # access denied, is what Windows 11 24H2 and later answer while desktop programs may not use the location - the
+    # setting under which netsh prints no interface - measured on the reference machine on 2026-09-12 with the list,
+    # the state, the channel, the radio switches and the retry counters all still readable. The envelope is returned
+    # whatever it holds, with the same reason codes as the retry reader (addtype, open, enumerate, error).
+    $reading = [pscustomobject][ordered]@{
+        Timestamp   = Get-Date
+        Interfaces  = @()
+        Error       = ""
+        ErrorText   = ""
+        Diagnostics = ""
+        LocationConsent = $null
+    }
+    $reading.LocationConsent = Get-LocationConsentState
+    $api = Get-WlanApiType
+    if ($null -eq $api.Type) {
+        $reading.Error = $api.Error
+        $reading.ErrorText = $api.ErrorText
+        $reading.Diagnostics = $api.Diagnostics
+        return $reading
+    }
+    $apiType = $api.Type
+    $handle = [IntPtr]::Zero
+    $list = [IntPtr]::Zero
+    try {
+        $version = [uint32]0
+        $code = $apiType::WlanOpenHandle(2, [IntPtr]::Zero, [ref]$version, [ref]$handle)
+        if ($code -ne 0) {
+            $reading.Error = "open"
+            $reading.ErrorText = Get-Win32ErrorText $code
+            return $reading
+        }
+        $code = $apiType::WlanEnumInterfaces($handle, [IntPtr]::Zero, [ref]$list)
+        if ($code -ne 0) {
+            $reading.Error = "enumerate"
+            $reading.ErrorText = Get-Win32ErrorText $code
+            return $reading
+        }
+        $count = [System.Runtime.InteropServices.Marshal]::ReadInt32($list, 0)
+        $interfaces = @()
+        for ($index = 0; $index -lt $count; $index++) {
+            # WLAN_INTERFACE_INFO_LIST: two DWORDs, then WLAN_INTERFACE_INFO entries of a GUID, 256 WCHARs of
+            # description and a DWORD state - 532 bytes each, the layout the retry reader reads.
+            $base = [IntPtr]($list.ToInt64() + 8 + ($index * 532))
+            $guidBytes = New-Object byte[] 16
+            [System.Runtime.InteropServices.Marshal]::Copy($base, $guidBytes, 0, 16)
+            $guid = New-Object System.Guid (,$guidBytes)
+            $description = ([System.Runtime.InteropServices.Marshal]::PtrToStringUni([IntPtr]($base.ToInt64() + 16), 256)).TrimEnd([char]0)
+            $state = [System.Runtime.InteropServices.Marshal]::ReadInt32($base, 528)
+            $entry = [pscustomobject][ordered]@{
+                Guid            = $guid.ToString().ToLowerInvariant()
+                Description     = $description
+                State           = $state
+                Channel         = $null
+                RadioSoftware   = ""
+                RadioHardware   = ""
+                ConnectionQuery = -1
+            }
+            $queryGuid = $guid
+            # The channel: a DWORD, read where the query answers and left empty where it does not.
+            $size = [uint32]0
+            $data = [IntPtr]::Zero
+            $code = $apiType::WlanQueryInterface($handle, [ref]$queryGuid, 8, [IntPtr]::Zero, [ref]$size, [ref]$data, [IntPtr]::Zero)
+            if ($code -eq 0) {
+                try { if ($size -ge 4) { $entry.Channel = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, 0) } }
+                finally { $apiType::WlanFreeMemory($data) }
+            }
+            # The radio switches: WLAN_RADIO_STATE is a DWORD count and then, per PHY, three DWORDs - the PHY index, the
+            # software state and the hardware state, each 1 for on and 2 for off. The radio is off where every PHY
+            # reports off, on where any reports on, unknown otherwise.
+            $size = [uint32]0
+            $data = [IntPtr]::Zero
+            $code = $apiType::WlanQueryInterface($handle, [ref]$queryGuid, 4, [IntPtr]::Zero, [ref]$size, [ref]$data, [IntPtr]::Zero)
+            if ($code -eq 0) {
+                try {
+                    $phys = 0
+                    if ($size -ge 4) { $phys = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, 0) }
+                    $softwareOn = 0; $softwareOff = 0; $hardwareOn = 0; $hardwareOff = 0; $phyRead = 0
+                    for ($phy = 0; $phy -lt $phys; $phy++) {
+                        $offset = 4 + ($phy * 12)
+                        if ($size -lt ($offset + 12)) { break }
+                        $phyRead++
+                        $softwareState = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, $offset + 4)
+                        $hardwareState = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, $offset + 8)
+                        if ($softwareState -eq 1) { $softwareOn++ } elseif ($softwareState -eq 2) { $softwareOff++ }
+                        if ($hardwareState -eq 1) { $hardwareOn++ } elseif ($hardwareState -eq 2) { $hardwareOff++ }
+                    }
+                    $entry.RadioSoftware = Get-RadioSwitchState -On $softwareOn -Off $softwareOff -Read $phyRead
+                    $entry.RadioHardware = Get-RadioSwitchState -On $hardwareOn -Off $hardwareOff -Read $phyRead
+                }
+                finally { $apiType::WlanFreeMemory($data) }
+            }
+            # The connection query, for its return code alone, and only where the service says connected: the data is
+            # netsh's to print, and this reader wants to know whether netsh could have.
+            if ($state -eq 1) {
+                $size = [uint32]0
+                $data = [IntPtr]::Zero
+                $code = $apiType::WlanQueryInterface($handle, [ref]$queryGuid, 7, [IntPtr]::Zero, [ref]$size, [ref]$data, [IntPtr]::Zero)
+                $entry.ConnectionQuery = [int]$code
+                if ($code -eq 0 -and $data -ne [IntPtr]::Zero) { $apiType::WlanFreeMemory($data) }
+            }
+            $interfaces += $entry
+        }
+        $reading.Interfaces = @($interfaces)
+        $reading.Timestamp = Get-Date
+        return $reading
+    }
+    catch {
+        $reading.Error = "error"
+        $reading.ErrorText = Get-ExceptionDetails $_
+        $reading.Diagnostics = Get-ExceptionDiagnostics $_
+        return $reading
+    }
+    finally {
+        if ($list -ne [IntPtr]::Zero) { $apiType::WlanFreeMemory($list) }
+        if ($handle -ne [IntPtr]::Zero) { [void]$apiType::WlanCloseHandle($handle, [IntPtr]::Zero) }
+    }
+}
+
 function Get-WifiRetrySnapshot {
     # One reading of every wireless interface's MAC frame counters, with the reason where there is none. The envelope
     # is returned whatever it holds, like the TCP snapshot: the analysis writes the row, with the evidence attached.
@@ -5218,31 +5794,14 @@ function Get-WifiRetrySnapshot {
         ErrorText   = ""
         Diagnostics = ""
     }
-    $apiType = "NetworkHealthCheck.WlanApi" -as [type]
-    if ($null -eq $apiType) {
-        $definition = @'
-[DllImport("wlanapi.dll")] public static extern uint WlanOpenHandle(uint dwClientVersion, IntPtr pReserved, out uint pdwNegotiatedVersion, out IntPtr phClientHandle);
-[DllImport("wlanapi.dll")] public static extern uint WlanCloseHandle(IntPtr hClientHandle, IntPtr pReserved);
-[DllImport("wlanapi.dll")] public static extern uint WlanEnumInterfaces(IntPtr hClientHandle, IntPtr pReserved, out IntPtr ppInterfaceList);
-[DllImport("wlanapi.dll")] public static extern uint WlanQueryInterface(IntPtr hClientHandle, ref Guid pInterfaceGuid, int OpCode, IntPtr pReserved, out uint pdwDataSize, out IntPtr ppData, IntPtr pWlanOpcodeValueType);
-[DllImport("wlanapi.dll")] public static extern void WlanFreeMemory(IntPtr pMemory);
-'@
-        try {
-            Add-Type -Namespace NetworkHealthCheck -Name WlanApi -MemberDefinition $definition -ErrorAction Stop
-            $apiType = "NetworkHealthCheck.WlanApi" -as [type]
-        }
-        catch {
-            $snapshot.Error = "addtype"
-            $snapshot.ErrorText = Get-ExceptionDetails $_
-            $snapshot.Diagnostics = Get-ExceptionDiagnostics $_
-            return $snapshot
-        }
-        if ($null -eq $apiType) {
-            $snapshot.Error = "addtype"
-            $snapshot.ErrorText = "The type was compiled but could not be loaded."
-            return $snapshot
-        }
+    $api = Get-WlanApiType
+    if ($null -eq $api.Type) {
+        $snapshot.Error = $api.Error
+        $snapshot.ErrorText = $api.ErrorText
+        $snapshot.Diagnostics = $api.Diagnostics
+        return $snapshot
     }
+    $apiType = $api.Type
 
     $handle = [IntPtr]::Zero
     $list = [IntPtr]::Zero
