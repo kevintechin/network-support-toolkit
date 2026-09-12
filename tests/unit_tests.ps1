@@ -1910,7 +1910,9 @@ $refused = Get-WifiRetrySnapshot
 Remove-Item function:Add-Type -ErrorAction SilentlyContinue
 Assert-Equal '#61 reader: a refused compile is the addtype reason, with the text' ("{0}/{1}" -f $refused.Error, ($refused.ErrorText -match 'compiler refused')) 'addtype/True'
 $live = Get-WifiRetrySnapshot
-Assert-Equal '#61 reader: read for real on this machine - interfaces with PHY entries, or a named reason' ((([string]$live.Error -eq '') -and (@($live.Interfaces).Count -ge 1) -and (@($live.Interfaces[0].Phys).Count -ge 1)) -or ([string]$live.Error -in @('none', 'open', 'enumerate'))) True
+# A listed interface whose statistics query failed - a disconnected or driver-incompatible adapter - is a supported
+# reading too (round 10): it carries the query's error and no PHY entries, and the tool writes its Unable-to-Check row.
+Assert-Equal '#61 reader: read for real on this machine - every interface with PHY entries or a query error, or a named reason' ((([string]$live.Error -eq '') -and (@($live.Interfaces).Count -ge 1) -and (@(@($live.Interfaces) | Where-Object { -not ((@($_.Phys).Count -ge 1) -or ([int]$_.QueryError -ne 0)) }).Count -eq 0)) -or ([string]$live.Error -in @('none', 'open', 'enumerate'))) True
 $liveText = 'no reading: ' + $live.Error + ' ' + $live.ErrorText
 if ([string]$live.Error -eq '') { $liveText = ('{0} interface(s); first: {1}, state {2}, {3} PHY entries' -f @($live.Interfaces).Count, $live.Interfaces[0].Description, $live.Interfaces[0].State, @($live.Interfaces[0].Phys).Count) }
 Write-Output ('[INFO] #61 reader on this machine: ' + $liveText)
