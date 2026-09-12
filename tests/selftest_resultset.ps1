@@ -36,7 +36,7 @@ $text = Get-Content -LiteralPath $json.FullName -Raw -Encoding UTF8
 function Load { $text | ConvertFrom-Json }
 
 # The fixture and its facts.
-$facts = @{ ConnectedAdapters = 3; Gateways = @('192.0.2.1'); DnsServers = @(); Source = 'NetCmdlets'; DataSourceRow = $false; SnapshotStepFailed = $false; TcpCounters = @{ TCPv4 = $true; TCPv6 = $true }; AdapterStatistics = $true; WifiInterfaces = 1 }
+$facts = @{ ConnectedAdapters = 3; Gateways = @('192.0.2.1'); DnsServers = @(); Source = 'NetCmdlets'; DataSourceRow = $false; SnapshotStepFailed = $false; TcpCounters = @{ TCPv4 = $true; TCPv6 = $true }; AdapterStatistics = $true; WifiInterfaces = 1; WlanInterfaces = 1 }
 function New-Row($Template, [string]$Tag, [string]$Check, [string]$Status, [string]$Scope = 'Main') {
     $row = $Template.PSObject.Copy(); $row.Tag = $Tag; $row.Check = $Check; $row.Status = $Status; $row.Scope = $Scope; $row.Message = 'fixture row'; return $row
 }
@@ -151,6 +151,15 @@ $r = ConvertTo-FailedFallbackShape (New-Fixture); Assert-Case 'the same shape wi
 $twoWifi = With $facts @{ WifiInterfaces = 2 }
 $r = New-Fixture; $r.Results = @($r.Results) + @(New-Row $r.Results[0] 'wifi' 'Wi-Fi radio' 'INFO' 'IT'); Assert-Case 'two connected wireless interfaces with two wifi rows' @(Test-ResultSet $r $cfg @{} $twoWifi) $true ''
 $r = New-Fixture; Assert-Case 'two connected wireless interfaces but one wifi row' @(Test-ResultSet $r $cfg @{} $twoWifi) $false 'wifi: 1 row(s), expected 2'
+# The Wi-Fi retry row (backlog #61): one per wireless interface the machine lists, none when the configuration switches
+# the reader off - and the report's own ChecksEnabled has to agree with the file.
+$twoWlan = With $facts @{ WlanInterfaces = 2 }
+$r = New-Fixture; $r.Results = @($r.Results) + @(New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'INFO'); Assert-Case 'two wireless interfaces with two wifi-retry rows' @(Test-ResultSet $r $cfg @{} $twoWlan) $true ''
+$r = New-Fixture; Assert-Case 'two wireless interfaces but one wifi-retry row' @(Test-ResultSet $r $cfg @{} $twoWlan) $false 'wifi-retry: 1 row(s), expected 2'
+$cfgNoRetry = Read-Config $ConfigDir; $cfgNoRetry.Checks.WifiRetryCounters = $false
+$r = New-Fixture; Assert-Case 'the reader switched off in the file but the row still written' @(Test-ResultSet $r $cfgNoRetry @{} $facts) $false 'wifi-retry: 1 row(s), expected 0'
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }); $r.RunOptions.ChecksEnabled.WifiRetryCounters = $false; Assert-Case 'the reader switched off: no row, and the report says so' @(Test-ResultSet $r $cfgNoRetry @{} $facts) $true ''
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }); Assert-Case 'the reader switched off in the file but the report claims it on' @(Test-ResultSet $r $cfgNoRetry @{} $facts) $false 'ChecksEnabled for WifiRetryCounters'
 # Exactly one adapter-statistics sample failing on a machine where the cmdlet works: one step-error row and the aggregate row.
 function ConvertTo-OneSampleFailed($Report) {
     $Report.Results = @($Report.Results | Where-Object { $_.Tag -ne 'adapter-errors' })

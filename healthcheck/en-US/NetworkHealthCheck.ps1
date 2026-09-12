@@ -783,6 +783,7 @@ function Get-DefaultConfig {
             Traceroute       = $true
             TracerouteHops   = 3
             DriverInfo       = $true
+            WifiRetryCounters = $true
         }
     }
 }
@@ -1050,6 +1051,7 @@ function Set-RunOptions {
             ProxySettings   = Test-IsTrueFlag $config.Checks.ProxySettings
             Traceroute      = Test-IsTrueFlag $config.Checks.Traceroute
             DriverInfo      = Test-IsTrueFlag $config.Checks.DriverInfo
+            WifiRetryCounters = Test-IsTrueFlag $config.Checks.WifiRetryCounters
         }
     }
     return $script:RunOptions
@@ -1740,7 +1742,7 @@ function Test-ConfigurationSemantics {
     }
 
     $checks = $script:Config.Checks
-    foreach ($flagName in @("WifiRf", "RouteTable", "GatewayNeighbor", "ProxySettings", "Traceroute", "DriverInfo")) {
+    foreach ($flagName in @("WifiRf", "RouteTable", "GatewayNeighbor", "ProxySettings", "Traceroute", "DriverInfo", "WifiRetryCounters")) {
         $flagValue = Get-PropertyValue $checks $flagName
         if ($null -ne $flagValue -and -not ($flagValue -is [bool])) {
             [void]$inputWarnings.Add("Checks.$flagName must be true or false (current value: $flagValue); the check is disabled.")
@@ -4501,6 +4503,313 @@ function Merge-TcpEndingSnapshot {
     }
 }
 
+# ---------------------------------------------------------------------------------------------------------------------
+# Wi-Fi retransmissions (backlog #61, the retry-counter half; v1.2.12). The 802.11 MAC retries a frame whose
+# acknowledgement did not come back, and a retry that succeeds is absorbed as delay: IP and TCP see no loss, the ping
+# rows see a slower reply, and the TCP retransmission rows see nothing at all. The retry rate is therefore the one
+# figure that separates the air between this adapter and its access point from everything behind the access point,
+# and Windows exposes it through the Native Wifi API only: WlanQueryInterface with wlan_intf_opcode_statistics
+# returns WLAN_STATISTICS, whose PhyCounters array carries the MAC frame counters per PHY. There is no netsh
+# equivalent, so the reader is P/Invoke through Add-Type - unmanaged code in a script that is otherwise plain
+# PowerShell, a choice the v1.2 design note declined for the RF data because netsh could supply it and this item
+# takes because nothing else can (decided 2026-09-12, the five points in the backlog's Status line). The compile
+# takes about 0.7 s on the reference machine and leaves nothing on disk; an application-control policy that refuses
+# the C# compiler or an in-memory assembly stops it, and the row then says so and decides nothing.
+#
+# What was measured before this was written (2026-09-10 and 2026-09-12, Intel Wi-Fi 6E AX211, Windows 11): the query
+# succeeds without elevation; the buffer is 1088 bytes for six PHYs, which is what the documented layout predicts; and
+# the driver writes the interface's totals into EVERY PHY entry - six identical rows of counters, moving in step. So
+# the entries are never added together: the interface's figure is the entry whose transmitted-frame delta is largest,
+# and the row says how many entries moved and whether they agreed. A driver that attributes frames per PHY would give
+# the same answer for a run on one PHY, and a run that changed PHY would be undercounted rather than counted six times.
+# The rate is retries / (transmitted + abandoned): ullRetryCount counts frames that succeeded after one or more
+# retransmissions, ullFailedCount the frames given up after the retry limit, which ullTransmittedFrameCount does not
+# include; ullMultipleRetryCount is a subset of ullRetryCount and is listed as one. The counters are cumulative for the
+# association, so the before-and-after delta over this run is what is reported, with the same backwards-counter branch
+# as the TCP rows. This row decides nothing: no threshold for a wireless retry rate has a stated basis (backlog #56).
+# ---------------------------------------------------------------------------------------------------------------------
+
+function Get-WifiRetrySnapshot {
+    # One reading of every wireless interface's MAC frame counters, with the reason where there is none. The envelope
+    # is returned whatever it holds, like the TCP snapshot: the analysis writes the row, with the evidence attached.
+    $snapshot = [pscustomobject][ordered]@{
+        Timestamp   = Get-Date
+        Interfaces  = @()
+        Error       = ""
+        ErrorText   = ""
+        Diagnostics = ""
+    }
+    $apiType = "NetworkHealthCheck.WlanApi" -as [type]
+    if ($null -eq $apiType) {
+        $definition = @'
+[DllImport("wlanapi.dll")] public static extern uint WlanOpenHandle(uint dwClientVersion, IntPtr pReserved, out uint pdwNegotiatedVersion, out IntPtr phClientHandle);
+[DllImport("wlanapi.dll")] public static extern uint WlanCloseHandle(IntPtr hClientHandle, IntPtr pReserved);
+[DllImport("wlanapi.dll")] public static extern uint WlanEnumInterfaces(IntPtr hClientHandle, IntPtr pReserved, out IntPtr ppInterfaceList);
+[DllImport("wlanapi.dll")] public static extern uint WlanQueryInterface(IntPtr hClientHandle, ref Guid pInterfaceGuid, int OpCode, IntPtr pReserved, out uint pdwDataSize, out IntPtr ppData, IntPtr pWlanOpcodeValueType);
+[DllImport("wlanapi.dll")] public static extern void WlanFreeMemory(IntPtr pMemory);
+'@
+        try {
+            Add-Type -Namespace NetworkHealthCheck -Name WlanApi -MemberDefinition $definition -ErrorAction Stop
+            $apiType = "NetworkHealthCheck.WlanApi" -as [type]
+        }
+        catch {
+            $snapshot.Error = "addtype"
+            $snapshot.ErrorText = Get-ExceptionDetails $_
+            $snapshot.Diagnostics = Get-ExceptionDiagnostics $_
+            return $snapshot
+        }
+        if ($null -eq $apiType) {
+            $snapshot.Error = "addtype"
+            $snapshot.ErrorText = "The type was compiled but could not be loaded."
+            return $snapshot
+        }
+    }
+
+    $handle = [IntPtr]::Zero
+    $list = [IntPtr]::Zero
+    try {
+        $version = [uint32]0
+        $code = $apiType::WlanOpenHandle(2, [IntPtr]::Zero, [ref]$version, [ref]$handle)
+        if ($code -ne 0) {
+            $snapshot.Error = "open"
+            $snapshot.ErrorText = Get-Win32ErrorText $code
+            return $snapshot
+        }
+        $code = $apiType::WlanEnumInterfaces($handle, [IntPtr]::Zero, [ref]$list)
+        if ($code -ne 0) {
+            $snapshot.Error = "enumerate"
+            $snapshot.ErrorText = Get-Win32ErrorText $code
+            return $snapshot
+        }
+        $count = [System.Runtime.InteropServices.Marshal]::ReadInt32($list, 0)
+        if ($count -le 0) {
+            $snapshot.Error = "none"
+            return $snapshot
+        }
+        $interfaces = @()
+        for ($index = 0; $index -lt $count; $index++) {
+            # WLAN_INTERFACE_INFO_LIST: two DWORDs, then WLAN_INTERFACE_INFO entries of a GUID, 256 WCHARs of
+            # description and a DWORD state - 532 bytes each.
+            $base = [IntPtr]($list.ToInt64() + 8 + ($index * 532))
+            $guidBytes = New-Object byte[] 16
+            [System.Runtime.InteropServices.Marshal]::Copy($base, $guidBytes, 0, 16)
+            $guid = New-Object System.Guid (,$guidBytes)
+            $description = ([System.Runtime.InteropServices.Marshal]::PtrToStringUni([IntPtr]($base.ToInt64() + 16), 256)).TrimEnd([char]0)
+            $state = [System.Runtime.InteropServices.Marshal]::ReadInt32($base, 528)
+            $entry = [pscustomobject][ordered]@{
+                Guid           = $guid.ToString()
+                Description    = $description
+                State          = $state
+                Phys           = @()
+                QueryError     = 0
+                QueryErrorText = ""
+            }
+            $size = [uint32]0
+            $data = [IntPtr]::Zero
+            $queryGuid = $guid
+            $code = $apiType::WlanQueryInterface($handle, [ref]$queryGuid, 0x10000101, [IntPtr]::Zero, [ref]$size, [ref]$data, [IntPtr]::Zero)
+            if ($code -ne 0) {
+                $entry.QueryError = [int]$code
+                $entry.QueryErrorText = Get-Win32ErrorText $code
+                $interfaces += $entry
+                continue
+            }
+            try {
+                # WLAN_STATISTICS: three ULONGLONGs, two WLAN_MAC_FRAME_STATISTICS of twelve ULONGLONGs, dwNumberOfPhys
+                # at 216 with its alignment, then WLAN_PHY_FRAME_STATISTICS entries of eighteen ULONGLONGs from 224 -
+                # the layout the 1088-byte buffer for six PHYs confirmed. A buffer shorter than its own count says is
+                # reported as such rather than read past its end.
+                $numberOfPhys = 0
+                if ($size -ge 220) { $numberOfPhys = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, 216) }
+                if ($numberOfPhys -lt 1 -or $size -lt (224 + ($numberOfPhys * 144))) {
+                    $entry.QueryError = -1
+                    $entry.QueryErrorText = ("The statistics buffer ({0} bytes) does not hold the {1} PHY entries it declares." -f $size, $numberOfPhys)
+                }
+                else {
+                    $phys = @()
+                    for ($phy = 0; $phy -lt $numberOfPhys; $phy++) {
+                        $offset = 224 + ($phy * 144)
+                        $phys += [pscustomobject][ordered]@{
+                            Index         = $phy
+                            Transmitted   = [uint64][System.Runtime.InteropServices.Marshal]::ReadInt64($data, $offset)
+                            Failed        = [uint64][System.Runtime.InteropServices.Marshal]::ReadInt64($data, $offset + 16)
+                            Retry         = [uint64][System.Runtime.InteropServices.Marshal]::ReadInt64($data, $offset + 24)
+                            MultipleRetry = [uint64][System.Runtime.InteropServices.Marshal]::ReadInt64($data, $offset + 32)
+                            AckFailure    = [uint64][System.Runtime.InteropServices.Marshal]::ReadInt64($data, $offset + 72)
+                            Received      = [uint64][System.Runtime.InteropServices.Marshal]::ReadInt64($data, $offset + 80)
+                        }
+                    }
+                    $entry.Phys = $phys
+                }
+            }
+            finally {
+                $apiType::WlanFreeMemory($data)
+            }
+            $interfaces += $entry
+        }
+        $snapshot.Interfaces = @($interfaces)
+        $snapshot.Timestamp = Get-Date
+        return $snapshot
+    }
+    catch {
+        $snapshot.Error = "error"
+        $snapshot.ErrorText = Get-ExceptionDetails $_
+        $snapshot.Diagnostics = Get-ExceptionDiagnostics $_
+        return $snapshot
+    }
+    finally {
+        if ($list -ne [IntPtr]::Zero) { $apiType::WlanFreeMemory($list) }
+        if ($handle -ne [IntPtr]::Zero) { [void]$apiType::WlanCloseHandle($handle, [IntPtr]::Zero) }
+    }
+}
+
+function Get-Win32ErrorText {
+    param([object]$Code)
+    $number = ConvertTo-IntSafe $Code 0
+    $text = ""
+    try { $text = (New-Object System.ComponentModel.Win32Exception($number)).Message } catch { $text = "" }
+    if ([string]::IsNullOrWhiteSpace($text)) { return ("error {0}" -f $number) }
+    return ("error {0}: {1}" -f $number, $text)
+}
+
+function Get-WifiInterfaceStateText {
+    param([object]$State)
+    switch (ConvertTo-IntSafe $State -1) {
+        0 { return "not ready" }
+        1 { return "connected" }
+        2 { return "ad hoc network formed" }
+        3 { return "disconnecting" }
+        4 { return "disconnected" }
+        5 { return "associating" }
+        6 { return "discovering" }
+        7 { return "authenticating" }
+    }
+    return ("state {0}" -f $State)
+}
+
+function Compare-WifiRetryCounters {
+    param([object]$Before, [object]$After)
+
+    $category = "Wi-Fi Retransmissions"
+    if ($null -eq $Before -or $null -eq $After) {
+        Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message "Complete before-and-after Wi-Fi retry counter data is unavailable." -Details "" -Tag "wifi-retry" -Weightless | Out-Null
+        return
+    }
+
+    # A snapshot that could not be taken names why, once, and the row is weightless: an absent reader is a fact about
+    # this machine, not a measurement of its network. No wireless interface is the ordinary wired case and reads as one.
+    foreach ($pair in @(@{ Snapshot = $Before; Side = "at the start" }, @{ Snapshot = $After; Side = "at the end" })) {
+        $snapshot = $pair.Snapshot
+        if ([string]::IsNullOrWhiteSpace([string]$snapshot.Error)) { continue }
+        $reason = [string]$snapshot.Error
+        $status = "ERROR"
+        $message = ""
+        switch ($reason) {
+            "none"      { $status = "INFO"; $message = "No wireless interface on this computer, so there is no wireless retry figure; the TCP retransmission rows are the link's statistics." }
+            "addtype"   { $message = "The Wi-Fi retry counters could not be read: the reader (a small P/Invoke type compiled at run time) could not be compiled or loaded, which an application-control policy can refuse." }
+            "open"      { $message = "The Wi-Fi retry counters could not be read: the WLAN service did not answer ({0})." -f $snapshot.ErrorText }
+            "enumerate" { $message = "The Wi-Fi retry counters could not be read: the wireless interfaces could not be listed ({0})." -f $snapshot.ErrorText }
+            default     { $message = "The Wi-Fi retry counters could not be read {0}." -f $pair.Side }
+        }
+        $details = @(
+            ("Reading {0}: {1}" -f $pair.Side, $reason),
+            $(if (-not [string]::IsNullOrWhiteSpace([string]$snapshot.ErrorText)) { [string]$snapshot.ErrorText } else { $null }),
+            "Method: Native Wifi API, WlanQueryInterface with wlan_intf_opcode_statistics through P/Invoke (wlanapi.dll), read before and after the run.",
+            "Explanation: this row decides nothing; where it is absent, the TCP retransmission rows and the ping rows are the link's statistics, and a wireless retry is visible in neither."
+        )
+        Add-CheckResult -Category $category -Check "Wireless retries" -Status $status -Message $message -Details ((@($details) | Where-Object { $null -ne $_ }) -join [Environment]::NewLine) -Diagnostics ([string]$snapshot.Diagnostics) -Tag "wifi-retry" -Weightless | Out-Null
+        return
+    }
+
+    $seconds = [math]::Round(($After.Timestamp - $Before.Timestamp).TotalSeconds, 1)
+    foreach ($ending in @($After.Interfaces)) {
+        $starting = @(@($Before.Interfaces) | Where-Object { [string]$_.Guid -eq [string]$ending.Guid } | Select-Object -First 1)
+        $description = ConvertTo-DisplayString $ending.Description
+        $stateLine = "Connection state: {0} at the start, {1} at the end." -f $(if ($starting.Count -gt 0) { Get-WifiInterfaceStateText $starting[0].State } else { "not listed" }), (Get-WifiInterfaceStateText $ending.State)
+        $methodLines = @(
+            "Method: Native Wifi API, WlanQueryInterface with wlan_intf_opcode_statistics through P/Invoke (wlanapi.dll); cumulative MAC frame counters read before and after the run, delta over the window.",
+            "Manual check: no built-in command prints these counters; the API is the only reader.",
+            "Explanation: an 802.11 frame the adapter sent again because no acknowledgement came back is absorbed as delay, so it appears in neither the TCP retransmission rate nor the ping loss figure; this is the air between this adapter and its access point, for every application's traffic in the window. This row decides nothing: no threshold for a wireless retry rate has a stated basis."
+        )
+        if ($starting.Count -eq 0) {
+            Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message ("{0}: the interface was not present at the start of the test, so there is no delta." -f $description) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            continue
+        }
+        $start = $starting[0]
+        if ($start.QueryError -ne 0 -or $ending.QueryError -ne 0) {
+            $which = $(if ($start.QueryError -ne 0) { $start.QueryErrorText } else { $ending.QueryErrorText })
+            Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message ("{0}: the statistics query failed ({1})." -f $description, $which) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            continue
+        }
+
+        # The PHY rule, stated where it is applied: deltas per entry, the entry with the largest transmitted delta is
+        # the interface's figure, and the entries are never added together (the header of this block says why).
+        $deltas = @()
+        foreach ($endPhy in @($ending.Phys)) {
+            $startPhy = @(@($start.Phys) | Where-Object { $_.Index -eq $endPhy.Index } | Select-Object -First 1)
+            if ($startPhy.Count -eq 0) { continue }
+            $deltas += [pscustomobject][ordered]@{
+                Index         = $endPhy.Index
+                Start         = $startPhy[0]
+                End           = $endPhy
+                Transmitted   = [double]$endPhy.Transmitted - [double]$startPhy[0].Transmitted
+                Failed        = [double]$endPhy.Failed - [double]$startPhy[0].Failed
+                Retry         = [double]$endPhy.Retry - [double]$startPhy[0].Retry
+                MultipleRetry = [double]$endPhy.MultipleRetry - [double]$startPhy[0].MultipleRetry
+                AckFailure    = [double]$endPhy.AckFailure - [double]$startPhy[0].AckFailure
+                Received      = [double]$endPhy.Received - [double]$startPhy[0].Received
+            }
+        }
+        if ($deltas.Count -eq 0) {
+            Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message ("{0}: the two readings hold no PHY entry in common, so there is no delta." -f $description) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            continue
+        }
+        $backwards = @($deltas | Where-Object { $_.Transmitted -lt 0 -or $_.Failed -lt 0 -or $_.Retry -lt 0 -or $_.MultipleRetry -lt 0 -or $_.AckFailure -lt 0 -or $_.Received -lt 0 })
+        if ($backwards.Count -gt 0) {
+            $resetLines = @(("Sample window: {0} seconds." -f $seconds), $stateLine)
+            foreach ($d in $backwards) {
+                $resetLines += ("Entry {0}: start Transmitted={1}, Failed={2}, Retry={3}, MultipleRetry={4}; end Transmitted={5}, Failed={6}, Retry={7}, MultipleRetry={8}" -f $d.Index, $d.Start.Transmitted, $d.Start.Failed, $d.Start.Retry, $d.Start.MultipleRetry, $d.End.Transmitted, $d.End.Failed, $d.End.Retry, $d.End.MultipleRetry)
+            }
+            Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message ("{0}: the counters went backwards during the test - the adapter reconnected or the driver reset them - so the delta cannot be calculated." -f $description) -Details ((@($resetLines) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            continue
+        }
+        $moved = @($deltas | Where-Object { $_.Transmitted -ne 0 -or $_.Failed -ne 0 -or $_.Retry -ne 0 -or $_.MultipleRetry -ne 0 -or $_.AckFailure -ne 0 -or $_.Received -ne 0 })
+        $chosen = @($deltas | Sort-Object -Property @{ Expression = "Transmitted"; Descending = $true }, @{ Expression = "Index"; Descending = $false })[0]
+        $agree = $true
+        foreach ($d in $moved) {
+            if ($d.Transmitted -ne $chosen.Transmitted -or $d.Failed -ne $chosen.Failed -or $d.Retry -ne $chosen.Retry -or $d.MultipleRetry -ne $chosen.MultipleRetry) { $agree = $false }
+        }
+        $phyLine = "PHY entries: {0} reported, {1} moved during the window" -f $deltas.Count, $moved.Count
+        if ($moved.Count -gt 1 -and $agree) { $phyLine += ", all with the same figures - the driver writes the interface's totals into every entry" }
+        elseif ($moved.Count -gt 1) { $phyLine += (", with different figures ({0})" -f ((@($moved | ForEach-Object { "entry {0}: transmitted {1}, retries {2}, abandoned {3}" -f $_.Index, $_.Transmitted, $_.Retry, $_.Failed }) -join "; "))) }
+        $phyLine += ("; the entry with the largest transmitted delta (entry {0}) is the interface's figure, and entries are never added together, because a driver that mirrors the totals would have every frame counted once per entry." -f $chosen.Index)
+        $transmitted = [uint64]$chosen.Transmitted
+        $failed = [uint64]$chosen.Failed
+        $retry = [uint64]$chosen.Retry
+        $multiple = [uint64]$chosen.MultipleRetry
+        $ackFailures = [uint64]$chosen.AckFailure
+        $received = [uint64]$chosen.Received
+        $attempted = $transmitted + $failed
+        $countLines = @(
+            ("Sample window: {0} seconds." -f $seconds),
+            ("Transmitted frame delta: {0}; abandoned after the retry limit: {1}; frames that needed retransmission: {2}, of which more than once: {3}; missing acknowledgements: {4}; received frame delta: {5}." -f $transmitted, $failed, $retry, $multiple, $ackFailures, $received),
+            $phyLine,
+            $stateLine,
+            ("Starting cumulative values (entry {0}): Transmitted={1}, Failed={2}, Retry={3}, MultipleRetry={4}, ACKFailure={5}, Received={6}" -f $chosen.Index, $chosen.Start.Transmitted, $chosen.Start.Failed, $chosen.Start.Retry, $chosen.Start.MultipleRetry, $chosen.Start.AckFailure, $chosen.Start.Received),
+            ("Ending cumulative values (entry {0}): Transmitted={1}, Failed={2}, Retry={3}, MultipleRetry={4}, ACKFailure={5}, Received={6}" -f $chosen.Index, $chosen.End.Transmitted, $chosen.End.Failed, $chosen.End.Retry, $chosen.End.MultipleRetry, $chosen.End.AckFailure, $chosen.End.Received)
+        )
+        if ($attempted -eq 0) {
+            $message = "{0}: no frames were transmitted in the {1}-second window, so no retry rate can be computed." -f $description, $seconds
+            Add-CheckResult -Category $category -Check "Wireless retries" -Status "INFO" -Message $message -Details ((@($countLines) + @("Retry rate: not computable - nothing was transmitted, so there is nothing to divide by.") + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            continue
+        }
+        $rate = [math]::Round(([double]$retry / [double]$attempted) * 100.0, 1)
+        $message = "{0}: {1} of {2} frames needed retransmission ({3}%), {4} of them more than once, {5} abandoned, over {6} seconds." -f $description, $retry, $attempted, $rate, $multiple, $failed, $seconds
+        $rateLine = "Retry rate: {0} / ({1} transmitted + {2} abandoned) = {3}%; the two retry counters are neither added together nor divided into each other." -f $retry, $transmitted, $failed, $rate
+        Add-CheckResult -Category $category -Check "Wireless retries" -Status "INFO" -Message $message -Details ((@($countLines) + @($rateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+    }
+}
+
 function Wait-ForMinimumTcpSample {
     param(
         [datetime]$StartTime,
@@ -5288,6 +5597,17 @@ function Run-AllChecks {
         Add-CheckResult -Category "System Information" -Check "Computer" -Status "INFO" -Message ("{0}, user {1}." -f $summary.ComputerName, $summary.UserName) -Details ("Operating system: {0} ({1})`r`nPowerShell: {2}" -f $summary.OperatingSystem, $summary.OperatingVersion, $summary.PowerShellVersion) -Tag "system" | Out-Null
     } | Out-Null
 
+    # The wireless retry counters are read before the TCP baseline, so that compiling their reader - about 0.7 s on the
+    # reference machine, once per process - is paid outside the retransmission window; they are read again after the TCP
+    # window has closed, and been extended where it was, so the two windows cover the same run. Off by configuration
+    # (Checks.WifiRetryCounters), nothing is read and no row is written, like the IT diagnostics.
+    $wifiRetryEnabled = Test-IsTrueFlag $script:Config.Checks.WifiRetryCounters
+    $wifiRetryBaseline = $null
+    if ($wifiRetryEnabled) {
+        $wifiRetryBaseline = Invoke-CheckStep -Category "Wi-Fi Retransmissions" -Name "Get Wi-Fi Retry Baseline" -Progress 9 -Weightless -Action {
+            return (Get-WifiRetrySnapshot)
+        }
+    }
     $tcpBaseline = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Get TCP Retransmission Baseline" -Progress 10 -Weightless -Action {
         # -WarmUp on the baseline only: the throwaway read that pays whatever the counter provider charges for a
         # first query outside the sample window, where it cannot lengthen what the window reports (backlog #38).
@@ -5388,9 +5708,22 @@ function Run-AllChecks {
         if ($null -ne $tcpExtended) { $tcpAfter = $tcpExtended }
     }
 
+    # The ending value after the TCP window, extended or not, so that the two windows end together; the analysis after
+    # the TCP analysis, in the order the report prints them.
+    $wifiRetryAfter = $null
+    if ($wifiRetryEnabled) {
+        $wifiRetryAfter = Invoke-CheckStep -Category "Wi-Fi Retransmissions" -Name "Get Ending Wi-Fi Retry Values" -Progress 91 -Weightless -Action {
+            return (Get-WifiRetrySnapshot)
+        }
+    }
     Invoke-CheckStep -Category "TCP Retransmissions" -Name "Analyze TCP Retransmissions" -Progress 92 -Action {
         Compare-TcpCounters -Before $tcpBaseline -After $tcpAfter
     } | Out-Null
+    if ($wifiRetryEnabled) {
+        Invoke-CheckStep -Category "Wi-Fi Retransmissions" -Name "Analyze Wi-Fi Retries" -Progress 93 -Action {
+            Compare-WifiRetryCounters -Before $wifiRetryBaseline -After $wifiRetryAfter
+        } | Out-Null
+    }
 
     $script:RunFinishedAt = Get-Date
     Set-UiProgress -Percent 96 -Text "Generate Reports"

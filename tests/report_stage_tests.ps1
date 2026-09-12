@@ -205,6 +205,17 @@ Assert-Equal 'E: out-of-range hops -> default 3' $o.TracerouteHops 3
 Assert-Equal 'E: NoWifi disables the check' $o.ChecksEnabled.WifiRf False
 Assert-Equal 'E: base config untouched' (@($script:BaseConfig.Tests.PingTargets).Count) 2
 Assert-Equal 'E: profile text mentions the extra target' ((Get-RunProfileText) -match '10\.0\.0\.1') True
+# The wireless retry flag (backlog #61) is a configuration switch with no panel box and no parameter: projected like the
+# others, on as shipped, off only from the file, and named among the disabled in the run profile when it is off.
+Assert-Equal 'E: the wireless retry flag is projected, on as shipped' $o.ChecksEnabled.WifiRetryCounters True
+$script:BaseConfig.Checks.WifiRetryCounters = $false
+$oOff = Set-RunOptions -Overrides @{ EntryPoint = "IT"; PingTarget = @("10.0.0.1") }
+Assert-Equal 'E: and follows the configuration when it is off' $oOff.ChecksEnabled.WifiRetryCounters False
+Assert-Equal 'E: the run profile names it among the disabled checks' ((Get-RunProfileText) -match 'WifiRetryCounters') True
+Assert-Equal 'E: the panel override touches only the boxes it has' (@($oOff.ChecksEnabled.PSObject.Properties).Count) 7
+$script:BaseConfig.Checks.WifiRetryCounters = $true
+$o = Set-RunOptions -Overrides @{ EntryPoint = "IT"; ExpandDetails = $true; PingTarget = @("10.0.0.1"); TcpTarget = @("host:445", "bad"); SampleSeconds = 20; TracerouteHops = 99; NoWifi = $true }
+Assert-Equal 'E: back on once the configuration says so' $o.ChecksEnabled.WifiRetryCounters True
 Set-RunOptions -Overrides @{ TcpTarget = @("host:445") } | Out-Null
 Assert-Equal 'E: stale option notice cleared when options are reapplied (round 3)' (@($script:RunOptionMessages).Count) 0
 Set-RunOptions -Overrides @{ PingTarget = @("10.0.0.1,10.0.0.2"); TcpTarget = @("1.1.1.1:53;bad") } | Out-Null
@@ -415,6 +426,20 @@ Assert-Equal 'K: and the fingerprint agrees with the verdict' (Get-FingerprintSu
 Assert-Equal 'K: the row keeps its badge in the counts' (Get-SummaryCounts).Error 1
 Assert-Equal 'K: and the notice still explains that badge (#40)' (Get-ReportNoticeFlags).Unable True
 Assert-Equal 'K: the summary names what was not measured' ((@((Get-FingerprintSummary).Lines) -join " ") -match 'TCPv4 counters') True
+# The wireless retry row (backlog #61) is weightless in every shape it takes: a reader that could not be compiled
+# leaves a healthy run healthy, and a measured rate - however high - decides nothing, because no threshold for it has
+# a stated basis.
+$script:Results = New-Object System.Collections.ArrayList
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+Add-CheckResult -Category "Test" -Check "Wireless retries" -Status "ERROR" -Message "not compiled" -Details "" -Tag "wifi-retry" -Weightless | Out-Null
+Assert-Equal 'K: the wifi-retry fixture built its 2 row(s)' (@($script:Results).Count) 2
+Assert-Equal 'K: a wireless reader that could not be compiled leaves a healthy run healthy' (Get-OverallStatus).Code "PASS"
+Assert-Equal 'K: and the fingerprint stays healthy' (Get-FingerprintSummary).Key "healthy"
+Assert-Equal 'K: the row keeps its Unable-to-Check badge in the counts' (Get-SummaryCounts).Error 1
+$script:Results = New-Object System.Collections.ArrayList
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+Add-CheckResult -Category "Test" -Check "Wireless retries" -Status "INFO" -Message "66 of 211 (31.3%)" -Details "" -Tag "wifi-retry" -Weightless | Out-Null
+Assert-Equal 'K: a measured retry rate is an Information row that decides nothing' ("{0}/{1}" -f (Get-OverallStatus).Code, (Get-FingerprintSummary).Key) "PASS/healthy"
 # The same row weighted is the 1.2.7 behaviour, and it must still be reachable: nothing is weightless by default.
 $script:Results = New-Object System.Collections.ArrayList
 Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null

@@ -8,7 +8,7 @@
 
 ## 1 · 你要部署的是什麼
 
-**一個資料夾，不是安裝程式。** 網路健檢工具是一支 Windows PowerShell 腳本，加上批次檔啟動器、一個 JSON 設定檔和幾份文件。它不安裝任何服務、驅動程式或封包擷取元件，也不登錄任何東西；它寫出的只有報告（第 3.1 節），以及執行無法開始或無法完成時寫在程式旁邊或使用者暫存資料夾裡的錯誤檔（第 3.6 與第 8 節）。對系統而言它是唯讀的：不改 IP、DNS、路由、防火牆、Proxy 或網卡設定。它的主動行為只有幾次 Ping、一次名稱查詢、幾個 TCP 連線，以及對設定檔裡的目標發出 HTTP/HTTPS GET 請求。
+**一個資料夾，不是安裝程式。** 網路健檢工具是一支 Windows PowerShell 腳本，加上批次檔啟動器、一個 JSON 設定檔和幾份文件。它不安裝任何服務、驅動程式或封包擷取元件，也不登錄任何東西；它寫出的只有報告（第 3.1 節），以及執行無法開始或無法完成時寫在程式旁邊或使用者暫存資料夾裡的錯誤檔（第 3.6 與第 8 節）。對系統而言它是唯讀的：不改 IP、DNS、路由、防火牆、Proxy 或網卡設定。它的主動行為只有幾次 Ping、一次名稱查詢、幾個 TCP 連線，以及對設定檔裡的目標發出 HTTP/HTTPS GET 請求。它唯一會編譯的東西是讀無線重傳計數器用的幾行 P/Invoke（第 3.4 節），在執行時於記憶體內建置，磁碟上不留任何東西。
 
 **電腦需要什麼。**
 
@@ -158,17 +158,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 | `DnsTimeoutMs` | 4000 | 500 | 每個名稱 |
 | `TcpTimeoutMs` | 4000 | 500 | 每個連線 |
 | `HttpTimeoutMs` | 6000 | 500 | 每個請求，連線與讀取皆同 |
-| `RetransmissionSampleSeconds` | 8 | 1 | TCP 計數器在開始時取樣一次，過了這麼多秒再取樣一次，所以這是執行時間的下限；各項測試在這段時間內進行，目標不回應時，它們的逾時會再疊上去 |
+| `RetransmissionSampleSeconds` | 8 | 1 | TCP 計數器在開始時取樣一次，過了這麼多秒再取樣一次，所以這是執行時間的下限；各項測試在這段時間內進行，目標不回應時，它們的逾時會再疊上去；無線重傳計數器（第 3.4 節）在同一個視窗內取樣 |
 
 **不允許連外的環境。** 移除公網的 Ping、TCP、HTTP 目標，把 `www.microsoft.com` 的名稱查詢換成你的解析器查得到的內部名稱（出廠的 `DnsNames` 項目是必要的，解析不出來就會讓這次執行失敗），把 `Internet` 群組換成你的內部服務，或者把 `Internet` 從 `RequiredConnectivityGroups` 移除（否則群組列會因為沒有成員而變成「無法檢查」），並把 `Checks.Traceroute` 設為 `false`：traceroute 會探測往第一個不是佔位符的 Ping 目標，一個都沒有時，仍然會探測往 `1.1.1.1`。
 
 ### 3.4 · 可選檢查（`Checks`）
 
-IT 診斷資料（報告最下方收合區裡 IT 範圍的列，永遠不計入整體結果）每一項都可以關掉，在這裡關，或在 IT 面板裡只關一次。那裡的「資訊」列記的是收集到的內容，或者說明沒有東西可收集、來源在這台電腦上不存在（沒有已連線的無線介面或沒有 `netsh.exe`、沒有 `Get-NetRoute`、沒有預設路由或閘道、沒有已連線的實體網卡）；「無法檢查」列表示讀取來源時發生錯誤（無線資料、路由表、鄰居表或 traceroute）。
+IT 診斷資料（報告最下方收合區裡 IT 範圍的列，永遠不計入整體結果）每一項都可以關掉，在這裡關，或在 IT 面板裡只關一次。那裡的「資訊」列記的是收集到的內容，或者說明沒有東西可收集、來源在這台電腦上不存在（沒有已連線的無線介面或沒有 `netsh.exe`、沒有 `Get-NetRoute`、沒有預設路由或閘道、沒有已連線的實體網卡）；「無法檢查」列表示讀取來源時發生錯誤（無線資料、路由表、鄰居表或 traceroute）。下面的 `WifiRetryCounters` 是例外：它切換的是主報告裡的一項量測，不是 IT 診斷資料——見它那一列。
 
 | 鍵 | 預設 | 收集什麼 |
 |---|---|---|
 | `WifiRf` | `true` | 無線介面的 SSID、BSSID、頻段、頻道、速率與訊號，從 `netsh wlan show interfaces` 解析 |
+| `WifiRetryCounters` | `true` | 不是 IT 診斷資料：無線網卡在這次執行期間的 802.11 重傳計數器，由執行時在記憶體內編譯的幾行 P/Invoke（每個程序一次約 0.7 秒，不寫任何東西到磁碟）透過 Native Wifi API 讀取，以一列不決定任何結果的「資訊」列寫進主報告——重送的框除以嘗試送出的框，並列出到達重傳上限後放棄的框，這台機器的每個無線介面各一列。讀取器無法編譯或載入、WLAN 服務沒有回應或沒有無線介面時，一列不計權重的列會說明。沒有面板核取方塊、沒有參數：只能在這裡切換 |
 | `RouteTable` | `true` | IPv4 預設路由，依 Windows 使用的順序 |
 | `GatewayNeighbor` | `true` | 鄰居（ARP）表裡閘道的硬體位址 |
 | `ProxySettings` | `true` | 使用者的 Proxy 設定、WinHTTP Proxy，以及 Windows 對第一個 HTTP 目標（沒有時是 `https://www.microsoft.com/`）會用哪個 Proxy：只問解析器，不發請求 |
@@ -235,7 +236,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 | `-PingTarget`、`-DnsName`、`-TcpTarget`（host:port） | 額外目標。多個值寫成一個逗號分隔的清單：`-PingTarget 10.0.0.1,10.0.0.2`，從 cmd.exe（`powershell -File …`）和 PowerShell 提示字元都可以；加了引號的值裡也可以用空格或分號分隔（`-PingTarget "10.0.0.1 10.0.0.2"`）。見表格下方的說明 |
 | `-HttpUrl` | 額外 URL。多個寫成一個加引號、以空格分隔的值：`-HttpUrl "https://a.company.local/ https://b.company.local/"`，兩種 shell 都可以。腳本只用空格切開 URL，因為逗號和分號在 URL 裡是合法字元，所以從 cmd.exe 傳 `u1,u2` 會變成一個無效的 URL；在 PowerShell 提示字元下逗號會組成陣列，可以用。見表格下方的說明 |
 | `-PingCount`、`-PingCountMaximum`、`-SampleSeconds`、`-TracerouteHops` | 這次執行覆蓋設定檔的值；跳數不在 1–10 內退回 3，上限低於起始次數時會被指出並改用起始次數 |
-| `-NoTraceroute`、`-NoWifi` | 略過這兩項診斷，也只有這兩項有參數 |
+| `-NoTraceroute`、`-NoWifi` | 略過這兩項診斷，也只有這兩項有參數；無線重傳計數器沒有核取方塊也沒有參數，只跟著設定檔裡的 `WifiRetryCounters` |
 | `-ConfigPath <檔案>` | 載入另一個設定檔（第 3 節） |
 | `-STA`（PowerShell 自己的參數） | 視窗啟動器會加的；`-ConsoleOnly` 不需要 |
 
@@ -300,7 +301,7 @@ python tools\validate_release.py .
 
 **發出去之前先定處理規定**：報告可以送到哪裡、留多久、誰能看，並在把工具交給使用者的同一則訊息裡說明；使用手冊只說請依公司對這類資訊的規定處理。報告是一般檔案：保留期限就是你對報告資料夾（或共用資料夾，第 3.1 節）套用的規定。
 
-**給你的工具用。** JSON 報告是 schema 2：`SchemaVersion`、`ToolVersion`、`RunOptions`（第 4 節）、`Fingerprint`（`Key`、`Title`、`Lines`，即「要告訴 IT 的話」）、`Overall`（`Code`、`Text`、`Description`）、`Counts`、`System`、`StartedAt`、`FinishedAt`，以及 `Results`：每一列一個物件，含 `Time`、`Category`、`Check`、`Status`（`PASS`、`WARN`、`FAIL`、`INFO`、`ERROR`）、`Message`、`Details`、`Diagnostics`、`Tag`、`Scope`（`Main` 或 `IT`）、`Weightless`、`Rule` 與 `Path`。`Tag` 是與語言無關的檢查名稱（`ping-gateway`、`ping-near-end`、`dns`、`connectivity-group`、`tcp-retransmissions`、`expected-standard`……）；技術文件第 4.10 節有清單，`Scope` 則告訴你整體結果忽略了哪些列；`Weightless`（在 schema 2 下新增的欄位）為 `true` 時，代表這一列保有徽章、訊息與 `Counts` 裡的位置，卻不決定 `Overall`，也不決定 `Fingerprint`——量不到的統計、對所套用門檻來說太粗的樣本，或關於這次執行拿到什麼的事實。它就是「`Overall` 是 `PASS`，旁邊卻有 `ERROR` 或 `WARN` 列」的解釋。`Rule`（同樣是 schema 2 下新增的欄位）只在 ping 的列上有值：遺失級別決定這一列狀態時是 `loss`，真的回來的那些回覆決定時是 `latency`，什麼都沒決定時是空的——摘要就是靠它分辨「回覆沒回來的閘道」和「回應得慢的閘道」。`Path`（同樣附加）只在主張了自己那一階的近端列或閘道列上有值——探測經證明走過的那張網卡的介面別名——那一列主張不了時、以及其他所有 ping 列都是空的；摘要就是靠它把近端列和失敗的閘道列配對，所以經過路由器或另一張網卡到達的閘道永遠不會被配對。
+**給你的工具用。** JSON 報告是 schema 2：`SchemaVersion`、`ToolVersion`、`RunOptions`（第 4 節）、`Fingerprint`（`Key`、`Title`、`Lines`，即「要告訴 IT 的話」）、`Overall`（`Code`、`Text`、`Description`）、`Counts`、`System`、`StartedAt`、`FinishedAt`，以及 `Results`：每一列一個物件，含 `Time`、`Category`、`Check`、`Status`（`PASS`、`WARN`、`FAIL`、`INFO`、`ERROR`）、`Message`、`Details`、`Diagnostics`、`Tag`、`Scope`（`Main` 或 `IT`）、`Weightless`、`Rule` 與 `Path`。`Tag` 是與語言無關的檢查名稱（`ping-gateway`、`ping-near-end`、`dns`、`connectivity-group`、`tcp-retransmissions`、`wifi-retry`、`expected-standard`……）；技術文件第 4.10 節有清單，`Scope` 則告訴你整體結果忽略了哪些列；`Weightless`（在 schema 2 下新增的欄位）為 `true` 時，代表這一列保有徽章、訊息與 `Counts` 裡的位置，卻不決定 `Overall`，也不決定 `Fingerprint`——量不到的統計、對所套用門檻來說太粗的樣本，或關於這次執行拿到什麼的事實。它就是「`Overall` 是 `PASS`，旁邊卻有 `ERROR` 或 `WARN` 列」的解釋。`Rule`（同樣是 schema 2 下新增的欄位）只在 ping 的列上有值：遺失級別決定這一列狀態時是 `loss`，真的回來的那些回覆決定時是 `latency`，什麼都沒決定時是空的——摘要就是靠它分辨「回覆沒回來的閘道」和「回應得慢的閘道」。`Path`（同樣附加）只在主張了自己那一階的近端列或閘道列上有值——探測經證明走過的那張網卡的介面別名——那一列主張不了時、以及其他所有 ping 列都是空的；摘要就是靠它把近端列和失敗的閘道列配對，所以經過路由器或另一張網卡到達的閘道永遠不會被配對。
 
 **讀報告。** 使用手冊解釋整體結果、「要告訴 IT 的話」的標題與各種標籤；技術文件解釋每一條規則。repo 的 `sop` 資料夾有支援工程師的現場手冊和把報告整理成交接文件的範本。 那本現場手冊有一條讀法也該寫在這裡，因為電話那頭的人手上沒有它：唯一的必要 ping 目標——預設閘道——是由閘道自己的 stack 回應的，而網路設備通常會對送給自己的 ICMP 限速或降低優先權——所以閘道爽快回應是「近端路徑正常」的好證據，「閘道沒有回應」則是嫌疑、不是定罪。這個標題的意思是回覆沒有回來：每次 Ping 都有回應、只是回應得慢的閘道，是「連線正常但品質不佳」——旁邊還有別的失敗時，則是「有必要檢查未通過」——因為摘要讀的是哪一種量測決定了那一列（早期版本只讀狀態，把兩種都標成同一個標題）。有設定近端主機時（第 3.3 節），摘要的第二行會說問題在閘道的哪一邊——前提是近端主機和失敗的閘道是經由同一張網卡到達的，每一列在主張了自己那一階之後才會把那張網卡記進 `Path` 欄位；其中一列主張不了時——經過路由器的路由、VPN——多網卡機器上不是同一張網卡、或閘道經由不同網卡失敗時，這一行維持中性的那一句。請讀成「先查本地路徑，同時考慮設備可能就是不回應送給自己的 ping」——同一份報告裡閘道之外的目標通過，只有在它的路由經過這個閘道時才證明它有在轉送：同網段的主機、VPN 或 Proxy 都可能沒經過它就成功，而多網卡機器上 `AUTO_GATEWAY` 會為每個閘道各寫一列。這項檢查維持必要，因為連自己閘道都到不了的機器通常真的有問題值得回報（2026-09-10 決定，backlog #58）；失敗那一列的詳細資料和「要告訴 IT 的話」現在也這麼說。
 
@@ -315,7 +316,7 @@ python tools\validate_release.py .
 | 下載的 ZIP 帶有**網路標記** | 啟動器出現「開啟檔案 - 安全性警告」；按「執行」後工具照常運作 | 沒有東西，除非使用者取消 |
 | **群組原則設定的執行原則**（`MachinePolicy`／`UserPolicy`，例如 *AllSigned*） | 蓋過啟動器的程序範圍 Bypass：腳本不會啟動。PowerShell 印出自己的訊息（英文 Windows 上是「…NetworkHealthCheck.ps1 is not digitally signed. You cannot run this script on the current system…」，中文 Windows 則是它的中文版本），啟動器回報非零的結束代碼並暫停，`LauncherError.txt` 建議閱讀上方的訊息並請 IT 允許程式 | `LauncherError.txt` 和主控台的文字。沒有環境報告：腳本根本沒跑 |
 | **PowerShell 被限制在受限語言模式**：強制執行的應用程式控制政策（WDAC）對不允許的腳本做的事，以及 `__PSLockdownPolicy` 對每支腳本做的事 | 腳本最前面幾行偵測到不是 *FullLanguage* 的模式，在任何檢測之前停下：結束代碼 3、原因印在主控台，並在程式旁邊（該資料夾不可寫或是壓縮檔檢視時，改在 `%TEMP%`）寫出 `NetworkHealthCheck_ENVIRONMENT_<時間>.txt`，載明原因、語言模式、工具版本、電腦名稱、使用者、腳本資料夾、PowerShell 版本、地區設定與作業系統，以及「IT 可以怎麼做」下的兩行：在應用程式控制政策（WDAC / AppLocker）中放行 `NetworkHealthCheck.ps1`，或改在沒有這項限制的電腦上執行檢測。啟動器會解釋結束代碼 3 並指向這個檔案。在兩台機器上以 `__PSLockdownPolicy` 量測過；沒有量測過強制執行 WDAC 的機器 | 環境報告和 `LauncherError.txt` |
-| **AppLocker 指令碼規則** | 沒有量測到它生效：唯一一台回報政策在強制執行、且判定拒絕這支腳本的機器，還是不受限制地跑完了它（待辦 #31，在 repo 的待辦頁，見第 10 節）。強制執行的規則會拒絕腳本，還是讓它在上面那種受限模式裡跑，都還沒有觀察到 | 看結果產生上面兩個檔案中的哪一個 |
+| **AppLocker 指令碼規則** | 沒有量測到它生效：唯一一台回報政策在強制執行、且判定拒絕這支腳本的機器，還是不受限制地跑完了它（待辦 #31，在 repo 的待辦頁，見第 10 節）。強制執行的規則會拒絕腳本，還是讓它在上面那種受限模式裡跑，都還沒有觀察到。強制執行的 DLL 或 EXE 規則還可能做一件不至於擋下腳本的事：拒絕無線重傳讀取器賴以建置的 C# 編譯器或記憶體內組件——那一列就會是「無法檢查」，其他都不變 | 看結果產生上面兩個檔案中的哪一個 |
 | **EDR 或防毒**擋住 `powershell.exe` 或腳本 | 沒有量測：驗收執行沒有包含裝了這類產品的機器。啟動器回報它拿到的結束代碼並寫出 `LauncherError.txt` | `LauncherError.txt` 和該產品自己的記錄 |
 
 **要向使用者要什麼**，使用手冊第 6 節逐列寫了；環境報告和 `LauncherError.txt` 就是為這個交接而寫的。`LauncherError.txt` 在啟動器旁邊，那個資料夾無法寫入時改寫在 `%TEMP%` 的 `NetworkHealthCheck_LauncherError.txt`，欄位較少。

@@ -762,6 +762,7 @@ function Get-DefaultConfig {
             Traceroute       = $true
             TracerouteHops   = 3
             DriverInfo       = $true
+            WifiRetryCounters = $true
         }
     }
 }
@@ -1015,6 +1016,7 @@ function Set-RunOptions {
             ProxySettings   = Test-IsTrueFlag $config.Checks.ProxySettings
             Traceroute      = Test-IsTrueFlag $config.Checks.Traceroute
             DriverInfo      = Test-IsTrueFlag $config.Checks.DriverInfo
+            WifiRetryCounters = Test-IsTrueFlag $config.Checks.WifiRetryCounters
         }
     }
     return $script:RunOptions
@@ -1699,7 +1701,7 @@ function Test-ConfigurationSemantics {
     }
 
     $checks = $script:Config.Checks
-    foreach ($flagName in @("WifiRf", "RouteTable", "GatewayNeighbor", "ProxySettings", "Traceroute", "DriverInfo")) {
+    foreach ($flagName in @("WifiRf", "RouteTable", "GatewayNeighbor", "ProxySettings", "Traceroute", "DriverInfo", "WifiRetryCounters")) {
         $flagValue = Get-PropertyValue $checks $flagName
         if ($null -ne $flagValue -and -not ($flagValue -is [bool])) {
             [void]$inputWarnings.Add("Checks.$flagName 必須是 true 或 false（目前值：$flagValue），該檢查已停用。")
@@ -4356,6 +4358,303 @@ function Merge-TcpEndingSnapshot {
     }
 }
 
+# ---------------------------------------------------------------------------------------------------------------------
+# Wi-Fi 重傳（backlog #61 的重傳計數器半邊；v1.2.12）。802.11 MAC 會把沒收到確認的框重送，而重送成功的框被吸收成延遲：IP 與
+# TCP 看不到遺失，ping 列看到的是慢一點的回覆，TCP 重傳列則什麼都看不到。所以重傳率是唯一能把這張網卡與基地台之間的空氣、
+# 和基地台後面的一切分開的數字，而 Windows 只透過 Native Wifi API 提供它：以 wlan_intf_opcode_statistics 呼叫 WlanQueryInterface
+# 會回傳 WLAN_STATISTICS，其中 PhyCounters 陣列帶著每個 PHY 的 MAC 框計數器。netsh 沒有對應項，所以讀取器是透過 Add-Type 的
+# P/Invoke——一支原本是純 PowerShell 的腳本裡的 unmanaged code。v1.2 設計筆記為射頻資料拒絕過這個選擇，因為 netsh 供得了；
+# 這一項採用它，因為別無他法（2026-09-12 決定，五點寫在 backlog 的 Status 行）。編譯在參考機上約 0.7 秒，磁碟上不留任何東西；
+# 拒絕 C# 編譯器或記憶體內組件的應用程式控制政策會擋下它，這一列就寫明並且不決定任何結果。
+#
+# 寫這段之前量到的事（2026-09-10 與 2026-09-12，Intel Wi-Fi 6E AX211、Windows 11）：查詢不需要提權；六個 PHY 的緩衝區是 1088
+# 位元組，正是文件版面所預測的；而驅動程式把介面的總計寫進「每一個」PHY 項目——六列完全相同的計數器，同步變動。所以項目之間
+# 絕不相加：介面的數字是傳送框差值最大的那個項目，這一列寫出有幾個項目變動、是否一致。逐 PHY 歸屬框的驅動程式在單一 PHY
+# 的執行裡會給出同樣的答案，而換過 PHY 的執行會被少算，不會被算六次。比率是重傳 ÷（傳送 + 放棄）：ullRetryCount 算的是
+# 重送一次以上後成功的框，ullFailedCount 是到達重傳上限後放棄的框，ullTransmittedFrameCount 不含後者；ullMultipleRetryCount
+# 是 ullRetryCount 的子集，照子集列出。計數器是這次關聯的累積值，所以報告的是這次執行前後的差值，並沿用 TCP 列的計數倒退
+# 分支。這一列不決定任何結果：無線重傳率沒有任何有依據的門檻（backlog #56）。
+# ---------------------------------------------------------------------------------------------------------------------
+
+function Get-WifiRetrySnapshot {
+    # 每個無線介面 MAC 框計數器的一次讀取，沒有的話帶著原因。不論內容為何都回傳這個信封，和 TCP 快照一樣：由分析那一步
+    # 寫出那一列，並附上證據。
+    $snapshot = [pscustomobject][ordered]@{
+        Timestamp   = Get-Date
+        Interfaces  = @()
+        Error       = ""
+        ErrorText   = ""
+        Diagnostics = ""
+    }
+    $apiType = "NetworkHealthCheck.WlanApi" -as [type]
+    if ($null -eq $apiType) {
+        $definition = @'
+[DllImport("wlanapi.dll")] public static extern uint WlanOpenHandle(uint dwClientVersion, IntPtr pReserved, out uint pdwNegotiatedVersion, out IntPtr phClientHandle);
+[DllImport("wlanapi.dll")] public static extern uint WlanCloseHandle(IntPtr hClientHandle, IntPtr pReserved);
+[DllImport("wlanapi.dll")] public static extern uint WlanEnumInterfaces(IntPtr hClientHandle, IntPtr pReserved, out IntPtr ppInterfaceList);
+[DllImport("wlanapi.dll")] public static extern uint WlanQueryInterface(IntPtr hClientHandle, ref Guid pInterfaceGuid, int OpCode, IntPtr pReserved, out uint pdwDataSize, out IntPtr ppData, IntPtr pWlanOpcodeValueType);
+[DllImport("wlanapi.dll")] public static extern void WlanFreeMemory(IntPtr pMemory);
+'@
+        try {
+            Add-Type -Namespace NetworkHealthCheck -Name WlanApi -MemberDefinition $definition -ErrorAction Stop
+            $apiType = "NetworkHealthCheck.WlanApi" -as [type]
+        }
+        catch {
+            $snapshot.Error = "addtype"
+            $snapshot.ErrorText = Get-ExceptionDetails $_
+            $snapshot.Diagnostics = Get-ExceptionDiagnostics $_
+            return $snapshot
+        }
+        if ($null -eq $apiType) {
+            $snapshot.Error = "addtype"
+            $snapshot.ErrorText = "型別已編譯但無法載入。"
+            return $snapshot
+        }
+    }
+
+    $handle = [IntPtr]::Zero
+    $list = [IntPtr]::Zero
+    try {
+        $version = [uint32]0
+        $code = $apiType::WlanOpenHandle(2, [IntPtr]::Zero, [ref]$version, [ref]$handle)
+        if ($code -ne 0) {
+            $snapshot.Error = "open"
+            $snapshot.ErrorText = Get-Win32ErrorText $code
+            return $snapshot
+        }
+        $code = $apiType::WlanEnumInterfaces($handle, [IntPtr]::Zero, [ref]$list)
+        if ($code -ne 0) {
+            $snapshot.Error = "enumerate"
+            $snapshot.ErrorText = Get-Win32ErrorText $code
+            return $snapshot
+        }
+        $count = [System.Runtime.InteropServices.Marshal]::ReadInt32($list, 0)
+        if ($count -le 0) {
+            $snapshot.Error = "none"
+            return $snapshot
+        }
+        $interfaces = @()
+        for ($index = 0; $index -lt $count; $index++) {
+            # WLAN_INTERFACE_INFO_LIST：兩個 DWORD，接著每個 WLAN_INTERFACE_INFO 項目是一個 GUID、256 個 WCHAR 的描述和一個
+            # DWORD 狀態——每項 532 位元組。
+            $base = [IntPtr]($list.ToInt64() + 8 + ($index * 532))
+            $guidBytes = New-Object byte[] 16
+            [System.Runtime.InteropServices.Marshal]::Copy($base, $guidBytes, 0, 16)
+            $guid = New-Object System.Guid (,$guidBytes)
+            $description = ([System.Runtime.InteropServices.Marshal]::PtrToStringUni([IntPtr]($base.ToInt64() + 16), 256)).TrimEnd([char]0)
+            $state = [System.Runtime.InteropServices.Marshal]::ReadInt32($base, 528)
+            $entry = [pscustomobject][ordered]@{
+                Guid           = $guid.ToString()
+                Description    = $description
+                State          = $state
+                Phys           = @()
+                QueryError     = 0
+                QueryErrorText = ""
+            }
+            $size = [uint32]0
+            $data = [IntPtr]::Zero
+            $queryGuid = $guid
+            $code = $apiType::WlanQueryInterface($handle, [ref]$queryGuid, 0x10000101, [IntPtr]::Zero, [ref]$size, [ref]$data, [IntPtr]::Zero)
+            if ($code -ne 0) {
+                $entry.QueryError = [int]$code
+                $entry.QueryErrorText = Get-Win32ErrorText $code
+                $interfaces += $entry
+                continue
+            }
+            try {
+                # WLAN_STATISTICS：三個 ULONGLONG、兩個各十二個 ULONGLONG 的 WLAN_MAC_FRAME_STATISTICS、位移 216 的 dwNumberOfPhys
+                # 及其對齊，然後從 224 起是每個十八個 ULONGLONG 的 WLAN_PHY_FRAME_STATISTICS 項目——六個 PHY 的 1088 位元組緩衝區
+                # 證實了這個版面。比自己宣告的數量還短的緩衝區照實回報，不會讀過它的尾端。
+                $numberOfPhys = 0
+                if ($size -ge 220) { $numberOfPhys = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, 216) }
+                if ($numberOfPhys -lt 1 -or $size -lt (224 + ($numberOfPhys * 144))) {
+                    $entry.QueryError = -1
+                    $entry.QueryErrorText = ("統計緩衝區（{0} 位元組）容不下它宣告的 {1} 個 PHY 項目。" -f $size, $numberOfPhys)
+                }
+                else {
+                    $phys = @()
+                    for ($phy = 0; $phy -lt $numberOfPhys; $phy++) {
+                        $offset = 224 + ($phy * 144)
+                        $phys += [pscustomobject][ordered]@{
+                            Index         = $phy
+                            Transmitted   = [uint64][System.Runtime.InteropServices.Marshal]::ReadInt64($data, $offset)
+                            Failed        = [uint64][System.Runtime.InteropServices.Marshal]::ReadInt64($data, $offset + 16)
+                            Retry         = [uint64][System.Runtime.InteropServices.Marshal]::ReadInt64($data, $offset + 24)
+                            MultipleRetry = [uint64][System.Runtime.InteropServices.Marshal]::ReadInt64($data, $offset + 32)
+                            AckFailure    = [uint64][System.Runtime.InteropServices.Marshal]::ReadInt64($data, $offset + 72)
+                            Received      = [uint64][System.Runtime.InteropServices.Marshal]::ReadInt64($data, $offset + 80)
+                        }
+                    }
+                    $entry.Phys = $phys
+                }
+            }
+            finally {
+                $apiType::WlanFreeMemory($data)
+            }
+            $interfaces += $entry
+        }
+        $snapshot.Interfaces = @($interfaces)
+        $snapshot.Timestamp = Get-Date
+        return $snapshot
+    }
+    catch {
+        $snapshot.Error = "error"
+        $snapshot.ErrorText = Get-ExceptionDetails $_
+        $snapshot.Diagnostics = Get-ExceptionDiagnostics $_
+        return $snapshot
+    }
+    finally {
+        if ($list -ne [IntPtr]::Zero) { $apiType::WlanFreeMemory($list) }
+        if ($handle -ne [IntPtr]::Zero) { [void]$apiType::WlanCloseHandle($handle, [IntPtr]::Zero) }
+    }
+}
+
+function Get-Win32ErrorText {
+    param([object]$Code)
+    $number = ConvertTo-IntSafe $Code 0
+    $text = ""
+    try { $text = (New-Object System.ComponentModel.Win32Exception($number)).Message } catch { $text = "" }
+    if ([string]::IsNullOrWhiteSpace($text)) { return ("錯誤 {0}" -f $number) }
+    return ("錯誤 {0}：{1}" -f $number, $text)
+}
+
+function Get-WifiInterfaceStateText {
+    param([object]$State)
+    switch (ConvertTo-IntSafe $State -1) {
+        0 { return "未就緒" }
+        1 { return "已連線" }
+        2 { return "已建立 ad hoc 網路" }
+        3 { return "中斷連線中" }
+        4 { return "已中斷連線" }
+        5 { return "關聯中" }
+        6 { return "探索中" }
+        7 { return "驗證中" }
+    }
+    return ("狀態 {0}" -f $State)
+}
+
+function Compare-WifiRetryCounters {
+    param([object]$Before, [object]$After)
+
+    $category = "Wi-Fi 重傳"
+    if ($null -eq $Before -or $null -eq $After) {
+        Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message "缺少完整的 Wi-Fi 重傳計數前後資料。" -Details "" -Tag "wifi-retry" -Weightless | Out-Null
+        return
+    }
+
+    # 取不到的快照說明原因，說一次，而且那一列不計權重：讀取器不存在是這台機器的事實，不是它網路的量測。沒有無線介面是
+    # 一般有線機器的情形，也照那樣讀。
+    foreach ($pair in @(@{ Snapshot = $Before; Side = "開始時" }, @{ Snapshot = $After; Side = "結束時" })) {
+        $snapshot = $pair.Snapshot
+        if ([string]::IsNullOrWhiteSpace([string]$snapshot.Error)) { continue }
+        $reason = [string]$snapshot.Error
+        $status = "ERROR"
+        $message = ""
+        switch ($reason) {
+            "none"      { $status = "INFO"; $message = "這台電腦沒有無線介面，所以沒有無線重傳數字；連線的統計看 TCP 重傳那幾列。" }
+            "addtype"   { $message = "無法讀取 Wi-Fi 重傳計數器：讀取器（執行時編譯的一個小型 P/Invoke 型別）無法編譯或載入，應用程式控制政策可能會拒絕它。" }
+            "open"      { $message = "無法讀取 Wi-Fi 重傳計數器：WLAN 服務沒有回應（{0}）。" -f $snapshot.ErrorText }
+            "enumerate" { $message = "無法讀取 Wi-Fi 重傳計數器：無法列出無線介面（{0}）。" -f $snapshot.ErrorText }
+            default     { $message = "無法讀取 Wi-Fi 重傳計數器（{0}）。" -f $pair.Side }
+        }
+        $details = @(
+            ("讀取{0}：{1}" -f $pair.Side, $reason),
+            $(if (-not [string]::IsNullOrWhiteSpace([string]$snapshot.ErrorText)) { [string]$snapshot.ErrorText } else { $null }),
+            "方法：Native Wifi API，透過 P/Invoke（wlanapi.dll）以 wlan_intf_opcode_statistics 呼叫 WlanQueryInterface，在執行前後各讀一次。",
+            "說明：這一列不決定任何結果；它不存在時，連線的統計看 TCP 重傳列與 ping 列，而無線重傳在這兩者裡都看不到。"
+        )
+        Add-CheckResult -Category $category -Check "無線重傳" -Status $status -Message $message -Details ((@($details) | Where-Object { $null -ne $_ }) -join [Environment]::NewLine) -Diagnostics ([string]$snapshot.Diagnostics) -Tag "wifi-retry" -Weightless | Out-Null
+        return
+    }
+
+    $seconds = [math]::Round(($After.Timestamp - $Before.Timestamp).TotalSeconds, 1)
+    foreach ($ending in @($After.Interfaces)) {
+        $starting = @(@($Before.Interfaces) | Where-Object { [string]$_.Guid -eq [string]$ending.Guid } | Select-Object -First 1)
+        $description = ConvertTo-DisplayString $ending.Description
+        $stateLine = "連線狀態：開始時{0}，結束時{1}。" -f $(if ($starting.Count -gt 0) { Get-WifiInterfaceStateText $starting[0].State } else { "未列出" }), (Get-WifiInterfaceStateText $ending.State)
+        $methodLines = @(
+            "方法：Native Wifi API，透過 P/Invoke（wlanapi.dll）以 wlan_intf_opcode_statistics 呼叫 WlanQueryInterface；MAC 框累積計數器在執行前後各讀一次，取視窗內的差值。",
+            "手動檢查：沒有內建指令會印出這些計數器；API 是唯一的讀法。",
+            "說明：網卡因為沒收到確認而重送的 802.11 框會被吸收成延遲，所以在 TCP 重傳率和 ping 遺失率裡都看不到；這是這張網卡和它的基地台之間的空氣，包含視窗內所有程式的流量。這一列不決定任何結果：無線重傳率沒有任何有依據的門檻。"
+        )
+        if ($starting.Count -eq 0) {
+            Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message ("{0}：這個介面在檢測開始時不存在，所以沒有差值。" -f $description) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            continue
+        }
+        $start = $starting[0]
+        if ($start.QueryError -ne 0 -or $ending.QueryError -ne 0) {
+            $which = $(if ($start.QueryError -ne 0) { $start.QueryErrorText } else { $ending.QueryErrorText })
+            Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message ("{0}：統計查詢失敗（{1}）。" -f $description, $which) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            continue
+        }
+
+        # PHY 規則寫在套用它的地方：逐項目算差值，傳送差值最大的項目是介面的數字，項目之間絕不相加（這一段的開頭說了為什麼）。
+        $deltas = @()
+        foreach ($endPhy in @($ending.Phys)) {
+            $startPhy = @(@($start.Phys) | Where-Object { $_.Index -eq $endPhy.Index } | Select-Object -First 1)
+            if ($startPhy.Count -eq 0) { continue }
+            $deltas += [pscustomobject][ordered]@{
+                Index         = $endPhy.Index
+                Start         = $startPhy[0]
+                End           = $endPhy
+                Transmitted   = [double]$endPhy.Transmitted - [double]$startPhy[0].Transmitted
+                Failed        = [double]$endPhy.Failed - [double]$startPhy[0].Failed
+                Retry         = [double]$endPhy.Retry - [double]$startPhy[0].Retry
+                MultipleRetry = [double]$endPhy.MultipleRetry - [double]$startPhy[0].MultipleRetry
+                AckFailure    = [double]$endPhy.AckFailure - [double]$startPhy[0].AckFailure
+                Received      = [double]$endPhy.Received - [double]$startPhy[0].Received
+            }
+        }
+        if ($deltas.Count -eq 0) {
+            Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message ("{0}：兩次讀取沒有共同的 PHY 項目，所以沒有差值。" -f $description) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            continue
+        }
+        $backwards = @($deltas | Where-Object { $_.Transmitted -lt 0 -or $_.Failed -lt 0 -or $_.Retry -lt 0 -or $_.MultipleRetry -lt 0 -or $_.AckFailure -lt 0 -or $_.Received -lt 0 })
+        if ($backwards.Count -gt 0) {
+            $resetLines = @(("取樣視窗：{0} 秒。" -f $seconds), $stateLine)
+            foreach ($d in $backwards) {
+                $resetLines += ("項目 {0}：開始 Transmitted={1}、Failed={2}、Retry={3}、MultipleRetry={4}；結束 Transmitted={5}、Failed={6}、Retry={7}、MultipleRetry={8}" -f $d.Index, $d.Start.Transmitted, $d.Start.Failed, $d.Start.Retry, $d.Start.MultipleRetry, $d.End.Transmitted, $d.End.Failed, $d.End.Retry, $d.End.MultipleRetry)
+            }
+            Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message ("{0}：計數器在檢測期間倒退——網卡重新連線或驅動程式重設了它們——所以無法計算差值。" -f $description) -Details ((@($resetLines) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            continue
+        }
+        $moved = @($deltas | Where-Object { $_.Transmitted -ne 0 -or $_.Failed -ne 0 -or $_.Retry -ne 0 -or $_.MultipleRetry -ne 0 -or $_.AckFailure -ne 0 -or $_.Received -ne 0 })
+        $chosen = @($deltas | Sort-Object -Property @{ Expression = "Transmitted"; Descending = $true }, @{ Expression = "Index"; Descending = $false })[0]
+        $agree = $true
+        foreach ($d in $moved) {
+            if ($d.Transmitted -ne $chosen.Transmitted -or $d.Failed -ne $chosen.Failed -or $d.Retry -ne $chosen.Retry -or $d.MultipleRetry -ne $chosen.MultipleRetry) { $agree = $false }
+        }
+        $phyLine = "PHY 項目：回報 {0} 個，視窗內有 {1} 個變動" -f $deltas.Count, $moved.Count
+        if ($moved.Count -gt 1 -and $agree) { $phyLine += "，數字全部相同——驅動程式把介面總計寫進每一個項目" }
+        elseif ($moved.Count -gt 1) { $phyLine += ("，數字不同（{0}）" -f ((@($moved | ForEach-Object { "項目 {0}：傳送 {1}、重傳 {2}、放棄 {3}" -f $_.Index, $_.Transmitted, $_.Retry, $_.Failed }) -join "；"))) }
+        $phyLine += ("；傳送差值最大的項目（項目 {0}）就是介面的數字，項目之間絕不相加，因為鏡射總計的驅動程式會讓每一個框在每個項目各算一次。" -f $chosen.Index)
+        $transmitted = [uint64]$chosen.Transmitted
+        $failed = [uint64]$chosen.Failed
+        $retry = [uint64]$chosen.Retry
+        $multiple = [uint64]$chosen.MultipleRetry
+        $ackFailures = [uint64]$chosen.AckFailure
+        $received = [uint64]$chosen.Received
+        $attempted = $transmitted + $failed
+        $countLines = @(
+            ("取樣視窗：{0} 秒。" -f $seconds),
+            ("傳送框差值：{0}；重傳到上限後放棄：{1}；需要重傳的框：{2}，其中重傳超過一次：{3}；沒收到確認：{4}；接收框差值：{5}。" -f $transmitted, $failed, $retry, $multiple, $ackFailures, $received),
+            $phyLine,
+            $stateLine,
+            ("開始累積值（項目 {0}）：Transmitted={1}、Failed={2}、Retry={3}、MultipleRetry={4}、ACKFailure={5}、Received={6}" -f $chosen.Index, $chosen.Start.Transmitted, $chosen.Start.Failed, $chosen.Start.Retry, $chosen.Start.MultipleRetry, $chosen.Start.AckFailure, $chosen.Start.Received),
+            ("結束累積值（項目 {0}）：Transmitted={1}、Failed={2}、Retry={3}、MultipleRetry={4}、ACKFailure={5}、Received={6}" -f $chosen.Index, $chosen.End.Transmitted, $chosen.End.Failed, $chosen.End.Retry, $chosen.End.MultipleRetry, $chosen.End.AckFailure, $chosen.End.Received)
+        )
+        if ($attempted -eq 0) {
+            $message = "{0}：{1} 秒的視窗內沒有傳送任何框，所以無法計算重傳率。" -f $description, $seconds
+            Add-CheckResult -Category $category -Check "無線重傳" -Status "INFO" -Message $message -Details ((@($countLines) + @("重傳率：無法計算——沒有傳送任何東西，所以沒有分母。") + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            continue
+        }
+        $rate = [math]::Round(([double]$retry / [double]$attempted) * 100.0, 1)
+        $message = "{0}：{2} 個框中有 {1} 個需要重傳（{3}%），其中 {4} 個重傳超過一次，{5} 個放棄，視窗 {6} 秒。" -f $description, $retry, $attempted, $rate, $multiple, $failed, $seconds
+        $rateLine = "重傳率：{0} ÷（{1} 傳送 + {2} 放棄）= {3}%；兩個重傳計數器不相加、也不互除。" -f $retry, $transmitted, $failed, $rate
+        Add-CheckResult -Category $category -Check "無線重傳" -Status "INFO" -Message $message -Details ((@($countLines) + @($rateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+    }
+}
+
 function Wait-ForMinimumTcpSample {
     param(
         [datetime]$StartTime,
@@ -5122,6 +5421,16 @@ function Run-AllChecks {
         Add-CheckResult -Category "系統資訊" -Check "電腦" -Status "INFO" -Message ("{0}，使用者 {1}。" -f $summary.ComputerName, $summary.UserName) -Details ("作業系統：{0} ({1})`r`nPowerShell：{2}" -f $summary.OperatingSystem, $summary.OperatingVersion, $summary.PowerShellVersion) -Tag "system" | Out-Null
     } | Out-Null
 
+    # 無線重傳計數器在 TCP 基準值之前讀，讓讀取器的編譯——參考機上約 0.7 秒，每個程序一次——在重傳視窗之外付掉；TCP 視窗結束
+    # （有延長就延長之後）再讀一次，所以兩個視窗涵蓋同一次執行。設定關掉（Checks.WifiRetryCounters）時什麼都不讀、不寫任何列，
+    # 和 IT 診斷資料一樣。
+    $wifiRetryEnabled = Test-IsTrueFlag $script:Config.Checks.WifiRetryCounters
+    $wifiRetryBaseline = $null
+    if ($wifiRetryEnabled) {
+        $wifiRetryBaseline = Invoke-CheckStep -Category "Wi-Fi 重傳" -Name "取得 Wi-Fi 重傳基準值" -Progress 9 -Weightless -Action {
+            return (Get-WifiRetrySnapshot)
+        }
+    }
     $tcpBaseline = Invoke-CheckStep -Category "TCP 重傳" -Name "取得 TCP 重傳基準值" -Progress 10 -Weightless -Action {
         # 只有基準值使用 -WarmUp：這次會被丟棄的讀取，把計數器提供者第一次查詢要收的成本付在取樣窗之外，
         # 在那裡它不會拉長窗所回報的數字（backlog #38）。
@@ -5218,9 +5527,21 @@ function Run-AllChecks {
         if ($null -ne $tcpExtended) { $tcpAfter = $tcpExtended }
     }
 
+    # 結束值在 TCP 視窗（不論有沒有延長）之後讀，讓兩個視窗一起結束；分析放在 TCP 分析之後，也就是報告印出的順序。
+    $wifiRetryAfter = $null
+    if ($wifiRetryEnabled) {
+        $wifiRetryAfter = Invoke-CheckStep -Category "Wi-Fi 重傳" -Name "取得 Wi-Fi 重傳結束值" -Progress 91 -Weightless -Action {
+            return (Get-WifiRetrySnapshot)
+        }
+    }
     Invoke-CheckStep -Category "TCP 重傳" -Name "分析 TCP 重傳" -Progress 92 -Action {
         Compare-TcpCounters -Before $tcpBaseline -After $tcpAfter
     } | Out-Null
+    if ($wifiRetryEnabled) {
+        Invoke-CheckStep -Category "Wi-Fi 重傳" -Name "分析 Wi-Fi 重傳" -Progress 93 -Action {
+            Compare-WifiRetryCounters -Before $wifiRetryBaseline -After $wifiRetryAfter
+        } | Out-Null
+    }
 
     $script:RunFinishedAt = Get-Date
     Set-UiProgress -Percent 96 -Text "產生報告"
