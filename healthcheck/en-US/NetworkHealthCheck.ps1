@@ -4201,7 +4201,14 @@ function Compare-WifiAssociation {
             $distinctBssids = @($withBssid | ForEach-Object { $_.Bssid } | Select-Object -Unique)
             $distinctSsids = @($withBssid | ForEach-Object { $_.Ssid } | Select-Object -Unique)
             $first = $withBssid[0]
-            if ($distinctBssids.Count -eq 1) {
+            if ($distinctBssids.Count -eq 1 -and $distinctSsids.Count -gt 1) {
+                # The same address under more than one network name (PR #54, round 2): the access point was renamed or
+                # reconfigured during the run, which the steady sentence would have hidden behind the first name.
+                $ssidSequence = @()
+                foreach ($reading in $withBssid) { if ($ssidSequence.Count -eq 0 -or $ssidSequence[$ssidSequence.Count - 1] -ne $reading.Ssid) { $ssidSequence += $reading.Ssid } }
+                $message = "{0}: the same access point (BSSID {1}) at the {2} of {3} samples that reported one, but under more than one network name - SSID {4} - so the access point was renamed or reconfigured during the run." -f $name, $first.Bssid, $withBssid.Count, $readings.Count, (@($ssidSequence | ForEach-Object { ConvertTo-DisplayString $_ }) -join ", then ")
+            }
+            elseif ($distinctBssids.Count -eq 1) {
                 if ($withBssid.Count -eq $readings.Count) {
                     $message = "{0}: SSID {1} on the same access point (BSSID {2}) at all {3} samples over {4} seconds; a change between two samples that returned to it cannot be seen." -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $readings.Count, $seconds
                 }
@@ -4317,6 +4324,40 @@ function Get-AccessPointGatewayText {
     return ""
 }
 
+function Update-AccessPointGatewayHints {
+    param([object[]]$Samples)
+
+    # The hint on a gateway-neighbour row is written with the IT diagnostics, when only the first two access-point samples
+    # exist; a roam between that read and the last sample would leave it comparing the gateway with an access point the
+    # association row says was left (PR #54, round 2). So after the last sample the comparison is made again, against the
+    # latest sample that could be read: where it reads the same, the row is untouched; where it does not, the line written
+    # at the neighbour read stays - it was true at that moment - and a second line gives the comparison with the access
+    # point the interface was on at the end, or says that none was reported then, and points at the association row.
+    foreach ($entry in @($script:GatewayNeighborRows)) {
+        if ($null -eq $entry -or $null -eq $entry.Row) { continue }
+        $fresh = Get-AccessPointGatewayText -Gateway ([string]$entry.Gateway) -GatewayMac ([string]$entry.Mac) -PrimaryAdapters @($script:PrimaryAdapters) -Samples @($Samples) -InterfaceIndex (ConvertTo-IntSafe $entry.InterfaceIndex 0)
+        if ([string]$fresh -eq [string]$entry.Hint) { continue }
+        if ([string]::IsNullOrWhiteSpace([string]$fresh)) {
+            $line = "Access point and gateway, after the last sample: no BSSID was reported for the interface any more, so the comparison above could not be repeated; the Wi-Fi association row records what the samples saw."
+        }
+        else {
+            $line = "Access point and gateway, after the last sample: {0} At the neighbour read the interface was on another access point, or reported none - the Wi-Fi association row records the samples - so the line above, where there is one, stands for that moment and this one for the end of the run." -f ($fresh -replace '^[^:：]*[:：]\s*', '')
+        }
+        $lines = @(([string]$entry.Row.Details) -split "\r?\n")
+        $at = -1
+        if (-not [string]::IsNullOrWhiteSpace([string]$entry.Hint)) { $at = [array]::IndexOf($lines, [string]$entry.Hint) }
+        if ($at -lt 0) {
+            # No line was written at the neighbour read: the new one goes where that line would have been, before the method line.
+            for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -like "Method:*") { $at = $i - 1; break } }
+        }
+        if ($at -lt 0) { $lines = @($lines) + @($line) }
+        else { $lines = @($(if ($at -ge 0) { $lines[0..$at] } else { @() })) + @($line) + @($(if ($at + 1 -lt $lines.Count) { $lines[($at + 1)..($lines.Count - 1)] } else { @() })) }
+        $entry.Row.Details = ($lines -join [Environment]::NewLine)
+        $entry.Hint = [string]$fresh
+        Write-UiLog -Status "INFO" -Text ("{0} / {1}: {2}" -f $entry.Row.Category, $entry.Row.Check, $line)
+    }
+}
+
 function Sort-DefaultRoutes {
     param([object[]]$Routes)
 
@@ -4412,10 +4453,13 @@ function Add-GatewayNeighborResult {
         # data was not read.
         $accessPointLine = Get-AccessPointGatewayText -Gateway ([string]$gateway) -GatewayMac $mac -PrimaryAdapters $PrimaryAdapters -Samples @($script:WifiAssociationSamples) -InterfaceIndex $neighborIfIndex
         if (-not [string]::IsNullOrWhiteSpace($accessPointLine)) { $lines += $accessPointLine }
+        if ($null -eq $script:GatewayNeighborRows) { $script:GatewayNeighborRows = New-Object System.Collections.ArrayList }
         $lines += "Method: Get-NetNeighbor -AddressFamily IPv4 (fallback: arp -a)"
         $lines += "Manual check: arp -a"
         $message = "Gateway {0}: neighbor state {1}, MAC {2}." -f $gateway, $state, (ConvertTo-DisplayString $mac)
-        Add-CheckResult -Category "IT Diagnostics" -Check "Gateway neighbor (ARP)" -Status "INFO" -Message $message -Details ($lines -join [Environment]::NewLine) -Tag "gateway-neighbor" -Scope "IT" | Out-Null
+        $neighborRow = Add-CheckResult -Category "IT Diagnostics" -Check "Gateway neighbor (ARP)" -Status "INFO" -Message $message -Details ($lines -join [Environment]::NewLine) -Tag "gateway-neighbor" -Scope "IT"
+        # Kept so that Update-AccessPointGatewayHints can make the comparison again once the last access-point sample exists (PR #54, round 2).
+        [void]$script:GatewayNeighborRows.Add([pscustomobject]@{ Row = $neighborRow; Gateway = [string]$gateway; Mac = [string]$mac; InterfaceIndex = $neighborIfIndex; Hint = [string]$accessPointLine })
     }
 }
 
@@ -6139,6 +6183,7 @@ function Run-AllChecks {
     $script:PendingPingSamples = New-Object System.Collections.ArrayList
     # And the access-point samples (backlog #61's other half): a run compares the samples it took itself.
     $script:WifiAssociationSamples = New-Object System.Collections.ArrayList
+    $script:GatewayNeighborRows = New-Object System.Collections.ArrayList
     $script:LastHtmlReport = $null
     $script:LastTextReport = $null
     $script:LastJsonReport = $null
@@ -6360,6 +6405,7 @@ function Run-AllChecks {
     if ($wifiAssociationEnabled) {
         Invoke-CheckStep -Category "IT Diagnostics" -Name "Compare the Wi-Fi Access Point Across the Samples" -Progress 94 -Scope "IT" -Action {
             Compare-WifiAssociation -Samples @($script:WifiAssociationSamples)
+            Update-AccessPointGatewayHints -Samples @($script:WifiAssociationSamples)
         } | Out-Null
     }
 

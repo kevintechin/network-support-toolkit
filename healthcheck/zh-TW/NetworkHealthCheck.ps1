@@ -4073,7 +4073,14 @@ function Compare-WifiAssociation {
             $distinctBssids = @($withBssid | ForEach-Object { $_.Bssid } | Select-Object -Unique)
             $distinctSsids = @($withBssid | ForEach-Object { $_.Ssid } | Select-Object -Unique)
             $first = $withBssid[0]
-            if ($distinctBssids.Count -eq 1) {
+            if ($distinctBssids.Count -eq 1 -and $distinctSsids.Count -gt 1) {
+                # 同一個位址、卻不只一個網路名稱（PR #54，第 2 回合）：存取點在執行期間被改名或重新設定，穩定不變那一句會把它藏在
+                # 第一個名稱後面。
+                $ssidSequence = @()
+                foreach ($reading in $withBssid) { if ($ssidSequence.Count -eq 0 -or $ssidSequence[$ssidSequence.Count - 1] -ne $reading.Ssid) { $ssidSequence += $reading.Ssid } }
+                $message = "{0}：有回報存取點的 {2} 次樣本（共 {3} 次）都是同一個存取點（BSSID {1}），但網路名稱不只一個——SSID {4}——所以存取點在執行期間被改名或重新設定。" -f $name, $first.Bssid, $withBssid.Count, $readings.Count, (@($ssidSequence | ForEach-Object { ConvertTo-DisplayString $_ }) -join "、然後 ")
+            }
+            elseif ($distinctBssids.Count -eq 1) {
                 if ($withBssid.Count -eq $readings.Count) {
                     $message = "{0}：SSID {1}，{3} 次樣本（跨 {4} 秒）都在同一個存取點（BSSID {2}）；兩個樣本之間換出去又回到它的變化看不見。" -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $readings.Count, $seconds
                 }
@@ -4182,6 +4189,38 @@ function Get-AccessPointGatewayText {
     return ""
 }
 
+function Update-AccessPointGatewayHints {
+    param([object[]]$Samples)
+
+    # 閘道鄰居列上的提示是在收集 IT 診斷資料時寫的，那時只有前兩次存取點樣本；那次讀取和最後一次樣本之間的漫遊，會讓它拿閘道
+    # 去比一個存取點列說已經離開的存取點（PR #54，第 2 回合）。所以最後一次樣本之後再比一次，對象是最近一次讀得到的樣本：讀出來
+    # 一樣就不動這一列；不一樣時，鄰居表讀取時寫的那一行留著——它在那一刻是真的——再加一行給出「介面在結束時所連存取點」的比較，
+    # 或者說那時已沒有回報存取點，並指向存取點列。
+    foreach ($entry in @($script:GatewayNeighborRows)) {
+        if ($null -eq $entry -or $null -eq $entry.Row) { continue }
+        $fresh = Get-AccessPointGatewayText -Gateway ([string]$entry.Gateway) -GatewayMac ([string]$entry.Mac) -PrimaryAdapters @($script:PrimaryAdapters) -Samples @($Samples) -InterfaceIndex (ConvertTo-IntSafe $entry.InterfaceIndex 0)
+        if ([string]$fresh -eq [string]$entry.Hint) { continue }
+        if ([string]::IsNullOrWhiteSpace([string]$fresh)) {
+            $line = "存取點與閘道（最後一次樣本之後）：介面已不再回報 BSSID，所以上面的比較無法重做；Wi-Fi 存取點列記錄了各次樣本看到的東西。"
+        }
+        else {
+            $line = "存取點與閘道（最後一次樣本之後）：{0}鄰居表讀取時介面連的是另一個存取點、或沒有回報存取點——Wi-Fi 存取點列記錄了各次樣本——所以上面那一行（如果有）代表那一刻，這一行代表執行結束時。" -f ($fresh -replace '^[^:：]*[:：]\s*', '')
+        }
+        $lines = @(([string]$entry.Row.Details) -split "\r?\n")
+        $at = -1
+        if (-not [string]::IsNullOrWhiteSpace([string]$entry.Hint)) { $at = [array]::IndexOf($lines, [string]$entry.Hint) }
+        if ($at -lt 0) {
+            # 鄰居表讀取時沒有寫這一行：新的一行放在它本來會在的位置，也就是檢測方式那一行之前。
+            for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -like "檢測方式：*") { $at = $i - 1; break } }
+        }
+        if ($at -lt 0) { $lines = @($lines) + @($line) }
+        else { $lines = @($(if ($at -ge 0) { $lines[0..$at] } else { @() })) + @($line) + @($(if ($at + 1 -lt $lines.Count) { $lines[($at + 1)..($lines.Count - 1)] } else { @() })) }
+        $entry.Row.Details = ($lines -join [Environment]::NewLine)
+        $entry.Hint = [string]$fresh
+        Write-UiLog -Status "INFO" -Text ("{0} / {1}: {2}" -f $entry.Row.Category, $entry.Row.Check, $line)
+    }
+}
+
 function Sort-DefaultRoutes {
     param([object[]]$Routes)
 
@@ -4274,10 +4313,13 @@ function Add-GatewayNeighborResult {
         # 資料沒有讀取時，這一行不出現。
         $accessPointLine = Get-AccessPointGatewayText -Gateway ([string]$gateway) -GatewayMac $mac -PrimaryAdapters $PrimaryAdapters -Samples @($script:WifiAssociationSamples) -InterfaceIndex $neighborIfIndex
         if (-not [string]::IsNullOrWhiteSpace($accessPointLine)) { $lines += $accessPointLine }
+        if ($null -eq $script:GatewayNeighborRows) { $script:GatewayNeighborRows = New-Object System.Collections.ArrayList }
         $lines += "檢測方式：Get-NetNeighbor -AddressFamily IPv4（備援：arp -a）"
         $lines += "手動驗證：arp -a"
         $message = "閘道 {0}：鄰居狀態 {1}，MAC {2}。" -f $gateway, $state, (ConvertTo-DisplayString $mac)
-        Add-CheckResult -Category "IT 診斷資料" -Check "閘道鄰居（ARP）" -Status "INFO" -Message $message -Details ($lines -join [Environment]::NewLine) -Tag "gateway-neighbor" -Scope "IT" | Out-Null
+        $neighborRow = Add-CheckResult -Category "IT 診斷資料" -Check "閘道鄰居（ARP）" -Status "INFO" -Message $message -Details ($lines -join [Environment]::NewLine) -Tag "gateway-neighbor" -Scope "IT"
+        # 留下來，讓 Update-AccessPointGatewayHints 在最後一次存取點樣本出現後再比一次（PR #54，第 2 回合）。
+        [void]$script:GatewayNeighborRows.Add([pscustomobject]@{ Row = $neighborRow; Gateway = [string]$gateway; Mac = [string]$mac; InterfaceIndex = $neighborIfIndex; Hint = [string]$accessPointLine })
     }
 }
 
@@ -5939,6 +5981,7 @@ function Run-AllChecks {
     $script:PendingPingSamples = New-Object System.Collections.ArrayList
     # And the access-point samples (backlog #61's other half): a run compares the samples it took itself.
     $script:WifiAssociationSamples = New-Object System.Collections.ArrayList
+    $script:GatewayNeighborRows = New-Object System.Collections.ArrayList
     $script:LastHtmlReport = $null
     $script:LastTextReport = $null
     $script:LastJsonReport = $null
@@ -6148,6 +6191,7 @@ function Run-AllChecks {
     if ($wifiAssociationEnabled) {
         Invoke-CheckStep -Category "IT 診斷資料" -Name "比較各次樣本的 Wi-Fi 存取點" -Progress 94 -Scope "IT" -Action {
             Compare-WifiAssociation -Samples @($script:WifiAssociationSamples)
+            Update-AccessPointGatewayHints -Samples @($script:WifiAssociationSamples)
         } | Out-Null
     }
 

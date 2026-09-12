@@ -771,8 +771,18 @@ function Test-ResultSet {
     if ([int]$want['wifi-association'] -gt 1 -and $aggregateAssocFailure) { $want['wifi-association'] = 1 }
     if (-not $aggregateAssocFailure -and $null -ne $Machine.WlanInterfaceIds -and [bool]$itTags['wifi-association']) {
         $assocIds = @(@($Machine.WlanInterfaceIds) + $wlanAfterIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).ToLowerInvariant() } | Sort-Object -Unique)
+        # The GUID is read off the identity line only - the GUID that the samples token follows (PR #54, round 2): a
+        # network named like a UUID is printed in the sample lines above it, and an unanchored match would have read the
+        # network as the interface and refused a valid report. A per-interface row without the token is a tool regression
+        # and is refused as such; the aggregate rows (netsh, exception, none) carry neither a GUID nor the token.
+        $assocGuidOnIdentity = '([0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})[;；]\s*samples='
+        foreach ($r in $assocRows) {
+            $firstLine = [string](@(([string]$r.Details) -split "`r`n|`n")[0])
+            if ($firstLine -match '[:：]\s*(netsh|exception|none)\s*$') { continue }
+            if (([string]$r.Details) -notmatch 'samples=') { $bad += ('wifi-association: a per-interface row carries no samples token ({0})' -f $r.Message) }
+        }
         foreach ($id in $assocIds) {
-            $n = @($assocRows | Where-Object { ([string]$_.Details).ToLowerInvariant().Contains($id) }).Count
+            $n = @($assocRows | Where-Object { $m = [regex]::Match([string]$_.Details, $assocGuidOnIdentity); $m.Success -and ($m.Groups[1].Value.ToLowerInvariant() -eq $id) }).Count
             if ($n -ne 1) { $bad += ('wifi-association: interface {0} has {1} row(s), expected 1' -f $id, $n) }
         }
         # An interface present at the middle sample only - enabled after the pre-launch facts were read and gone before
@@ -782,12 +792,12 @@ function Test-ResultSet {
         # more expected row; any other such row names an interface nobody listed and is refused.
         $transientAssoc = 0
         foreach ($r in $assocRows) {
-            $m = [regex]::Match([string]$r.Details, '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}')
-            if (-not $m.Success -or ($assocIds -contains $m.Value.ToLowerInvariant())) { continue }
+            $m = [regex]::Match([string]$r.Details, $assocGuidOnIdentity)
+            if (-not $m.Success -or ($assocIds -contains $m.Groups[1].Value.ToLowerInvariant())) { continue }
             $listed = [regex]::Match([string]$r.Details, 'samples=([a-z,]+)')
             $moments = @($(if ($listed.Success) { $listed.Groups[1].Value -split ',' } else { @() }))
             if ($listed.Success -and $moments -notcontains 'start' -and $moments -notcontains 'end') { $transientAssoc++ }
-            else { $bad += ('wifi-association: a row names interface {0}, which neither reading listed' -f $m.Value) }
+            else { $bad += ('wifi-association: a row names interface {0}, which neither reading listed' -f $m.Groups[1].Value) }
         }
         if ($transientAssoc -gt 0) { $want['wifi-association'] = [math]::Max(1, $wlanUnion + $transientAssoc) }
     }
