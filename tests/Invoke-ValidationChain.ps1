@@ -484,27 +484,46 @@ function Get-MachineFacts {
             catch { }
         }
     }
-    # How many wireless interfaces `netsh wlan show interfaces` reports as connected - the output Add-WifiRfResult parses,
-    # which writes one wifi row per connected interface. Only a connected interface carries an SSID line, and that label
-    # is not localized; without netsh, or with none connected, the script writes one row.
+    # How many wireless interfaces are connected, and which exist - read beside netsh and not from its text (backlog #62):
+    # where desktop programs may not use the location (Windows 11 24H2 and later; measured on the reference machine on
+    # 2026-09-12) netsh prints no interface at all and exits 1, while the tool reads the list and the state from the WLAN
+    # service, so a witness that counted netsh's SSID lines would have agreed with the wrong rows. A connected wireless
+    # interface is a physical 802.11 adapter (Get-NetAdapter) holding a connection profile (Get-NetConnectionProfile),
+    # which is what Add-WifiRfResult writes one wifi row per; where those cmdlets cannot be asked, netsh's SSID lines -
+    # one per connected interface, a label netsh does not translate - are the fallback they were until 1.2.13.
     $facts.WifiInterfaces = 0
-    $netsh = Join-Path $env:SystemRoot 'System32\netsh.exe'
-    if (Test-Path -LiteralPath $netsh) {
-        try { $facts.WifiInterfaces = @(& $netsh wlan show interfaces 2>&1 | Where-Object { ([string]$_) -match '^\s*SSID\s*:' }).Count } catch { }
-    }
+    $wirelessAdapters = @()
+    $profileWitness = $false
+    try {
+        $wirelessAdapters = @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { [string]$_.PhysicalMediaType -eq 'Native 802.11' -and [string]$_.Status -notin @('Disabled', 'Not Present') })
+        $profiles = @(Get-NetConnectionProfile -ErrorAction Stop | ForEach-Object { [int]$_.InterfaceIndex })
+        $facts.WifiInterfaces = @($wirelessAdapters | Where-Object { $profiles -contains [int]$_.InterfaceIndex }).Count
+        $profileWitness = $true
+    } catch { $wirelessAdapters = @() }
     # How many wireless interfaces the machine has at all, connected or not - the set WlanEnumInterfaces lists, which is
     # what the Wi-Fi retry row (backlog #61) writes one row per; netsh prints one interface GUID per interface, and a
     # GUID label is not localized. A machine with none, or without the WLAN service, gets one row saying so. The GUIDs
     # themselves are kept as well (PR #52, round 6): an interface enabled or removed during the run gets a transition row
     # of its own, so the row count the oracle expects is the union of the lists read before the launch and after the report.
+    # netsh's exit code says whether it answered at all (backlog #62): refused, it printed no GUID line for interfaces that
+    # exist, and the physical 802.11 adapters that are not disabled or absent stand in for them, by their own GUID - the
+    # set the WLAN service lists, which the association and retry rows name.
     $facts.WlanInterfaces = 0
     $facts.WlanInterfaceIds = @()
+    $facts.WlanRefused = $false
+    $netsh = Join-Path $env:SystemRoot 'System32\netsh.exe'
     if (Test-Path -LiteralPath $netsh) {
         try {
-            $facts.WlanInterfaceIds = @(Get-WlanInterfaceIds -Lines @(& $netsh wlan show interfaces 2>&1 | ForEach-Object { [string]$_ }))
-            $facts.WlanInterfaces = @($facts.WlanInterfaceIds).Count
+            $netshLines = @(& $netsh wlan show interfaces 2>&1 | ForEach-Object { [string]$_ })
+            $facts.WlanRefused = ($LASTEXITCODE -ne 0)
+            if (-not $profileWitness) { $facts.WifiInterfaces = @($netshLines | Where-Object { ([string]$_) -match '^\s*SSID\s*:' }).Count }
+            $facts.WlanInterfaceIds = @(Get-WlanInterfaceIds -Lines $netshLines)
         } catch { }
     }
+    if ($facts.WlanRefused -and @($facts.WlanInterfaceIds).Count -eq 0) {
+        $facts.WlanInterfaceIds = @($wirelessAdapters | ForEach-Object { ([string]$_.InterfaceGuid).Trim('{', '}').ToLowerInvariant() } | Where-Object { $_ -match '^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$' } | Sort-Object -Unique)
+    }
+    $facts.WlanInterfaces = @($facts.WlanInterfaceIds).Count
     # Whether adapter statistics can be sampled, the way Get-AdapterStatisticsSnapshot samples them; without them both
     # sampling steps end as step-error rows and the analysis step writes one aggregate adapter-errors row.
     $facts.AdapterStatistics = $false
@@ -719,6 +738,14 @@ function Test-ResultSet {
     $rows = @($Report.Results)
     $byTag = @{}
     foreach ($r in $rows) { $t = [string]$r.Tag; if (-not $byTag.ContainsKey($t)) { $byTag[$t] = 0 }; $byTag[$t]++ }
+    # Where netsh was refused (backlog #62), the radio row is written from the WLAN service, one per connected interface,
+    # and each names the interface's GUID on a details line; the wired-looking row a refused netsh used to produce names
+    # none, and the count alone would not tell the two apart on a machine with one interface.
+    if ([bool]$Machine.WlanRefused -and [bool]$itTags['wifi'] -and [int]$(if ($null -eq $Machine.WifiInterfaces) { 0 } else { $Machine.WifiInterfaces }) -ge 1) {
+        foreach ($r in @($rows | Where-Object { $_.Tag -eq 'wifi' })) {
+            if (([string]$r.Details) -notmatch '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}') { $bad += ('wifi: a row without an interface GUID on a machine where netsh was refused ({0})' -f $r.Message) }
+        }
+    }
     # The two adapter-statistics samples are taken independently: when exactly one of them fails on a machine where the
     # cmdlet works, the report legitimately carries one step-error row and the single aggregate "Before/After
     # Comparison" row (the only adapter-errors row the script ever writes with status ERROR) instead of one row per adapter.
@@ -873,7 +900,7 @@ function Test-ResultSet {
     return $bad
 }
 function ConvertTo-FactsKey([hashtable]$F) {
-    return ('{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}' -f $F.ConnectedAdapters, (@($F.Gateways) -join ','), (@($F.DnsServers) -join ','), $F.WifiInterfaces, [bool]$F.TcpCounters.TCPv4, [bool]$F.TcpCounters.TCPv6, [bool]$F.AdapterStatistics, [bool]$F.DataSourceRow, [bool]$F.SnapshotStepFailed, $F.WlanInterfaces, (@($F.WlanInterfaceIds) -join ','))
+    return ('{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}' -f $F.ConnectedAdapters, (@($F.Gateways) -join ','), (@($F.DnsServers) -join ','), $F.WifiInterfaces, [bool]$F.TcpCounters.TCPv4, [bool]$F.TcpCounters.TCPv6, [bool]$F.AdapterStatistics, [bool]$F.DataSourceRow, [bool]$F.SnapshotStepFailed, $F.WlanInterfaces, (@($F.WlanInterfaceIds) -join ','), [bool]$F.WlanRefused)
 }
 function Test-ResultSetForRun {
     # The machine can change while a run samples for two minutes (an adapter connecting or dropping, a Wi-Fi roaming),
