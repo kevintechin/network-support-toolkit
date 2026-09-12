@@ -615,5 +615,46 @@ ${function:Get-TcpInitialRto} = $originalRto
 $script:TcpConnectSampleCount = 0
 Set-RunOptions -Overrides @{} | Out-Null
 
+# --- Scenario N: the access-point samples and their row (backlog #61, the other half; v1.2.13) ---
+# The radio row's read is the middle sample, the analysis writes one IT-scope row per wireless interface netsh listed
+# (or one saying there is none), and an IT row - Information or Unable to Check - changes neither the verdict nor the
+# fingerprint. Real reads, whatever this machine has: a runner without a radio gets the one row that says so.
+$script:Results = New-Object System.Collections.ArrayList
+$script:WifiAssociationSamples = New-Object System.Collections.ArrayList
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+[void](Add-WifiAssociationSample -Moment "start")
+Add-WifiRfResult
+[void](Add-WifiAssociationSample -Moment "end")
+Assert-Equal 'N: three samples taken, the middle one by the radio row' (@($script:WifiAssociationSamples | ForEach-Object { $_.Moment }) -join ',') 'start,middle,end'
+$rowsBefore = @($script:Results).Count
+Compare-WifiAssociation -Samples @($script:WifiAssociationSamples)
+$assocRows = @($script:Results | Where-Object { $_.Tag -eq 'wifi-association' })
+Assert-Equal 'N: at least one association row, every one in the IT scope and unmarked' (($assocRows.Count -ge 1) -and (@($assocRows | Where-Object { $_.Scope -ne 'IT' -or $_.Weightless }).Count -eq 0)) True
+Assert-Equal 'N: and the analysis wrote nothing else' (@($script:Results).Count - $rowsBefore) $assocRows.Count
+Assert-Equal 'N: the rows leave a healthy run healthy' ("{0}/{1}" -f (Get-OverallStatus).Code, (Get-FingerprintSummary).Key) 'PASS/healthy'
+Write-Output ('[INFO] N: ' + $assocRows.Count + ' association row(s) on this machine; the first reads: ' + $assocRows[0].Message)
+$script:LastHtmlReport = $null; $script:LastTextReport = $null; $script:LastJsonReport = $null
+$r = Complete-ReportStage -SaveResult (Save-Reports)
+$json = Get-Content -LiteralPath $r.Json -Raw | ConvertFrom-Json
+Assert-Equal 'N: the JSON report carries the rows with their tag and scope' (@($json.Results | Where-Object { $_.Tag -eq 'wifi-association' -and $_.Scope -eq 'IT' }).Count) $assocRows.Count
+$html = Get-Content -LiteralPath $r.Html -Raw
+Assert-Equal 'N: and the HTML puts them in the IT block' ((($html -split 'class="itblock"')[1]) -match 'wifi-association|Wi-Fi') True
+Start-Sleep -Seconds 1
+# Every sample failing is one Unable-to-Check row, IT-scoped like the rest, and outside the verdict like every IT row.
+$script:Results = New-Object System.Collections.ArrayList
+Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null
+Compare-WifiAssociation -Samples @([pscustomobject]@{ Moment = 'start'; Timestamp = (Get-Date); Interfaces = @(); Error = 'netsh'; ErrorText = 'not found'; Diagnostics = '' })
+Assert-Equal 'N: a sampling that failed every time is one Unable-to-Check IT row' ("{0}/{1}/{2}" -f @($script:Results).Count, $script:Results[1].Status, $script:Results[1].Scope) '2/ERROR/IT'
+Assert-Equal 'N: which changes neither the verdict nor the fingerprint' ("{0}/{1}" -f (Get-OverallStatus).Code, (Get-FingerprintSummary).Key) 'PASS/healthy'
+# The switch: the radio row off in the file takes the samples with it - the run gates all three steps on WifiRf.
+$script:BaseConfig.Checks.WifiRf = $false
+$oNoWifi = Set-RunOptions -Overrides @{}
+Assert-Equal 'N: WifiRf off in the file is projected off, and the profile names it' (("{0}/{1}" -f $oNoWifi.ChecksEnabled.WifiRf, ((Get-RunProfileText) -match 'WifiRf'))) 'False/True'
+$script:WifiAssociationSamples = New-Object System.Collections.ArrayList
+Add-WifiRfResult
+Assert-Equal 'N: and the radio row takes no sample when it is off' (@($script:WifiAssociationSamples).Count) 0
+$script:BaseConfig.Checks.WifiRf = $true
+Set-RunOptions -Overrides @{} | Out-Null
+
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

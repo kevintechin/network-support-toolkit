@@ -704,16 +704,17 @@ function Test-ResultSet {
     # The IT diagnostics to expect come from the configuration and the launch switches (-NoWifi / -NoTraceroute as
     # Expect['NoWifi'] / Expect['NoTraceroute']), never from the report under test; the report's own ChecksEnabled must
     # agree with them.
-    $itTags = [ordered]@{ 'wifi' = (Test-TrueFlag $Config.Checks.WifiRf); 'routes' = (Test-TrueFlag $Config.Checks.RouteTable); 'gateway-neighbor' = (Test-TrueFlag $Config.Checks.GatewayNeighbor); 'proxy' = (Test-TrueFlag $Config.Checks.ProxySettings); 'traceroute' = (Test-TrueFlag $Config.Checks.Traceroute); 'drivers' = (Test-TrueFlag $Config.Checks.DriverInfo) }
-    if ($Expect['NoWifi'] -eq $true) { $itTags['wifi'] = $false }
+    $itTags = [ordered]@{ 'wifi' = (Test-TrueFlag $Config.Checks.WifiRf); 'wifi-association' = (Test-TrueFlag $Config.Checks.WifiRf); 'routes' = (Test-TrueFlag $Config.Checks.RouteTable); 'gateway-neighbor' = (Test-TrueFlag $Config.Checks.GatewayNeighbor); 'proxy' = (Test-TrueFlag $Config.Checks.ProxySettings); 'traceroute' = (Test-TrueFlag $Config.Checks.Traceroute); 'drivers' = (Test-TrueFlag $Config.Checks.DriverInfo) }
+    if ($Expect['NoWifi'] -eq $true) { $itTags['wifi'] = $false; $itTags['wifi-association'] = $false }
     if ($Expect['NoTraceroute'] -eq $true) { $itTags['traceroute'] = $false }
-    $reported = @{ 'wifi' = $o.ChecksEnabled.WifiRf; 'routes' = $o.ChecksEnabled.RouteTable; 'gateway-neighbor' = $o.ChecksEnabled.GatewayNeighbor; 'proxy' = $o.ChecksEnabled.ProxySettings; 'traceroute' = $o.ChecksEnabled.Traceroute; 'drivers' = $o.ChecksEnabled.DriverInfo }
+    $reported = @{ 'wifi' = $o.ChecksEnabled.WifiRf; 'wifi-association' = $o.ChecksEnabled.WifiRf; 'routes' = $o.ChecksEnabled.RouteTable; 'gateway-neighbor' = $o.ChecksEnabled.GatewayNeighbor; 'proxy' = $o.ChecksEnabled.ProxySettings; 'traceroute' = $o.ChecksEnabled.Traceroute; 'drivers' = $o.ChecksEnabled.DriverInfo }
     if ([bool]$o.ChecksEnabled.WifiRetryCounters -ne (Test-TrueFlag $Config.Checks.WifiRetryCounters)) { $bad += ('ChecksEnabled for WifiRetryCounters reported as {0}, expected {1} from the configuration' -f $o.ChecksEnabled.WifiRetryCounters, (Test-TrueFlag $Config.Checks.WifiRetryCounters)) }
     foreach ($k in @($itTags.Keys)) {
         if ([bool]$reported[$k] -ne [bool]$itTags[$k]) { $bad += ('ChecksEnabled for {0} reported as {1}, expected {2} from the configuration and the switches' -f $k, $reported[$k], $itTags[$k]) }
-        # One row per enabled diagnostic; the gateway neighbour is looked up once per resolved gateway and the Wi-Fi radio
-        # reported once per connected wireless interface (one row each without).
-        $want[$k] = $(if (-not $itTags[$k]) { 0 } elseif ($k -eq 'gateway-neighbor') { [math]::Max(1, $gateways.Count) } elseif ($k -eq 'wifi') { [math]::Max(1, [int]$(if ($null -eq $Machine.WifiInterfaces) { 0 } else { $Machine.WifiInterfaces })) } else { 1 })
+        # One row per enabled diagnostic; the gateway neighbour is looked up once per resolved gateway, the Wi-Fi radio
+        # reported once per connected wireless interface, and the Wi-Fi association once per wireless interface netsh
+        # listed at either reading (backlog #61's other half; the union, as for the retry rows) - one row each without.
+        $want[$k] = $(if (-not $itTags[$k]) { 0 } elseif ($k -eq 'gateway-neighbor') { [math]::Max(1, $gateways.Count) } elseif ($k -eq 'wifi') { [math]::Max(1, [int]$(if ($null -eq $Machine.WifiInterfaces) { 0 } else { $Machine.WifiInterfaces })) } elseif ($k -eq 'wifi-association') { [math]::Max(1, $wlanUnion) } else { 1 })
     }
     $rows = @($Report.Results)
     $byTag = @{}
@@ -754,6 +755,29 @@ function Test-ResultSet {
         foreach ($r in $retryRows) {
             $m = [regex]::Match([string]$r.Details, '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}')
             if ($m.Success -and ($unionIds -notcontains $m.Value.ToLowerInvariant())) { $bad += ('wifi-retry: a row names interface {0}, which neither reading listed' -f $m.Value) }
+        }
+    }
+    # The Wi-Fi association rows (backlog #61's other half) follow the retry rows' shape, one switch over: one row per
+    # wireless interface netsh listed at either reading, each naming its GUID once; or one Information row saying no
+    # interface was listed; or, where every sample failed - netsh missing, or the read threw - one aggregate
+    # Unable-to-Check row whose first details line ends with the reason code (netsh, exception), which a per-interface
+    # row's first line - a sample line - never does. They ride the radio row's switch (Checks.WifiRf, -NoWifi).
+    $assocRows = @($rows | Where-Object { $_.Tag -eq 'wifi-association' })
+    $aggregateAssocFailure = $false
+    if ($assocRows.Count -eq 1 -and [string]$assocRows[0].Status -eq 'ERROR') {
+        $firstLine = [string](@(([string]$assocRows[0].Details) -split "`r`n|`n")[0])
+        $aggregateAssocFailure = ($firstLine -match '[:：]\s*(netsh|exception|none)\s*$')
+    }
+    if ([int]$want['wifi-association'] -gt 1 -and $aggregateAssocFailure) { $want['wifi-association'] = 1 }
+    if (-not $aggregateAssocFailure -and $null -ne $Machine.WlanInterfaceIds -and [bool]$itTags['wifi-association']) {
+        $assocIds = @(@($Machine.WlanInterfaceIds) + $wlanAfterIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).ToLowerInvariant() } | Sort-Object -Unique)
+        foreach ($id in $assocIds) {
+            $n = @($assocRows | Where-Object { ([string]$_.Details).ToLowerInvariant().Contains($id) }).Count
+            if ($n -ne 1) { $bad += ('wifi-association: interface {0} has {1} row(s), expected 1' -f $id, $n) }
+        }
+        foreach ($r in $assocRows) {
+            $m = [regex]::Match([string]$r.Details, '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}')
+            if ($m.Success -and ($assocIds -notcontains $m.Value.ToLowerInvariant())) { $bad += ('wifi-association: a row names interface {0}, which neither reading listed' -f $m.Value) }
         }
     }
     foreach ($k in @($want.Keys)) {

@@ -50,7 +50,7 @@ param(
 # - Traceability: exception type, message, and inner exceptions are stored in every
 #   report; script location and call stack go to the JSON report only (Diagnostics).
 
-$script:ToolVersion = "1.2.12"
+$script:ToolVersion = "1.2.13"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -2490,6 +2490,15 @@ function Invoke-PingMeasurement {
         $minimum = [math]::Round((($successes | Measure-Object -Minimum).Minimum), 1)
         $maximum = [math]::Round((($successes | Measure-Object -Maximum).Maximum), 1)
     }
+    # backlog #61's other half: the sample standard deviation of the replies that arrived, over the whole sample where
+    # one was continued, like every other figure here; two replies are the least a spread can be taken over.
+    $spread = $null
+    if ($received -ge 2) {
+        $mean = ($successes | Measure-Object -Average).Average
+        $squares = 0.0
+        foreach ($value in $successes) { $squares += ([double]$value - $mean) * ([double]$value - $mean) }
+        $spread = [math]::Round([math]::Sqrt($squares / ($received - 1)), 1)
+    }
 
     return [pscustomobject][ordered]@{
         Target         = $Target
@@ -2500,6 +2509,7 @@ function Invoke-PingMeasurement {
         AverageMs      = $average
         MinimumMs      = $minimum
         MaximumMs      = $maximum
+        SpreadMs       = $spread
         SuccessMs      = @($successes)
         RepliedAddresses = @($repliedAddresses)
         AttemptDetails = @($attemptDetails)
@@ -2651,6 +2661,32 @@ function Get-PingRouteAfter {
         }
     }
     return [pscustomobject][ordered]@{ Selection = $routeAfter; LookupAddress = $lookupAddress; Others = @($routeOthers) }
+}
+
+function Get-LatencySpreadText {
+    param([object]$Measurement)
+
+    # The spread of a ping row's round-trip times, as one sentence for its details (backlog #61's other half).
+    # Variability with little loss is the air's signature - an 802.11 retry is absorbed as delay, so the replies arrive
+    # but not evenly - and until 1.2.13 the row kept every reply's milliseconds and computed nothing over them but the
+    # average and the two ends. The figure is the sample standard deviation of the replies that arrived: a description,
+    # never a verdict, since no threshold for it has a stated basis. And it names the sample it was taken over, because
+    # over the four replies a target starts with it describes four moments rather than the link. The minimum below is
+    # where the figure's own uncertainty falls below a quarter of itself - the relative standard error of a sample
+    # standard deviation is about 1 / sqrt(2 (n - 1)), which is 25 % at n = 9 - a chosen precision, recorded with its
+    # arithmetic on the repository's threshold page (docs/thresholds.md); nothing is decided at it, one sentence changes.
+    $minimum = 9
+    $received = ConvertTo-IntSafe (Get-PropertyValue $Measurement "Received" 0) 0
+    $spread = Get-PropertyValue $Measurement "SpreadMs" $null
+    if ($received -lt 2 -or $null -eq $spread) { return "" }
+    $text = "Spread: standard deviation {0} ms over the {1} replies that arrived (average {2} ms, from {3} to {4}). The round-trip times are whole milliseconds, so on a link that answers in a millisecond or two a spread of about 1 ms is the timer's resolution, not the link." -f $spread, $received, $Measurement.AverageMs, $Measurement.MinimumMs, $Measurement.MaximumMs
+    if ($received -lt $minimum) {
+        $text += (" {0} replies describe {0} moments rather than the link: it takes {1} replies for the figure's own uncertainty to fall below a quarter of itself, so read this one beside the same target's figure from a longer sample. It decides nothing." -f $received, $minimum)
+    }
+    else {
+        $text += (" At {0} replies - {1} or more - the figure's own uncertainty is below a quarter of itself, so it describes this run's variability towards this target; it decides nothing, because no threshold for it has a stated basis." -f $received, $minimum)
+    }
+    return $text
 }
 
 function Add-PingTargetResult {
@@ -2812,6 +2848,10 @@ function Add-PingTargetResult {
     $message = "Target {0}: {1}% loss ({2}/{3} successful), {4}." -f $Target, $Measurement.LossPercent, $Measurement.Received, $Measurement.Sent, $latencyText
     $detailLines = @()
     $detailLines += @($Measurement.AttemptDetails)
+    # backlog #61's other half: the spread of the round-trip times, in one sentence that names the sample it was taken
+    # over and decides nothing - Get-LatencySpreadText says why; a row with fewer than two replies has no line.
+    $spreadLine = Get-LatencySpreadText -Measurement $Measurement
+    if (-not [string]::IsNullOrWhiteSpace($spreadLine)) { $detailLines += $spreadLine }
     $detailLines += (Format-RouteSelection -Before $RouteBefore -After $RouteAfter.Selection -LookupAddress $RouteAfter.LookupAddress -Others $RouteAfter.Others)
     # backlog #60: the rung this row is, said as which segments its probes crossed and which they did not. Two rows
     # say it - the near-end host, which is what makes the ping rows a ladder at all, and the gateway, whose probes are
@@ -3862,9 +3902,20 @@ function ConvertFrom-NetshWlanOutput {
 
     $guidPattern = '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'
     $macPattern = '^[0-9a-fA-F]{2}([:-][0-9a-fA-F]{2}){5}$'
+    # An interface block begins two lines above its GUID (the name and the description come first). The GUID line is
+    # found by its LABEL - GUID, which netsh does not translate, like SSID - rather than by the shape of its value
+    # (backlog #61's other half; PR #52 rounds 11 and 12 met the same exposure in the test chain's reader): a network
+    # or a profile named like a UUID, or an adapter renamed to one, is printed inside the block, and by shape each of
+    # them would have started an interface of its own. The shape rule stays as the fallback for an output that carries
+    # no GUID label at all, so that a build this parser has never seen still yields its interfaces.
     $starts = @()
     for ($i = 0; $i -lt $pairs.Count; $i++) {
-        if ($pairs[$i].Value -match $guidPattern -and $i -ge 2) { $starts += ($i - 2) }
+        if ($pairs[$i].Label.ToUpperInvariant() -eq 'GUID' -and $pairs[$i].Value -match $guidPattern -and $i -ge 2) { $starts += ($i - 2) }
+    }
+    if ($starts.Count -eq 0) {
+        for ($i = 0; $i -lt $pairs.Count; $i++) {
+            if ($pairs[$i].Value -match $guidPattern -and $i -ge 2) { $starts += ($i - 2) }
+        }
     }
 
     $interfaces = New-Object System.Collections.ArrayList
@@ -3883,6 +3934,9 @@ function ConvertFrom-NetshWlanOutput {
         }
         $ssid = ""
         if ($bssidIndex -gt 0) { $ssid = $block[$bssidIndex - 1].Value }
+        # The interface's own GUID, kept lower-case: it is what the association rows are keyed and named by.
+        $guid = ""
+        if ($block.Count -ge 3 -and $block[2].Value -match $guidPattern) { $guid = $block[2].Value.ToLowerInvariant() }
 
         $signalIndex = -1
         $signal = $null
@@ -3931,6 +3985,7 @@ function ConvertFrom-NetshWlanOutput {
         [void]$interfaces.Add([pscustomobject][ordered]@{
             Name             = $block[0].Value
             Description      = $block[1].Value
+            Guid             = $guid
             PhysicalAddress  = $(if ($macs.Count -ge 1) { $macs[0].Value } else { "" })
             Connected        = ($bssidIndex -ge 0)
             Ssid             = $ssid
@@ -3949,25 +4004,69 @@ function ConvertFrom-NetshWlanOutput {
     return @($interfaces)
 }
 
+function Get-WifiAssociationSample {
+    param([string]$Moment)
+
+    # One reading of netsh wlan show interfaces, kept as a sample of which access point each wireless interface was
+    # associated with at this moment of the run (backlog #61's other half): the BSSID is the access point's own address,
+    # a change of it under the same network name is a roam, and a roam is the air-side event that explains a run with a
+    # good signal and bad numbers. The envelope is returned whatever it holds, like the retry snapshot and the TCP
+    # snapshot; the analysis writes the rows, with the evidence attached. -Moment says where in the run the sample was
+    # taken - start, middle, end - so that the rows can say so.
+    $sample = [pscustomobject][ordered]@{
+        Moment      = $Moment
+        Timestamp   = Get-Date
+        Interfaces  = @()
+        Error       = ""
+        ErrorText   = ""
+        Diagnostics = ""
+    }
+    $netsh = Join-Path $env:SystemRoot "System32\netsh.exe"
+    if (-not (Test-Path -LiteralPath $netsh)) {
+        $sample.Error = "netsh"
+        $sample.ErrorText = "netsh.exe was not found."
+        return $sample
+    }
+    try {
+        $lines = @(& $netsh wlan show interfaces 2>&1 | ForEach-Object { [string]$_ })
+        $sample.Interfaces = @(ConvertFrom-NetshWlanOutput -Lines $lines)
+    }
+    catch {
+        $sample.Error = "exception"
+        $sample.ErrorText = Get-ExceptionDetails $_
+        $sample.Diagnostics = Get-ExceptionDiagnostics $_
+    }
+    return $sample
+}
+
+function Add-WifiAssociationSample {
+    param([string]$Moment)
+
+    # Takes one sample and keeps it with the run's others, in the order taken. The list is created here as well as at
+    # the start of a run, so that a caller outside Run-AllChecks - the radio row in a test harness - never writes into
+    # a list that does not exist.
+    if ($null -eq $script:WifiAssociationSamples) { $script:WifiAssociationSamples = New-Object System.Collections.ArrayList }
+    $sample = Get-WifiAssociationSample -Moment $Moment
+    [void]$script:WifiAssociationSamples.Add($sample)
+    return $sample
+}
+
 function Add-WifiRfResult {
     if (-not (Test-IsTrueFlag $script:Config.Checks.WifiRf)) { return }
 
-    $netsh = Join-Path $env:SystemRoot "System32\netsh.exe"
-    if (-not (Test-Path -LiteralPath $netsh)) {
+    # The one read serves twice (backlog #61's other half): this row, and the middle sample of the access point that
+    # Compare-WifiAssociation reads against the samples taken before the first measurement and after the last.
+    $sample = Add-WifiAssociationSample -Moment "middle"
+    if ([string]$sample.Error -eq "netsh") {
         Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message "netsh.exe was not found; Wi-Fi radio data is unavailable." -Details "" -Tag "wifi" -Scope "IT" | Out-Null
         return
     }
-
-    $lines = @()
-    try {
-        $lines = @(& $netsh wlan show interfaces 2>&1 | ForEach-Object { [string]$_ })
-    }
-    catch {
-        Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "ERROR" -Message "Wi-Fi radio data could not be read." -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "wifi" -Scope "IT" | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error)) {
+        Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "ERROR" -Message "Wi-Fi radio data could not be read." -Details ([string]$sample.ErrorText) -Diagnostics ([string]$sample.Diagnostics) -Tag "wifi" -Scope "IT" | Out-Null
         return
     }
 
-    $interfaces = @(ConvertFrom-NetshWlanOutput -Lines $lines)
+    $interfaces = @($sample.Interfaces)
     $connected = @($interfaces | Where-Object { $_.Connected })
     if ($connected.Count -eq 0) {
         Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message "No connected Wi-Fi interface (wired connection, Wi-Fi off, or no wireless adapter)." -Details (("Wireless interfaces reported by netsh: {0}" -f $interfaces.Count) + [Environment]::NewLine + "Manual check: netsh wlan show interfaces") -Tag "wifi" -Scope "IT" | Out-Null
@@ -3992,6 +4091,212 @@ function Add-WifiRfResult {
         ) -join [Environment]::NewLine
         Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message $message -Details $details -Tag "wifi" -Scope "IT" | Out-Null
     }
+}
+
+function Compare-WifiAssociation {
+    param([object[]]$Samples)
+
+    # The access-point samples read against each other (backlog #61's other half): one row per wireless interface that
+    # any sample listed, saying whether the interface stayed on one access point across the run, moved to another, or
+    # reported none - and, whatever it says, that a change between two samples which returned to the same access point
+    # cannot be seen, because the BSSID is sampled and not watched. That limit is stated on every row rather than
+    # implied by a silence: two equal samples do not exclude a roam that came back. Windows' WLAN event log was measured
+    # as the alternative and not read - it is readable without elevation, but none of its events carries the BSSID, and
+    # the security re-association it does record is written for a key rotation as well as for a roam, so it could not
+    # have said more than the samples do. An IT-scope row, like the radio row it extends: evidence, not a verdict.
+    $category = "IT Diagnostics"
+    $check = "Wi-Fi association"
+    $samples = @(@($Samples) | Where-Object { $null -ne $_ })
+    $readable = @($samples | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.Error) })
+    $momentText = @{ start = "before the first measurement"; middle = "with the IT diagnostics"; end = "after the last measurement" }
+    $entries = @()
+    $index = 0
+    foreach ($sample in $samples) {
+        $index++
+        $moment = [string]$sample.Moment
+        if ($momentText.ContainsKey($moment)) { $moment = $momentText[$moment] }
+        $stamp = ""
+        try { $stamp = ([datetime]$sample.Timestamp).ToString("HH:mm:ss") } catch { $stamp = "" }
+        $entries += [pscustomobject]@{ Sample = $sample; Prefix = ("Sample {0} ({1}, {2})" -f $index, $moment, $stamp) }
+    }
+    $seconds = 0
+    if ($samples.Count -ge 2) { try { $seconds = [math]::Round((([datetime]$samples[$samples.Count - 1].Timestamp) - ([datetime]$samples[0].Timestamp)).TotalSeconds, 0) } catch { $seconds = 0 } }
+    $methodLines = @(
+        ("Method: netsh wlan show interfaces, read {0} time(s) during the test - before the first measurement, with the IT diagnostics and after the last measurement - and the BSSID of each reading compared with the others; the access point is sampled, not watched." -f $samples.Count),
+        "Manual check: netsh wlan show interfaces, repeated while the problem is happening",
+        "Explanation: the BSSID is the access point's own address, so a change under the same network name is a roam - the air-side event that explains a run with a good signal and bad numbers - and a change of network name is a move to another network. A change between two samples that returned to the same access point cannot be seen here: two equal samples do not exclude one. Windows' WLAN event log records the network and not the access point, so it was not read. This row decides nothing."
+    )
+
+    if ($samples.Count -eq 0) {
+        Add-CheckResult -Category $category -Check $check -Status "ERROR" -Message "No access-point sample was taken during the test, so the association cannot be compared." -Details ((@("Reading: none") + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
+        return
+    }
+    if ($readable.Count -eq 0) {
+        # Every sample failed: one row, with the reason code at the end of its first details line - a language-neutral
+        # token like a tag - which is how the chain's oracle tells this aggregate row from a per-interface row.
+        $first = $samples[0]
+        $reason = [string]$first.Error
+        $message = "The Wi-Fi association could not be sampled: netsh.exe was not found."
+        if ($reason -ne "netsh") { $message = "The Wi-Fi association could not be sampled: netsh wlan show interfaces could not be read." }
+        $lines = @(("Reading: {0}" -f $reason))
+        foreach ($entry in $entries) { $lines += ("{0}: could not be read - {1}" -f $entry.Prefix, [string]$entry.Sample.ErrorText) }
+        Add-CheckResult -Category $category -Check $check -Status "ERROR" -Message $message -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Diagnostics ([string]$first.Diagnostics) -Tag "wifi-association" -Scope "IT" | Out-Null
+        return
+    }
+
+    # The interfaces, by GUID where netsh printed one and by adapter address where it did not, in the order first seen.
+    $keys = New-Object System.Collections.ArrayList
+    $names = @{}
+    foreach ($sample in $readable) {
+        foreach ($wifi in @($sample.Interfaces)) {
+            $key = ([string]$wifi.Guid).ToLowerInvariant()
+            if ([string]::IsNullOrWhiteSpace($key)) { $key = ("mac:" + ([string]$wifi.PhysicalAddress).ToLowerInvariant()) }
+            if (-not $names.ContainsKey($key)) { [void]$keys.Add($key); $names[$key] = [string]$wifi.Name }
+        }
+    }
+    if ($keys.Count -eq 0) {
+        $lines = @("Reading: none")
+        foreach ($entry in $entries) {
+            if ([string]::IsNullOrWhiteSpace([string]$entry.Sample.Error)) { $lines += ("{0}: no wireless interface listed" -f $entry.Prefix) }
+            else { $lines += ("{0}: could not be read - {1}" -f $entry.Prefix, [string]$entry.Sample.ErrorText) }
+        }
+        Add-CheckResult -Category $category -Check $check -Status "INFO" -Message ("No wireless interface was listed at any of the {0} sample(s), so there is no access point to compare (a wired computer, or the WLAN service is not running)." -f $samples.Count) -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
+        return
+    }
+
+    foreach ($key in $keys) {
+        $name = ConvertTo-DisplayString $names[$key]
+        $readings = @()
+        $lines = @()
+        foreach ($entry in $entries) {
+            $sample = $entry.Sample
+            if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error)) {
+                $lines += ("{0}: could not be read - {1}" -f $entry.Prefix, [string]$sample.ErrorText)
+                continue
+            }
+            $match = @(@($sample.Interfaces) | Where-Object { (([string]$_.Guid).ToLowerInvariant() -eq $key) -or ([string]::IsNullOrWhiteSpace([string]$_.Guid) -and ("mac:" + ([string]$_.PhysicalAddress).ToLowerInvariant()) -eq $key) } | Select-Object -First 1)
+            if ($match.Count -eq 0) {
+                $lines += ("{0}: interface not listed" -f $entry.Prefix)
+                $readings += [pscustomobject]@{ Listed = $false; Bssid = ""; Ssid = "" }
+                continue
+            }
+            $wifi = $match[0]
+            $bssid = ([string]$wifi.Bssid).Trim().ToLowerInvariant()
+            if ([string]::IsNullOrWhiteSpace($bssid)) { $lines += ("{0}: no BSSID reported" -f $entry.Prefix) }
+            else { $lines += ("{0}: SSID {1}, BSSID {2}" -f $entry.Prefix, (ConvertTo-DisplayString $wifi.Ssid), $bssid) }
+            $readings += [pscustomobject]@{ Listed = $true; Bssid = $bssid; Ssid = [string]$wifi.Ssid }
+        }
+        $withBssid = @($readings | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Bssid) })
+        $listedCount = @($readings | Where-Object { $_.Listed }).Count
+        # Never "disconnected" from an absent BSSID (backlog #62): the field can be withheld from an associated radio.
+        if ($withBssid.Count -eq 0) {
+            $message = "{0}: no access point (BSSID) was reported at any of the {1} sample(s) - the interface was not associated, or netsh did not print the field; see the Wi-Fi radio row." -f $name, $readings.Count
+        }
+        else {
+            $distinctBssids = @($withBssid | ForEach-Object { $_.Bssid } | Select-Object -Unique)
+            $distinctSsids = @($withBssid | ForEach-Object { $_.Ssid } | Select-Object -Unique)
+            $first = $withBssid[0]
+            if ($distinctBssids.Count -eq 1) {
+                if ($withBssid.Count -eq $readings.Count) {
+                    $message = "{0}: SSID {1} on the same access point (BSSID {2}) at all {3} samples over {4} seconds; a change between two samples that returned to it cannot be seen." -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $readings.Count, $seconds
+                }
+                else {
+                    $message = "{0}: SSID {1} on the same access point (BSSID {2}) at the {3} of {4} samples that reported one; at the other(s) no BSSID was reported, or the interface was not listed." -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $withBssid.Count, $readings.Count
+                }
+            }
+            else {
+                # The sequence of access points as sampled, consecutive repeats folded, so that A then B then A reads as
+                # what it is - a roam that came back, which two samples alone would have hidden.
+                $sequence = @()
+                $labels = @()
+                foreach ($reading in $withBssid) {
+                    if ($sequence.Count -gt 0 -and $sequence[$sequence.Count - 1] -eq $reading.Bssid) { continue }
+                    $sequence += $reading.Bssid
+                    $labels += ("SSID {0} (BSSID {1})" -f (ConvertTo-DisplayString $reading.Ssid), $reading.Bssid)
+                }
+                $changes = $sequence.Count - 1
+                $shape = "a roam"
+                if ($changes -gt 1) {
+                    $shape = "{0} roams" -f $changes
+                    if ($sequence[0] -eq $sequence[$sequence.Count - 1]) { $shape += ", back to the first access point" }
+                }
+                if ($distinctSsids.Count -eq 1) {
+                    $message = "{0}: the access point changed during the test - BSSID {1} - under the same SSID {2}: {3}. This run's figures were measured across the change." -f $name, ($sequence -join ", then "), (ConvertTo-DisplayString $first.Ssid), $shape
+                }
+                else {
+                    $message = "{0}: the interface moved to another network during the test - {1}. This run's figures were measured across the change." -f $name, ($labels -join ", then ")
+                }
+            }
+        }
+        if ($listedCount -lt $readings.Count) { $message += (" The interface was not listed at {0} of the samples (disabled or removed at that moment)." -f ($readings.Count - $listedCount)) }
+        $identity = @()
+        if ($key -like "mac:*") { $identity += ("Interface address: {0}" -f $key.Substring(4)) } else { $identity += ("Interface GUID: {0}" -f $key) }
+        Add-CheckResult -Category $category -Check $check -Status "INFO" -Message $message -Details ((@($lines) + $identity + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
+    }
+}
+
+function Get-MacRelation {
+    param([string]$First, [string]$Second)
+
+    # How two MAC addresses stand to each other, for the access-point-is-the-gateway hint (backlog #61's other half):
+    # identical; near-ul and near-last - differing only in the locally-administered bit of the first octet, or only in
+    # the last octet, the shapes one device's radio and bridge addresses commonly take; vendor - the same first three
+    # octets, that bit aside; different; or invalid where either is not a MAC address. Separators and case are not part
+    # of the address.
+    $a = ([string]$First) -replace '[^0-9a-fA-F]', ''
+    $b = ([string]$Second) -replace '[^0-9a-fA-F]', ''
+    if ($a.Length -ne 12 -or $b.Length -ne 12) { return "invalid" }
+    $a = $a.ToUpperInvariant()
+    $b = $b.ToUpperInvariant()
+    if ($a -eq $b) { return "identical" }
+    $firstA = [Convert]::ToInt32($a.Substring(0, 2), 16)
+    $firstB = [Convert]::ToInt32($b.Substring(0, 2), 16)
+    if (($firstA -bxor $firstB) -eq 2 -and $a.Substring(2) -eq $b.Substring(2)) { return "near-ul" }
+    if ($a.Substring(0, 10) -eq $b.Substring(0, 10)) { return "near-last" }
+    if (($firstA -band 0xFD) -eq ($firstB -band 0xFD) -and $a.Substring(2, 4) -eq $b.Substring(2, 4)) { return "vendor" }
+    return "different"
+}
+
+function Get-AccessPointGatewayText {
+    param([string]$Gateway, [string]$GatewayMac, [object[]]$PrimaryAdapters, [object[]]$Samples)
+
+    # The hint's sentence, or nothing (backlog #61's other half). The one thing to know before trying to separate the air
+    # from the wire on a wireless machine is whether there is a wire at all: the access point that answers the radio and
+    # the gateway that answers the pings may be one box. The BSSID is the access point's own address and the neighbour
+    # table holds the gateway's, so the two are compared - for the wireless interface whose adapter supplied this
+    # gateway, matched by the adapter's own address, which netsh prints as the interface's physical address, in the
+    # latest access-point sample that could be read - and published as the hint it is: identical addresses are one
+    # device, but an all-in-one's radio and bridge addresses commonly differ by an octet or the locally-administered
+    # bit, so a difference proves nothing. A gateway supplied by a wired adapter has no access point to compare with,
+    # and the Wi-Fi data switched off leaves nothing to compare from: in both cases the line is absent.
+    $gatewayHex = ([string]$GatewayMac) -replace '[^0-9a-fA-F]', ''
+    if ($gatewayHex.Length -ne 12 -or $gatewayHex -eq "000000000000") { return "" }
+    $adapterMacs = @()
+    foreach ($adapter in @($PrimaryAdapters)) {
+        if ($null -eq $adapter -or @($adapter.Gateways) -notcontains [string]$Gateway) { continue }
+        $adapterMac = ([string](Get-PropertyValue $adapter "MacAddress" "")) -replace '[^0-9a-fA-F]', ''
+        if ($adapterMac.Length -eq 12) { $adapterMacs += $adapterMac.ToUpperInvariant() }
+    }
+    if ($adapterMacs.Count -eq 0) { return "" }
+    $latest = @(@($Samples) | Where-Object { $null -ne $_ -and [string]::IsNullOrWhiteSpace([string]$_.Error) } | Select-Object -Last 1)
+    if ($latest.Count -eq 0) { return "" }
+    foreach ($wifi in @($latest[0].Interfaces)) {
+        $physical = ([string]$wifi.PhysicalAddress) -replace '[^0-9a-fA-F]', ''
+        if ($physical.Length -ne 12 -or $adapterMacs -notcontains $physical.ToUpperInvariant()) { continue }
+        $name = ConvertTo-DisplayString $wifi.Name
+        $bssid = ([string]$wifi.Bssid).Trim().ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($bssid)) {
+            return ("Access point and gateway: this gateway is reached over the wireless interface {0}, for which no BSSID was reported, so the two addresses could not be compared." -f $name)
+        }
+        switch (Get-MacRelation -First $GatewayMac -Second $bssid) {
+            "identical" { return ("Access point and gateway: the gateway's MAC address is the BSSID of the access point {0} is associated with ({1}), so the access point and the gateway are one device - a router with its own radio - and on this network there is no boundary between the air and the wire for a wired-versus-wireless comparison to stand on." -f $name, $bssid) }
+            "near-ul"   { return ("Access point and gateway: the gateway's MAC address differs from the BSSID of the access point {0} is associated with ({1}) only in the locally-administered bit, the shape one device's radio and bridge addresses commonly take; read the two as probably one device - a hint, not a topology claim." -f $name, $bssid) }
+            "near-last" { return ("Access point and gateway: the gateway's MAC address differs from the BSSID of the access point {0} is associated with ({1}) only in its last octet, the shape one device's radio and bridge addresses commonly take; read the two as probably one device - a hint, not a topology claim." -f $name, $bssid) }
+            "vendor"    { return ("Access point and gateway: the gateway's MAC address shares its vendor prefix (the first three octets) with the BSSID of the access point {0} is associated with ({1}) - the same maker, one device or two; a hint, not a topology claim." -f $name, $bssid) }
+            default     { return ("Access point and gateway: the gateway's MAC address and the BSSID of the access point {0} is associated with ({1}) share no vendor prefix, which suggests two devices - an access point and a router - and so a boundary between the air and the wire that a wired station on the same segment could measure from; a hint, not a topology claim, since a router with its own radio can use unrelated addresses for the two." -f $name, $bssid) }
+        }
+    }
+    return ""
 }
 
 function Sort-DefaultRoutes {
@@ -4079,6 +4384,12 @@ function Add-GatewayNeighborResult {
 
         $lines = @()
         if ([string]::IsNullOrWhiteSpace($mac) -or $mac -match '^(00[-:]){5}00$' -or $state -match 'Unreachable|Incomplete') { $lines += "The gateway has no resolved MAC address; Layer 2 to the router may be broken (the gateway ping above is the authoritative test)." }
+        # backlog #61's other half: is the access point the gateway? The one thing to know before trying to separate the
+        # air from the wire on a wireless machine, published as a hint - Get-AccessPointGatewayText says what each shape
+        # of the comparison does and does not establish - and absent where the gateway's adapter is wired or the Wi-Fi
+        # data was not read.
+        $accessPointLine = Get-AccessPointGatewayText -Gateway ([string]$gateway) -GatewayMac $mac -PrimaryAdapters $PrimaryAdapters -Samples @($script:WifiAssociationSamples)
+        if (-not [string]::IsNullOrWhiteSpace($accessPointLine)) { $lines += $accessPointLine }
         $lines += "Method: Get-NetNeighbor -AddressFamily IPv4 (fallback: arp -a)"
         $lines += "Manual check: arp -a"
         $message = "Gateway {0}: neighbor state {1}, MAC {2}." -f $gateway, $state, (ConvertTo-DisplayString $mac)
@@ -5804,6 +6115,8 @@ function Run-AllChecks {
     $script:TcpConnectSampleCount = 0
     # The same reason (backlog #51): a ping sample one run put aside must never be finished in a later run's report.
     $script:PendingPingSamples = New-Object System.Collections.ArrayList
+    # And the access-point samples (backlog #61's other half): a run compares the samples it took itself.
+    $script:WifiAssociationSamples = New-Object System.Collections.ArrayList
     $script:LastHtmlReport = $null
     $script:LastTextReport = $null
     $script:LastJsonReport = $null
@@ -5878,6 +6191,16 @@ function Run-AllChecks {
         Add-CheckResult -Category "System Information" -Check "Computer" -Status "INFO" -Message ("{0}, user {1}." -f $summary.ComputerName, $summary.UserName) -Details ("Operating system: {0} ({1})`r`nPowerShell: {2}" -f $summary.OperatingSystem, $summary.OperatingVersion, $summary.PowerShellVersion) -Tag "system" | Out-Null
     } | Out-Null
 
+    # The access point is sampled first (backlog #61's other half): one netsh read, about 0.1 s, before the first
+    # measurement, so that the run's whole window lies between this sample and the one taken after the last measurement;
+    # the radio row's own read at the IT diagnostics is the middle sample. The samples share the radio row's switch
+    # (Checks.WifiRf), because they are the same reader: off, and no sample is taken and no association row written.
+    $wifiAssociationEnabled = Test-IsTrueFlag $script:Config.Checks.WifiRf
+    if ($wifiAssociationEnabled) {
+        Invoke-CheckStep -Category "IT Diagnostics" -Name "Sample the Wi-Fi Access Point (start)" -Progress 8 -Scope "IT" -Action {
+            Add-WifiAssociationSample -Moment "start"
+        } | Out-Null
+    }
     # The wireless retry counters are read before the TCP baseline, so that compiling their reader - about 0.7 s on the
     # reference machine, once per process - is paid outside the retransmission window; they are read again after the TCP
     # window has closed, and been extended where it was, so the two windows cover the same run. Off by configuration
@@ -5997,12 +6320,24 @@ function Run-AllChecks {
             return (Get-WifiRetrySnapshot)
         }
     }
+    # The last access-point sample, after the TCP window like the retry counters' ending value, so that every measurement
+    # of the run lies between the first sample and this one (backlog #61's other half).
+    if ($wifiAssociationEnabled) {
+        Invoke-CheckStep -Category "IT Diagnostics" -Name "Sample the Wi-Fi Access Point (end)" -Progress 91 -Scope "IT" -Action {
+            Add-WifiAssociationSample -Moment "end"
+        } | Out-Null
+    }
     Invoke-CheckStep -Category "TCP Retransmissions" -Name "Analyze TCP Retransmissions" -Progress 92 -Action {
         Compare-TcpCounters -Before $tcpBaseline -After $tcpAfter
     } | Out-Null
     if ($wifiRetryEnabled) {
         Invoke-CheckStep -Category "Wi-Fi Retransmissions" -Name "Analyze Wi-Fi Retries" -Progress 93 -Action {
             Compare-WifiRetryCounters -Before $wifiRetryBaseline -After $wifiRetryAfter
+        } | Out-Null
+    }
+    if ($wifiAssociationEnabled) {
+        Invoke-CheckStep -Category "IT Diagnostics" -Name "Compare the Wi-Fi Access Point Across the Samples" -Progress 94 -Scope "IT" -Action {
+            Compare-WifiAssociation -Samples @($script:WifiAssociationSamples)
         } | Out-Null
     }
 
