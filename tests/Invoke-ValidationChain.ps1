@@ -793,13 +793,19 @@ function Test-ResultSet {
         # token is such a transient interface: one more expected row. What this oracle cannot see is what the samples saw
         # except through the rows, so a fabricated row with a token would pass here - the same approximation the retry
         # rows' union already accepts, one step looser - while the per-interface count above still holds every interface
-        # the readings did list to exactly one row, and a row without the token is refused above as a tool regression.
-        $transientAssoc = 0
+        # the readings did list to exactly one row, a row without the token is refused above as a tool regression, and a
+        # transient identity is held to one row as well (round 5): two rows for the same unknown GUID are a duplication,
+        # not two interfaces, and the report itself is enough to see that.
+        $transientSeen = @{}
         foreach ($r in $assocRows) {
             $m = [regex]::Match([string]$r.Details, $assocGuidOnIdentity)
             if (-not $m.Success -or ($assocIds -contains $m.Groups[1].Value.ToLowerInvariant())) { continue }
-            $transientAssoc++
+            $id = $m.Groups[1].Value.ToLowerInvariant()
+            if (-not $transientSeen.ContainsKey($id)) { $transientSeen[$id] = 0 }
+            $transientSeen[$id]++
         }
+        foreach ($id in @($transientSeen.Keys)) { if ($transientSeen[$id] -ne 1) { $bad += ('wifi-association: transient interface {0} has {1} row(s), expected 1' -f $id, $transientSeen[$id]) } }
+        $transientAssoc = @($transientSeen.Keys).Count
         if ($transientAssoc -gt 0) { $want['wifi-association'] = [math]::Max(1, $wlanUnion + $transientAssoc) }
     }
     foreach ($k in @($want.Keys)) {
