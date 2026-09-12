@@ -4179,7 +4179,11 @@ function Add-WifiRfResult {
             $details += "未回報：SSID、BSSID、頻段、無線規格、訊號、接收與傳送速率、設定檔"
             $details += $netshLines
             $details += "檢測方式：介面與連線狀態來自 WLAN 服務（WlanEnumInterfaces），欄位缺少的原因來自它連線查詢的回傳碼（WlanQueryInterface，目前連線），印出的欄位來自 netsh wlan show interfaces。"
-            $details += "手動驗證：netsh wlan show interfaces（它會指出要開啟的設定）；設定 > 隱私權與安全性 > 位置"
+            # 手動驗證跟著見證走（PR #55，第 2 回合）：有見證的拒絕才指向位置設定，沒有見證的錯誤 5 給 WLAN 查詢的檢查，其他情況
+            # 只叫人讀 netsh 的輸出。
+            if ($wifi.Refused) { $details += "手動驗證：netsh wlan show interfaces（它會指出要開啟的設定）；start ms-settings:privacy-location（設定 > 隱私權與安全性 > 位置）" }
+            elseif ($wifi.AccessDenied) { $details += "手動驗證：netsh wlan show interfaces，並讀它印出的訊息；WLAN 服務拒絕了連線查詢（錯誤 5）——限制 WLAN 查詢的原則會造成這種結果" }
+            else { $details += "手動驗證：netsh wlan show interfaces，並讀它印出的訊息" }
             $details += "說明：用戶端看到的數值，證據力低於 AP 的用戶端列表。"
             Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message $message -Details ($details -join [Environment]::NewLine) -Tag "wifi" -Scope "IT" | Out-Null
             continue

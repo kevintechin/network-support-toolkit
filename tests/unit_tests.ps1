@@ -2344,6 +2344,7 @@ Assert-Equal '#62 sample: a live read that listed an interface exited 0 - the co
 $rfBody = Get-FunctionBody 'Add-WifiRfResult'
 Assert-Equal '#62 row: the radio row reads the sample through the view and has the branch for an interface netsh printed nothing for' (($rfBody -match 'Get-WifiInterfaceView -Sample \$sample') -and ($rfBody -match '(?s)if \(-not \$wifi\.NetshListed\) \{.*?continue\s*\}.*?\$rssi = ')) True
 Assert-Equal '#62 row: the ordinary row names the source of its state' ($rfBody -match '\$stateSource') True
+Assert-Equal '#62 row r2: the manual check of the not-listed row is chosen by the witness - Refused, then AccessDenied, then the plain read' ($rfBody -match '(?s)if \(\$wifi\.Refused\) \{ \$details \+= "[^"]*ms-settings:privacy-location[^"]*" \}\s*elseif \(\$wifi\.AccessDenied\) \{ \$details \+= "[^"]*" \}\s*else \{ \$details \+= "[^"]*" \}') True
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

@@ -4316,7 +4316,11 @@ function Add-WifiRfResult {
             $details += "Not reported: SSID, BSSID, band, radio type, signal, receive and transmit rates, profile"
             $details += $netshLines
             $details += "Method: the WLAN service (WlanEnumInterfaces) for the interface and its connection state, the return code of its connection query (WlanQueryInterface, current connection) for why the fields are missing, netsh wlan show interfaces for the fields it printed."
-            $details += "Manual check: netsh wlan show interfaces (it names the setting to open); Settings > Privacy & security > Location"
+            # The manual check follows the witness (PR #55, round 2): the location setting only where the denial was witnessed,
+            # a WLAN-query check for an error 5 without it, the plain read for anything else.
+            if ($wifi.Refused) { $details += "Manual check: netsh wlan show interfaces (it names the setting to open); start ms-settings:privacy-location (Settings > Privacy & security > Location)" }
+            elseif ($wifi.AccessDenied) { $details += "Manual check: netsh wlan show interfaces, and read the message it prints; the WLAN service refused the connection query (error 5) - a policy that restricts WLAN queries would do that" }
+            else { $details += "Manual check: netsh wlan show interfaces, and read the message it prints" }
             $details += "Note: the client-side view is weaker evidence than the access point's client table."
             Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message $message -Details ($details -join [Environment]::NewLine) -Tag "wifi" -Scope "IT" | Out-Null
             continue

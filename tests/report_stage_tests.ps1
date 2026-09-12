@@ -681,11 +681,17 @@ $script:Results = New-Object System.Collections.ArrayList
 Add-WifiRfResult
 $rowsO5 = @($script:Results | Where-Object { $_.Tag -eq 'wifi' })
 Assert-Equal 'O r1: error 5 with the consent store at Allow is one row that names error 5 but not the location setting' ("{0}/{1}/{2}/{3}" -f $rowsO5.Count, $rowsO5[0].Status, ($rowsO5[0].Message -match '\b5\b'), ($rowsO5[0].Message -match '24H2')) '1/INFO/True/False'
+# The manual check follows the witness (round 2): the settings URI appears once more than the netsh lines carry it only on the
+# witnessed row; the unwitnessed error 5 and the plain failure carry it exactly as often as the netsh lines do.
+function Count-Uri($row) { return ([regex]::Matches([string]$row.Details, 'ms-settings:privacy-location')).Count }
+$uriInFixture = @($refusedO | Where-Object { $_ -match 'ms-settings:privacy-location' }).Count
+Assert-Equal 'O r2: the location remedy is on the witnessed row alone - the unwitnessed error 5 carries only what netsh printed' ("{0}/{1}" -f ((Count-Uri $rowsO[0]) -eq ($uriInFixture + 1)), ((Count-Uri $rowsO5[0]) -eq $uriInFixture)) 'True/True'
 $script:SampleO = New-SampleO $refusedO 1 (New-ReadingO 1 0)
 $script:Results = New-Object System.Collections.ArrayList
 Add-WifiRfResult
 $rowsO2 = @($script:Results | Where-Object { $_.Tag -eq 'wifi' })
 Assert-Equal 'O: netsh failing while the service answers the query is one row that names no error 5' ("{0}/{1}/{2}" -f $rowsO2.Count, $rowsO2[0].Status, ($rowsO2[0].Message -match '\b5\b')) '1/INFO/False'
+Assert-Equal 'O r2: and the plain failure carries the settings URI only as often as netsh printed it' ((Count-Uri $rowsO2[0]) -eq $uriInFixture) True
 $offO = @('There is 1 interface on the system: ', '', '    Name                   : Wi-Fi', '    Description            : Fixture', '    GUID                   : e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb', '    Physical address       : 10:f6:0a:db:fc:e5', '    State                  : disconnected', '')
 $script:SampleO = New-SampleO $offO 0 (New-ReadingO 4 -1)
 $script:Results = New-Object System.Collections.ArrayList
