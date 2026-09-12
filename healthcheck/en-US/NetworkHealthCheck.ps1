@@ -4726,15 +4726,16 @@ function Compare-WifiRetryCounters {
     }
 
     $seconds = [math]::Round(($After.Timestamp - $Before.Timestamp).TotalSeconds, 1)
+    # The method lines are the same on every per-interface row, so they are built once (round 5 moved them out of the loop).
+    $methodLines = @(
+        "Method: Native Wifi API, WlanQueryInterface with wlan_intf_opcode_statistics through P/Invoke (wlanapi.dll); cumulative MAC frame counters read before and after the run, delta over the window.",
+        "Manual check: no built-in command prints these counters; the API is the only reader.",
+        "Explanation: an 802.11 frame the adapter sent again because no acknowledgement came back is absorbed as delay, so it appears in neither the TCP retransmission rate nor the ping loss figure; this is the air between this adapter and its access point, for every application's traffic in the window. This row decides nothing: no threshold for a wireless retry rate has a stated basis."
+    )
     foreach ($ending in @($After.Interfaces)) {
         $starting = @(@($Before.Interfaces) | Where-Object { [string]$_.Guid -eq [string]$ending.Guid } | Select-Object -First 1)
         $description = ConvertTo-DisplayString $ending.Description
         $stateLine = "Connection state: {0} at the start, {1} at the end." -f $(if ($starting.Count -gt 0) { Get-WifiInterfaceStateText $starting[0].State } else { "not listed" }), (Get-WifiInterfaceStateText $ending.State)
-        $methodLines = @(
-            "Method: Native Wifi API, WlanQueryInterface with wlan_intf_opcode_statistics through P/Invoke (wlanapi.dll); cumulative MAC frame counters read before and after the run, delta over the window.",
-            "Manual check: no built-in command prints these counters; the API is the only reader.",
-            "Explanation: an 802.11 frame the adapter sent again because no acknowledgement came back is absorbed as delay, so it appears in neither the TCP retransmission rate nor the ping loss figure; this is the air between this adapter and its access point, for every application's traffic in the window. This row decides nothing: no threshold for a wireless retry rate has a stated basis."
-        )
         if ($starting.Count -eq 0) {
             Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message ("{0}: the interface was not present at the start of the test, so there is no delta." -f $description) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
             continue
@@ -4811,6 +4812,14 @@ function Compare-WifiRetryCounters {
         $message = "{0}: {1} of {2} frames needed retransmission ({3}%), {4} of them more than once, {5} abandoned, over {6} seconds." -f $description, $retry, $attempted, $rate, $multiple, $failed, $seconds
         $rateLine = "Retry rate: {0} / ({1} transmitted + {2} abandoned) = {3}%; the two retry counters are neither added together nor divided into each other." -f $retry, $transmitted, $failed, $rate
         Add-CheckResult -Category $category -Check "Wireless retries" -Status "INFO" -Message $message -Details ((@($countLines) + @($rateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+    }
+    # An interface listed at the start and not at the end (PR #52, round 5): disabled or removed during the test, so no
+    # delta - its own row, since a machine with a second wireless interface keeps both readings free of errors.
+    foreach ($starting in @($Before.Interfaces)) {
+        if (@(@($After.Interfaces) | Where-Object { [string]$_.Guid -eq [string]$starting.Guid }).Count -gt 0) { continue }
+        $description = ConvertTo-DisplayString $starting.Description
+        $stateLine = "Connection state: {0} at the start, not listed at the end." -f (Get-WifiInterfaceStateText $starting.State)
+        Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message ("{0}: the interface was listed at the start of the test and not at the end - disabled or removed during the test - so there is no delta." -f $description) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
     }
 }
 

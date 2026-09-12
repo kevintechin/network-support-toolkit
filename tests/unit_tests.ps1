@@ -1880,6 +1880,15 @@ Assert-Equal '#61 retry: and its sentence is not the wired-machine sentence' (($
 Assert-Equal '#61 retry: a none beside a failed reading names the other failure too' (((Get-WifiRows (New-WifiSnapshot $wifiT0 @() 'none') (New-WifiSnapshot $wifiT1 @() 'open' 'error 1062: stopped'))[0]).Details -match '1062') True
 Assert-Equal '#61 shape: an aggregate reader-failure row ends its first details line with the reason code' (@(@($addTypeRow, $openRow, $errorRow, $noneBeforeRow, $noneAfterRow) | Where-Object { (Get-DetailLineAt $_ 0) -match $reasonTail }).Count) 5
 Assert-Equal '#61 shape: and no per-interface error row does' (@(@($resetRow, $missingRow, $queryRow) | Where-Object { (Get-DetailLineAt $_ 0) -match $reasonTail }).Count) 0
+# A second interface listed at the start and not at the end (round 5): its own Unable-to-Check row, per-interface shaped,
+# while the interface that stayed is measured exactly as before.
+$guidB = '0b3f7c2e-1111-4a2b-9c3d-000000000002'
+$twoStart = New-WifiSnapshot $wifiT0 @((New-WifiInterface $wifiGuid 1 @(0..5 | ForEach-Object { New-WifiPhy $_ 1000 0 100 20 300 5000 })), (New-WifiInterface $guidB 1 @(New-WifiPhy 0 10 0 1 0 1 10)))
+$goneRows = @(Get-WifiRows $twoStart $mirrorAfter)
+Assert-Equal '#61 retry: an interface listed at the start and not at the end gets its own row' $goneRows.Count 2
+$goneRow = @($goneRows | Where-Object { $_.Status -eq 'ERROR' })
+Assert-Equal '#61 retry: and it is Unable to Check, weightless, and not the aggregate shape' ("{0}/{1}/{2}" -f $goneRow.Count, $goneRow[0].Weightless, ((Get-DetailLineAt $goneRow[0] 0) -match $reasonTail)) '1/True/False'
+Assert-Equal '#61 retry: while the interface that stayed is measured as before' (@($goneRows | Where-Object { $_.Status -eq 'INFO' })[0].Message) $mirrorRow.Message
 Assert-Equal '#61 retry: the connection states are words' (((Get-WifiInterfaceStateText 1) -ne (Get-WifiInterfaceStateText 4)) -and -not [string]::IsNullOrWhiteSpace((Get-WifiInterfaceStateText 1))) True
 Assert-Equal '#61 retry: an unknown state keeps its number' ((Get-WifiInterfaceStateText 9) -match '9') True
 Assert-Equal '#61 retry: a Win32 error keeps its number' ((Get-Win32ErrorText 1062) -match '1062') True

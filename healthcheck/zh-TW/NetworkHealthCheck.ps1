@@ -4572,15 +4572,16 @@ function Compare-WifiRetryCounters {
     }
 
     $seconds = [math]::Round(($After.Timestamp - $Before.Timestamp).TotalSeconds, 1)
+    # 方法那幾行在每一列逐介面的列上都一樣，所以只建一次（第 5 輪把它們移出迴圈）。
+    $methodLines = @(
+        "方法：Native Wifi API，透過 P/Invoke（wlanapi.dll）以 wlan_intf_opcode_statistics 呼叫 WlanQueryInterface；MAC 框累積計數器在執行前後各讀一次，取視窗內的差值。",
+        "手動檢查：沒有內建指令會印出這些計數器；API 是唯一的讀法。",
+        "說明：網卡因為沒收到確認而重送的 802.11 框會被吸收成延遲，所以在 TCP 重傳率和 ping 遺失率裡都看不到；這是這張網卡和它的基地台之間的空氣，包含視窗內所有程式的流量。這一列不決定任何結果：無線重傳率沒有任何有依據的門檻。"
+    )
     foreach ($ending in @($After.Interfaces)) {
         $starting = @(@($Before.Interfaces) | Where-Object { [string]$_.Guid -eq [string]$ending.Guid } | Select-Object -First 1)
         $description = ConvertTo-DisplayString $ending.Description
         $stateLine = "連線狀態：開始時{0}，結束時{1}。" -f $(if ($starting.Count -gt 0) { Get-WifiInterfaceStateText $starting[0].State } else { "未列出" }), (Get-WifiInterfaceStateText $ending.State)
-        $methodLines = @(
-            "方法：Native Wifi API，透過 P/Invoke（wlanapi.dll）以 wlan_intf_opcode_statistics 呼叫 WlanQueryInterface；MAC 框累積計數器在執行前後各讀一次，取視窗內的差值。",
-            "手動檢查：沒有內建指令會印出這些計數器；API 是唯一的讀法。",
-            "說明：網卡因為沒收到確認而重送的 802.11 框會被吸收成延遲，所以在 TCP 重傳率和 ping 遺失率裡都看不到；這是這張網卡和它的基地台之間的空氣，包含視窗內所有程式的流量。這一列不決定任何結果：無線重傳率沒有任何有依據的門檻。"
-        )
         if ($starting.Count -eq 0) {
             Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message ("{0}：這個介面在檢測開始時不存在，所以沒有差值。" -f $description) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
             continue
@@ -4656,6 +4657,14 @@ function Compare-WifiRetryCounters {
         $message = "{0}：{2} 個框中有 {1} 個需要重傳（{3}%），其中 {4} 個重傳超過一次，{5} 個放棄，視窗 {6} 秒。" -f $description, $retry, $attempted, $rate, $multiple, $failed, $seconds
         $rateLine = "重傳率：{0} ÷（{1} 傳送 + {2} 放棄）= {3}%；兩個重傳計數器不相加、也不互除。" -f $retry, $transmitted, $failed, $rate
         Add-CheckResult -Category $category -Check "無線重傳" -Status "INFO" -Message $message -Details ((@($countLines) + @($rateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+    }
+    # 開始時有列出、結束時沒有的介面（PR #52 第 5 輪）：檢測期間被停用或移除，所以沒有差值——自成一列，因為有第二張無線
+    # 網卡的機器兩次讀取都不會帶錯誤。
+    foreach ($starting in @($Before.Interfaces)) {
+        if (@(@($After.Interfaces) | Where-Object { [string]$_.Guid -eq [string]$starting.Guid }).Count -gt 0) { continue }
+        $description = ConvertTo-DisplayString $starting.Description
+        $stateLine = "連線狀態：開始時{0}，結束時未列出。" -f (Get-WifiInterfaceStateText $starting.State)
+        Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message ("{0}：這個介面在檢測開始時有列出、結束時沒有——檢測期間被停用或移除——所以沒有差值。" -f $description) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
     }
 }
 
