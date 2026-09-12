@@ -440,6 +440,20 @@ function Get-ConfigRowCount($Config, $Options, [hashtable]$Overrides) {
     if ($options -gt 0) { $rows += 1 }
     return $rows
 }
+function Get-WlanInterfaceIds {
+    # The interface GUIDs in `netsh wlan show interfaces`, one per interface block: netsh separates the blocks with blank
+    # lines and prints the interface's GUID before anything else GUID-shaped in its block, so the first GUID-shaped value
+    # of a block is the interface and a later one - an SSID or a profile named like a UUID - is not (PR #52, round 11).
+    # Labels are not read, because they are localized.
+    param([string[]]$Lines)
+    $ids = @(); $seenInBlock = $false
+    foreach ($line in @($Lines)) {
+        $text = [string]$line
+        if ($text.Trim().Length -eq 0) { $seenInBlock = $false; continue }
+        if (-not $seenInBlock -and $text -match '([0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})') { $ids += $matches[1].ToLowerInvariant(); $seenInBlock = $true }
+    }
+    return @($ids | Sort-Object -Unique)
+}
 function Get-MachineFacts {
     # What the script's snapshot sees, read from the operating system the way Get-NetworkSnapshot does: first
     # Get-NetIPConfiguration (an adapter counts when it is Up and has an IPv4 or IPv6 address; the gateways are those of
@@ -483,7 +497,7 @@ function Get-MachineFacts {
     $facts.WlanInterfaceIds = @()
     if (Test-Path -LiteralPath $netsh) {
         try {
-            $facts.WlanInterfaceIds = @(& $netsh wlan show interfaces 2>&1 | ForEach-Object { if (([string]$_) -match '([0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})') { $matches[1].ToLowerInvariant() } } | Sort-Object -Unique)
+            $facts.WlanInterfaceIds = @(Get-WlanInterfaceIds -Lines @(& $netsh wlan show interfaces 2>&1 | ForEach-Object { [string]$_ }))
             $facts.WlanInterfaces = @($facts.WlanInterfaceIds).Count
         } catch { }
     }
