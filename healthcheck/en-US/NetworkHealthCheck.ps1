@@ -4735,15 +4735,16 @@ function Compare-WifiRetryCounters {
     foreach ($ending in @($After.Interfaces)) {
         $starting = @(@($Before.Interfaces) | Where-Object { [string]$_.Guid -eq [string]$ending.Guid } | Select-Object -First 1)
         $description = ConvertTo-DisplayString $ending.Description
+        $guidLine = "Interface GUID: {0}" -f $ending.Guid
         $stateLine = "Connection state: {0} at the start, {1} at the end." -f $(if ($starting.Count -gt 0) { Get-WifiInterfaceStateText $starting[0].State } else { "not listed" }), (Get-WifiInterfaceStateText $ending.State)
         if ($starting.Count -eq 0) {
-            Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message ("{0}: the interface was not present at the start of the test, so there is no delta." -f $description) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message ("{0}: the interface was not present at the start of the test, so there is no delta." -f $description) -Details ((@($stateLine, $guidLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
             continue
         }
         $start = $starting[0]
         if ($start.QueryError -ne 0 -or $ending.QueryError -ne 0) {
             $which = $(if ($start.QueryError -ne 0) { $start.QueryErrorText } else { $ending.QueryErrorText })
-            Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message ("{0}: the statistics query failed ({1})." -f $description, $which) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message ("{0}: the statistics query failed ({1})." -f $description, $which) -Details ((@($stateLine, $guidLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
             continue
         }
 
@@ -4766,12 +4767,12 @@ function Compare-WifiRetryCounters {
             }
         }
         if ($deltas.Count -eq 0) {
-            Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message ("{0}: the two readings hold no PHY entry in common, so there is no delta." -f $description) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message ("{0}: the two readings hold no PHY entry in common, so there is no delta." -f $description) -Details ((@($stateLine, $guidLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
             continue
         }
         $backwards = @($deltas | Where-Object { $_.Transmitted -lt 0 -or $_.Failed -lt 0 -or $_.Retry -lt 0 -or $_.MultipleRetry -lt 0 -or $_.AckFailure -lt 0 -or $_.Received -lt 0 })
         if ($backwards.Count -gt 0) {
-            $resetLines = @(("Sample window: {0} seconds." -f $seconds), $stateLine)
+            $resetLines = @(("Sample window: {0} seconds." -f $seconds), $stateLine, $guidLine)
             foreach ($d in $backwards) {
                 $resetLines += ("Entry {0}: start Transmitted={1}, Failed={2}, Retry={3}, MultipleRetry={4}; end Transmitted={5}, Failed={6}, Retry={7}, MultipleRetry={8}" -f $d.Index, $d.Start.Transmitted, $d.Start.Failed, $d.Start.Retry, $d.Start.MultipleRetry, $d.End.Transmitted, $d.End.Failed, $d.End.Retry, $d.End.MultipleRetry)
             }
@@ -4800,6 +4801,7 @@ function Compare-WifiRetryCounters {
             ("Transmitted frame delta: {0}; abandoned after the retry limit: {1}; frames that needed retransmission: {2}, of which more than once: {3}; missing acknowledgements: {4}; received frame delta: {5}." -f $transmitted, $failed, $retry, $multiple, $ackFailures, $received),
             $phyLine,
             $stateLine,
+            $guidLine,
             ("Starting cumulative values (entry {0}): Transmitted={1}, Failed={2}, Retry={3}, MultipleRetry={4}, ACKFailure={5}, Received={6}" -f $chosen.Index, $chosen.Start.Transmitted, $chosen.Start.Failed, $chosen.Start.Retry, $chosen.Start.MultipleRetry, $chosen.Start.AckFailure, $chosen.Start.Received),
             ("Ending cumulative values (entry {0}): Transmitted={1}, Failed={2}, Retry={3}, MultipleRetry={4}, ACKFailure={5}, Received={6}" -f $chosen.Index, $chosen.End.Transmitted, $chosen.End.Failed, $chosen.End.Retry, $chosen.End.MultipleRetry, $chosen.End.AckFailure, $chosen.End.Received)
         )
@@ -4819,7 +4821,8 @@ function Compare-WifiRetryCounters {
         if (@(@($After.Interfaces) | Where-Object { [string]$_.Guid -eq [string]$starting.Guid }).Count -gt 0) { continue }
         $description = ConvertTo-DisplayString $starting.Description
         $stateLine = "Connection state: {0} at the start, not listed at the end." -f (Get-WifiInterfaceStateText $starting.State)
-        Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message ("{0}: the interface was listed at the start of the test and not at the end - disabled or removed during the test - so there is no delta." -f $description) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+        $guidLine = "Interface GUID: {0}" -f $starting.Guid
+        Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message ("{0}: the interface was listed at the start of the test and not at the end - disabled or removed during the test - so there is no delta." -f $description) -Details ((@($stateLine, $guidLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
     }
 }
 

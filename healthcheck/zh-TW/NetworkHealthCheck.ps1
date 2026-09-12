@@ -4581,15 +4581,16 @@ function Compare-WifiRetryCounters {
     foreach ($ending in @($After.Interfaces)) {
         $starting = @(@($Before.Interfaces) | Where-Object { [string]$_.Guid -eq [string]$ending.Guid } | Select-Object -First 1)
         $description = ConvertTo-DisplayString $ending.Description
+        $guidLine = "介面 GUID：{0}" -f $ending.Guid
         $stateLine = "連線狀態：開始時{0}，結束時{1}。" -f $(if ($starting.Count -gt 0) { Get-WifiInterfaceStateText $starting[0].State } else { "未列出" }), (Get-WifiInterfaceStateText $ending.State)
         if ($starting.Count -eq 0) {
-            Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message ("{0}：這個介面在檢測開始時不存在，所以沒有差值。" -f $description) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message ("{0}：這個介面在檢測開始時不存在，所以沒有差值。" -f $description) -Details ((@($stateLine, $guidLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
             continue
         }
         $start = $starting[0]
         if ($start.QueryError -ne 0 -or $ending.QueryError -ne 0) {
             $which = $(if ($start.QueryError -ne 0) { $start.QueryErrorText } else { $ending.QueryErrorText })
-            Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message ("{0}：統計查詢失敗（{1}）。" -f $description, $which) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message ("{0}：統計查詢失敗（{1}）。" -f $description, $which) -Details ((@($stateLine, $guidLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
             continue
         }
 
@@ -4611,12 +4612,12 @@ function Compare-WifiRetryCounters {
             }
         }
         if ($deltas.Count -eq 0) {
-            Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message ("{0}：兩次讀取沒有共同的 PHY 項目，所以沒有差值。" -f $description) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+            Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message ("{0}：兩次讀取沒有共同的 PHY 項目，所以沒有差值。" -f $description) -Details ((@($stateLine, $guidLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
             continue
         }
         $backwards = @($deltas | Where-Object { $_.Transmitted -lt 0 -or $_.Failed -lt 0 -or $_.Retry -lt 0 -or $_.MultipleRetry -lt 0 -or $_.AckFailure -lt 0 -or $_.Received -lt 0 })
         if ($backwards.Count -gt 0) {
-            $resetLines = @(("取樣視窗：{0} 秒。" -f $seconds), $stateLine)
+            $resetLines = @(("取樣視窗：{0} 秒。" -f $seconds), $stateLine, $guidLine)
             foreach ($d in $backwards) {
                 $resetLines += ("項目 {0}：開始 Transmitted={1}、Failed={2}、Retry={3}、MultipleRetry={4}；結束 Transmitted={5}、Failed={6}、Retry={7}、MultipleRetry={8}" -f $d.Index, $d.Start.Transmitted, $d.Start.Failed, $d.Start.Retry, $d.Start.MultipleRetry, $d.End.Transmitted, $d.End.Failed, $d.End.Retry, $d.End.MultipleRetry)
             }
@@ -4645,6 +4646,7 @@ function Compare-WifiRetryCounters {
             ("傳送框差值：{0}；重傳到上限後放棄：{1}；需要重傳的框：{2}，其中重傳超過一次：{3}；沒收到確認：{4}；接收框差值：{5}。" -f $transmitted, $failed, $retry, $multiple, $ackFailures, $received),
             $phyLine,
             $stateLine,
+            $guidLine,
             ("開始累積值（項目 {0}）：Transmitted={1}、Failed={2}、Retry={3}、MultipleRetry={4}、ACKFailure={5}、Received={6}" -f $chosen.Index, $chosen.Start.Transmitted, $chosen.Start.Failed, $chosen.Start.Retry, $chosen.Start.MultipleRetry, $chosen.Start.AckFailure, $chosen.Start.Received),
             ("結束累積值（項目 {0}）：Transmitted={1}、Failed={2}、Retry={3}、MultipleRetry={4}、ACKFailure={5}、Received={6}" -f $chosen.Index, $chosen.End.Transmitted, $chosen.End.Failed, $chosen.End.Retry, $chosen.End.MultipleRetry, $chosen.End.AckFailure, $chosen.End.Received)
         )
@@ -4664,7 +4666,8 @@ function Compare-WifiRetryCounters {
         if (@(@($After.Interfaces) | Where-Object { [string]$_.Guid -eq [string]$starting.Guid }).Count -gt 0) { continue }
         $description = ConvertTo-DisplayString $starting.Description
         $stateLine = "連線狀態：開始時{0}，結束時未列出。" -f (Get-WifiInterfaceStateText $starting.State)
-        Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message ("{0}：這個介面在檢測開始時有列出、結束時沒有——檢測期間被停用或移除——所以沒有差值。" -f $description) -Details ((@($stateLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
+        $guidLine = "介面 GUID：{0}" -f $starting.Guid
+        Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message ("{0}：這個介面在檢測開始時有列出、結束時沒有——檢測期間被停用或移除——所以沒有差值。" -f $description) -Details ((@($stateLine, $guidLine) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-retry" -Weightless | Out-Null
     }
 }
 

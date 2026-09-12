@@ -721,6 +721,20 @@ function Test-ResultSet {
         $aggregateRetryFailure = ($firstLine -match '[:：]\s*(addtype|open|enumerate|error|none)\s*$')
     }
     if ([int]$want['wifi-retry'] -gt 1 -and $aggregateRetryFailure) { $want['wifi-retry'] = 1 }
+    # Per interface, not only in total (PR #52, round 7): every per-interface row names its interface GUID on a details
+    # line, so each GUID either reading listed must have exactly one row - a transition in each direction for a
+    # replacement, a measured row for the one that stayed - and no row may name a GUID neither reading listed.
+    if (-not $aggregateRetryFailure -and $null -ne $Machine.WlanInterfaceIds -and (Test-TrueFlag $Config.Checks.WifiRetryCounters)) {
+        $unionIds = @(@($Machine.WlanInterfaceIds) + $wlanAfterIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).ToLowerInvariant() } | Sort-Object -Unique)
+        foreach ($id in $unionIds) {
+            $n = @($retryRows | Where-Object { ([string]$_.Details).ToLowerInvariant().Contains($id) }).Count
+            if ($n -ne 1) { $bad += ('wifi-retry: interface {0} has {1} row(s), expected 1' -f $id, $n) }
+        }
+        foreach ($r in $retryRows) {
+            $m = [regex]::Match([string]$r.Details, '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}')
+            if ($m.Success -and ($unionIds -notcontains $m.Value.ToLowerInvariant())) { $bad += ('wifi-retry: a row names interface {0}, which neither reading listed' -f $m.Value) }
+        }
+    }
     foreach ($k in @($want.Keys)) {
         $have = $(if ($byTag.ContainsKey($k)) { $byTag[$k] } else { 0 })
         if ($have -ne $want[$k]) { $bad += ('{0}: {1} row(s), expected {2}' -f $k, $have, $want[$k]) }

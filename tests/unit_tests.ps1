@@ -1889,6 +1889,10 @@ Assert-Equal '#61 retry: an interface listed at the start and not at the end get
 $goneRow = @($goneRows | Where-Object { $_.Status -eq 'ERROR' })
 Assert-Equal '#61 retry: and it is Unable to Check, weightless, and not the aggregate shape' ("{0}/{1}/{2}" -f $goneRow.Count, $goneRow[0].Weightless, ((Get-DetailLineAt $goneRow[0] 0) -match $reasonTail)) '1/True/False'
 Assert-Equal '#61 retry: while the interface that stayed is measured as before' (@($goneRows | Where-Object { $_.Status -eq 'INFO' })[0].Message) $mirrorRow.Message
+# Every per-interface row names its interface GUID on a details line (round 7), which is what lets the oracle hold each
+# interface to exactly one row; the aggregate rows name none.
+Assert-Equal '#61 shape: every per-interface row names its interface GUID' (@(@($mirrorRow, $idleRow, $resetRow, $missingRow, $queryRow, $goneRow[0]) | Where-Object { $_.Details -notmatch ([regex]::Escape($wifiGuid)) -and $_.Details -notmatch ([regex]::Escape($guidB)) }).Count) 0
+Assert-Equal '#61 shape: and the aggregate rows name none' (@(@($addTypeRow, $openRow, $errorRow, $noneBeforeRow, $noneRows[0]) | Where-Object { $_.Details -match '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}' }).Count) 0
 Assert-Equal '#61 retry: the connection states are words' (((Get-WifiInterfaceStateText 1) -ne (Get-WifiInterfaceStateText 4)) -and -not [string]::IsNullOrWhiteSpace((Get-WifiInterfaceStateText 1))) True
 Assert-Equal '#61 retry: an unknown state keeps its number' ((Get-WifiInterfaceStateText 9) -match '9') True
 Assert-Equal '#61 retry: a Win32 error keeps its number' ((Get-Win32ErrorText 1062) -match '1062') True
