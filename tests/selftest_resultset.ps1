@@ -45,7 +45,7 @@ function New-Fixture {
     $template = $r.Results[0]
     # Environment-dependent rows are dropped and rebuilt, step-error rows included: the fixture's facts declare every
     # collector healthy, whatever the live machine had to say.
-    $rows = @($r.Results | Where-Object { $_.Tag -notin @('adapter', 'adapter-errors', 'gateway-config', 'dns-config', 'ping-gateway', 'tcp-retransmissions', 'data-source', 'step-error') })
+    $rows = @($r.Results | Where-Object { $_.Tag -notin @('adapter', 'adapter-errors', 'gateway-config', 'dns-config', 'ping-gateway', 'tcp-retransmissions', 'data-source', 'step-error', 'wifi-retry') })
     foreach ($x in $rows) { if ($x.Tag -eq 'adapters') { $x.Status = 'PASS' } }
     foreach ($i in 1..3) { $rows += New-Row $template 'adapter' "Adapter: fixture $i" 'PASS' }
     $rows += New-Row $template 'gateway-config' 'Default Gateway' 'PASS'
@@ -54,6 +54,10 @@ function New-Fixture {
     foreach ($i in 1..3) { $rows += New-Row $template 'adapter-errors' "fixture $i" 'PASS' }
     $rows += New-Row $template 'tcp-retransmissions' 'TCPv4' 'PASS'
     $rows += New-Row $template 'tcp-retransmissions' 'TCPv6' 'INFO'
+    # The live wifi-retry row names the live machine's interface GUID (PR #52, round 8), so it is dropped above and
+    # rebuilt here for the fixture's one wireless interface, whose GUID the synthetic facts declare.
+    $retry = New-Row $template 'wifi-retry' 'Wireless retries' 'INFO'; $retry.Details = 'Connection state: connected at the start, connected at the end.' + [Environment]::NewLine + 'Interface GUID: e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb'
+    $rows += $retry
     $r.Results = $rows
     return $r
 }
