@@ -4349,6 +4349,19 @@ function Add-WifiRfResult {
     }
 }
 
+function Test-WifiSampleReadable {
+    param([object]$Sample)
+
+    # A sample is readable where either reader answered (PR #55, round 6): netsh's read may have failed outright - the
+    # executable missing, the read that threw - while the WLAN service still listed the interfaces and their state, and a
+    # sample skipped on netsh's failure alone would have dropped an interface the service saw. Only a sample both readers
+    # failed is unreadable, and only a run of those is the aggregate failure row.
+    if ($null -eq $Sample) { return $false }
+    if ([string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" ""))) { return $true }
+    $api = Get-PropertyValue $Sample "Api" $null
+    return ($null -ne $api -and [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $api "Error" "")))
+}
+
 function Get-WifiApiSummaryText {
     param([object]$Sample)
 
@@ -4380,7 +4393,7 @@ function Compare-WifiAssociation {
     $category = "IT Diagnostics"
     $check = "Wi-Fi association"
     $samples = @(@($Samples) | Where-Object { $null -ne $_ })
-    $readable = @($samples | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.Error) })
+    $readable = @($samples | Where-Object { Test-WifiSampleReadable $_ })
     $momentText = @{ start = "before the first measurement"; middle = "with the IT diagnostics"; end = "after the last measurement" }
     $entries = @()
     $index = 0
@@ -4439,7 +4452,7 @@ function Compare-WifiAssociation {
     $viewsBySample = @{}
     for ($i = 0; $i -lt $entries.Count; $i++) {
         $sample = $entries[$i].Sample
-        if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error)) { continue }
+        if (-not (Test-WifiSampleReadable $sample)) { continue }
         $views = @(Get-WifiInterfaceView -Sample $sample)
         $viewsBySample[$i] = $views
         foreach ($view in $views) {
@@ -4454,12 +4467,12 @@ function Compare-WifiAssociation {
         $lines = @(("Reading: none{0}" -f $apiSuffix))
         foreach ($entry in $entries) {
             $sample = $entry.Sample
+            $apiSummary = Get-WifiApiSummaryText -Sample $sample
             if ([string]::IsNullOrWhiteSpace([string]$sample.Error)) {
                 $reason = Get-WifiNetshReasonText -Sample $sample
-                $apiSummary = Get-WifiApiSummaryText -Sample $sample
                 $lines += ("{0}: no wireless interface listed{1}{2}" -f $entry.Prefix, $(if ($reason) { " - " + $reason } else { "" }), $(if ($apiSummary) { "; " + $apiSummary } else { "" }))
             }
-            else { $lines += ("{0}: could not be read - {1}" -f $entry.Prefix, [string]$sample.ErrorText) }
+            else { $lines += ("{0}: could not be read - {1}{2}" -f $entry.Prefix, [string]$sample.ErrorText, $(if ($apiSummary) { "; " + $apiSummary } else { "" })) }
         }
         Add-CheckResult -Category $category -Check $check -Status "INFO" -Message ("No wireless interface was listed at any of the {0} sample(s), by netsh or by the WLAN service, so there is no access point to compare - a wired computer, for example; the sample lines say what each reader returned." -f $samples.Count) -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
         return
@@ -4472,7 +4485,7 @@ function Compare-WifiAssociation {
         for ($i = 0; $i -lt $entries.Count; $i++) {
             $entry = $entries[$i]
             $sample = $entry.Sample
-            if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error)) {
+            if (-not (Test-WifiSampleReadable $sample)) {
                 $lines += ("{0}: could not be read - {1}" -f $entry.Prefix, [string]$sample.ErrorText)
                 # A sample that failed is still one of the run's samples (PR #54, round 1): it counts in every total the
                 # message names, and it is neither a reading of the access point nor evidence that the interface was absent.

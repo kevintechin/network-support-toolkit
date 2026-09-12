@@ -4211,6 +4211,18 @@ function Add-WifiRfResult {
     }
 }
 
+function Test-WifiSampleReadable {
+    param([object]$Sample)
+
+    # 兩個讀取來源任一方有回答，樣本就算可讀（PR #55，第 6 回合）：netsh 的讀取可能整個失敗——找不到執行檔、讀取時擲出例外——
+    # 而 WLAN 服務仍然列出了介面與狀態，只因 netsh 失敗就跳過的樣本會漏掉服務看見的介面。兩個讀取來源都失敗的樣本才算
+    # 不可讀，而每次樣本都如此才是彙總失敗列。
+    if ($null -eq $Sample) { return $false }
+    if ([string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" ""))) { return $true }
+    $api = Get-PropertyValue $Sample "Api" $null
+    return ($null -ne $api -and [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $api "Error" "")))
+}
+
 function Get-WifiApiSummaryText {
     param([object]$Sample)
 
@@ -4239,7 +4251,7 @@ function Compare-WifiAssociation {
     $category = "IT 診斷資料"
     $check = "Wi-Fi 存取點"
     $samples = @(@($Samples) | Where-Object { $null -ne $_ })
-    $readable = @($samples | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.Error) })
+    $readable = @($samples | Where-Object { Test-WifiSampleReadable $_ })
     $momentText = @{ start = "第一項量測之前"; middle = "收集 IT 診斷資料時"; end = "最後一項量測之後" }
     $entries = @()
     $index = 0
@@ -4297,7 +4309,7 @@ function Compare-WifiAssociation {
     $viewsBySample = @{}
     for ($i = 0; $i -lt $entries.Count; $i++) {
         $sample = $entries[$i].Sample
-        if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error)) { continue }
+        if (-not (Test-WifiSampleReadable $sample)) { continue }
         $views = @(Get-WifiInterfaceView -Sample $sample)
         $viewsBySample[$i] = $views
         foreach ($view in $views) {
@@ -4312,12 +4324,12 @@ function Compare-WifiAssociation {
         $lines = @(("讀取：none{0}" -f $apiSuffix))
         foreach ($entry in $entries) {
             $sample = $entry.Sample
+            $apiSummary = Get-WifiApiSummaryText -Sample $sample
             if ([string]::IsNullOrWhiteSpace([string]$sample.Error)) {
                 $reason = Get-WifiNetshReasonText -Sample $sample
-                $apiSummary = Get-WifiApiSummaryText -Sample $sample
                 $lines += ("{0}：未列出任何無線介面{1}{2}" -f $entry.Prefix, $(if ($reason) { "——" + $reason } else { "" }), $(if ($apiSummary) { "；" + $apiSummary } else { "" }))
             }
-            else { $lines += ("{0}：無法讀取——{1}" -f $entry.Prefix, [string]$sample.ErrorText) }
+            else { $lines += ("{0}：無法讀取——{1}{2}" -f $entry.Prefix, [string]$sample.ErrorText, $(if ($apiSummary) { "；" + $apiSummary } else { "" })) }
         }
         Add-CheckResult -Category $category -Check $check -Status "INFO" -Message ("{0} 次樣本都沒有列出任何無線介面——netsh 與 WLAN 服務都沒有——所以沒有存取點可以比較；例如有線電腦，樣本行寫著兩個讀取來源各自回報了什麼。" -f $samples.Count) -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
         return
@@ -4330,7 +4342,7 @@ function Compare-WifiAssociation {
         for ($i = 0; $i -lt $entries.Count; $i++) {
             $entry = $entries[$i]
             $sample = $entry.Sample
-            if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error)) {
+            if (-not (Test-WifiSampleReadable $sample)) {
                 $lines += ("{0}：無法讀取——{1}" -f $entry.Prefix, [string]$sample.ErrorText)
                 # 失敗的樣本仍然是這次執行的樣本之一（PR #54，第 1 回合）：訊息裡的每個總數都要算它，而它既不是存取點的一次
                 # 讀數，也不是介面不在場的證據。
