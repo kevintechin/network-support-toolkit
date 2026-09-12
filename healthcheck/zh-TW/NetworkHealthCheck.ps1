@@ -3397,7 +3397,7 @@ function Get-TcpConnectSampleText {
         $message = $lead + ("；socket 自己的重傳計數器讀不到，改以時間代替：{1} 次中有 {0} 次達到重傳逾時 {2}——這是 SYN 重傳的代理指標，不是計數。" -f $reached, $judged, $rtoText)
     }
     else {
-        $message = $lead + ("；socket 自己的重傳計數器讀不到，改以時間代替：{1} 次中有 {0} 次達到重傳逾時 {2}——那正是 SYN 被重送的時刻——這是 SYN 重傳的代理指標，不是計數。" -f $reached, $judged, $rtoText)
+        $message = $lead + ("；socket 自己的重傳計數器讀不到，改以時間代替：{1} 次中有 {0} 次達到重傳逾時 {2}——那是重傳的 SYN 可能出現的地方——這是 SYN 重傳的代理指標，不是計數。" -f $reached, $judged, $rtoText)
     }
 
     $lines = New-Object System.Collections.ArrayList
@@ -3429,7 +3429,7 @@ function Get-TcpConnectSampleText {
     if ([string]$Sample.RtoSource -eq "setting") { $rtoLine += "取自 Get-NetTCPSetting 回報的 Internet 範本 InitialRtoMs。" }
     else { $rtoLine += ("為假設值：這台電腦的 Get-NetTCPSetting 沒有回報數值，而 {0} ms 是 Windows 未另行設定時採用的值（netsh int tcp show global 會顯示生效中的值）。" -f $rtoMs) }
     [void]$lines.Add($rtoLine)
-    if ($telemetry) { [void]$lines.Add(("判讀：{1} 次連線共有 {0} 個 SYN 曾被重送，由 socket 自己計數。這些是工具自己的連線、對這一個目標、在這一刻——正是系統級「TCP 重傳」列無法歸屬的數字——而且它們不做判定：這一列的狀態由第一次連線決定。耗時達到初始重傳逾時的連線，就是重傳的 SYN 會在時間上顯現的地方。" -f $retransmitted, $timed)) }
+    if ($telemetry) { [void]$lines.Add(("判讀：{1} 次連線共有 {0} 個 SYN 曾被重送，由 socket 自己計數。這些是工具自己的連線、對這一個目標、在這一刻——正是系統級「TCP 重傳」列無法歸屬的數字——而且它們不做判定：這一列的狀態由第一次連線決定。耗時達到初始重傳逾時的連線，是重傳的 SYN 可能在時間上顯現的地方；有沒有真的重送，以 socket 的計數為準。" -f $retransmitted, $timed)) }
     elseif ($judged -eq 0) { [void]$lines.Add("判讀：什麼都沒有比較——socket 的計數器讀不到，而唯一完成的那一次連線含名稱查詢。這些是工具自己的連線、對這一個目標、在這一刻——正是系統級「TCP 重傳」列無法歸屬的數字——而且它們不做判定：這一列的狀態由第一次連線決定。") }
     else { [void]$lines.Add(("判讀：{1} 次中有 {0} 次達到或超過逾時。耗時達到初始重傳逾時的連線，是重傳的 SYN 會顯現的地方，但這段時間也包含 SYN 之前與回覆之後所發生的事，所以它是重傳的代理指標，不是計數；而低於它的連線，只有在這裡讀到的逾時值正是該連線所用的那一個時，才排除得了重傳——這一點本工具無法確認：連線套用哪個範本沒有系統管理員權限讀不到，而假設值只是假設。這些是工具自己的連線、對這一個目標、在這一刻——正是系統級「TCP 重傳」列無法歸屬的數字——而且它們不做判定：這一列的狀態由第一次連線決定。" -f $reached, $judged)) }
 
