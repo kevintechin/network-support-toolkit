@@ -5430,6 +5430,16 @@ function Get-LocationConsentState {
     return $consent
 }
 
+function Get-RadioSwitchState {
+    param([int]$On, [int]$Off, [int]$Read)
+
+    # 從讀到的 PHY 項目得出一個無線電開關的字（PR #55，第 8 回合）：任一 PHY 回報開就是開，讀到的每個 PHY 都回報關才是關，其餘
+    # 為未知——驅動程式把一部分 PHY 回報為關、其餘不確定，並沒有說無線電是關的，據此把開關寫成關閉的列就是宣稱得比讀到的多。
+    if ($On -gt 0) { return "on" }
+    if ($Read -gt 0 -and $Off -eq $Read) { return "off" }
+    return "unknown"
+}
+
 function Get-WlanInterfaceStates {
     # WLAN 服務自己對每張無線介面的說法，一次讀取（backlog #62）：介面清單與各介面的連線狀態（WlanEnumInterfaces）、頻道
     # （WlanQueryInterface，opcode 8）與無線電開關（opcode 4）——而對服務稱為已連線的介面，再問服務願不願意把連線細節交給
@@ -5508,17 +5518,18 @@ function Get-WlanInterfaceStates {
                 try {
                     $phys = 0
                     if ($size -ge 4) { $phys = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, 0) }
-                    $softwareOn = 0; $softwareOff = 0; $hardwareOn = 0; $hardwareOff = 0
+                    $softwareOn = 0; $softwareOff = 0; $hardwareOn = 0; $hardwareOff = 0; $phyRead = 0
                     for ($phy = 0; $phy -lt $phys; $phy++) {
                         $offset = 4 + ($phy * 12)
                         if ($size -lt ($offset + 12)) { break }
+                        $phyRead++
                         $softwareState = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, $offset + 4)
                         $hardwareState = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, $offset + 8)
                         if ($softwareState -eq 1) { $softwareOn++ } elseif ($softwareState -eq 2) { $softwareOff++ }
                         if ($hardwareState -eq 1) { $hardwareOn++ } elseif ($hardwareState -eq 2) { $hardwareOff++ }
                     }
-                    $entry.RadioSoftware = $(if ($softwareOn -gt 0) { "on" } elseif ($softwareOff -gt 0) { "off" } else { "unknown" })
-                    $entry.RadioHardware = $(if ($hardwareOn -gt 0) { "on" } elseif ($hardwareOff -gt 0) { "off" } else { "unknown" })
+                    $entry.RadioSoftware = Get-RadioSwitchState -On $softwareOn -Off $softwareOff -Read $phyRead
+                    $entry.RadioHardware = Get-RadioSwitchState -On $hardwareOn -Off $hardwareOff -Read $phyRead
                 }
                 finally { $apiType::WlanFreeMemory($data) }
             }

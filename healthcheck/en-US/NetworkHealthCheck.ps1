@@ -5637,6 +5637,17 @@ function Get-LocationConsentState {
     return $consent
 }
 
+function Get-RadioSwitchState {
+    param([int]$On, [int]$Off, [int]$Read)
+
+    # One radio switch's word from the PHY entries read (PR #55, round 8): on where any PHY reports on, off only where every
+    # PHY read reports off, unknown otherwise - a driver reporting some PHYs off and the rest indeterminate has not said
+    # the radio is off, and a row that called a switch disabled on that would claim more than was read.
+    if ($On -gt 0) { return "on" }
+    if ($Read -gt 0 -and $Off -eq $Read) { return "off" }
+    return "unknown"
+}
+
 function Get-WlanInterfaceStates {
     # One reading of what the WLAN service itself says about every wireless interface (backlog #62): the list of them
     # and each one's connection state (WlanEnumInterfaces), its channel (WlanQueryInterface, opcode 8) and its radio
@@ -5719,17 +5730,18 @@ function Get-WlanInterfaceStates {
                 try {
                     $phys = 0
                     if ($size -ge 4) { $phys = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, 0) }
-                    $softwareOn = 0; $softwareOff = 0; $hardwareOn = 0; $hardwareOff = 0
+                    $softwareOn = 0; $softwareOff = 0; $hardwareOn = 0; $hardwareOff = 0; $phyRead = 0
                     for ($phy = 0; $phy -lt $phys; $phy++) {
                         $offset = 4 + ($phy * 12)
                         if ($size -lt ($offset + 12)) { break }
+                        $phyRead++
                         $softwareState = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, $offset + 4)
                         $hardwareState = [System.Runtime.InteropServices.Marshal]::ReadInt32($data, $offset + 8)
                         if ($softwareState -eq 1) { $softwareOn++ } elseif ($softwareState -eq 2) { $softwareOff++ }
                         if ($hardwareState -eq 1) { $hardwareOn++ } elseif ($hardwareState -eq 2) { $hardwareOff++ }
                     }
-                    $entry.RadioSoftware = $(if ($softwareOn -gt 0) { "on" } elseif ($softwareOff -gt 0) { "off" } else { "unknown" })
-                    $entry.RadioHardware = $(if ($hardwareOn -gt 0) { "on" } elseif ($hardwareOff -gt 0) { "off" } else { "unknown" })
+                    $entry.RadioSoftware = Get-RadioSwitchState -On $softwareOn -Off $softwareOff -Read $phyRead
+                    $entry.RadioHardware = Get-RadioSwitchState -On $hardwareOn -Off $hardwareOff -Read $phyRead
                 }
                 finally { $apiType::WlanFreeMemory($data) }
             }
