@@ -775,11 +775,15 @@ function Test-ResultSet {
         # network named like a UUID is printed in the sample lines above it, and an unanchored match would have read the
         # network as the interface and refused a valid report. A per-interface row without the token is a tool regression
         # and is refused as such; the aggregate rows (netsh, exception, none) carry neither a GUID nor the token.
-        $assocGuidOnIdentity = '([0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})[;；]\s*samples='
+        # The token's grammar (round 6): one or more of the three sample names, comma-separated, ending the line - a regression
+        # that lost the listed moments would leave an empty token or a made-up name, and a match that stopped at 'samples='
+        # would have passed it as a known or transient interface.
+        $assocToken = 'samples=(start|middle|end)(,(start|middle|end))*(?=\r|\n|$)'
+        $assocGuidOnIdentity = '([0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})[;；]\s*' + $assocToken
         foreach ($r in $assocRows) {
             $firstLine = [string](@(([string]$r.Details) -split "`r`n|`n")[0])
             if ($firstLine -match '[:：]\s*(netsh|exception|none)\s*$') { continue }
-            if (([string]$r.Details) -notmatch 'samples=') { $bad += ('wifi-association: a per-interface row carries no samples token ({0})' -f $r.Message) }
+            if (([string]$r.Details) -notmatch $assocToken) { $bad += ('wifi-association: a per-interface row carries no valid samples token ({0})' -f $r.Message) }
         }
         foreach ($id in $assocIds) {
             $n = @($assocRows | Where-Object { $m = [regex]::Match([string]$_.Details, $assocGuidOnIdentity); $m.Success -and ($m.Groups[1].Value.ToLowerInvariant() -eq $id) }).Count
