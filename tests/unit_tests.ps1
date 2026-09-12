@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Compare-WifiRetryCounters', 'Get-WifiRetrySnapshot', 'Get-WifiInterfaceStateText', 'Get-Win32ErrorText', 'Get-TcpInitialRto', 'New-TcpConnectSample', 'Get-TcpConnectSampleText', 'Invoke-TcpConnectionTest'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Compare-WifiRetryCounters', 'Get-WifiRetrySnapshot', 'Get-WifiInterfaceStateText', 'Get-Win32ErrorText', 'Get-TcpInitialRto', 'New-TcpConnectSample', 'Get-TcpConnectSampleText', 'Invoke-TcpConnectionTest', 'Get-LatencySpreadText', 'Get-WifiAssociationSample', 'Add-WifiAssociationSample', 'Compare-WifiAssociation', 'Get-MacRelation', 'Get-AccessPointGatewayText', 'Get-AccessPointGatewayEvidence', 'Update-AccessPointGatewayHints'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -2044,6 +2044,228 @@ Assert-Equal '#52 run: the repeats are made only after a connection succeeded, g
 Assert-Equal '#52 run: the count is PingCount, never below one, and the timeout is read once a connection has succeeded' (($connectivityBody -match '\$connectCount = \[math\]::Max\(1, \(ConvertTo-IntSafe \$script:Config\.Tests\.PingCount 4\)\)') -and ($connectivityBody -match '(?s)if \(\$result\.Success\) \{.*?if \(\$null -eq \$initialRto\) \{ \$initialRto = Get-TcpInitialRto \}')) True
 $connectBody = Get-FunctionBody 'Invoke-TcpConnectionTest'
 Assert-Equal '#52 read: SIO_TCP_INFO is asked for version 0 inside a try, and SynRetrans and RttUs are read at the documented offsets of TCP_INFO_v0' ($connectBody -match '(?s)try \{\s*\$infoOut = New-Object byte\[\] 128.*?IOControl\(\[int\]-671088601, \[System\.BitConverter\]::GetBytes\(\[uint32\]0\), \$infoOut\).*?if \(\$infoBytes -ge 88\).*?\$infoOut\[84\].*?ToUInt32\(\$infoOut, 20\).*?catch') True
+
+# --- backlog #61, the other half (v1.2.13): the access point sampled, the access-point-is-the-gateway hint, the spread ---
+# Language-independent throughout, as the retry half's cases are: statuses, scopes, tags, the values a sentence
+# interpolates and the shape of the details, never the wording.
+$macShape = '([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}'
+$guidShape = '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}'
+# The parser keeps the interface's own GUID, found by its label rather than by its shape (the tool's copy of the exposure
+# PR #52 rounds 11 and 12 closed in the chain's reader): a network, a profile and an adapter renamed to a UUID sit inside
+# the block and start no interface of their own.
+$w = @(ConvertFrom-NetshWlanOutput -Lines $win11)
+Assert-Equal '#61 parser: the interface GUID is kept, lower-case' $w[0].Guid 'e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb'
+$uuidNamed = @('', 'There are 2 interfaces on the system:', '', '    Name                   : Wi-Fi', '    Description            : Fixture Wi-Fi 6E', '    GUID                   : E6B08C8A-3FEB-4C3E-88C3-DEE94DD2F0EB', '    Physical address       : 00:11:22:33:44:55', '    State                  : connected', '    SSID                   : 5d1e2f3a-2222-4b3c-8d4e-000000000003', '    BSSID                  : 66:77:88:99:aa:bb', '    Radio type             : 802.11ax', '    Channel                : 36', '    Receive rate (Mbps)    : 100', '    Transmit rate (Mbps)   : 100', '    Signal                 : 70%', '    Profile                : 5d1e2f3a-2222-4b3c-8d4e-000000000003', '', '    Name                   : 7c2d3e4f-3333-4c5d-9e6f-000000000004', '    Description            : Fixture USB', '    GUID                   : 0b3f7c2e-1111-4a2b-9c3d-000000000002', '    Physical address       : 00:11:22:33:44:66', '    State                  : disconnected', '')
+$w = @(ConvertFrom-NetshWlanOutput -Lines $uuidNamed)
+Assert-Equal '#61 parser: a UUID-shaped network, profile and adapter name start no interface - two blocks are two' $w.Count 2
+Assert-Equal '#61 parser: and the two GUIDs are the labelled ones' (($w | ForEach-Object { $_.Guid }) -join ',') 'e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb,0b3f7c2e-1111-4a2b-9c3d-000000000002'
+Assert-Equal '#61 parser: the UUID-shaped SSID is still the SSID and the BSSID is still read' ("{0}/{1}/{2}" -f $w[0].Connected, $w[0].Ssid, $w[0].Bssid) 'True/5d1e2f3a-2222-4b3c-8d4e-000000000003/66:77:88:99:aa:bb'
+Assert-Equal '#61 parser: the renamed adapter keeps its name and is not connected' ("{0}/{1}" -f $w[1].Name, $w[1].Connected) '7c2d3e4f-3333-4c5d-9e6f-000000000004/False'
+$fullWidth = @('    名稱：Wi-Fi', '    描述：Fixture', '    GUID：e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb', '    實體位址：10:f6:0a:db:fc:e5', '    狀態：已連線', '    SSID：Office', '    BSSID：5c:e2:8c:11:22:33', '    訊號：55%')
+$w = @(ConvertFrom-NetshWlanOutput -Lines $fullWidth)
+Assert-Equal '#61 parser: the GUID label is read before a full-width colon too' ("{0}/{1}/{2}" -f $w.Count, $w[0].Guid, $w[0].Bssid) '1/e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb/5c:e2:8c:11:22:33'
+$noLabel = @($win11 | ForEach-Object { $_ -replace '^    GUID  ', '    識別碼' })
+$w = @(ConvertFrom-NetshWlanOutput -Lines $noLabel)
+Assert-Equal '#61 parser: an output with no GUID label falls back to the shape rule and still yields the interface' ("{0}/{1}/{2}" -f $w.Count, $w[0].Guid, $w[0].Bssid) '1/e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb/ac:b6:87:a6:81:a0'
+
+# The sample envelope, once for real on whatever this machine has, and its keeper.
+$liveSample = Get-WifiAssociationSample -Moment 'start'
+Assert-Equal '#61 sample: a real reading names its moment and carries a time' ("{0}/{1}" -f $liveSample.Moment, ($liveSample.Timestamp -is [datetime])) 'start/True'
+Assert-Equal '#61 sample: and either lists interfaces without an error or names the reason' ((([string]$liveSample.Error -eq '') -and ($null -ne $liveSample.Interfaces)) -or ([string]$liveSample.Error -in @('netsh', 'exception'))) True
+Write-Output ('[INFO] #61 access-point sample on this machine: ' + @($liveSample.Interfaces).Count + ' interface(s)' + $(if ([string]$liveSample.Error -ne '') { ', error ' + $liveSample.Error } else { '' }))
+$script:WifiAssociationSamples = $null
+$kept = Add-WifiAssociationSample -Moment 'end'
+Assert-Equal '#61 sample: the keeper creates the list when there is none and appends in order' ("{0}/{1}" -f @($script:WifiAssociationSamples).Count, $script:WifiAssociationSamples[0].Moment) '1/end'
+[void](Add-WifiAssociationSample -Moment 'middle')
+Assert-Equal '#61 sample: and goes on appending' (@($script:WifiAssociationSamples | ForEach-Object { $_.Moment }) -join ',') 'end,middle'
+
+# The analysis, on fixtures shaped like the envelope.
+function New-AssocInterface($guid, $name, $mac, $ssid, $bssid) { return [pscustomobject]@{ Name = $name; Description = 'Fixture'; Guid = $guid; PhysicalAddress = $mac; Connected = (-not [string]::IsNullOrWhiteSpace($bssid)); Ssid = $ssid; Bssid = $bssid } }
+function New-AssocSample($moment, $stamp, $interfaces, $error = '', $errorText = '') { return [pscustomobject]@{ Moment = $moment; Timestamp = $stamp; Interfaces = @($interfaces); Error = $error; ErrorText = $errorText; Diagnostics = '' } }
+function Get-AssocRows($samples) { $script:TcpRows = New-Object System.Collections.ArrayList; Compare-WifiAssociation -Samples @($samples); return @($script:TcpRows) }
+$assocT0 = Get-Date '2026-09-12 10:00:00'; $assocT1 = $assocT0.AddSeconds(12); $assocT2 = $assocT0.AddSeconds(25)
+$apA = 'ac:b6:87:a6:81:a0'; $apB = '08:26:97:7f:28:91'
+$ifA = { param($bssid, $ssid = 'kevin_5g') New-AssocInterface 'e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb' 'Wi-Fi' '10:f6:0a:db:fc:e5' $ssid $bssid }
+$steady = @((New-AssocSample 'start' $assocT0 (& $ifA $apA)), (New-AssocSample 'middle' $assocT1 (& $ifA $apA)), (New-AssocSample 'end' $assocT2 (& $ifA $apA)))
+$steadyRows = @(Get-AssocRows $steady)
+Assert-Equal '#61 assoc: one interface on one access point is one row' $steadyRows.Count 1
+$steadyRow = $steadyRows[0]
+Assert-Equal '#61 assoc: an Information row in the IT scope, tagged, and not marked (IT rows carry no weight to remove)' ("{0}/{1}/{2}/{3}" -f $steadyRow.Status, $steadyRow.Scope, $steadyRow.Tag, $steadyRow.Weightless) 'INFO/IT/wifi-association/False'
+Assert-Equal '#61 assoc: the message names the access point, the sample count and the seconds between the first and the last' (($steadyRow.Message -match [regex]::Escape($apA)) -and ($steadyRow.Message -match '\b3\b') -and ($steadyRow.Message -match '\b25\b')) True
+Assert-Equal '#61 assoc: the details list every sample with its access point and name the interface GUID once' ("{0}/{1}" -f ([regex]::Matches($steadyRow.Details, [regex]::Escape($apA))).Count, ([regex]::Matches($steadyRow.Details, 'e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb')).Count) '3/1'
+Assert-Equal '#61 assoc: and the first details line is a sample line, not a reason token' ((Get-DetailLineAt $steadyRow 0) -match '[:：]\s*(netsh|exception|none)\s*$') False
+# A roam: the same network name, another access point at the end.
+$roamRow = (Get-AssocRows @((New-AssocSample 'start' $assocT0 (& $ifA $apA)), (New-AssocSample 'middle' $assocT1 (& $ifA $apA)), (New-AssocSample 'end' $assocT2 (& $ifA $apB))))[0]
+Assert-Equal '#61 assoc: a roam names both access points in the message' (($roamRow.Message -match [regex]::Escape($apA)) -and ($roamRow.Message -match [regex]::Escape($apB))) True
+Assert-Equal '#61 assoc: and is not the steady sentence' ($roamRow.Message -eq $steadyRow.Message) False
+# A roam that came back inside the window - visible only because the middle sample caught it - reads as more than one change.
+$returnRow = (Get-AssocRows @((New-AssocSample 'start' $assocT0 (& $ifA $apA)), (New-AssocSample 'middle' $assocT1 (& $ifA $apB)), (New-AssocSample 'end' $assocT2 (& $ifA $apA))))[0]
+Assert-Equal '#61 assoc: A then B then A names both and is neither the steady nor the single-roam sentence' (($returnRow.Message -match [regex]::Escape($apB)) -and ($returnRow.Message -ne $steadyRow.Message) -and ($returnRow.Message -ne $roamRow.Message)) True
+Assert-Equal '#61 assoc: and its message carries the count of changes' ($returnRow.Message -match '\b2\b') True
+# Another network altogether: the SSID changed with the BSSID.
+$networkRow = (Get-AssocRows @((New-AssocSample 'start' $assocT0 (& $ifA $apA 'Office')), (New-AssocSample 'end' $assocT2 (& $ifA $apB 'Guest'))))[0]
+Assert-Equal '#61 assoc: a change of network names both SSIDs' (($networkRow.Message -match 'Office') -and ($networkRow.Message -match 'Guest') -and ($networkRow.Message -ne $roamRow.Message)) True
+# An access point at the start and none at the end: reported as not reported, never as disconnected (backlog #62).
+$droppedRow = (Get-AssocRows @((New-AssocSample 'start' $assocT0 (& $ifA $apA)), (New-AssocSample 'middle' $assocT1 (& $ifA $apA)), (New-AssocSample 'end' $assocT2 (& $ifA ''))))[0]
+Assert-Equal '#61 assoc: a BSSID reported at two of three samples keeps the access point and says how many reported it' (($droppedRow.Message -match [regex]::Escape($apA)) -and ($droppedRow.Message -match '\b2\b') -and ($droppedRow.Message -match '\b3\b') -and ($droppedRow.Message -ne $steadyRow.Message)) True
+Assert-Equal '#61 assoc: and the details carry it twice' ([regex]::Matches($droppedRow.Details, [regex]::Escape($apA))).Count 2
+$noneRow = (Get-AssocRows @((New-AssocSample 'start' $assocT0 (& $ifA '')), (New-AssocSample 'end' $assocT2 (& $ifA ''))))[0]
+Assert-Equal '#61 assoc: no BSSID at any sample is an Information row naming no access point' (("{0}/{1}" -f $noneRow.Status, ($noneRow.Message -match $macShape))) 'INFO/False'
+# The interface absent from the middle sample: disabled or removed at that moment, said in the message and listed in the details.
+$absentRow = (Get-AssocRows @((New-AssocSample 'start' $assocT0 (& $ifA $apA)), (New-AssocSample 'middle' $assocT1 @()), (New-AssocSample 'end' $assocT2 (& $ifA $apA))))[0]
+Assert-Equal '#61 assoc: an interface missing from one sample is one row, its message not the steady one, its details still three sample lines' ("{0}/{1}" -f ($absentRow.Message -ne $steadyRow.Message), ((Get-DetailLineCount $absentRow) -eq (Get-DetailLineCount $steadyRow))) 'True/True'
+# Two interfaces: a row each, naming its own GUID and not the other's.
+$guidUsb = '0b3f7c2e-1111-4a2b-9c3d-000000000002'
+$usb = New-AssocInterface $guidUsb 'Wi-Fi 2' '00:11:22:33:44:66' '' ''
+$twoRows = @(Get-AssocRows @((New-AssocSample 'start' $assocT0 @((& $ifA $apA), $usb)), (New-AssocSample 'end' $assocT2 @((& $ifA $apA), $usb))))
+Assert-Equal '#61 assoc: two interfaces are two rows' $twoRows.Count 2
+Assert-Equal '#61 assoc: each naming its own GUID exactly once and the other not at all' (@($twoRows | Where-Object { (([regex]::Matches($_.Details, $guidShape)).Count -eq 1) }).Count) 2
+# An interface netsh printed no GUID for is keyed and named by its address.
+$noGuidRow = (Get-AssocRows @((New-AssocSample 'start' $assocT0 (New-AssocInterface '' 'Wi-Fi' '10:f6:0a:db:fc:e5' 'kevin_5g' $apA)), (New-AssocSample 'end' $assocT2 (New-AssocInterface '' 'Wi-Fi' '10:f6:0a:db:fc:e5' 'kevin_5g' $apA))))[0]
+Assert-Equal '#61 assoc: without a GUID the row names the adapter address and no GUID' (($noGuidRow.Details -match '10:f6:0a:db:fc:e5') -and ($noGuidRow.Details -notmatch $guidShape)) True
+# Samples that failed: one beside two that worked is named in the details; all of them failing is one aggregate row
+# whose first details line ends with the reason code, like the retry reader's.
+$oneFailedRow = (Get-AssocRows @((New-AssocSample 'start' $assocT0 @() 'exception' 'boom'), (New-AssocSample 'middle' $assocT1 (& $ifA $apA)), (New-AssocSample 'end' $assocT2 (& $ifA $apA))))[0]
+Assert-Equal '#61 assoc: a failed sample beside good ones is named in the details and the row is still measured' (("{0}/{1}" -f $oneFailedRow.Status, ($oneFailedRow.Details -match 'boom'))) 'INFO/True'
+$assocReasonTail = '[:：]\s*(netsh|exception|none)\s*$'
+$allFailedRows = @(Get-AssocRows @((New-AssocSample 'start' $assocT0 @() 'netsh' 'not found'), (New-AssocSample 'end' $assocT2 @() 'netsh' 'not found')))
+Assert-Equal '#61 assoc: every sample failing is one Unable-to-Check row in the IT scope, its first line ending with the reason' ("{0}/{1}/{2}/{3}" -f $allFailedRows.Count, $allFailedRows[0].Status, $allFailedRows[0].Scope, ((Get-DetailLineAt $allFailedRows[0] 0) -match $assocReasonTail)) '1/ERROR/IT/True'
+$exceptionRow = (Get-AssocRows @((New-AssocSample 'start' $assocT0 @() 'exception' 'boom')))[0]
+Assert-Equal '#61 assoc: an exception is the other aggregate reason, with its text' (("{0}/{1}/{2}" -f $exceptionRow.Status, ((Get-DetailLineAt $exceptionRow 0) -match 'exception\s*$'), ($exceptionRow.Details -match 'boom'))) 'ERROR/True/True'
+$wiredRows = @(Get-AssocRows @((New-AssocSample 'start' $assocT0 @()), (New-AssocSample 'middle' $assocT1 @()), (New-AssocSample 'end' $assocT2 @())))
+Assert-Equal '#61 assoc: no interface at any sample is one Information row ending its first line with none, naming no GUID' ("{0}/{1}/{2}/{3}" -f $wiredRows.Count, $wiredRows[0].Status, ((Get-DetailLineAt $wiredRows[0] 0) -match 'none\s*$'), ($wiredRows[0].Details -match $guidShape)) '1/INFO/True/False'
+$noSampleRows = @(Get-AssocRows @())
+Assert-Equal '#61 assoc: no sample at all is one Unable-to-Check row' ("{0}/{1}" -f $noSampleRows.Count, $noSampleRows[0].Status) '1/ERROR'
+$everyAssocRow = @($steadyRow, $roamRow, $returnRow, $networkRow, $droppedRow, $noneRow, $absentRow, $noGuidRow, $oneFailedRow, $allFailedRows[0], $exceptionRow, $wiredRows[0], $noSampleRows[0]) + $twoRows
+Assert-Equal '#61 assoc: every row this analysis writes is in the IT scope and carries the tag' (@($everyAssocRow | Where-Object { $_.Scope -ne 'IT' -or $_.Tag -ne 'wifi-association' }).Count) 0
+Assert-Equal '#61 shape: the per-interface rows never end their first details line with a reason token' (@(@($steadyRow, $roamRow, $returnRow, $networkRow, $droppedRow, $noneRow, $absentRow, $noGuidRow, $oneFailedRow) + $twoRows | Where-Object { (Get-DetailLineAt $_ 0) -match $assocReasonTail }).Count) 0
+
+# The relation between two MAC addresses, which is what the hint is built on.
+Assert-Equal '#61 mac: separators and case are not part of the address' (Get-MacRelation -First '08-26-97-7F-28-91' -Second '08:26:97:7f:28:91') 'identical'
+Assert-Equal '#61 mac: the locally-administered bit alone is near' (Get-MacRelation -First '08:26:97:7f:28:91' -Second '0a:26:97:7f:28:91') 'near-ul'
+Assert-Equal '#61 mac: the last octet alone is near' (Get-MacRelation -First '08:26:97:7f:28:91' -Second '08:26:97:7f:28:92') 'near-last'
+Assert-Equal '#61 mac: the same first three octets is the vendor' (Get-MacRelation -First '08:26:97:7f:28:91' -Second '08:26:97:11:22:33') 'vendor'
+Assert-Equal '#61 mac: the vendor prefix is compared with that bit aside' (Get-MacRelation -First '08:26:97:7f:28:91' -Second '0a:26:97:11:22:33') 'vendor'
+Assert-Equal '#61 mac: that bit and the last octet together are the vendor, not near' (Get-MacRelation -First '08:26:97:7f:28:91' -Second '0a:26:97:7f:28:92') 'vendor'
+Assert-Equal '#61 mac: different prefixes are different' (Get-MacRelation -First '08:26:97:7f:28:91' -Second 'ac:b6:87:a6:81:a0') 'different'
+Assert-Equal '#61 mac: a value that is not an address is invalid, either side' ("{0}/{1}/{2}" -f (Get-MacRelation -First '' -Second 'ac:b6:87:a6:81:a0'), (Get-MacRelation -First '08:26:97:7f:28' -Second 'ac:b6:87:a6:81:a0'), (Get-MacRelation -First 'ac:b6:87:a6:81:a0' -Second '(unknown)')) 'invalid/invalid/invalid'
+
+# The hint itself: the wireless interface whose adapter supplied the gateway, matched by address, against the gateway's.
+$hintAdapters = @([pscustomobject]@{ Name = 'Wi-Fi'; Gateways = @('192.0.2.1'); MacAddress = '10-F6-0A-DB-FC-E5' }, [pscustomobject]@{ Name = 'Ethernet'; Gateways = @('192.0.2.254'); MacAddress = '00-11-22-33-44-55' })
+function Get-HintFor($gatewayMac, $bssid, $gateway = '192.0.2.1') { return (Get-AccessPointGatewayText -Gateway $gateway -GatewayMac $gatewayMac -PrimaryAdapters $hintAdapters -Samples @((New-AssocSample 'middle' $assocT1 (& $ifA $bssid)))) }
+$hintTexts = @{}
+foreach ($pair in @(@('identical', $apA), @('near-ul', 'ae:b6:87:a6:81:a0'), @('near-last', 'ac:b6:87:a6:81:a1'), @('vendor', 'ac:b6:87:11:22:33'), @('different', $apB))) { $hintTexts[$pair[0]] = Get-HintFor $pair[1] $apA }
+Assert-Equal '#61 hint: each of the five relations gives a sentence naming the BSSID' (@($hintTexts.Values | Where-Object { [string]::IsNullOrWhiteSpace($_) -or ($_ -notmatch [regex]::Escape($apA)) }).Count) 0
+Assert-Equal '#61 hint: and the five sentences are five' (@($hintTexts.Values | Sort-Object -Unique).Count) 5
+Assert-Equal '#61 hint: a wireless interface that reported no BSSID gets its own sentence, naming no address' ((-not [string]::IsNullOrWhiteSpace((Get-HintFor $apA ''))) -and ((Get-HintFor $apA '') -notmatch $macShape)) True
+Assert-Equal '#61 hint: a gateway supplied by a wired adapter has no line' (Get-HintFor $apA $apA '192.0.2.254') ''
+Assert-Equal '#61 hint: an unresolved or all-zero gateway address has no line' ("{0}/{1}" -f (Get-HintFor '' $apA), (Get-HintFor '00-00-00-00-00-00' $apA)) '/'
+Assert-Equal '#61 hint: no readable sample has no line' (Get-AccessPointGatewayText -Gateway '192.0.2.1' -GatewayMac $apA -PrimaryAdapters $hintAdapters -Samples @((New-AssocSample 'start' $assocT0 @() 'netsh' 'not found'))) ''
+Assert-Equal '#61 hint: the latest readable sample is the one compared' ((Get-AccessPointGatewayText -Gateway '192.0.2.1' -GatewayMac $apA -PrimaryAdapters $hintAdapters -Samples @((New-AssocSample 'start' $assocT0 (& $ifA $apB)), (New-AssocSample 'end' $assocT2 (& $ifA $apA)), (New-AssocSample 'late' $assocT2 @() 'exception' 'boom'))) -eq $hintTexts['identical']) True
+Assert-Equal '#61 hint: the gateway row calls for it' ((Get-FunctionBody 'Add-GatewayNeighborResult') -match 'Get-AccessPointGatewayEvidence -Gateway \(\[string\]\$gateway\) -GatewayMac \$mac') True
+
+# The spread: the sentence on the numbers it is given, and the row that carries it.
+function New-SpreadFixture($received, $spread) { $m = New-PingFixture ([math]::Max(1, $received)) $received 5; if ($received -eq 0) { $m.Received = 0; $m.Sent = 4; $m.Lost = 4; $m.LossPercent = 100 }; if ($null -ne $spread) { $m | Add-Member -NotePropertyName SpreadMs -NotePropertyValue $spread }; return $m }
+Assert-Equal '#61 spread: nothing replied, no sentence' (Get-LatencySpreadText -Measurement (New-SpreadFixture 0 $null)) ''
+Assert-Equal '#61 spread: one reply has no sentence either - a spread needs two' (Get-LatencySpreadText -Measurement (New-SpreadFixture 1 $null)) ''
+$fourSpread = Get-LatencySpreadText -Measurement (New-SpreadFixture 4 0.5)
+Assert-Equal '#61 spread: four replies name the figure, the count and the minimum sample of nine' (($fourSpread -match '\b0\.5\b') -and ($fourSpread -match '\b4\b') -and ($fourSpread -match '\b9\b')) True
+$thirtySpread = Get-LatencySpreadText -Measurement (New-SpreadFixture 30 0.4)
+Assert-Equal '#61 spread: thirty replies name the figure and the count, and the sentence is the other one' (($thirtySpread -match '\b0\.4\b') -and ($thirtySpread -match '\b30\b') -and ($thirtySpread -match '\b9\b') -and (($thirtySpread -replace '[\d.]+', '#') -ne ($fourSpread -replace '[\d.]+', '#'))) True
+Assert-Equal '#61 spread: nine replies is the minimum itself and takes the longer-sample sentence' ((((Get-LatencySpreadText -Measurement (New-SpreadFixture 9 1.2)) -replace '[\d.]+', '#')) -eq ($thirtySpread -replace '[\d.]+', '#')) True
+Assert-Equal '#61 spread: eight takes the shorter-sample one' ((((Get-LatencySpreadText -Measurement (New-SpreadFixture 8 1.2)) -replace '[\d.]+', '#')) -eq ($fourSpread -replace '[\d.]+', '#')) True
+Assert-Equal '#61 spread: a measurement of the old shape, with no spread field, has no sentence' (Get-LatencySpreadText -Measurement (New-PingFixture 4 4 5)) ''
+$script:TcpRows = New-Object System.Collections.ArrayList
+$plainRow = Add-PingTargetResult -Name 'Internet' -Target '203.0.113.9' -ConfiguredAddress '203.0.113.9' -Required $false -Measurement (New-PingFixture 4 4 5) -RouteBefore $pingRoute.Selection -RouteAfter $pingRoute -TargetIsAddress $true -TimeoutMs 1200
+$spreadRow = Add-PingTargetResult -Name 'Internet' -Target '203.0.113.9' -ConfiguredAddress '203.0.113.9' -Required $false -Measurement (New-SpreadFixture 4 2.5) -RouteBefore $pingRoute.Selection -RouteAfter $pingRoute -TargetIsAddress $true -TimeoutMs 1200
+Assert-Equal '#61 spread: the row carries the sentence as one details line, with the figure' ("{0}/{1}" -f ((Get-DetailLineCount $spreadRow) - (Get-DetailLineCount $plainRow)), ($spreadRow.Details -match '\b2\.5\b')) '1/True'
+Assert-Equal '#61 spread: and it changes neither the status nor the message' ("{0}/{1}" -f ($spreadRow.Status -eq $plainRow.Status), ($spreadRow.Message -eq $plainRow.Message)) 'True/True'
+$pingBody = Get-FunctionBody 'Invoke-PingMeasurement'
+Assert-Equal '#61 spread: the measurement computes the sample standard deviation over two or more replies, n - 1, rounded to a tenth' (($pingBody -match 'if \(\$received -ge 2\) \{') -and ($pingBody -match '\[math\]::Round\(\[math\]::Sqrt\(\$squares / \(\$received - 1\)\), 1\)') -and ($pingBody -match 'SpreadMs\s+= \$spread')) True
+
+# The run: the two extra samples and the analysis are IT-scoped steps at 8, 91 and 94, unmarked - an IT step's error row
+# is outside the verdict already - and the radio row supplies the middle sample; the samples are reset with the results.
+$sampleSteps = @($stepCalls | Where-Object { $_.Extent.Text -match 'Add-WifiAssociationSample -Moment' })
+Assert-Equal '#61 run: two sampling steps, at 8 and 91, both in the IT scope and neither marked' ("{0}/{1}/{2}" -f $sampleSteps.Count, ((@($sampleSteps | ForEach-Object { Get-StepProgress $_ } | Sort-Object) -join ',')), (@($sampleSteps | Where-Object { (Get-StepParameter $_ 'Scope').Count -eq 1 -and (Get-StepParameter $_ 'Weightless').Count -eq 0 }).Count)) '2/8,91/2'
+$compareSteps = @($stepCalls | Where-Object { $_.Extent.Text -match 'Compare-WifiAssociation -Samples' })
+Assert-Equal '#61 run: one analysis step, at 94, in the IT scope' ("{0}/{1}/{2}" -f $compareSteps.Count, (Get-StepProgress $compareSteps[0]), ((Get-StepParameter $compareSteps[0] 'Scope').Count)) '1/94/1'
+Assert-Equal '#61 run: the steps share the radio row''s switch' ((Get-FunctionBody 'Run-AllChecks') -match '\$wifiAssociationEnabled = Test-IsTrueFlag \$script:Config\.Checks\.WifiRf') True
+Assert-Equal '#61 run: the samples are reset with the results' ((Get-FunctionBody 'Run-AllChecks') -match '\$script:WifiAssociationSamples = New-Object System\.Collections\.ArrayList') True
+Assert-Equal '#61 run: the radio row takes the middle sample from the same read' ((Get-FunctionBody 'Add-WifiRfResult') -match 'Add-WifiAssociationSample -Moment "middle"') True
+
+# PR #54, round 1: a failed sample stays in the totals; the identity line names the samples the interface was listed at;
+# the hint pairs the neighbour entry with the adapter it was learned on.
+Assert-Equal '#61 assoc r1: a failed sample beside two good ones keeps three in the total and two in the count' (($oneFailedRow.Message -match '\b3\b') -and ($oneFailedRow.Message -match '\b2\b') -and ($oneFailedRow.Message -ne $steadyRow.Message)) True
+Assert-Equal '#61 assoc r1: and its details still list three samples' (Get-DetailLineCount $oneFailedRow) (Get-DetailLineCount $steadyRow)
+Assert-Equal '#61 assoc r1: the identity line names the samples the interface was listed at' (($steadyRow.Details -match 'samples=start,middle,end') -and ($absentRow.Details -match 'samples=start,end') -and ($oneFailedRow.Details -match 'samples=middle,end')) True
+$middleOnlyRow = (Get-AssocRows @((New-AssocSample 'start' $assocT0 @()), (New-AssocSample 'middle' $assocT1 (& $ifA $apA)), (New-AssocSample 'end' $assocT2 @())))[0]
+Assert-Equal '#61 assoc r1: an interface present at the middle sample only is one row whose token names the middle alone' ("{0}/{1}" -f $middleOnlyRow.Status, ($middleOnlyRow.Details -match 'samples=middle\s*$|samples=middle\r?$|samples=middle\r?\n')) 'INFO/True'
+Assert-Equal '#61 assoc r1: the token is on the GUID line' (([regex]::Match($middleOnlyRow.Details, '(?m)^[^\r\n]*e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb[^\r\n]*')).Value -match 'samples=middle') True
+$dualAdapters = @([pscustomobject]@{ Name = 'Ethernet'; InterfaceIndex = 5; Gateways = @('192.0.2.1'); MacAddress = '00-11-22-33-44-55' }, [pscustomobject]@{ Name = 'Wi-Fi'; InterfaceIndex = 12; Gateways = @('192.0.2.1'); MacAddress = '10-F6-0A-DB-FC-E5' })
+$dualSample = @((New-AssocSample 'middle' $assocT1 (& $ifA $apA)))
+Assert-Equal '#61 hint r1: an entry learned on the wired adapter of a dual-homed machine leaves no line' (Get-AccessPointGatewayText -Gateway '192.0.2.1' -GatewayMac $apA -PrimaryAdapters $dualAdapters -Samples $dualSample -InterfaceIndex 5) ''
+Assert-Equal '#61 hint r1: the same entry learned on the wireless adapter is compared' ((Get-AccessPointGatewayText -Gateway '192.0.2.1' -GatewayMac $apA -PrimaryAdapters $dualAdapters -Samples $dualSample -InterfaceIndex 12) -eq $hintTexts['identical']) True
+Assert-Equal '#61 hint r1: no interface on the entry and two adapters supplying the gateway: nothing is compared' (Get-AccessPointGatewayText -Gateway '192.0.2.1' -GatewayMac $apA -PrimaryAdapters $dualAdapters -Samples $dualSample -InterfaceIndex 0) ''
+Assert-Equal '#61 hint r1: no interface on the entry and one adapter: compared as before' ((Get-AccessPointGatewayText -Gateway '192.0.2.1' -GatewayMac $apA -PrimaryAdapters $hintAdapters -Samples $dualSample -InterfaceIndex 0) -eq $hintTexts['identical']) True
+Assert-Equal '#61 hint r1: an interface index no primary adapter carries leaves no line' (Get-AccessPointGatewayText -Gateway '192.0.2.1' -GatewayMac $apA -PrimaryAdapters $dualAdapters -Samples $dualSample -InterfaceIndex 99) ''
+$gatewayBody = Get-FunctionBody 'Add-GatewayNeighborResult'
+Assert-Equal '#61 hint r1: the gateway row reads the entry''s interface index and hands it to the hint' (($gatewayBody -match '\$neighborIfIndex = ConvertTo-IntSafe \(Get-PropertyValue \$neighbor "InterfaceIndex" 0\) 0') -and ($gatewayBody -match '-Samples @\(\$script:WifiAssociationSamples\) -InterfaceIndex \$neighborIfIndex')) True
+
+# PR #54, round 2: the same address under another network name is a renamed access point; the identity line's GUID is the one
+# the samples token follows, whatever the network is called; and the gateway hint is compared again after the last sample.
+$renamedRow = (Get-AssocRows @((New-AssocSample 'start' $assocT0 (& $ifA $apA 'Office')), (New-AssocSample 'middle' $assocT1 (& $ifA $apA 'Office')), (New-AssocSample 'end' $assocT2 (& $ifA $apA 'Office-5G'))))[0]
+Assert-Equal '#61 assoc r2: the same BSSID under two network names names both and is not the steady sentence' (($renamedRow.Message -match 'Office-5G') -and ($renamedRow.Message -match 'Office\b') -and ($renamedRow.Message -match [regex]::Escape($apA)) -and (($renamedRow.Message -replace '[\d.]+', '#') -ne ($steadyRow.Message -replace '[\d.]+', '#'))) True
+$uuidSsidRow = (Get-AssocRows @((New-AssocSample 'start' $assocT0 (& $ifA $apA '5d1e2f3a-2222-4b3c-8d4e-000000000003')), (New-AssocSample 'end' $assocT2 (& $ifA $apA '5d1e2f3a-2222-4b3c-8d4e-000000000003'))))[0]
+$identityGuid = [regex]::Match($uuidSsidRow.Details, '([0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})[;；]\s*samples=')
+Assert-Equal '#61 assoc r2: with a UUID-shaped network name the GUID the samples token follows is still the interface' ("{0}/{1}" -f $identityGuid.Success, $identityGuid.Groups[1].Value) 'True/e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb'
+Assert-Equal '#61 assoc r2: while the first GUID-shaped value in the details is the network, which is the trap' (([regex]::Match($uuidSsidRow.Details, '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}')).Value) '5d1e2f3a-2222-4b3c-8d4e-000000000003'
+# The hint refreshed after the last sample, on a row shaped like the gateway-neighbour row's details.
+$script:PrimaryAdapters = $hintAdapters
+# The method line carries each language's own prefix, and the refresh finds it by that prefix - so the fixture takes the prefix from the script under test.
+$methodPrefix = $(if ((Get-FunctionBody 'Update-AccessPointGatewayHints') -match '檢測方式') { '檢測方式：' } else { 'Method: ' })
+function New-HintRow($hint) { $rowLines = @('Gateway 192.0.2.1: neighbor state Reachable', $hint, ($methodPrefix + 'Get-NetNeighbor -AddressFamily IPv4 (fallback: arp -a)'), 'Manual check: arp -a') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }; return [pscustomobject]@{ Category = 'IT'; Check = 'Gateway neighbor (ARP)'; Details = ($rowLines -join [Environment]::NewLine) } }
+function Get-RefreshedRow($hint, $endSample) { $script:GatewayNeighborRows = New-Object System.Collections.ArrayList; $row = New-HintRow $hint; [void]$script:GatewayNeighborRows.Add([pscustomobject]@{ Row = $row; Gateway = '192.0.2.1'; Mac = $apA; InterfaceIndex = 0; Hint = $hint; Bssid = $(if ($hint) { $apA } else { '' }); Relation = $(if ($hint) { 'identical' } else { '' }) }); Update-AccessPointGatewayHints -Samples @((New-AssocSample 'start' $assocT0 (& $ifA $apA)), (New-AssocSample 'middle' $assocT1 (& $ifA $apA)), $endSample); return $row }
+$sameHint = $hintTexts['identical']
+$unchanged = Get-RefreshedRow $sameHint (New-AssocSample 'end' $assocT2 (& $ifA $apA))
+Assert-Equal '#61 hint r2: the same access point at the end leaves the row untouched' ($unchanged.Details -eq (New-HintRow $sameHint).Details) True
+$moved = Get-RefreshedRow $sameHint (New-AssocSample 'end' $assocT2 (& $ifA $apB))
+$movedLines = @($moved.Details -split "`r`n|`n")
+Assert-Equal '#61 hint r2: a roam before the last sample adds one line after the original, which stays as written' ("{0}/{1}/{2}" -f $movedLines.Count, ($movedLines[1] -eq $sameHint), ($movedLines[2] -match [regex]::Escape($apB))) '5/True/True'
+Assert-Equal '#61 hint r2: and the added line carries the new comparison without the sentence prefix twice' (([regex]::Matches($movedLines[2], [regex]::Escape($apB))).Count) 1
+$gone = Get-RefreshedRow $sameHint (New-AssocSample 'end' $assocT2 (& $ifA ''))
+$goneLines = @($gone.Details -split "`r`n|`n")
+Assert-Equal '#61 hint r2: no BSSID at the end adds a line that names no address and keeps the original' ("{0}/{1}/{2}" -f $goneLines.Count, ($goneLines[1] -eq $sameHint), ($goneLines[2] -match $macShape)) '5/True/False'
+$late = Get-RefreshedRow '' (New-AssocSample 'end' $assocT2 (& $ifA $apA))
+$lateLines = @($late.Details -split "`r`n|`n")
+Assert-Equal '#61 hint r2: no line at the neighbour read and an access point at the end: the line goes before the method line' ("{0}/{1}/{2}" -f $lateLines.Count, ($lateLines[1] -match [regex]::Escape($apA)), ($lateLines[2].StartsWith($methodPrefix))) '4/True/True'
+Assert-Equal '#61 hint r2: the analysis step refreshes the hints after the association rows' ((@($stepCalls | Where-Object { $_.Extent.Text -match 'Compare-WifiAssociation -Samples' })[0]).Extent.Text -match '(?s)Compare-WifiAssociation -Samples @\(\$script:WifiAssociationSamples\)\s*Update-AccessPointGatewayHints -Samples @\(\$script:WifiAssociationSamples\)') True
+Assert-Equal '#61 hint r2: the gateway row keeps what the refresh needs, and the run resets the list' ((($gatewayBody = Get-FunctionBody 'Add-GatewayNeighborResult') -match '\$script:GatewayNeighborRows\.Add\(\[pscustomobject\]@\{ Row = \$neighborRow; Gateway = \[string\]\$gateway; Mac = \[string\]\$mac; InterfaceIndex = \$neighborIfIndex; Hint = \[string\]\$accessPointLine; ') -and ((Get-FunctionBody 'Run-AllChecks') -match '\$script:GatewayNeighborRows = New-Object System\.Collections\.ArrayList')) True
+
+# PR #54, round 3: the BSSID and the SSID by their labels, network names compared case-sensitively, and the hint refresh
+# comparing evidence - the address and the relation - rather than the sentence.
+$macNamed = @($win11 | ForEach-Object { $_ -replace '^    SSID                   : kevin_5g$', '    SSID                   : aa:bb:cc:dd:ee:ff' })
+$w = @(ConvertFrom-NetshWlanOutput -Lines $macNamed)
+Assert-Equal '#61 parser r3: a network named like a MAC address is the SSID, and the labelled AP BSSID is the access point' ("{0}/{1}/{2}/{3}" -f $w[0].Connected, $w[0].Ssid, $w[0].Bssid, $w[0].Channel) 'True/aa:bb:cc:dd:ee:ff/ac:b6:87:a6:81:a0/149'
+Assert-Equal '#61 parser r3: the Windows 10 label BSSID is read the same way' ("{0}/{1}" -f (@(ConvertFrom-NetshWlanOutput -Lines $win10zh))[0].Ssid, (@(ConvertFrom-NetshWlanOutput -Lines $win10zh))[0].Bssid) 'Office-2G/5c:e2:8c:11:22:33'
+$noLabels = @($win10zh | ForEach-Object { $_ -replace '^    SSID  ', '    網路名稱' -replace '^    BSSID ', '    基地台' })
+$w = @(ConvertFrom-NetshWlanOutput -Lines $noLabels)
+Assert-Equal '#61 parser r3: without the SSID and BSSID labels the shape rules still yield both' ("{0}/{1}/{2}" -f $w[0].Connected, $w[0].Ssid, $w[0].Bssid) 'True/Office-2G/5c:e2:8c:11:22:33'
+$caseRow = (Get-AssocRows @((New-AssocSample 'start' $assocT0 (& $ifA $apA 'Office')), (New-AssocSample 'end' $assocT2 (& $ifA $apA 'OFFICE'))))[0]
+Assert-Equal '#61 assoc r3: network names that differ only by case are both listed, in order' (($caseRow.Message -cmatch 'Office\b') -and ($caseRow.Message -cmatch 'OFFICE') -and ($caseRow.Message.IndexOf('Office') -lt $caseRow.Message.IndexOf('OFFICE'))) True
+$ev = Get-AccessPointGatewayEvidence -Gateway '192.0.2.1' -GatewayMac $apA -PrimaryAdapters $hintAdapters -Samples @((New-AssocSample 'middle' $assocT1 (& $ifA $apA)))
+Assert-Equal '#61 hint r3: the evidence carries the address, the relation, the interface and the sentence' ("{0}/{1}/{2}/{3}" -f $ev.Bssid, $ev.Relation, $ev.Interface, ($ev.Text -eq $hintTexts['identical'])) ("{0}/identical/Wi-Fi/True" -f $apA)
+$evNone = Get-AccessPointGatewayEvidence -Gateway '192.0.2.1' -GatewayMac $apA -PrimaryAdapters $hintAdapters -Samples @((New-AssocSample 'middle' $assocT1 (& $ifA '')))
+$evSilent = Get-AccessPointGatewayEvidence -Gateway '192.0.2.254' -GatewayMac $apA -PrimaryAdapters $hintAdapters -Samples @((New-AssocSample 'middle' $assocT1 (& $ifA $apA)))
+Assert-Equal '#61 hint r3: no BSSID is the nobssid relation with its sentence; a wired gateway is empty evidence' ("{0}/{1}/{2}/{3}" -f $evNone.Relation, (-not [string]::IsNullOrWhiteSpace($evNone.Text)), $evSilent.Relation, $evSilent.Text) 'nobssid/True//'
+Assert-Equal '#61 hint r3: the text function is the evidence''s sentence' ((Get-AccessPointGatewayText -Gateway '192.0.2.1' -GatewayMac $apA -PrimaryAdapters $hintAdapters -Samples @((New-AssocSample 'middle' $assocT1 (& $ifA $apA)))) -eq $ev.Text) True
+# The refresh on evidence: a renamed interface with the same access point adds nothing; a new address still does.
+function Get-RefreshedRow3($evidence, $endSample) { $script:GatewayNeighborRows = New-Object System.Collections.ArrayList; $row = New-HintRow ([string]$evidence.Text); [void]$script:GatewayNeighborRows.Add([pscustomobject]@{ Row = $row; Gateway = '192.0.2.1'; Mac = $apA; InterfaceIndex = 0; Hint = [string]$evidence.Text; Bssid = [string]$evidence.Bssid; Relation = [string]$evidence.Relation }); Update-AccessPointGatewayHints -Samples @((New-AssocSample 'start' $assocT0 (& $ifA $apA)), (New-AssocSample 'middle' $assocT1 (& $ifA $apA)), $endSample); return $row }
+$renamedIf = Get-RefreshedRow3 $ev (New-AssocSample 'end' $assocT2 (New-AssocInterface 'e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb' 'WLAN' '10:f6:0a:db:fc:e5' 'kevin_5g' $apA))
+Assert-Equal '#61 hint r3: an interface renamed during the run, same access point, leaves the row untouched' ($renamedIf.Details -eq (New-HintRow $ev.Text).Details) True
+$movedIf = Get-RefreshedRow3 $ev (New-AssocSample 'end' $assocT2 (New-AssocInterface 'e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb' 'WLAN' '10:f6:0a:db:fc:e5' 'kevin_5g' $apB))
+Assert-Equal '#61 hint r3: a renamed interface on another access point still gets the line' ((@($movedIf.Details -split "`r`n|`n")).Count -eq 5 -and ($movedIf.Details -match [regex]::Escape($apB))) True
+Assert-Equal '#61 hint r3: the gateway row keeps the address and the relation beside the sentence' ((Get-FunctionBody 'Add-GatewayNeighborResult') -match 'Hint = \[string\]\$accessPointLine; Bssid = \[string\]\$accessPointEvidence\.Bssid; Relation = \[string\]\$accessPointEvidence\.Relation \}\)') True
+Assert-Equal '#61 hint r3: and the refresh compares them, not the sentence' ((Get-FunctionBody 'Update-AccessPointGatewayHints') -match '\$freshEvidence\.Bssid -eq \[string\]\(Get-PropertyValue \$entry "Bssid" ""\)\) -and \(\[string\]\$freshEvidence\.Relation -eq') True
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

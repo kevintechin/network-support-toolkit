@@ -704,16 +704,17 @@ function Test-ResultSet {
     # The IT diagnostics to expect come from the configuration and the launch switches (-NoWifi / -NoTraceroute as
     # Expect['NoWifi'] / Expect['NoTraceroute']), never from the report under test; the report's own ChecksEnabled must
     # agree with them.
-    $itTags = [ordered]@{ 'wifi' = (Test-TrueFlag $Config.Checks.WifiRf); 'routes' = (Test-TrueFlag $Config.Checks.RouteTable); 'gateway-neighbor' = (Test-TrueFlag $Config.Checks.GatewayNeighbor); 'proxy' = (Test-TrueFlag $Config.Checks.ProxySettings); 'traceroute' = (Test-TrueFlag $Config.Checks.Traceroute); 'drivers' = (Test-TrueFlag $Config.Checks.DriverInfo) }
-    if ($Expect['NoWifi'] -eq $true) { $itTags['wifi'] = $false }
+    $itTags = [ordered]@{ 'wifi' = (Test-TrueFlag $Config.Checks.WifiRf); 'wifi-association' = (Test-TrueFlag $Config.Checks.WifiRf); 'routes' = (Test-TrueFlag $Config.Checks.RouteTable); 'gateway-neighbor' = (Test-TrueFlag $Config.Checks.GatewayNeighbor); 'proxy' = (Test-TrueFlag $Config.Checks.ProxySettings); 'traceroute' = (Test-TrueFlag $Config.Checks.Traceroute); 'drivers' = (Test-TrueFlag $Config.Checks.DriverInfo) }
+    if ($Expect['NoWifi'] -eq $true) { $itTags['wifi'] = $false; $itTags['wifi-association'] = $false }
     if ($Expect['NoTraceroute'] -eq $true) { $itTags['traceroute'] = $false }
-    $reported = @{ 'wifi' = $o.ChecksEnabled.WifiRf; 'routes' = $o.ChecksEnabled.RouteTable; 'gateway-neighbor' = $o.ChecksEnabled.GatewayNeighbor; 'proxy' = $o.ChecksEnabled.ProxySettings; 'traceroute' = $o.ChecksEnabled.Traceroute; 'drivers' = $o.ChecksEnabled.DriverInfo }
+    $reported = @{ 'wifi' = $o.ChecksEnabled.WifiRf; 'wifi-association' = $o.ChecksEnabled.WifiRf; 'routes' = $o.ChecksEnabled.RouteTable; 'gateway-neighbor' = $o.ChecksEnabled.GatewayNeighbor; 'proxy' = $o.ChecksEnabled.ProxySettings; 'traceroute' = $o.ChecksEnabled.Traceroute; 'drivers' = $o.ChecksEnabled.DriverInfo }
     if ([bool]$o.ChecksEnabled.WifiRetryCounters -ne (Test-TrueFlag $Config.Checks.WifiRetryCounters)) { $bad += ('ChecksEnabled for WifiRetryCounters reported as {0}, expected {1} from the configuration' -f $o.ChecksEnabled.WifiRetryCounters, (Test-TrueFlag $Config.Checks.WifiRetryCounters)) }
     foreach ($k in @($itTags.Keys)) {
         if ([bool]$reported[$k] -ne [bool]$itTags[$k]) { $bad += ('ChecksEnabled for {0} reported as {1}, expected {2} from the configuration and the switches' -f $k, $reported[$k], $itTags[$k]) }
-        # One row per enabled diagnostic; the gateway neighbour is looked up once per resolved gateway and the Wi-Fi radio
-        # reported once per connected wireless interface (one row each without).
-        $want[$k] = $(if (-not $itTags[$k]) { 0 } elseif ($k -eq 'gateway-neighbor') { [math]::Max(1, $gateways.Count) } elseif ($k -eq 'wifi') { [math]::Max(1, [int]$(if ($null -eq $Machine.WifiInterfaces) { 0 } else { $Machine.WifiInterfaces })) } else { 1 })
+        # One row per enabled diagnostic; the gateway neighbour is looked up once per resolved gateway, the Wi-Fi radio
+        # reported once per connected wireless interface, and the Wi-Fi association once per wireless interface netsh
+        # listed at either reading (backlog #61's other half; the union, as for the retry rows) - one row each without.
+        $want[$k] = $(if (-not $itTags[$k]) { 0 } elseif ($k -eq 'gateway-neighbor') { [math]::Max(1, $gateways.Count) } elseif ($k -eq 'wifi') { [math]::Max(1, [int]$(if ($null -eq $Machine.WifiInterfaces) { 0 } else { $Machine.WifiInterfaces })) } elseif ($k -eq 'wifi-association') { [math]::Max(1, $wlanUnion) } else { 1 })
     }
     $rows = @($Report.Results)
     $byTag = @{}
@@ -755,6 +756,62 @@ function Test-ResultSet {
             $m = [regex]::Match([string]$r.Details, '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}')
             if ($m.Success -and ($unionIds -notcontains $m.Value.ToLowerInvariant())) { $bad += ('wifi-retry: a row names interface {0}, which neither reading listed' -f $m.Value) }
         }
+    }
+    # The Wi-Fi association rows (backlog #61's other half) follow the retry rows' shape, one switch over: one row per
+    # wireless interface netsh listed at either reading, each naming its GUID once; or one Information row saying no
+    # interface was listed; or, where every sample failed - netsh missing, or the read threw - one aggregate
+    # Unable-to-Check row whose first details line ends with the reason code (netsh, exception), which a per-interface
+    # row's first line - a sample line - never does. They ride the radio row's switch (Checks.WifiRf, -NoWifi).
+    $assocRows = @($rows | Where-Object { $_.Tag -eq 'wifi-association' })
+    $aggregateAssocFailure = $false
+    if ($assocRows.Count -eq 1 -and [string]$assocRows[0].Status -eq 'ERROR') {
+        $firstLine = [string](@(([string]$assocRows[0].Details) -split "`r`n|`n")[0])
+        $aggregateAssocFailure = ($firstLine -match '[:：]\s*(netsh|exception|none)\s*$')
+    }
+    if ([int]$want['wifi-association'] -gt 1 -and $aggregateAssocFailure) { $want['wifi-association'] = 1 }
+    if (-not $aggregateAssocFailure -and $null -ne $Machine.WlanInterfaceIds -and [bool]$itTags['wifi-association']) {
+        $assocIds = @(@($Machine.WlanInterfaceIds) + $wlanAfterIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).ToLowerInvariant() } | Sort-Object -Unique)
+        # The GUID is read off the identity line only - the GUID that the samples token follows (PR #54, round 2): a
+        # network named like a UUID is printed in the sample lines above it, and an unanchored match would have read the
+        # network as the interface and refused a valid report. A per-interface row without the token is a tool regression
+        # and is refused as such; the aggregate rows (netsh, exception, none) carry neither a GUID nor the token.
+        # The token's grammar (round 6): one or more of the three sample names, comma-separated, ending the line - a regression
+        # that lost the listed moments would leave an empty token or a made-up name, and a match that stopped at 'samples='
+        # would have passed it as a known or transient interface. An ordered subset (round 7): each moment is sampled once,
+        # in that order, so a repeated or reordered name is a shape no run produces.
+        $assocToken = 'samples=(start(,middle)?(,end)?|middle(,end)?|end)(?=\r|\n|$)'
+        $assocGuidOnIdentity = '([0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})[;；]\s*' + $assocToken
+        foreach ($r in $assocRows) {
+            $firstLine = [string](@(([string]$r.Details) -split "`r`n|`n")[0])
+            if ($firstLine -match '[:：]\s*(netsh|exception|none)\s*$') { continue }
+            if (([string]$r.Details) -notmatch $assocToken) { $bad += ('wifi-association: a per-interface row carries no valid samples token ({0})' -f $r.Message) }
+        }
+        foreach ($id in $assocIds) {
+            $n = @($assocRows | Where-Object { $m = [regex]::Match([string]$_.Details, $assocGuidOnIdentity); $m.Success -and ($m.Groups[1].Value.ToLowerInvariant() -eq $id) }).Count
+            if ($n -ne 1) { $bad += ('wifi-association: interface {0} has {1} row(s), expected 1' -f $id, $n) }
+        }
+        # An interface the tool sampled but neither of these two readings listed has a legitimate row (PR #54, rounds 1 and
+        # 4): the readings are taken before the process starts and after it exits, so an adapter enabled after the first
+        # and removed before the second can be present at any of the run's three samples - the start and the end as much as
+        # the middle, which round 1 alone had allowed. Every per-interface row names the samples its interface was listed
+        # at as a language-neutral token, samples=start,middle,end, and a row naming a GUID outside the union with that
+        # token is such a transient interface: one more expected row. What this oracle cannot see is what the samples saw
+        # except through the rows, so a fabricated row with a token would pass here - the same approximation the retry
+        # rows' union already accepts, one step looser - while the per-interface count above still holds every interface
+        # the readings did list to exactly one row, a row without the token is refused above as a tool regression, and a
+        # transient identity is held to one row as well (round 5): two rows for the same unknown GUID are a duplication,
+        # not two interfaces, and the report itself is enough to see that.
+        $transientSeen = @{}
+        foreach ($r in $assocRows) {
+            $m = [regex]::Match([string]$r.Details, $assocGuidOnIdentity)
+            if (-not $m.Success -or ($assocIds -contains $m.Groups[1].Value.ToLowerInvariant())) { continue }
+            $id = $m.Groups[1].Value.ToLowerInvariant()
+            if (-not $transientSeen.ContainsKey($id)) { $transientSeen[$id] = 0 }
+            $transientSeen[$id]++
+        }
+        foreach ($id in @($transientSeen.Keys)) { if ($transientSeen[$id] -ne 1) { $bad += ('wifi-association: transient interface {0} has {1} row(s), expected 1' -f $id, $transientSeen[$id]) } }
+        $transientAssoc = @($transientSeen.Keys).Count
+        if ($transientAssoc -gt 0) { $want['wifi-association'] = [math]::Max(1, $wlanUnion + $transientAssoc) }
     }
     foreach ($k in @($want.Keys)) {
         $have = $(if ($byTag.ContainsKey($k)) { $byTag[$k] } else { 0 })

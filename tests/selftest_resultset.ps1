@@ -46,7 +46,7 @@ function New-Fixture {
     $template = $r.Results[0]
     # Environment-dependent rows are dropped and rebuilt, step-error rows included: the fixture's facts declare every
     # collector healthy, whatever the live machine had to say.
-    $rows = @($r.Results | Where-Object { $_.Tag -notin @('adapter', 'adapter-errors', 'gateway-config', 'dns-config', 'ping-gateway', 'tcp-retransmissions', 'data-source', 'step-error', 'wifi-retry', 'tcp') })
+    $rows = @($r.Results | Where-Object { $_.Tag -notin @('adapter', 'adapter-errors', 'gateway-config', 'dns-config', 'ping-gateway', 'tcp-retransmissions', 'data-source', 'step-error', 'wifi-retry', 'wifi-association', 'tcp') })
     foreach ($x in $rows) { if ($x.Tag -eq 'adapters') { $x.Status = 'PASS' } }
     foreach ($i in 1..3) { $rows += New-Row $template 'adapter' "Adapter: fixture $i" 'PASS' }
     $rows += New-Row $template 'gateway-config' 'Default Gateway' 'PASS'
@@ -59,6 +59,10 @@ function New-Fixture {
     # rebuilt here for the fixture's one wireless interface, whose GUID the synthetic facts declare.
     $retry = New-Row $template 'wifi-retry' 'Wireless retries' 'INFO'; $retry.Weightless = $true; $retry.Details = 'Connection state: connected at the start, connected at the end.' + [Environment]::NewLine + 'Interface GUID: e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb'
     $rows += $retry
+    # The live wifi-association row names the live machine's interface GUID as well (backlog #61's other half): dropped
+    # above and rebuilt for the fixture's one wireless interface, IT-scoped, its first details line a sample line.
+    $assoc = New-Row $template 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assoc.Details = 'Sample 1 (before the first measurement, 10:00:00): SSID fixture, BSSID ac:b6:87:a6:81:a0' + [Environment]::NewLine + 'Interface GUID: e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb; samples=start,middle,end'
+    $rows += $assoc
     # The live tcp row is the shipped target's real connection, which the machine running this may or may not have
     # made (backlog #52): it is dropped above and rebuilt as a passed row carrying the connection sample's RTO line, so
     # that the tampered variant below is the same case on every machine.
@@ -68,6 +72,11 @@ function New-Fixture {
     return $r
 }
 function With($Facts, [hashtable]$Changes) { $copy = @{}; foreach ($k in $Facts.Keys) { $copy[$k] = $Facts[$k] }; foreach ($k in $Changes.Keys) { $copy[$k] = $Changes[$k] }; return $copy }
+# The association rows the two-interface and wired cases below need beside their retry rows (backlog #61's other half):
+# the second interface's row, and the one row of a machine that listed no interface at any sample.
+$assocTemplate = (New-Fixture).Results[0]
+$secondAssoc = New-Row $assocTemplate 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $secondAssoc.Details = 'Sample 1 (before the first measurement, 10:00:00): no BSSID reported' + [Environment]::NewLine + 'Interface GUID: 0b3f7c2e-1111-4a2b-9c3d-000000000002; samples=start,middle,end'
+$assocWired = New-Row $assocTemplate 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assocWired.Details = 'Reading: none'
 
 $fails = 0; $passes = 0
 function Assert-Case([string]$Name, [string[]]$Mismatches, [bool]$ExpectClean, [string]$MustMention) {
@@ -166,30 +175,30 @@ $r = New-Fixture; Assert-Case 'two connected wireless interfaces but one wifi ro
 # The Wi-Fi retry row (backlog #61): one per wireless interface the machine lists, none when the configuration switches
 # the reader off - and the report's own ChecksEnabled has to agree with the file.
 $twoWlan = With $facts @{ WlanInterfaces = 2; WlanInterfaceIds = @('e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb', '0b3f7c2e-1111-4a2b-9c3d-000000000002') }
-$r = New-Fixture; $second = New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'INFO'; $second.Weightless = $true; $second.Details = 'Connection state: connected at the start, connected at the end.' + [Environment]::NewLine + 'Interface GUID: 0b3f7c2e-1111-4a2b-9c3d-000000000002'; $r.Results = @($r.Results) + @($second); Assert-Case 'two wireless interfaces with two wifi-retry rows' @(Test-ResultSet $r $cfg @{} $twoWlan) $true ''
+$r = New-Fixture; $second = New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'INFO'; $second.Weightless = $true; $second.Details = 'Connection state: connected at the start, connected at the end.' + [Environment]::NewLine + 'Interface GUID: 0b3f7c2e-1111-4a2b-9c3d-000000000002'; $r.Results = @($r.Results) + @($second, $secondAssoc); Assert-Case 'two wireless interfaces with two wifi-retry rows' @(Test-ResultSet $r $cfg @{} $twoWlan) $true ''
 $r = New-Fixture; Assert-Case 'two wireless interfaces but one wifi-retry row' @(Test-ResultSet $r $cfg @{} $twoWlan) $false 'wifi-retry: 1 row(s), expected 2'
-$r = New-Fixture; $agg = New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'ERROR'; $agg.Weightless = $true; $agg.Details = 'Reading at the start: addtype'; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }) + @($agg); Assert-Case 'two wireless interfaces and the one aggregate row of a reader that failed before listing them' @(Test-ResultSet $r $cfg @{} $twoWlan) $true ''
+$r = New-Fixture; $agg = New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'ERROR'; $agg.Weightless = $true; $agg.Details = 'Reading at the start: addtype'; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }) + @($agg, $secondAssoc); Assert-Case 'two wireless interfaces and the one aggregate row of a reader that failed before listing them' @(Test-ResultSet $r $cfg @{} $twoWlan) $true ''
 $r = New-Fixture; $one = New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'ERROR'; $one.Weightless = $true; $one.Details = 'Connection state: connected at the start, connected at the end.'; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }) + @($one); Assert-Case 'two wireless interfaces but one per-interface error row is a missing row, not the aggregate shape' @(Test-ResultSet $r $cfg @{} $twoWlan) $false 'wifi-retry: 1 row(s), expected 2'
 # An interface that appeared or was replaced during the run (round 6): the expected count is the union of the lists read
 # before the launch and after the report, one measured row plus one transition row, or two transition rows.
 $transition = New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'ERROR'; $transition.Weightless = $true; $transition.Details = 'Connection state: not listed at the start, connected at the end.' + [Environment]::NewLine + 'Interface GUID: 0b3f7c2e-1111-4a2b-9c3d-000000000002'
 $gone = New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'ERROR'; $gone.Weightless = $true; $gone.Details = 'Connection state: connected at the start, not listed at the end.' + [Environment]::NewLine + 'Interface GUID: e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb'
-$r = New-Fixture; $r.Results = @($r.Results) + @($transition); Assert-Case 'a second interface enabled during the run: the union of both readings, one measured row and one transition row' @(Test-ResultSet $r $cfg @{} $facts $twoWlan) $true ''
+$r = New-Fixture; $r.Results = @($r.Results) + @($transition, $secondAssoc); Assert-Case 'a second interface enabled during the run: the union of both readings, one measured row and one transition row' @(Test-ResultSet $r $cfg @{} $facts $twoWlan) $true ''
 $r = New-Fixture; Assert-Case 'a second interface enabled during the run but no transition row' @(Test-ResultSet $r $cfg @{} $facts $twoWlan) $false 'wifi-retry: 1 row(s), expected 2'
 $replaced = With $facts @{ WlanInterfaceIds = @('0b3f7c2e-1111-4a2b-9c3d-000000000002') }
-$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }) + @($gone, $transition); Assert-Case 'one interface replaced by another during the run: one transition row in each direction' @(Test-ResultSet $r $cfg @{} $facts $replaced) $true ''
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }) + @($gone, $transition, $secondAssoc); Assert-Case 'one interface replaced by another during the run: one transition row in each direction' @(Test-ResultSet $r $cfg @{} $facts $replaced) $true ''
 # The rest of the oracle's matrix, walked in one pass before round 11: a wired machine (no interface at either reading,
 # one Information row), that same row where the machine lists an interface, a one-sided none, the aggregate row where
 # one interface is listed, a measured row beside a per-interface error, and a row naming an interface nobody listed.
 $noWlan = With $facts @{ WlanInterfaces = 0; WlanInterfaceIds = @() }
 $wired = New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'INFO'; $wired.Weightless = $true; $wired.Details = 'Reading at the start: none'
-$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }) + @($wired); Assert-Case 'a wired machine: no interface at either reading, one Information row' @(Test-ResultSet $r $cfg @{} $noWlan) $true ''
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -notin @('wifi-retry', 'wifi-association') }) + @($wired, $assocWired); Assert-Case 'a wired machine: no interface at either reading, one Information row' @(Test-ResultSet $r $cfg @{} $noWlan) $true ''
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }) + @($wired); Assert-Case 'the wired-machine row on a machine that lists an interface' @(Test-ResultSet $r $cfg @{} $facts) $false ('wifi-retry: interface e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb has 0 row(s), expected 1')
 $oneSided = New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'ERROR'; $oneSided.Weightless = $true; $oneSided.Details = 'Reading at the end: none'
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }) + @($oneSided); Assert-Case 'an interface listed at the start and none at the end: the one-sided aggregate row' @(Test-ResultSet $r $cfg @{} $facts $noWlan) $true ''
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }) + @($agg); Assert-Case 'one interface listed and the reader failed: the aggregate row alone' @(Test-ResultSet $r $cfg @{} $facts) $true ''
 $queryFailed = New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'ERROR'; $queryFailed.Weightless = $true; $queryFailed.Details = 'Connection state: connected at the start, connected at the end.' + [Environment]::NewLine + 'Interface GUID: 0b3f7c2e-1111-4a2b-9c3d-000000000002'
-$r = New-Fixture; $r.Results = @($r.Results) + @($queryFailed); Assert-Case 'two interfaces: one measured, one whose query failed' @(Test-ResultSet $r $cfg @{} $twoWlan) $true ''
+$r = New-Fixture; $r.Results = @($r.Results) + @($queryFailed, $secondAssoc); Assert-Case 'two interfaces: one measured, one whose query failed' @(Test-ResultSet $r $cfg @{} $twoWlan) $true ''
 $foreign = New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'INFO'; $foreign.Weightless = $true; $foreign.Details = 'Connection state: connected at the start, connected at the end.' + [Environment]::NewLine + 'Interface GUID: 5d1e2f3a-2222-4b3c-8d4e-000000000003'
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }) + @($foreign); Assert-Case 'a row naming an interface neither reading listed' @(Test-ResultSet $r $cfg @{} $facts) $false 'which neither reading listed'
 # The interface GUIDs the facts read off netsh (rounds 11 and 12): the value of the GUID-labelled line, so a network, a
@@ -206,6 +215,49 @@ $cfgNoRetry = Read-Config $ConfigDir; $cfgNoRetry.Checks.WifiRetryCounters = $fa
 $r = New-Fixture; Assert-Case 'the reader switched off in the file but the row still written' @(Test-ResultSet $r $cfgNoRetry @{} $facts) $false 'wifi-retry: 1 row(s), expected 0'
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }); $r.RunOptions.ChecksEnabled.WifiRetryCounters = $false; Assert-Case 'the reader switched off: no row, and the report says so' @(Test-ResultSet $r $cfgNoRetry @{} $facts) $true ''
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }); Assert-Case 'the reader switched off in the file but the report claims it on' @(Test-ResultSet $r $cfgNoRetry @{} $facts) $false 'ChecksEnabled for WifiRetryCounters'
+# The Wi-Fi association rows (backlog #61's other half): one per interface netsh lists at either reading, in the IT scope,
+# riding the radio row's switch; the aggregate failure row alone where every sample failed; a no-interface row only where
+# none is listed; a row for an interface nobody listed refused; and the row gone with the radio row, from the file or -NoWifi.
+$r = New-Fixture; $r.Results = @($r.Results) + @($secondAssoc, $second); Assert-Case 'two wireless interfaces with two association rows' @(Test-ResultSet $r $cfg @{} $twoWlan) $true ''
+$r = New-Fixture; $r.Results = @($r.Results) + @($second); Assert-Case 'two wireless interfaces but one association row' @(Test-ResultSet $r $cfg @{} $twoWlan) $false 'wifi-association: 1 row(s), expected 2'
+$assocAgg = New-Row $r.Results[0] 'wifi-association' 'Wi-Fi association' 'ERROR' 'IT'; $assocAgg.Details = 'Reading: netsh'
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-association' }) + @($assocAgg, $second); Assert-Case 'two wireless interfaces and the one aggregate row of a sampling that failed every time' @(Test-ResultSet $r $cfg @{} $twoWlan) $true ''
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-association' }) + @($assocAgg); Assert-Case 'one interface listed and the sampling failed: the aggregate row alone' @(Test-ResultSet $r $cfg @{} $facts) $true ''
+$assocOne = New-Row $r.Results[0] 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assocOne.Details = 'Sample 1 (before the first measurement, 10:00:00): no BSSID reported' + [Environment]::NewLine + 'Interface GUID: e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb; samples=start,middle,end'
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-association' }) + @($assocOne, $second); Assert-Case 'two wireless interfaces but one per-interface association row is a missing row, not the aggregate shape' @(Test-ResultSet $r $cfg @{} $twoWlan) $false 'wifi-association: 1 row(s), expected 2'
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -notin @('wifi-association', 'wifi-retry') }) + @($assocWired, $wired); Assert-Case 'a wired machine: no interface at any sample, one association row saying so' @(Test-ResultSet $r $cfg @{} $noWlan) $true ''
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-association' }) + @($assocWired); Assert-Case 'the no-interface association row on a machine that lists an interface' @(Test-ResultSet $r $cfg @{} $facts) $false 'wifi-association: interface e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb has 0 row(s), expected 1'
+$assocForeign = New-Row $r.Results[0] 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assocForeign.Details = 'Sample 1 (before the first measurement, 10:00:00): no BSSID reported' + [Environment]::NewLine + 'Interface GUID: 5d1e2f3a-2222-4b3c-8d4e-000000000003'
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-association' }) + @($assocForeign); Assert-Case 'an association row with a GUID line but no samples token is a tool regression, refused as such' @(Test-ResultSet $r $cfg @{} $facts) $false 'wifi-association: a per-interface row carries no valid samples token'
+# The token's grammar (round 6): an empty token and a made-up sample name are the regressions a match stopping at 'samples=' let through.
+$assocEmptyToken = New-Row $r.Results[0] 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assocEmptyToken.Details = 'Sample 1 (before the first measurement, 10:00:00): no BSSID reported' + [Environment]::NewLine + 'Interface GUID: e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb; samples='
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-association' }) + @($assocEmptyToken); Assert-Case 'an empty samples token is refused' @(Test-ResultSet $r $cfg @{} $facts) $false 'wifi-association: a per-interface row carries no valid samples token'
+$assocBogusToken = New-Row $r.Results[0] 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assocBogusToken.Details = 'Sample 1 (before the first measurement, 10:00:00): no BSSID reported' + [Environment]::NewLine + 'Interface GUID: e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb; samples=start,bogus'
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-association' }) + @($assocBogusToken); Assert-Case 'a made-up sample name in the token is refused' @(Test-ResultSet $r $cfg @{} $facts) $false 'wifi-association: a per-interface row carries no valid samples token'
+# An ordered subset (round 7): a repeated or a reordered moment is a shape no run produces.
+$assocRepeatToken = New-Row $r.Results[0] 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assocRepeatToken.Details = 'Sample 1 (before the first measurement, 10:00:00): no BSSID reported' + [Environment]::NewLine + 'Interface GUID: e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb; samples=start,start'
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-association' }) + @($assocRepeatToken); Assert-Case 'a repeated moment in the token is refused' @(Test-ResultSet $r $cfg @{} $facts) $false 'wifi-association: a per-interface row carries no valid samples token'
+$assocReorderedToken = New-Row $r.Results[0] 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assocReorderedToken.Details = 'Sample 1 (before the first measurement, 10:00:00): no BSSID reported' + [Environment]::NewLine + 'Interface GUID: e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb; samples=end,middle'
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-association' }) + @($assocReorderedToken); Assert-Case 'a reordered token is refused' @(Test-ResultSet $r $cfg @{} $facts) $false 'wifi-association: a per-interface row carries no valid samples token'
+# A network named like a UUID sits in the sample lines above the identity line (PR #54, round 2): the GUID is the one the
+# samples token follows, so the row is the listed interface's and the report is clean.
+$assocUuidSsid = New-Row $r.Results[0] 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assocUuidSsid.Details = 'Sample 1 (before the first measurement, 10:00:00): SSID 5d1e2f3a-2222-4b3c-8d4e-000000000003, BSSID 66:77:88:99:aa:bb' + [Environment]::NewLine + 'Interface GUID: e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb; samples=start,middle,end'
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-association' }) + @($assocUuidSsid); Assert-Case 'a UUID-shaped network name above the identity line is not read as the interface' @(Test-ResultSet $r $cfg @{} $facts) $true ''
+# An interface the run sampled but neither reading listed (PR #54, rounds 1 and 4): the readings are taken before the
+# process starts and after it exits, so such an interface can be present at any sample - its row names a GUID outside the
+# union with its samples token, and is one more expected row - beside the fixture's interface, alone on a wired machine,
+# and listed at the start and the end as much as at the middle only.
+$assocTransient = New-Row $r.Results[0] 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assocTransient.Details = 'Sample 1 (before the first measurement, 10:00:00): interface not listed' + [Environment]::NewLine + 'Sample 2 (with the IT diagnostics, 10:00:05): no BSSID reported' + [Environment]::NewLine + 'Sample 3 (after the last measurement, 10:00:09): interface not listed' + [Environment]::NewLine + 'Interface GUID: 5d1e2f3a-2222-4b3c-8d4e-000000000003; samples=middle'
+$r = New-Fixture; $r.Results = @($r.Results) + @($assocTransient); Assert-Case 'an interface present at the middle sample only, beside the listed one: one more row, accepted' @(Test-ResultSet $r $cfg @{} $facts) $true ''
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -notin @('wifi-association', 'wifi-retry') }) + @($assocTransient, $wired); Assert-Case 'an interface present at the middle sample only, on a machine that lists none: the one row, accepted' @(Test-ResultSet $r $cfg @{} $noWlan) $true ''
+$assocStartForeign = New-Row $r.Results[0] 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assocStartForeign.Details = 'Sample 1 (before the first measurement, 10:00:00): no BSSID reported' + [Environment]::NewLine + 'Interface GUID: 5d1e2f3a-2222-4b3c-8d4e-000000000003; samples=start,end'
+$r = New-Fixture; $r.Results = @($r.Results) + @($assocStartForeign); Assert-Case 'an interface neither reading listed but the start and end samples saw: a transient too, accepted (round 4)' @(Test-ResultSet $r $cfg @{} $facts) $true ''
+$r = New-Fixture; $r.Results = @($r.Results) + @($assocTransient, $assocTransient); Assert-Case 'the same transient interface twice is a duplication, not two interfaces (round 5)' @(Test-ResultSet $r $cfg @{} $facts) $false 'wifi-association: transient interface 5d1e2f3a-2222-4b3c-8d4e-000000000003 has 2 row(s), expected 1'
+$r = New-Fixture; foreach ($x in $r.Results) { if ($x.Tag -eq 'wifi-association') { $x.Scope = 'Main' } }; Assert-Case 'the association row moved to the Main scope' @(Test-ResultSet $r $cfg @{} $facts) $false 'wifi-association row in scope Main'
+$cfgNoWifi = Read-Config $ConfigDir; $cfgNoWifi.Checks.WifiRf = $false
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -notin @('wifi', 'wifi-association') }); $r.RunOptions.ChecksEnabled.WifiRf = $false; Assert-Case 'the radio switched off in the file: no wifi row, no association row, and the report says so' @(Test-ResultSet $r $cfgNoWifi @{} $facts) $true ''
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi' }); $r.RunOptions.ChecksEnabled.WifiRf = $false; Assert-Case 'the radio switched off in the file but the association row still written' @(Test-ResultSet $r $cfgNoWifi @{} $facts) $false 'wifi-association: 1 row(s), expected 0'
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi' }); $r.RunOptions.ChecksEnabled.WifiRf = $false; Assert-Case '-NoWifi at launch: the association row must go with the radio row' @(Test-ResultSet $r $cfg @{ NoWifi = $true } $facts) $false 'wifi-association: 1 row(s), expected 0'
 # Exactly one adapter-statistics sample failing on a machine where the cmdlet works: one step-error row and the aggregate row.
 function ConvertTo-OneSampleFailed($Report) {
     $Report.Results = @($Report.Results | Where-Object { $_.Tag -ne 'adapter-errors' })

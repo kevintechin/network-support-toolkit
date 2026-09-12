@@ -43,7 +43,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：報告保存例外類型、訊息與內部例外；腳本位置與呼叫堆疊只寫入 JSON 報告（Diagnostics）。
 
-$script:ToolVersion = "1.2.12"
+$script:ToolVersion = "1.2.13"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -2426,6 +2426,15 @@ function Invoke-PingMeasurement {
         $minimum = [math]::Round((($successes | Measure-Object -Minimum).Minimum), 1)
         $maximum = [math]::Round((($successes | Measure-Object -Maximum).Maximum), 1)
     }
+    # backlog #61's other half: the sample standard deviation of the replies that arrived, over the whole sample where
+    # one was continued, like every other figure here; two replies are the least a spread can be taken over.
+    $spread = $null
+    if ($received -ge 2) {
+        $mean = ($successes | Measure-Object -Average).Average
+        $squares = 0.0
+        foreach ($value in $successes) { $squares += ([double]$value - $mean) * ([double]$value - $mean) }
+        $spread = [math]::Round([math]::Sqrt($squares / ($received - 1)), 1)
+    }
 
     return [pscustomobject][ordered]@{
         Target         = $Target
@@ -2436,6 +2445,7 @@ function Invoke-PingMeasurement {
         AverageMs      = $average
         MinimumMs      = $minimum
         MaximumMs      = $maximum
+        SpreadMs       = $spread
         SuccessMs      = @($successes)
         RepliedAddresses = @($repliedAddresses)
         AttemptDetails = @($attemptDetails)
@@ -2584,6 +2594,30 @@ function Get-PingRouteAfter {
     return [pscustomobject][ordered]@{ Selection = $routeAfter; LookupAddress = $lookupAddress; Others = @($routeOthers) }
 }
 
+function Get-LatencySpreadText {
+    param([object]$Measurement)
+
+    # 一列 ping 的往返時間離散度，寫成 details 裡的一句話（backlog #61 的另一半）。遺失很少、變異卻大，是空氣的
+    # 特徵——802.11 重試被吸收成延遲，所以回覆會到、只是不均勻——而在 1.2.13 之前，這一列留著每筆回覆的毫秒數，
+    # 卻只算平均值和兩端。這個數字是有到達的回覆的樣本標準差：是描述，絕不是判定，因為沒有任何門檻對它有陳述過的
+    # 依據。而且它會說明自己取自多大的樣本，因為在一個目標起始的四筆回覆上，它描述的是四個時刻而不是這條連線。
+    # 下面的最小值是這個數字自身的不確定度降到自身四分之一以下的點——樣本標準差的相對標準誤約為 1 / sqrt(2 (n - 1))，
+    # n = 9 時是 25 %——一個選定的精度，連同算式記錄在儲存庫的門檻頁（docs/thresholds.md）；到了那個點什麼都不判定，
+    # 只換一句話。
+    $minimum = 9
+    $received = ConvertTo-IntSafe (Get-PropertyValue $Measurement "Received" 0) 0
+    $spread = Get-PropertyValue $Measurement "SpreadMs" $null
+    if ($received -lt 2 -or $null -eq $spread) { return "" }
+    $text = "離散度：有到達的 {1} 筆回覆的標準差 {0} ms（平均 {2} ms，範圍 {3} 到 {4}）。往返時間是整數毫秒，所以在一、兩毫秒就回應的連線上，約 1 ms 的離散度是計時器的解析度，不是連線。" -f $spread, $received, $Measurement.AverageMs, $Measurement.MinimumMs, $Measurement.MaximumMs
+    if ($received -lt $minimum) {
+        $text += ("{0} 筆回覆描述的是 {0} 個時刻而不是這條連線：要 {1} 筆回覆這個數字自身的不確定度才會降到自身的四分之一以下，所以請把它放在同一目標較長樣本的數字旁邊讀。它不影響任何判定。" -f $received, $minimum)
+    }
+    else {
+        $text += ("在 {0} 筆回覆時（{1} 筆以上）這個數字自身的不確定度已低於自身的四分之一，所以它描述的是本次執行對這個目標的變異；它不影響任何判定，因為沒有任何門檻對它有陳述過的依據。" -f $received, $minimum)
+    }
+    return $text
+}
+
 function Add-PingTargetResult {
     param(
         [string]$Name,
@@ -2723,6 +2757,10 @@ function Add-PingTargetResult {
     $message = "目標 {0}：遺失 {1}%（{2}/{3} 成功），{4}。" -f $Target, $Measurement.LossPercent, $Measurement.Received, $Measurement.Sent, $latencyText
     $detailLines = @()
     $detailLines += @($Measurement.AttemptDetails)
+    # backlog #61 的另一半：往返時間的離散度，一句話，說明自己取自多大的樣本、而且不影響任何判定——理由寫在
+    # Get-LatencySpreadText；回覆不到兩筆的列沒有這一行。
+    $spreadLine = Get-LatencySpreadText -Measurement $Measurement
+    if (-not [string]::IsNullOrWhiteSpace($spreadLine)) { $detailLines += $spreadLine }
     $detailLines += (Format-RouteSelection -Before $RouteBefore -After $RouteAfter.Selection -LookupAddress $RouteAfter.LookupAddress -Others $RouteAfter.Others)
     # backlog #60：這一列是哪一階，寫成「探測經過了哪些路段、沒有經過哪些」。只有兩列會寫——近端主機那一列，因為
     # 有它各列 ping 才成為一道階梯；以及閘道那一列，因為它的探測是由控制平面而不是主機回應的——而讀法規則寫在近端
@@ -3741,9 +3779,20 @@ function ConvertFrom-NetshWlanOutput {
 
     $guidPattern = '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'
     $macPattern = '^[0-9a-fA-F]{2}([:-][0-9a-fA-F]{2}){5}$'
+    # An interface block begins two lines above its GUID (the name and the description come first). The GUID line is
+    # found by its LABEL - GUID, which netsh does not translate, like SSID - rather than by the shape of its value
+    # (backlog #61's other half; PR #52 rounds 11 and 12 met the same exposure in the test chain's reader): a network
+    # or a profile named like a UUID, or an adapter renamed to one, is printed inside the block, and by shape each of
+    # them would have started an interface of its own. The shape rule stays as the fallback for an output that carries
+    # no GUID label at all, so that a build this parser has never seen still yields its interfaces.
     $starts = @()
     for ($i = 0; $i -lt $pairs.Count; $i++) {
-        if ($pairs[$i].Value -match $guidPattern -and $i -ge 2) { $starts += ($i - 2) }
+        if ($pairs[$i].Label.ToUpperInvariant() -eq 'GUID' -and $pairs[$i].Value -match $guidPattern -and $i -ge 2) { $starts += ($i - 2) }
+    }
+    if ($starts.Count -eq 0) {
+        for ($i = 0; $i -lt $pairs.Count; $i++) {
+            if ($pairs[$i].Value -match $guidPattern -and $i -ge 2) { $starts += ($i - 2) }
+        }
     }
 
     $interfaces = New-Object System.Collections.ArrayList
@@ -3756,12 +3805,27 @@ function ConvertFrom-NetshWlanOutput {
         # Values are matched by shape (MAC, percentage, 802.11x, GHz, plain numbers) because labels are localized
         # and their order differs between Windows 10 and Windows 11 builds.
         $macs = @($block | Where-Object { $_.Value -match $macPattern })
+        # The BSSID by its LABEL first (PR #54, round 3): netsh does not translate the acronym - the label is BSSID on Windows
+        # 10 and AP BSSID on Windows 11 - and a network named like a MAC address would otherwise be the block's second MAC-shaped
+        # value and be stored as the access point, with the connection state as the network's name. The second-MAC rule stays
+        # as the fallback for an output without the label; the SSID is read from its own label the same way, else from the
+        # line before the BSSID, which is where both layouts print it.
         $bssidIndex = -1
         for ($k = 0; $k -lt $block.Count; $k++) {
-            if ($block[$k].Value -match $macPattern -and $macs.Count -ge 2 -and $block[$k].Value -eq $macs[1].Value) { $bssidIndex = $k; break }
+            if ($block[$k].Label -match '(^|\s)BSSID$' -and $block[$k].Value -match $macPattern) { $bssidIndex = $k; break }
+        }
+        if ($bssidIndex -lt 0) {
+            for ($k = 0; $k -lt $block.Count; $k++) {
+                if ($block[$k].Value -match $macPattern -and $macs.Count -ge 2 -and $block[$k].Value -eq $macs[1].Value) { $bssidIndex = $k; break }
+            }
         }
         $ssid = ""
-        if ($bssidIndex -gt 0) { $ssid = $block[$bssidIndex - 1].Value }
+        $ssidLine = @($block | Where-Object { $_.Label -match '^SSID$' } | Select-Object -First 1)
+        if ($ssidLine.Count -gt 0) { $ssid = $ssidLine[0].Value }
+        elseif ($bssidIndex -gt 0) { $ssid = $block[$bssidIndex - 1].Value }
+        # The interface's own GUID, kept lower-case: it is what the association rows are keyed and named by.
+        $guid = ""
+        if ($block.Count -ge 3 -and $block[2].Value -match $guidPattern) { $guid = $block[2].Value.ToLowerInvariant() }
 
         $signalIndex = -1
         $signal = $null
@@ -3810,6 +3874,7 @@ function ConvertFrom-NetshWlanOutput {
         [void]$interfaces.Add([pscustomobject][ordered]@{
             Name             = $block[0].Value
             Description      = $block[1].Value
+            Guid             = $guid
             PhysicalAddress  = $(if ($macs.Count -ge 1) { $macs[0].Value } else { "" })
             Connected        = ($bssidIndex -ge 0)
             Ssid             = $ssid
@@ -3828,25 +3893,66 @@ function ConvertFrom-NetshWlanOutput {
     return @($interfaces)
 }
 
+function Get-WifiAssociationSample {
+    param([string]$Moment)
+
+    # netsh wlan show interfaces 的一次讀取，留作「執行到這一刻、每張無線介面連在哪個存取點」的樣本（backlog #61 的另一半）：
+    # BSSID 是存取點自己的位址，同一個網路名稱下 BSSID 改變就是漫遊，而漫遊正是那種能解釋「訊號好、數字卻差」的空中
+    # 事件。不論內容為何都回傳整個信封，和重傳快照、TCP 快照一樣；由分析函式把列寫出來，證據附在旁邊。-Moment 記下
+    # 這個樣本取自執行的哪一刻——start、middle、end——讓列能說出來。
+    $sample = [pscustomobject][ordered]@{
+        Moment      = $Moment
+        Timestamp   = Get-Date
+        Interfaces  = @()
+        Error       = ""
+        ErrorText   = ""
+        Diagnostics = ""
+    }
+    $netsh = Join-Path $env:SystemRoot "System32\netsh.exe"
+    if (-not (Test-Path -LiteralPath $netsh)) {
+        $sample.Error = "netsh"
+        $sample.ErrorText = "找不到 netsh.exe。"
+        return $sample
+    }
+    try {
+        $lines = @(& $netsh wlan show interfaces 2>&1 | ForEach-Object { [string]$_ })
+        $sample.Interfaces = @(ConvertFrom-NetshWlanOutput -Lines $lines)
+    }
+    catch {
+        $sample.Error = "exception"
+        $sample.ErrorText = Get-ExceptionDetails $_
+        $sample.Diagnostics = Get-ExceptionDiagnostics $_
+    }
+    return $sample
+}
+
+function Add-WifiAssociationSample {
+    param([string]$Moment)
+
+    # 取一個樣本，依取樣順序和本次執行的其他樣本放在一起。清單在這裡也會建立，不只在一次執行開始時建立，
+    # 讓 Run-AllChecks 之外的呼叫者——測試環境裡的無線訊號列——永遠不會寫進一個不存在的清單。
+    if ($null -eq $script:WifiAssociationSamples) { $script:WifiAssociationSamples = New-Object System.Collections.ArrayList }
+    $sample = Get-WifiAssociationSample -Moment $Moment
+    [void]$script:WifiAssociationSamples.Add($sample)
+    return $sample
+}
+
 function Add-WifiRfResult {
     if (-not (Test-IsTrueFlag $script:Config.Checks.WifiRf)) { return }
 
-    $netsh = Join-Path $env:SystemRoot "System32\netsh.exe"
-    if (-not (Test-Path -LiteralPath $netsh)) {
+    # 這一次讀取一次做兩件事（backlog #61 的另一半）：這一列，以及存取點的中間樣本——Compare-WifiAssociation 會拿它
+    # 和第一項量測之前、最後一項量測之後取的樣本比較。
+    $sample = Add-WifiAssociationSample -Moment "middle"
+    if ([string]$sample.Error -eq "netsh") {
         Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message "找不到 netsh.exe，無法取得 Wi-Fi 無線資料。" -Details "" -Tag "wifi" -Scope "IT" | Out-Null
         return
     }
-
-    $lines = @()
-    try {
-        $lines = @(& $netsh wlan show interfaces 2>&1 | ForEach-Object { [string]$_ })
-    }
-    catch {
-        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "ERROR" -Message "無法讀取 Wi-Fi 無線資料。" -Details (Get-ExceptionDetails $_) -Diagnostics (Get-ExceptionDiagnostics $_) -Tag "wifi" -Scope "IT" | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error)) {
+        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "ERROR" -Message "無法讀取 Wi-Fi 無線資料。" -Details ([string]$sample.ErrorText) -Diagnostics ([string]$sample.Diagnostics) -Tag "wifi" -Scope "IT" | Out-Null
         return
     }
 
-    $interfaces = @(ConvertFrom-NetshWlanOutput -Lines $lines)
+    $interfaces = @($sample.Interfaces)
     $connected = @($interfaces | Where-Object { $_.Connected })
     if ($connected.Count -eq 0) {
         Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message "沒有已連線的 Wi-Fi 介面（有線連線、Wi-Fi 關閉或沒有無線網卡）。" -Details (("netsh 回報的無線介面數：{0}" -f $interfaces.Count) + [Environment]::NewLine + "手動驗證：netsh wlan show interfaces") -Tag "wifi" -Scope "IT" | Out-Null
@@ -3870,6 +3976,282 @@ function Add-WifiRfResult {
             "說明：用戶端看到的數值，證據力低於 AP 的用戶端列表。"
         ) -join [Environment]::NewLine
         Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message $message -Details $details -Tag "wifi" -Scope "IT" | Out-Null
+    }
+}
+
+function Compare-WifiAssociation {
+    param([object[]]$Samples)
+
+    # 把各次存取點樣本互相比對（backlog #61 的另一半）：任何一次樣本列出的每張無線介面各一列，說它整段執行是留在同一個
+    # 存取點、換到了另一個，還是根本沒回報存取點——而不論它說什麼，都要說明「兩個樣本之間換出去又回到同一個存取點」
+    # 是看不見的，因為 BSSID 是取樣的，不是持續監看的。這個限制寫在每一列上，而不是靠沉默暗示：兩個相同的樣本不能
+    # 排除一次繞回來的漫遊。Windows 的 WLAN 事件記錄作為替代方案量測過、沒有採用——不提權就能讀，但沒有任何事件
+    # 帶 BSSID，而它記錄的安全性重新關聯，換金鑰和漫遊都會寫，所以它說不出比樣本更多的東西。IT 範圍的列，和它所延伸的
+    # 無線訊號列一樣：是證據，不是判定。
+    $category = "IT 診斷資料"
+    $check = "Wi-Fi 存取點"
+    $samples = @(@($Samples) | Where-Object { $null -ne $_ })
+    $readable = @($samples | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.Error) })
+    $momentText = @{ start = "第一項量測之前"; middle = "收集 IT 診斷資料時"; end = "最後一項量測之後" }
+    $entries = @()
+    $index = 0
+    foreach ($sample in $samples) {
+        $index++
+        $moment = [string]$sample.Moment
+        if ($momentText.ContainsKey($moment)) { $moment = $momentText[$moment] }
+        $stamp = ""
+        try { $stamp = ([datetime]$sample.Timestamp).ToString("HH:mm:ss") } catch { $stamp = "" }
+        $entries += [pscustomobject]@{ Sample = $sample; Prefix = ("樣本 {0}（{1}，{2}）" -f $index, $moment, $stamp) }
+    }
+    $seconds = 0
+    if ($samples.Count -ge 2) { try { $seconds = [math]::Round((([datetime]$samples[$samples.Count - 1].Timestamp) - ([datetime]$samples[0].Timestamp)).TotalSeconds, 0) } catch { $seconds = 0 } }
+    $methodLines = @(
+        ("檢測方式：netsh wlan show interfaces，本次測試共讀取 {0} 次——第一項量測之前、收集 IT 診斷資料時、最後一項量測之後——並把各次讀到的 BSSID 互相比較；存取點是取樣的，不是持續監看的。" -f $samples.Count),
+        "手動驗證：問題發生時反覆執行 netsh wlan show interfaces",
+        "說明：BSSID 是存取點自己的位址，所以同一個網路名稱下 BSSID 改變就是漫遊——正是那種能解釋「訊號好、數字卻差」的空中事件——網路名稱也變了則是換到另一個網路。兩個樣本之間換出去又回到同一個存取點的變化，這裡看不見：兩個相同的樣本不能排除它。Windows 的 WLAN 事件記錄只記網路、不記存取點，所以沒有讀取。這一列不影響任何判定。"
+    )
+
+    if ($samples.Count -eq 0) {
+        Add-CheckResult -Category $category -Check $check -Status "ERROR" -Message "測試期間沒有取得任何存取點樣本，無法比較連線的存取點。" -Details ((@("讀取：none") + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
+        return
+    }
+    if ($readable.Count -eq 0) {
+        # 每一次樣本都失敗：一列，原因代碼放在 details 第一行的結尾——和 tag 一樣不隨語言改變的記號——測試鏈的 oracle 靠它
+        # 分辨這個彙總列和逐介面的列。
+        $first = $samples[0]
+        $reason = [string]$first.Error
+        $message = "無法取樣 Wi-Fi 存取點：找不到 netsh.exe。"
+        if ($reason -ne "netsh") { $message = "無法取樣 Wi-Fi 存取點：netsh wlan show interfaces 無法讀取。" }
+        $lines = @(("讀取：{0}" -f $reason))
+        foreach ($entry in $entries) { $lines += ("{0}：無法讀取——{1}" -f $entry.Prefix, [string]$entry.Sample.ErrorText) }
+        Add-CheckResult -Category $category -Check $check -Status "ERROR" -Message $message -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Diagnostics ([string]$first.Diagnostics) -Tag "wifi-association" -Scope "IT" | Out-Null
+        return
+    }
+
+    # 各張介面：netsh 有印 GUID 就以 GUID 為鍵，沒有就以網卡位址為鍵，依第一次出現的順序。
+    $keys = New-Object System.Collections.ArrayList
+    $names = @{}
+    foreach ($sample in $readable) {
+        foreach ($wifi in @($sample.Interfaces)) {
+            $key = ([string]$wifi.Guid).ToLowerInvariant()
+            if ([string]::IsNullOrWhiteSpace($key)) { $key = ("mac:" + ([string]$wifi.PhysicalAddress).ToLowerInvariant()) }
+            if (-not $names.ContainsKey($key)) { [void]$keys.Add($key); $names[$key] = [string]$wifi.Name }
+        }
+    }
+    if ($keys.Count -eq 0) {
+        $lines = @("讀取：none")
+        foreach ($entry in $entries) {
+            if ([string]::IsNullOrWhiteSpace([string]$entry.Sample.Error)) { $lines += ("{0}：未列出任何無線介面" -f $entry.Prefix) }
+            else { $lines += ("{0}：無法讀取——{1}" -f $entry.Prefix, [string]$entry.Sample.ErrorText) }
+        }
+        Add-CheckResult -Category $category -Check $check -Status "INFO" -Message ("{0} 次樣本都沒有列出任何無線介面，所以沒有存取點可以比較（有線電腦，或 WLAN 服務未執行）。" -f $samples.Count) -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
+        return
+    }
+
+    foreach ($key in $keys) {
+        $name = ConvertTo-DisplayString $names[$key]
+        $readings = @()
+        $lines = @()
+        foreach ($entry in $entries) {
+            $sample = $entry.Sample
+            if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error)) {
+                $lines += ("{0}：無法讀取——{1}" -f $entry.Prefix, [string]$sample.ErrorText)
+                # 失敗的樣本仍然是這次執行的樣本之一（PR #54，第 1 回合）：訊息裡的每個總數都要算它，而它既不是存取點的一次
+                # 讀數，也不是介面不在場的證據。
+                $readings += [pscustomobject]@{ State = "failed"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = "" }
+                continue
+            }
+            $match = @(@($sample.Interfaces) | Where-Object { (([string]$_.Guid).ToLowerInvariant() -eq $key) -or ([string]::IsNullOrWhiteSpace([string]$_.Guid) -and ("mac:" + ([string]$_.PhysicalAddress).ToLowerInvariant()) -eq $key) } | Select-Object -First 1)
+            if ($match.Count -eq 0) {
+                $lines += ("{0}：介面未列出" -f $entry.Prefix)
+                $readings += [pscustomobject]@{ State = "absent"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = "" }
+                continue
+            }
+            $wifi = $match[0]
+            $bssid = ([string]$wifi.Bssid).Trim().ToLowerInvariant()
+            if ([string]::IsNullOrWhiteSpace($bssid)) { $lines += ("{0}：未回報 BSSID" -f $entry.Prefix) }
+            else { $lines += ("{0}：SSID {1}，BSSID {2}" -f $entry.Prefix, (ConvertTo-DisplayString $wifi.Ssid), $bssid) }
+            $readings += [pscustomobject]@{ State = $(if ([string]::IsNullOrWhiteSpace($bssid)) { "nobssid" } else { "bssid" }); Moment = [string]$sample.Moment; Bssid = $bssid; Ssid = [string]$wifi.Ssid }
+        }
+        $withBssid = @($readings | Where-Object { $_.State -eq "bssid" })
+        $absentCount = @($readings | Where-Object { $_.State -eq "absent" }).Count
+        $failedCount = @($readings | Where-Object { $_.State -eq "failed" }).Count
+        $listedMoments = @($readings | Where-Object { $_.State -eq "bssid" -or $_.State -eq "nobssid" } | ForEach-Object { $_.Moment })
+        # 沒有 BSSID 絕不寫成「已斷線」（backlog #62）：已關聯的無線電也可能被扣住這個欄位。
+        if ($withBssid.Count -eq 0) {
+            $message = "{0}：{1} 次樣本都沒有回報存取點（BSSID）——介面未關聯，或 netsh 沒有印出這個欄位；請看 Wi-Fi 無線訊號那一列。" -f $name, $readings.Count
+        }
+        else {
+            $distinctBssids = @($withBssid | ForEach-Object { $_.Bssid } | Select-Object -Unique)
+            $distinctSsids = @($withBssid | ForEach-Object { $_.Ssid } | Select-Object -Unique)
+            $first = $withBssid[0]
+            if ($distinctBssids.Count -eq 1 -and $distinctSsids.Count -gt 1) {
+                # 同一個位址、卻不只一個網路名稱（PR #54，第 2 回合）：存取點在執行期間被改名或重新設定，穩定不變那一句會把它藏在
+                # 第一個名稱後面。
+                $ssidSequence = @()
+                foreach ($reading in $withBssid) { if ($ssidSequence.Count -eq 0 -or $ssidSequence[$ssidSequence.Count - 1] -cne $reading.Ssid) { $ssidSequence += $reading.Ssid } }
+                $message = "{0}：有回報存取點的 {2} 次樣本（共 {3} 次）都是同一個存取點（BSSID {1}），但網路名稱不只一個——SSID {4}——所以存取點在執行期間被改名或重新設定。" -f $name, $first.Bssid, $withBssid.Count, $readings.Count, (@($ssidSequence | ForEach-Object { ConvertTo-DisplayString $_ }) -join "、然後 ")
+            }
+            elseif ($distinctBssids.Count -eq 1) {
+                if ($withBssid.Count -eq $readings.Count) {
+                    $message = "{0}：SSID {1}，{3} 次樣本（跨 {4} 秒）都在同一個存取點（BSSID {2}）；兩個樣本之間換出去又回到它的變化看不見。" -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $readings.Count, $seconds
+                }
+                else {
+                    $message = "{0}：SSID {1}，有回報存取點的 {3} 次樣本（共 {4} 次）都是同一個（BSSID {2}）；其餘樣本沒有回報 BSSID、介面未列出，或樣本無法讀取。" -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $withBssid.Count, $readings.Count
+                }
+            }
+            else {
+                # 依取樣順序列出存取點，連續重複的摺起來，讓「A、然後 B、然後 A」讀起來就是它本來的樣子——一次繞回來的漫遊，
+                # 只取兩個樣本會把它藏起來。
+                $sequence = @()
+                $labels = @()
+                foreach ($reading in $withBssid) {
+                    if ($sequence.Count -gt 0 -and $sequence[$sequence.Count - 1] -eq $reading.Bssid) { continue }
+                    $sequence += $reading.Bssid
+                    $labels += ("SSID {0}（BSSID {1}）" -f (ConvertTo-DisplayString $reading.Ssid), $reading.Bssid)
+                }
+                $changes = $sequence.Count - 1
+                $shape = "一次漫遊"
+                if ($changes -gt 1) {
+                    $shape = "{0} 次漫遊" -f $changes
+                    if ($sequence[0] -eq $sequence[$sequence.Count - 1]) { $shape += "，回到最初的存取點" }
+                }
+                if ($distinctSsids.Count -eq 1) {
+                    $message = "{0}：測試期間存取點改變——BSSID {1}——SSID {2} 不變：{3}。本次執行的數字是跨著這個變化量到的。" -f $name, ($sequence -join "、然後 "), (ConvertTo-DisplayString $first.Ssid), $shape
+                }
+                else {
+                    $message = "{0}：測試期間介面換到了另一個網路——{1}。本次執行的數字是跨著這個變化量到的。" -f $name, ($labels -join "、然後 ")
+                }
+            }
+        }
+        if ($absentCount -gt 0) { $message += ("介面在其中 {0} 次樣本未列出（那一刻被停用或移除）。" -f $absentCount) }
+        if ($failedCount -gt 0) { $message += ("其中 {0} 次樣本無法讀取。" -f $failedCount) }
+        # 身分那一行以介面被列出的樣本收尾，用不隨語言改變的記號（samples=start,middle,end）：測試鏈的 oracle 靠它分辨「只在中間
+        # 樣本出現的介面」——它的兩次讀取都不可能列出——和「寫了一張誰都沒列出的介面」的列（PR #54，第 1 回合）。
+        $identity = @()
+        if ($key -like "mac:*") { $identity += ("介面位址：{0}；samples={1}" -f $key.Substring(4), ($listedMoments -join ",")) } else { $identity += ("介面 GUID：{0}；samples={1}" -f $key, ($listedMoments -join ",")) }
+        Add-CheckResult -Category $category -Check $check -Status "INFO" -Message $message -Details ((@($lines) + $identity + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
+    }
+}
+
+function Get-MacRelation {
+    param([string]$First, [string]$Second)
+
+    # 兩個 MAC 位址之間的關係，供「存取點就是閘道」的提示使用（backlog #61 的另一半）：identical 完全相同；near-ul 與
+    # near-last 只差在第一個八位元組的本地管理位元、或只差在最後一個八位元組——同一台設備的無線電位址和橋接位址常見的
+    # 形狀；vendor 前三個八位元組相同（那個位元除外）；different 不同；兩者之一不是 MAC 位址則為 invalid。分隔符號和
+    # 大小寫不屬於位址的一部分。
+    $a = ([string]$First) -replace '[^0-9a-fA-F]', ''
+    $b = ([string]$Second) -replace '[^0-9a-fA-F]', ''
+    if ($a.Length -ne 12 -or $b.Length -ne 12) { return "invalid" }
+    $a = $a.ToUpperInvariant()
+    $b = $b.ToUpperInvariant()
+    if ($a -eq $b) { return "identical" }
+    $firstA = [Convert]::ToInt32($a.Substring(0, 2), 16)
+    $firstB = [Convert]::ToInt32($b.Substring(0, 2), 16)
+    if (($firstA -bxor $firstB) -eq 2 -and $a.Substring(2) -eq $b.Substring(2)) { return "near-ul" }
+    if ($a.Substring(0, 10) -eq $b.Substring(0, 10)) { return "near-last" }
+    if (($firstA -band 0xFD) -eq ($firstB -band 0xFD) -and $a.Substring(2, 4) -eq $b.Substring(2, 4)) { return "vendor" }
+    return "different"
+}
+
+function Get-AccessPointGatewayEvidence {
+    param([string]$Gateway, [string]$GatewayMac, [object[]]$PrimaryAdapters, [object[]]$Samples, [int]$InterfaceIndex = 0)
+
+    # 提示背後的比較，同時以證據和句子的形式給出（PR #54，第 3 回合）：存取點的位址、它和閘道位址的關係（Get-MacRelation 的字眼，
+    # 介面沒有回報存取點時是 nobssid，什麼都沒比時是空的）、介面名稱，以及這一列印出的文字。最後一次樣本之後的重比對比的是位址
+    # 和關係，絕不是句子——執行期間被改名的介面只會改變句子，其他什麼都不變。
+
+    # 提示的那一句話，或者什麼都不寫（backlog #61 的另一半）。在無線機器上想把空氣和有線分開之前，最該先知道的是到底
+    # 有沒有一段有線：回應無線電的存取點和回應 ping 的閘道可能是同一台盒子。BSSID 是存取點自己的位址，鄰居表裡有閘道
+    # 的位址，所以兩者拿來比較——比的是提供這個閘道的那張網卡所對應的無線介面，用網卡自己的位址對上（netsh 印成介面的
+    # 實體位址），取自最近一次讀得到的存取點樣本——並照它本來的身分發表：提示。位址完全相同就是同一台設備，但一體機的
+    # 無線電位址和橋接位址常常只差一個八位元組或本地管理位元，所以不同並不能證明什麼。閘道由有線網卡提供時沒有存取點
+    # 可比，Wi-Fi 資料關掉時沒有東西可比：兩種情況都不寫這一行。
+    $evidence = [pscustomobject][ordered]@{ Text = ""; Bssid = ""; Relation = ""; Interface = "" }
+    $gatewayHex = ([string]$GatewayMac) -replace '[^0-9a-fA-F]', ''
+    if ($gatewayHex.Length -ne 12 -or $gatewayHex -eq "000000000000") { return $evidence }
+    # 網卡取「鄰居項目是在哪張介面上學到的」那一張（PR #54，第 1 回合）：有線和無線網卡指向同一個閘道位址的機器上，項目的 MAC
+    # 可能屬於有線那個網路，拿它和無線網路的存取點比較，就是把兩個毫不相關的位址擺在一起。-InterfaceIndex 是項目的介面；項目
+    # 沒帶介面時——arp -a 備援——而且提供這個閘道的網卡不只一張，就什麼都不比。
+    $adapterMacs = @()
+    $candidates = 0
+    foreach ($adapter in @($PrimaryAdapters)) {
+        if ($null -eq $adapter -or @($adapter.Gateways) -notcontains [string]$Gateway) { continue }
+        $candidates++
+        if ($InterfaceIndex -gt 0 -and (ConvertTo-IntSafe (Get-PropertyValue $adapter "InterfaceIndex" 0) 0) -ne $InterfaceIndex) { continue }
+        $adapterMac = ([string](Get-PropertyValue $adapter "MacAddress" "")) -replace '[^0-9a-fA-F]', ''
+        if ($adapterMac.Length -eq 12) { $adapterMacs += $adapterMac.ToUpperInvariant() }
+    }
+    if ($adapterMacs.Count -eq 0) { return $evidence }
+    if ($InterfaceIndex -le 0 -and $candidates -gt 1) { return $evidence }
+    $latest = @(@($Samples) | Where-Object { $null -ne $_ -and [string]::IsNullOrWhiteSpace([string]$_.Error) } | Select-Object -Last 1)
+    if ($latest.Count -eq 0) { return $evidence }
+    foreach ($wifi in @($latest[0].Interfaces)) {
+        $physical = ([string]$wifi.PhysicalAddress) -replace '[^0-9a-fA-F]', ''
+        if ($physical.Length -ne 12 -or $adapterMacs -notcontains $physical.ToUpperInvariant()) { continue }
+        $name = ConvertTo-DisplayString $wifi.Name
+        $bssid = ([string]$wifi.Bssid).Trim().ToLowerInvariant()
+        $evidence.Interface = $name
+        if ([string]::IsNullOrWhiteSpace($bssid)) {
+            $evidence.Relation = "nobssid"
+            $evidence.Text = ("存取點與閘道：這個閘道經由無線介面 {0} 到達，但該介面沒有回報 BSSID，兩個位址無法比較。" -f $name)
+            return $evidence
+        }
+        $evidence.Bssid = $bssid
+        $evidence.Relation = Get-MacRelation -First $GatewayMac -Second $bssid
+        switch ($evidence.Relation) {
+            "identical" { $evidence.Text = ("存取點與閘道：閘道的 MAC 位址就是 {0} 所連存取點的 BSSID（{1}），所以存取點和閘道是同一台設備——自帶無線電的路由器——在這個網路上，空氣與有線之間沒有可供「有線對無線」比較立足的邊界。" -f $name, $bssid) }
+            "near-ul"   { $evidence.Text = ("存取點與閘道：閘道的 MAC 位址與 {0} 所連存取點的 BSSID（{1}）只差在本地管理位元，這是同一台設備的無線電位址和橋接位址常見的形狀；把兩者當成大概是同一台設備——這是提示，不是拓樸結論。" -f $name, $bssid) }
+            "near-last" { $evidence.Text = ("存取點與閘道：閘道的 MAC 位址與 {0} 所連存取點的 BSSID（{1}）只差在最後一個八位元組，這是同一台設備的無線電位址和橋接位址常見的形狀；把兩者當成大概是同一台設備——這是提示，不是拓樸結論。" -f $name, $bssid) }
+            "vendor"    { $evidence.Text = ("存取點與閘道：閘道的 MAC 位址與 {0} 所連存取點的 BSSID（{1}）的廠商前綴（前三個八位元組）相同——同一家廠商，可能是一台設備、也可能是兩台；這是提示，不是拓樸結論。" -f $name, $bssid) }
+            default     { $evidence.Text = ("存取點與閘道：閘道的 MAC 位址與 {0} 所連存取點的 BSSID（{1}）廠商前綴不同，暗示是兩台設備——一台存取點加一台路由器——因此空氣與有線之間有一道邊界，同一網段上的有線工作站可以從那裡量起；這是提示，不是拓樸結論，因為自帶無線電的路由器也可能為兩者使用毫不相關的位址。" -f $name, $bssid) }
+        }
+        return $evidence
+    }
+    return $evidence
+}
+
+function Get-AccessPointGatewayText {
+    param([string]$Gateway, [string]$GatewayMac, [object[]]$PrimaryAdapters, [object[]]$Samples, [int]$InterfaceIndex = 0)
+
+    # 只給句子，供印出它的呼叫者使用；背後的證據在 Get-AccessPointGatewayEvidence。
+    return ([string](Get-AccessPointGatewayEvidence -Gateway $Gateway -GatewayMac $GatewayMac -PrimaryAdapters $PrimaryAdapters -Samples $Samples -InterfaceIndex $InterfaceIndex).Text)
+}
+
+function Update-AccessPointGatewayHints {
+    param([object[]]$Samples)
+
+    # 閘道鄰居列上的提示是在收集 IT 診斷資料時寫的，那時只有前兩次存取點樣本；那次讀取和最後一次樣本之間的漫遊，會讓它拿閘道
+    # 去比一個存取點列說已經離開的存取點（PR #54，第 2 回合）。所以最後一次樣本之後再比一次，對象是最近一次讀得到的樣本：讀出來
+    # 一樣就不動這一列；不一樣時，鄰居表讀取時寫的那一行留著——它在那一刻是真的——再加一行給出「介面在結束時所連存取點」的比較，
+    # 或者說那時已沒有回報存取點，並指向存取點列。
+    foreach ($entry in @($script:GatewayNeighborRows)) {
+        if ($null -eq $entry -or $null -eq $entry.Row) { continue }
+        $freshEvidence = Get-AccessPointGatewayEvidence -Gateway ([string]$entry.Gateway) -GatewayMac ([string]$entry.Mac) -PrimaryAdapters @($script:PrimaryAdapters) -Samples @($Samples) -InterfaceIndex (ConvertTo-IntSafe $entry.InterfaceIndex 0)
+        # 比的是證據，不是句子（第 3 回合）：同一個位址、同一種關係就是同一個發現，不管介面現在叫什麼名字。
+        if (([string]$freshEvidence.Bssid -eq [string](Get-PropertyValue $entry "Bssid" "")) -and ([string]$freshEvidence.Relation -eq [string](Get-PropertyValue $entry "Relation" ""))) { continue }
+        $fresh = [string]$freshEvidence.Text
+        if ([string]::IsNullOrWhiteSpace([string]$fresh)) {
+            $line = "存取點與閘道（最後一次樣本之後）：介面已不再回報 BSSID，所以上面的比較無法重做；Wi-Fi 存取點列記錄了各次樣本看到的東西。"
+        }
+        else {
+            $line = "存取點與閘道（最後一次樣本之後）：{0}鄰居表讀取時介面連的是另一個存取點、或沒有回報存取點——Wi-Fi 存取點列記錄了各次樣本——所以上面那一行（如果有）代表那一刻，這一行代表執行結束時。" -f ($fresh -replace '^[^:：]*[:：]\s*', '')
+        }
+        $lines = @(([string]$entry.Row.Details) -split "\r?\n")
+        $at = -1
+        if (-not [string]::IsNullOrWhiteSpace([string]$entry.Hint)) { $at = [array]::IndexOf($lines, [string]$entry.Hint) }
+        if ($at -lt 0) {
+            # 鄰居表讀取時沒有寫這一行：新的一行放在它本來會在的位置，也就是檢測方式那一行之前。
+            for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -like "檢測方式：*") { $at = $i - 1; break } }
+        }
+        if ($at -lt 0) { $lines = @($lines) + @($line) }
+        else { $lines = @($(if ($at -ge 0) { $lines[0..$at] } else { @() })) + @($line) + @($(if ($at + 1 -lt $lines.Count) { $lines[($at + 1)..($lines.Count - 1)] } else { @() })) }
+        $entry.Row.Details = ($lines -join [Environment]::NewLine)
+        $entry.Hint = [string]$fresh
+        $entry.Bssid = [string]$freshEvidence.Bssid
+        $entry.Relation = [string]$freshEvidence.Relation
+        Write-UiLog -Status "INFO" -Text ("{0} / {1}: {2}" -f $entry.Row.Category, $entry.Row.Check, $line)
     }
 }
 
@@ -3934,12 +4316,15 @@ function Add-GatewayNeighborResult {
     foreach ($gateway in $gateways) {
         $state = "（未知）"
         $mac = ""
+        # 項目是在哪張介面上學到的，供下面的存取點提示使用（PR #54，第 1 回合）；arp -a 備援不印介面索引，由它提供位址時為 0。
+        $neighborIfIndex = 0
         try {
             if (Get-Command Get-NetNeighbor -ErrorAction SilentlyContinue) {
                 $neighbor = Get-NetNeighbor -IPAddress ([string]$gateway) -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($null -ne $neighbor) {
                     $state = [string]$neighbor.State
                     $mac = [string]$neighbor.LinkLayerAddress
+                    $neighborIfIndex = ConvertTo-IntSafe (Get-PropertyValue $neighbor "InterfaceIndex" 0) 0
                 }
             }
             else {
@@ -3957,10 +4342,20 @@ function Add-GatewayNeighborResult {
 
         $lines = @()
         if ([string]::IsNullOrWhiteSpace($mac) -or $mac -match '^(00[-:]){5}00$' -or $state -match 'Unreachable|Incomplete') { $lines += "閘道沒有解析到 MAC 位址，到路由器的第二層可能中斷（以上方的閘道 Ping 為準）。" }
+        # backlog #61 的另一半：存取點就是閘道嗎？在無線機器上想把空氣和有線分開之前最該先知道的一件事，以提示的身分
+        # 發表——Get-AccessPointGatewayText 說明比較的每一種形狀能確立什麼、不能確立什麼——閘道的網卡是有線的、或 Wi-Fi
+        # 資料沒有讀取時，這一行不出現。
+        $accessPointEvidence = Get-AccessPointGatewayEvidence -Gateway ([string]$gateway) -GatewayMac $mac -PrimaryAdapters $PrimaryAdapters -Samples @($script:WifiAssociationSamples) -InterfaceIndex $neighborIfIndex
+        $accessPointLine = [string]$accessPointEvidence.Text
+        if (-not [string]::IsNullOrWhiteSpace($accessPointLine)) { $lines += $accessPointLine }
+        if ($null -eq $script:GatewayNeighborRows) { $script:GatewayNeighborRows = New-Object System.Collections.ArrayList }
         $lines += "檢測方式：Get-NetNeighbor -AddressFamily IPv4（備援：arp -a）"
         $lines += "手動驗證：arp -a"
         $message = "閘道 {0}：鄰居狀態 {1}，MAC {2}。" -f $gateway, $state, (ConvertTo-DisplayString $mac)
-        Add-CheckResult -Category "IT 診斷資料" -Check "閘道鄰居（ARP）" -Status "INFO" -Message $message -Details ($lines -join [Environment]::NewLine) -Tag "gateway-neighbor" -Scope "IT" | Out-Null
+        $neighborRow = Add-CheckResult -Category "IT 診斷資料" -Check "閘道鄰居（ARP）" -Status "INFO" -Message $message -Details ($lines -join [Environment]::NewLine) -Tag "gateway-neighbor" -Scope "IT"
+        # 留下來，讓 Update-AccessPointGatewayHints 在最後一次存取點樣本出現後再比一次（PR #54，第 2 回合）——重比對比的是位址和關係，
+        # 印出的句子放在旁邊（第 3 回合）。
+        [void]$script:GatewayNeighborRows.Add([pscustomobject]@{ Row = $neighborRow; Gateway = [string]$gateway; Mac = [string]$mac; InterfaceIndex = $neighborIfIndex; Hint = [string]$accessPointLine; Bssid = [string]$accessPointEvidence.Bssid; Relation = [string]$accessPointEvidence.Relation })
     }
 }
 
@@ -5620,6 +6015,9 @@ function Run-AllChecks {
     $script:TcpConnectSampleCount = 0
     # 同樣的理由（backlog #51）：一次執行擱下的 ping 取樣，絕不能跑到下一次執行的報告裡。
     $script:PendingPingSamples = New-Object System.Collections.ArrayList
+    # And the access-point samples (backlog #61's other half): a run compares the samples it took itself.
+    $script:WifiAssociationSamples = New-Object System.Collections.ArrayList
+    $script:GatewayNeighborRows = New-Object System.Collections.ArrayList
     $script:LastHtmlReport = $null
     $script:LastTextReport = $null
     $script:LastJsonReport = $null
@@ -5689,6 +6087,15 @@ function Run-AllChecks {
         Add-CheckResult -Category "系統資訊" -Check "電腦" -Status "INFO" -Message ("{0}，使用者 {1}。" -f $summary.ComputerName, $summary.UserName) -Details ("作業系統：{0} ({1})`r`nPowerShell：{2}" -f $summary.OperatingSystem, $summary.OperatingVersion, $summary.PowerShellVersion) -Tag "system" | Out-Null
     } | Out-Null
 
+    # 存取點最先取樣（backlog #61 的另一半）：一次 netsh 讀取，約 0.1 秒，在第一項量測之前，讓整段執行的視窗落在這個
+    # 樣本和最後一項量測之後那個樣本之間；無線訊號列在收集 IT 診斷資料時自己的那次讀取就是中間樣本。樣本和無線訊號列
+    # 共用同一個開關（Checks.WifiRf），因為它們是同一個讀取器：關掉就不取樣本、也不寫任何存取點列。
+    $wifiAssociationEnabled = Test-IsTrueFlag $script:Config.Checks.WifiRf
+    if ($wifiAssociationEnabled) {
+        Invoke-CheckStep -Category "IT 診斷資料" -Name "取樣 Wi-Fi 存取點（開始）" -Progress 8 -Scope "IT" -Action {
+            Add-WifiAssociationSample -Moment "start"
+        } | Out-Null
+    }
     # 無線重傳計數器在 TCP 基準值之前讀，讓讀取器的編譯——參考機上約 0.7 秒，每個程序一次——在重傳視窗之外付掉；TCP 視窗結束
     # （有延長就延長之後）再讀一次，所以兩個視窗涵蓋同一次執行。設定關掉（Checks.WifiRetryCounters）時什麼都不讀、不寫任何列，
     # 和 IT 診斷資料一樣。
@@ -5802,12 +6209,25 @@ function Run-AllChecks {
             return (Get-WifiRetrySnapshot)
         }
     }
+    # 最後一次存取點樣本，和重傳計數器的結束值一樣放在 TCP 視窗之後，讓本次執行的每一項量測都落在第一個樣本和這個
+    # 樣本之間（backlog #61 的另一半）。
+    if ($wifiAssociationEnabled) {
+        Invoke-CheckStep -Category "IT 診斷資料" -Name "取樣 Wi-Fi 存取點（結束）" -Progress 91 -Scope "IT" -Action {
+            Add-WifiAssociationSample -Moment "end"
+        } | Out-Null
+    }
     Invoke-CheckStep -Category "TCP 重傳" -Name "分析 TCP 重傳" -Progress 92 -Action {
         Compare-TcpCounters -Before $tcpBaseline -After $tcpAfter
     } | Out-Null
     if ($wifiRetryEnabled) {
         Invoke-CheckStep -Category "Wi-Fi 重傳" -Name "分析 Wi-Fi 重傳" -Progress 93 -Action {
             Compare-WifiRetryCounters -Before $wifiRetryBaseline -After $wifiRetryAfter
+        } | Out-Null
+    }
+    if ($wifiAssociationEnabled) {
+        Invoke-CheckStep -Category "IT 診斷資料" -Name "比較各次樣本的 Wi-Fi 存取點" -Progress 94 -Scope "IT" -Action {
+            Compare-WifiAssociation -Samples @($script:WifiAssociationSamples)
+            Update-AccessPointGatewayHints -Samples @($script:WifiAssociationSamples)
         } | Out-Null
     }
 
