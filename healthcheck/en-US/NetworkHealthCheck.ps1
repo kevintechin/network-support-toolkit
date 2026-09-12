@@ -4210,7 +4210,11 @@ function Get-WifiRadioSwitchText {
     if ($software -eq "off") { $off += "in software" }
     if ($hardware -eq "off") { $off += "by a hardware switch" }
     if ($off.Count -gt 0) { return ("radio off ({0})" -f ($off -join " and ")) }
-    if ($software -eq "on" -or $hardware -eq "on") { return "radio on" }
+    # On only where both switches are known on (PR #55, round 9): one on beside one unknown names which is which, because
+    # the unknown switch may still hold the radio off and a row that said on would claim more than was read.
+    if ($software -eq "on" -and $hardware -eq "on") { return "radio on" }
+    if ($software -eq "on") { return "radio on in software, the hardware switch unknown" }
+    if ($hardware -eq "on") { return "radio on by the hardware switch, the software state unknown" }
     return ""
 }
 

@@ -4077,7 +4077,11 @@ function Get-WifiRadioSwitchText {
     if ($software -eq "off") { $off += "軟體" }
     if ($hardware -eq "off") { $off += "硬體開關" }
     if ($off.Count -gt 0) { return ("無線電關閉（{0}）" -f ($off -join "與")) }
-    if ($software -eq "on" -or $hardware -eq "on") { return "無線電開啟" }
+    # 兩個開關都確定是開才寫開啟（PR #55，第 9 回合）：一個開、另一個未知時寫明是哪一個，因為未知的那個開關仍可能把無線電
+    # 關著，寫成開啟的列會宣稱得比讀到的多。
+    if ($software -eq "on" -and $hardware -eq "on") { return "無線電開啟" }
+    if ($software -eq "on") { return "軟體無線電開啟，硬體開關未知" }
+    if ($hardware -eq "on") { return "硬體開關開啟，軟體狀態未知" }
     return ""
 }
 
