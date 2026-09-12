@@ -441,16 +441,20 @@ function Get-ConfigRowCount($Config, $Options, [hashtable]$Overrides) {
     return $rows
 }
 function Get-WlanInterfaceIds {
-    # The interface GUIDs in `netsh wlan show interfaces`, one per interface block: netsh separates the blocks with blank
-    # lines and prints the interface's GUID before anything else GUID-shaped in its block, so the first GUID-shaped value
-    # of a block is the interface and a later one - an SSID or a profile named like a UUID - is not (PR #52, round 11).
-    # Labels are not read, because they are localized.
+    # The interface GUIDs in `netsh wlan show interfaces`: the value of the line whose label is GUID. Every other label
+    # is localized and their order differs between Windows versions, which is why the tool's own parser reads values
+    # by shape; but GUID, like the SSID label the connected-interface count already relies on, is an acronym netsh
+    # does not translate, and the shape alone is not enough - a network or a profile named like a UUID is printed in
+    # the same block (PR #52, round 11) and so is an adapter renamed to one, and the name comes before the GUID
+    # (round 12). The label is compared before the first colon, half-width or full-width.
     param([string[]]$Lines)
-    $ids = @(); $seenInBlock = $false
+    $ids = @()
     foreach ($line in @($Lines)) {
         $text = [string]$line
-        if ($text.Trim().Length -eq 0) { $seenInBlock = $false; continue }
-        if (-not $seenInBlock -and $text -match '([0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})') { $ids += $matches[1].ToLowerInvariant(); $seenInBlock = $true }
+        $split = $text.IndexOfAny(@([char]':', [char]0xFF1A))
+        if ($split -lt 1) { continue }
+        if ($text.Substring(0, $split).Trim().ToUpperInvariant() -ne 'GUID') { continue }
+        if ($text.Substring($split + 1) -match '([0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})') { $ids += $matches[1].ToLowerInvariant() }
     }
     return @($ids | Sort-Object -Unique)
 }
@@ -490,7 +494,7 @@ function Get-MachineFacts {
     }
     # How many wireless interfaces the machine has at all, connected or not - the set WlanEnumInterfaces lists, which is
     # what the Wi-Fi retry row (backlog #61) writes one row per; netsh prints one interface GUID per interface, and a
-    # GUID's shape is not localized. A machine with none, or without the WLAN service, gets one row saying so. The GUIDs
+    # GUID label is not localized. A machine with none, or without the WLAN service, gets one row saying so. The GUIDs
     # themselves are kept as well (PR #52, round 6): an interface enabled or removed during the run gets a transition row
     # of its own, so the row count the oracle expects is the union of the lists read before the launch and after the report.
     $facts.WlanInterfaces = 0
