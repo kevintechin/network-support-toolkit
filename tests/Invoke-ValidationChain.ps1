@@ -785,19 +785,20 @@ function Test-ResultSet {
             $n = @($assocRows | Where-Object { $m = [regex]::Match([string]$_.Details, $assocGuidOnIdentity); $m.Success -and ($m.Groups[1].Value.ToLowerInvariant() -eq $id) }).Count
             if ($n -ne 1) { $bad += ('wifi-association: interface {0} has {1} row(s), expected 1' -f $id, $n) }
         }
-        # An interface present at the middle sample only - enabled after the pre-launch facts were read and gone before
-        # the post-run ones - has a legitimate row that neither reading can have listed (PR #54, round 1). Every row names
-        # the samples its interface was listed at as a language-neutral token, samples=start,middle,end; a row naming a GUID
-        # outside the union is that transient interface when the token names neither start nor end, and then it is one
-        # more expected row; any other such row names an interface nobody listed and is refused.
+        # An interface the tool sampled but neither of these two readings listed has a legitimate row (PR #54, rounds 1 and
+        # 4): the readings are taken before the process starts and after it exits, so an adapter enabled after the first
+        # and removed before the second can be present at any of the run's three samples - the start and the end as much as
+        # the middle, which round 1 alone had allowed. Every per-interface row names the samples its interface was listed
+        # at as a language-neutral token, samples=start,middle,end, and a row naming a GUID outside the union with that
+        # token is such a transient interface: one more expected row. What this oracle cannot see is what the samples saw
+        # except through the rows, so a fabricated row with a token would pass here - the same approximation the retry
+        # rows' union already accepts, one step looser - while the per-interface count above still holds every interface
+        # the readings did list to exactly one row, and a row without the token is refused above as a tool regression.
         $transientAssoc = 0
         foreach ($r in $assocRows) {
             $m = [regex]::Match([string]$r.Details, $assocGuidOnIdentity)
             if (-not $m.Success -or ($assocIds -contains $m.Groups[1].Value.ToLowerInvariant())) { continue }
-            $listed = [regex]::Match([string]$r.Details, 'samples=([a-z,]+)')
-            $moments = @($(if ($listed.Success) { $listed.Groups[1].Value -split ',' } else { @() }))
-            if ($listed.Success -and $moments -notcontains 'start' -and $moments -notcontains 'end') { $transientAssoc++ }
-            else { $bad += ('wifi-association: a row names interface {0}, which neither reading listed' -f $m.Groups[1].Value) }
+            $transientAssoc++
         }
         if ($transientAssoc -gt 0) { $want['wifi-association'] = [math]::Max(1, $wlanUnion + $transientAssoc) }
     }

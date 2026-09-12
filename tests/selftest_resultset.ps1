@@ -233,14 +233,15 @@ $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-as
 # samples token follows, so the row is the listed interface's and the report is clean.
 $assocUuidSsid = New-Row $r.Results[0] 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assocUuidSsid.Details = 'Sample 1 (before the first measurement, 10:00:00): SSID 5d1e2f3a-2222-4b3c-8d4e-000000000003, BSSID 66:77:88:99:aa:bb' + [Environment]::NewLine + 'Interface GUID: e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb; samples=start,middle,end'
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-association' }) + @($assocUuidSsid); Assert-Case 'a UUID-shaped network name above the identity line is not read as the interface' @(Test-ResultSet $r $cfg @{} $facts) $true ''
-# An interface present at the middle sample only (PR #54, round 1): its row names a GUID neither reading listed and a
-# samples token without start or end, and is one more expected row - beside the fixture's interface, and alone on a wired
-# machine; the same GUID listed at the start or the end is not transient and stays refused.
+# An interface the run sampled but neither reading listed (PR #54, rounds 1 and 4): the readings are taken before the
+# process starts and after it exits, so such an interface can be present at any sample - its row names a GUID outside the
+# union with its samples token, and is one more expected row - beside the fixture's interface, alone on a wired machine,
+# and listed at the start and the end as much as at the middle only.
 $assocTransient = New-Row $r.Results[0] 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assocTransient.Details = 'Sample 1 (before the first measurement, 10:00:00): interface not listed' + [Environment]::NewLine + 'Sample 2 (with the IT diagnostics, 10:00:05): no BSSID reported' + [Environment]::NewLine + 'Sample 3 (after the last measurement, 10:00:09): interface not listed' + [Environment]::NewLine + 'Interface GUID: 5d1e2f3a-2222-4b3c-8d4e-000000000003; samples=middle'
 $r = New-Fixture; $r.Results = @($r.Results) + @($assocTransient); Assert-Case 'an interface present at the middle sample only, beside the listed one: one more row, accepted' @(Test-ResultSet $r $cfg @{} $facts) $true ''
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -notin @('wifi-association', 'wifi-retry') }) + @($assocTransient, $wired); Assert-Case 'an interface present at the middle sample only, on a machine that lists none: the one row, accepted' @(Test-ResultSet $r $cfg @{} $noWlan) $true ''
 $assocStartForeign = New-Row $r.Results[0] 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assocStartForeign.Details = 'Sample 1 (before the first measurement, 10:00:00): no BSSID reported' + [Environment]::NewLine + 'Interface GUID: 5d1e2f3a-2222-4b3c-8d4e-000000000003; samples=start,end'
-$r = New-Fixture; $r.Results = @($r.Results) + @($assocStartForeign); Assert-Case 'a foreign interface listed at the start and the end is not transient: refused' @(Test-ResultSet $r $cfg @{} $facts) $false 'wifi-association: a row names interface'
+$r = New-Fixture; $r.Results = @($r.Results) + @($assocStartForeign); Assert-Case 'an interface neither reading listed but the start and end samples saw: a transient too, accepted (round 4)' @(Test-ResultSet $r $cfg @{} $facts) $true ''
 $r = New-Fixture; foreach ($x in $r.Results) { if ($x.Tag -eq 'wifi-association') { $x.Scope = 'Main' } }; Assert-Case 'the association row moved to the Main scope' @(Test-ResultSet $r $cfg @{} $facts) $false 'wifi-association row in scope Main'
 $cfgNoWifi = Read-Config $ConfigDir; $cfgNoWifi.Checks.WifiRf = $false
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -notin @('wifi', 'wifi-association') }); $r.RunOptions.ChecksEnabled.WifiRf = $false; Assert-Case 'the radio switched off in the file: no wifi row, no association row, and the report says so' @(Test-ResultSet $r $cfgNoWifi @{} $facts) $true ''
