@@ -1867,6 +1867,12 @@ Assert-Equal '#61 retry: a failed statistics query names its error' (($queryRow.
 $everyWifiRow = @($mirrorRow, $singleRow, $twoRow, $failedRow, $idleRow, $resetRow, $noneRows[0], $addTypeRow, $openRow, $missingRow, $queryRow)
 Assert-Equal '#61 retry: every row this analysis writes is weightless' (@($everyWifiRow | Where-Object { -not $_.Weightless }).Count) 0
 Assert-Equal '#61 retry: and every one carries the tag' (@($everyWifiRow | Where-Object { $_.Tag -ne 'wifi-retry' }).Count) 0
+# The chain's oracle tells the aggregate reader-failure row from a per-interface error row by the first details line,
+# which ends with the reader's language-neutral reason code on the aggregate row and never on the others (PR #52, round 2).
+$reasonTail = '[:：]\s*(addtype|open|enumerate|error)\s*$'
+$errorRow = (Get-WifiRows $mirrorBefore (New-WifiSnapshot $wifiT1 @() 'error' 'boom'))[0]
+Assert-Equal '#61 shape: an aggregate reader-failure row ends its first details line with the reason code' (@(@($addTypeRow, $openRow, $errorRow) | Where-Object { (Get-DetailLineAt $_ 0) -match $reasonTail }).Count) 3
+Assert-Equal '#61 shape: and no per-interface error row does' (@(@($resetRow, $missingRow, $queryRow) | Where-Object { (Get-DetailLineAt $_ 0) -match $reasonTail }).Count) 0
 Assert-Equal '#61 retry: the connection states are words' (((Get-WifiInterfaceStateText 1) -ne (Get-WifiInterfaceStateText 4)) -and -not [string]::IsNullOrWhiteSpace((Get-WifiInterfaceStateText 1))) True
 Assert-Equal '#61 retry: an unknown state keeps its number' ((Get-WifiInterfaceStateText 9) -match '9') True
 Assert-Equal '#61 retry: a Win32 error keeps its number' ((Get-Win32ErrorText 1062) -match '1062') True

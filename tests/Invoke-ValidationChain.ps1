@@ -695,10 +695,19 @@ function Test-ResultSet {
     $oneSampleFailed = $statsReadable -and ($counterRows.Count -eq 1) -and ([string]$counterRows[0].Status -eq 'ERROR')
     if ($oneSampleFailed) { $want['step-error'] = [int]$want['step-error'] + 1 }
     # The Wi-Fi retry reader that fails before it can list the interfaces - the type refused, the WLAN service silent -
-    # writes one aggregate Unable-to-Check row and no per-interface row (PR #52, round 1), so on a machine with several
-    # wireless interfaces a single ERROR row is that shape and not a missing row; a single Information row is not.
+    # writes one aggregate Unable-to-Check row and no per-interface row (PR #52, rounds 1 and 2), so on a machine with
+    # several wireless interfaces that single row is the shape and not a missing row. A per-interface error row - a
+    # reset counter, a failed query - carries the same tag and status, so the shape is read off the row itself: the
+    # aggregate row's first details line ends with the reader's reason code, a language-neutral token like a tag
+    # (addtype, open, enumerate, error), which the per-interface rows' first line - the connection-state sentence -
+    # never does; the unit tests hold both scripts to that.
     $retryRows = @($rows | Where-Object { $_.Tag -eq 'wifi-retry' })
-    if ([int]$want['wifi-retry'] -gt 1 -and $retryRows.Count -eq 1 -and [string]$retryRows[0].Status -eq 'ERROR') { $want['wifi-retry'] = 1 }
+    $aggregateRetryFailure = $false
+    if ($retryRows.Count -eq 1 -and [string]$retryRows[0].Status -eq 'ERROR') {
+        $firstLine = [string](@(([string]$retryRows[0].Details) -split "`r`n|`n")[0])
+        $aggregateRetryFailure = ($firstLine -match '[:：]\s*(addtype|open|enumerate|error)\s*$')
+    }
+    if ([int]$want['wifi-retry'] -gt 1 -and $aggregateRetryFailure) { $want['wifi-retry'] = 1 }
     foreach ($k in @($want.Keys)) {
         $have = $(if ($byTag.ContainsKey($k)) { $byTag[$k] } else { 0 })
         if ($have -ne $want[$k]) { $bad += ('{0}: {1} row(s), expected {2}' -f $k, $have, $want[$k]) }

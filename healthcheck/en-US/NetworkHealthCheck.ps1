@@ -4711,6 +4711,8 @@ function Compare-WifiRetryCounters {
             "enumerate" { $message = "The Wi-Fi retry counters could not be read: the wireless interfaces could not be listed ({0})." -f $snapshot.ErrorText }
             default     { $message = "The Wi-Fi retry counters could not be read {0}." -f $pair.Side }
         }
+        # The first line ends with the reason code - a language-neutral token, like a tag - which is how the chain's oracle
+        # tells this aggregate row from a per-interface error row that carries the same tag and status (PR #52, round 2).
         $details = @(
             ("Reading {0}: {1}" -f $pair.Side, $reason),
             $(if (-not [string]::IsNullOrWhiteSpace([string]$snapshot.ErrorText)) { [string]$snapshot.ErrorText } else { $null }),

@@ -4557,6 +4557,8 @@ function Compare-WifiRetryCounters {
             "enumerate" { $message = "無法讀取 Wi-Fi 重傳計數器：無法列出無線介面（{0}）。" -f $snapshot.ErrorText }
             default     { $message = "無法讀取 Wi-Fi 重傳計數器（{0}）。" -f $pair.Side }
         }
+        # 第一行以原因代碼結尾——語言中立的記號，像標籤一樣——chain 的 oracle 靠它把這列彙總列和帶同樣標籤、同樣狀態的
+        # 逐介面錯誤列分開（PR #52 第 2 輪）。
         $details = @(
             ("讀取{0}：{1}" -f $pair.Side, $reason),
             $(if (-not [string]::IsNullOrWhiteSpace([string]$snapshot.ErrorText)) { [string]$snapshot.ErrorText } else { $null }),
