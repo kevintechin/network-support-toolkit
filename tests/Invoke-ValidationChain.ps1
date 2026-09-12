@@ -777,8 +777,9 @@ function Test-ResultSet {
         # and is refused as such; the aggregate rows (netsh, exception, none) carry neither a GUID nor the token.
         # The token's grammar (round 6): one or more of the three sample names, comma-separated, ending the line - a regression
         # that lost the listed moments would leave an empty token or a made-up name, and a match that stopped at 'samples='
-        # would have passed it as a known or transient interface.
-        $assocToken = 'samples=(start|middle|end)(,(start|middle|end))*(?=\r|\n|$)'
+        # would have passed it as a known or transient interface. An ordered subset (round 7): each moment is sampled once,
+        # in that order, so a repeated or reordered name is a shape no run produces.
+        $assocToken = 'samples=(start(,middle)?(,end)?|middle(,end)?|end)(?=\r|\n|$)'
         $assocGuidOnIdentity = '([0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})[;；]\s*' + $assocToken
         foreach ($r in $assocRows) {
             $firstLine = [string](@(([string]$r.Details) -split "`r`n|`n")[0])
