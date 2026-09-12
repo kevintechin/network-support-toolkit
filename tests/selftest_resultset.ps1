@@ -279,6 +279,16 @@ $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -notin @('wi
 # leaves a GUID-less radio row beside per-interface association rows, accepted; the same row written from a read that answered is not.
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -notin @('wifi', 'wifi-association') }) + @($wifiReaderFailedRow, $assocRefused); Assert-Case 'netsh refused, the middle read failed, the start and end reads answered: the GUID-less radio row beside a per-interface association row' @(Test-ResultSet $r $cfg @{} $refusedFacts) $true ''
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -notin @('wifi', 'wifi-association') }) + @($wifiWiredLook, $assocRefused); Assert-Case 'netsh refused and the radio row written from a read that answered (wlanapi=ok) without a GUID: refused' @(Test-ResultSet $r $cfg @{} $refusedFacts) $false 'wifi: a row without an interface GUID'
+# PR #55, round 7: the facts keep the adapters they enumerated when only the profile lookup fails - the wireless adapters'
+# GUIDs are the same with the lookup throwing as without, and the connected count then comes from netsh's SSID lines.
+$factsPlain = Get-MachineFacts
+function Get-NetConnectionProfile { throw 'stub: the profile lookup failed' }
+$factsNoProfile = Get-MachineFacts
+Remove-Item -Path function:Get-NetConnectionProfile
+$ssidLines = 0; try { $ssidLines = @(& (Join-Path $env:SystemRoot 'System32\netsh.exe') wlan show interfaces 2>&1 | Where-Object { ([string]$_) -match '^\s*SSID\s*:' }).Count } catch { $ssidLines = 0 }
+$adaptersKept = ((@($factsNoProfile.WirelessAdapterIds) -join ',') -eq (@($factsPlain.WirelessAdapterIds) -join ','))
+$countFellBack = ([int]$factsNoProfile.WifiInterfaces -eq $ssidLines)
+Assert-Case 'the profile lookup failing keeps the enumerated adapters and falls back to the SSID lines for the connected count' @($(if ($adaptersKept -and $countFellBack) { @() } else { @(('facts: adapters kept {0}, count fell back {1} (adapters {2} / {3}; count {4} vs SSID lines {5})' -f $adaptersKept, $countFellBack, (@($factsNoProfile.WirelessAdapterIds) -join ','), (@($factsPlain.WirelessAdapterIds) -join ','), $factsNoProfile.WifiInterfaces, $ssidLines)) })) $true ''
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -notin @('wifi', 'wifi-association') }) + @($wifiWiredLook, $assocReaderOk); Assert-Case 'netsh refused and the reader answering: the no-interface rows are still a missing interface' @(Test-ResultSet $r $cfg @{} $refusedFacts) $false 'wifi-association: interface e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb has 0 row(s)'
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -notin @('wifi', 'wifi-association') }) + @($wifiWiredLook, $assocWired); Assert-Case 'netsh refused and an aggregate row without the token: read as the reader answering, so still a missing interface' @(Test-ResultSet $r $cfg @{} $refusedFacts) $false 'wifi-association: interface e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb has 0 row(s)'
 # Exactly one adapter-statistics sample failing on a machine where the cmdlet works: one step-error row and the aggregate row.

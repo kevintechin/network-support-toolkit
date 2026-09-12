@@ -493,13 +493,22 @@ function Get-MachineFacts {
     # one per connected interface, a label netsh does not translate - are the fallback they were until 1.2.13.
     $facts.WifiInterfaces = 0
     $wirelessAdapters = @()
+    $adaptersRead = $false
     $profileWitness = $false
     try {
         $wirelessAdapters = @(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { [string]$_.PhysicalMediaType -eq 'Native 802.11' -and [string]$_.Status -notin @('Disabled', 'Not Present') })
-        $profiles = @(Get-NetConnectionProfile -ErrorAction Stop | ForEach-Object { [int]$_.InterfaceIndex })
-        $facts.WifiInterfaces = @($wirelessAdapters | Where-Object { $profiles -contains [int]$_.InterfaceIndex }).Count
-        $profileWitness = $true
+        $adaptersRead = $true
     } catch { $wirelessAdapters = @() }
+    # The profile lookup is its own attempt (PR #55, round 7): where it fails, the adapters already enumerated still stand in
+    # for the GUID lines a refused netsh did not print, and only the connected count falls back to netsh's SSID lines.
+    if ($adaptersRead) {
+        try {
+            $profiles = @(Get-NetConnectionProfile -ErrorAction Stop | ForEach-Object { [int]$_.InterfaceIndex })
+            $facts.WifiInterfaces = @($wirelessAdapters | Where-Object { $profiles -contains [int]$_.InterfaceIndex }).Count
+            $profileWitness = $true
+        } catch { $profileWitness = $false }
+    }
+    $facts.WirelessAdapterIds = @($wirelessAdapters | ForEach-Object { ([string]$_.InterfaceGuid).Trim('{', '}').ToLowerInvariant() } | Where-Object { $_ -match '^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$' } | Sort-Object -Unique)
     # How many wireless interfaces the machine has at all, connected or not - the set WlanEnumInterfaces lists, which is
     # what the Wi-Fi retry row (backlog #61) writes one row per; netsh prints one interface GUID per interface, and a
     # GUID label is not localized. A machine with none, or without the WLAN service, gets one row saying so. The GUIDs
@@ -521,7 +530,7 @@ function Get-MachineFacts {
         } catch { }
     }
     if ($facts.WlanRefused -and @($facts.WlanInterfaceIds).Count -eq 0) {
-        $facts.WlanInterfaceIds = @($wirelessAdapters | ForEach-Object { ([string]$_.InterfaceGuid).Trim('{', '}').ToLowerInvariant() } | Where-Object { $_ -match '^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$' } | Sort-Object -Unique)
+        $facts.WlanInterfaceIds = @($facts.WirelessAdapterIds)
     }
     $facts.WlanInterfaces = @($facts.WlanInterfaceIds).Count
     # Whether adapter statistics can be sampled, the way Get-AdapterStatisticsSnapshot samples them; without them both
