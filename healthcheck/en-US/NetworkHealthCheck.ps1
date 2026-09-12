@@ -4487,7 +4487,7 @@ function Compare-WifiAssociation {
             }
             $bssid = ([string]$view.Bssid).Trim().ToLowerInvariant()
             if ([string]::IsNullOrWhiteSpace($bssid)) { $lines += ("{0}: no BSSID reported{1}" -f $entry.Prefix, $stateSuffix) }
-            else { $lines += ("{0}: SSID {1}, BSSID {2}" -f $entry.Prefix, (ConvertTo-DisplayString $view.Ssid), $bssid) }
+            else { $lines += (("{0}: SSID {1}, BSSID {2}" -f $entry.Prefix, (ConvertTo-DisplayString $view.Ssid), $bssid) + $stateSuffix) }
             $readings += [pscustomobject]@{ State = $(if ([string]::IsNullOrWhiteSpace($bssid)) { "nobssid" } else { "bssid" }); Moment = [string]$sample.Moment; Bssid = $bssid; Ssid = [string]$view.Ssid; ApiState = $apiState; LocationDenied = $false }
         }
         $withBssid = @($readings | Where-Object { $_.State -eq "bssid" })
@@ -4568,6 +4568,10 @@ function Compare-WifiAssociation {
                 }
             }
             $message += $refusedSentence
+            # A BSSID netsh printed beside a service state that is not connected - the two reads are sequential, and the radio
+            # can drop between them - is disclosed rather than hidden behind the address (PR #55, round 3): the service's
+            # account is appended wherever it is not "connected at every sample it listed the interface at".
+            if ($apiKnown.Count -gt 0 -and $apiConnected.Count -lt $apiKnown.Count) { $message += $stateSentence }
         }
         if ($absentCount -gt 0) { $message += (" The interface was not listed at {0} of the samples (disabled or removed at that moment)." -f $absentCount) }
         if ($failedCount -gt 0) { $message += (" {0} of the samples could not be read." -f $failedCount) }

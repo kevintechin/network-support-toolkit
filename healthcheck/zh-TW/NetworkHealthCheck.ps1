@@ -4346,7 +4346,7 @@ function Compare-WifiAssociation {
             }
             $bssid = ([string]$view.Bssid).Trim().ToLowerInvariant()
             if ([string]::IsNullOrWhiteSpace($bssid)) { $lines += ("{0}：未回報 BSSID{1}" -f $entry.Prefix, $stateSuffix) }
-            else { $lines += ("{0}：SSID {1}，BSSID {2}" -f $entry.Prefix, (ConvertTo-DisplayString $view.Ssid), $bssid) }
+            else { $lines += (("{0}：SSID {1}，BSSID {2}" -f $entry.Prefix, (ConvertTo-DisplayString $view.Ssid), $bssid) + $stateSuffix) }
             $readings += [pscustomobject]@{ State = $(if ([string]::IsNullOrWhiteSpace($bssid)) { "nobssid" } else { "bssid" }); Moment = [string]$sample.Moment; Bssid = $bssid; Ssid = [string]$view.Ssid; ApiState = $apiState; LocationDenied = $false }
         }
         $withBssid = @($readings | Where-Object { $_.State -eq "bssid" })
@@ -4426,6 +4426,9 @@ function Compare-WifiAssociation {
                 }
             }
             $message += $refusedSentence
+            # netsh 印了 BSSID、服務卻說不是已連線——兩次讀取是先後進行的，無線電可能在中間掉線——要說出來，不能藏在位址後面
+            # （PR #55，第 3 回合）：只要服務的說法不是「列出它的每次樣本都已連線」，就把服務的說法接在後面。
+            if ($apiKnown.Count -gt 0 -and $apiConnected.Count -lt $apiKnown.Count) { $message += $stateSentence }
         }
         if ($absentCount -gt 0) { $message += ("介面在其中 {0} 次樣本未列出（那一刻被停用或移除）。" -f $absentCount) }
         if ($failedCount -gt 0) { $message += ("其中 {0} 次樣本無法讀取。" -f $failedCount) }
