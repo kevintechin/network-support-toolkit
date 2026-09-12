@@ -3110,15 +3110,40 @@ function Invoke-TcpConnectionTest {
             if ($null -ne $client.Client.LocalEndPoint) { $localAddress = [string]$client.Client.LocalEndPoint.Address }
         }
         catch {}
+        # backlog #52、PR #53 第 1 輪：socket 自己對這次交握的交代，在 finally 關閉它之前讀取。SIO_TCP_INFO（0xD8000027，
+        # 即下面那個 Int32）填入一個 TCP_INFO_v0——88 個位元組，SynRetrans 是位移 84 的 UCHAR，RttUs 是位移 20 的 ULONG，
+        # 這是 mstcpip.h 參考文件記載、也是這台機器回傳的配置（2026-09-12 讀取）——只針對發問的那個 socket、不需提權，
+        # Windows 10 1703 版與 Windows Server 2016 起支援。沒有它的版本、或拒絕的 socket，留下 -1 與原因，該列改拿各次
+        # 時間和重傳逾時比較，並寫明。
+        $synRetrans = -1
+        $rttUs = -1
+        $telemetryError = ""
+        try {
+            $infoOut = New-Object byte[] 128
+            $infoBytes = $client.Client.IOControl([int]-671088601, [System.BitConverter]::GetBytes([uint32]0), $infoOut)
+            if ($infoBytes -ge 88) {
+                $synRetrans = [int]$infoOut[84]
+                $rttUs = [int][System.BitConverter]::ToUInt32($infoOut, 20)
+            }
+            else {
+                $telemetryError = ("SIO_TCP_INFO 回傳 {0} 個位元組" -f $infoBytes)
+            }
+        }
+        catch {
+            $telemetryError = [string]$_.Exception.Message
+        }
 
         return [pscustomobject][ordered]@{
-            Success       = $true
-            Host          = $HostName
-            Port          = $Port
-            ElapsedMs     = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
-            Error         = ""
-            RemoteAddress = $remoteAddress
-            LocalAddress  = $localAddress
+            Success        = $true
+            Host           = $HostName
+            Port           = $Port
+            ElapsedMs      = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
+            Error          = ""
+            RemoteAddress  = $remoteAddress
+            LocalAddress   = $localAddress
+            SynRetrans     = $synRetrans
+            RttUs          = $rttUs
+            TelemetryError = $telemetryError
         }
     }
     catch {
@@ -3129,8 +3154,11 @@ function Invoke-TcpConnectionTest {
             Port          = $Port
             ElapsedMs     = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
             Error         = (Add-NetworkErrorCause $_.Exception $_.Exception.Message)
-            RemoteAddress = ""
-            LocalAddress  = ""
+            RemoteAddress  = ""
+            LocalAddress   = ""
+            SynRetrans     = -1
+            RttUs          = -1
+            TelemetryError = ""
         }
     }
     finally {
@@ -3271,37 +3299,55 @@ function New-TcpConnectSample {
     # 迴圈就停在那裡——停止回應的目標多花的是一次逾時，不是 PingCount 次。
     $results = @(@(@($First) + @($Repeats)) | Where-Object { $null -ne $_ })
     $times = New-Object System.Collections.ArrayList
+    $synCounts = New-Object System.Collections.ArrayList
+    $rtts = New-Object System.Collections.ArrayList
+    $telemetryError = ""
     $failedIndex = 0
     $failedError = ""
     for ($i = 0; $i -lt $results.Count; $i++) {
         if ($results[$i].Success) {
             [void]$times.Add([int](ConvertTo-IntSafe $results[$i].ElapsedMs 0))
+            $synCount = [int](ConvertTo-IntSafe (Get-PropertyValue $results[$i] "SynRetrans" -1) -1)
+            [void]$synCounts.Add($synCount)
+            [void]$rtts.Add([int](ConvertTo-IntSafe (Get-PropertyValue $results[$i] "RttUs" -1) -1))
+            if ($synCount -lt 0 -and $telemetryError -eq "") { $telemetryError = [string](Get-PropertyValue $results[$i] "TelemetryError" "") }
         }
         elseif ($failedIndex -eq 0) {
             $failedIndex = $i + 1
             $failedError = [string]$results[$i].Error
         }
     }
-    # 以名稱給定的目標，第一次連線的計時裡含名稱查詢——TcpClient 先解析名稱再送 SYN——所以那個時間會列出，但不拿來和
-    # 逾時比較；後續連線連的是第一次到達的位址，會拿來比較。以位址給定的目標，第一次連線和其他各次一樣比較。
+    # 每一次完成的連線都問得到 socket 時，重傳數字就是 socket 自己的（PR #53 第 1 輪）：各次的 SynRetrans 加總。只要有一次
+    # 問不到——比 Windows 10 1703 舊的版本、拒絕的 socket——樣本就寫明，改拿各次時間和逾時比較，當作它本來就是的代理指標。
+    $telemetryComplete = ($synCounts.Count -gt 0) -and (@($synCounts | Where-Object { $_ -lt 0 }).Count -eq 0)
+    $retransmittedSyns = 0
+    foreach ($synCount in $synCounts) { if ($synCount -gt 0) { $retransmittedSyns += $synCount } }
+    # 代理指標的規則：以名稱給定的目標，第一次連線的計時裡含名稱查詢——TcpClient 先解析名稱再送 SYN——所以那個時間會列出，
+    # 但不拿來和逾時比較；後續連線連的是第一次到達的位址，會拿來比較。以位址給定的目標，第一次連線和其他各次一樣比較。
+    # 有 socket 自己的計數時這些都不重要，因為計數不是時間。
     $judged = @($times)
     if ($HostIsName -and $judged.Count -gt 0) { $judged = @($judged | Select-Object -Skip 1) }
     $rtoMs = [math]::Max(1, (ConvertTo-IntSafe (Get-PropertyValue $InitialRto "Ms" 1000) 1000))
     $atOrAbove = @($judged | Where-Object { $_ -ge $rtoMs })
 
     return [pscustomobject][ordered]@{
-        Planned       = [math]::Max(1, $Planned)
-        Attempted     = $results.Count
-        Times         = @($times)
-        Judged        = $judged.Count
-        AtOrAbove     = @($atOrAbove)
-        RtoMs         = $rtoMs
-        RtoSource     = [string](Get-PropertyValue $InitialRto "Source" "default")
-        RemoteAddress = [string](Get-PropertyValue $First "RemoteAddress" "")
-        LocalAddress  = [string](Get-PropertyValue $First "LocalAddress" "")
-        HostIsName    = [bool]$HostIsName
-        FailedIndex   = $failedIndex
-        FailedError   = $failedError
+        Planned           = [math]::Max(1, $Planned)
+        Attempted         = $results.Count
+        Times             = @($times)
+        SynRetrans        = @($synCounts)
+        RttUs             = @($rtts)
+        TelemetryComplete = [bool]$telemetryComplete
+        TelemetryError    = $telemetryError
+        RetransmittedSyns = $retransmittedSyns
+        Judged            = $judged.Count
+        AtOrAbove         = @($atOrAbove)
+        RtoMs             = $rtoMs
+        RtoSource         = [string](Get-PropertyValue $InitialRto "Source" "default")
+        RemoteAddress     = [string](Get-PropertyValue $First "RemoteAddress" "")
+        LocalAddress      = [string](Get-PropertyValue $First "LocalAddress" "")
+        HostIsName        = [bool]$HostIsName
+        FailedIndex       = $failedIndex
+        FailedError       = $failedError
     }
 }
 
@@ -3312,10 +3358,15 @@ function Get-TcpConnectSampleText {
         [int]$Port
     )
 
-    # backlog #52：訊息帶著各次時間，以及被比較的連線裡有幾次達到逾時——讀者一眼該看到的那一個數字；判讀規則、逾時值
-    # 的出處與位址則放在詳細資料。這裡不決定任何事：這一列的狀態在這段文字存在之前，就已由第一次連線決定。
+    # backlog #52：訊息帶著各次時間與重傳數字——讀得到時是 socket 自己的計數，否則是被比較的連線裡有幾次達到逾時，並標明
+    # 那是代理指標——讀者一眼該看到的那一個數字；規則、逾時值的出處與位址則放在詳細資料。這裡不決定任何事：這一列的狀態
+    # 在這段文字存在之前，就已由第一次連線決定。
     $target = "{0}:{1}" -f $HostName, $Port
     $timesText = (@($Sample.Times) | ForEach-Object { [string]$_ }) -join " / "
+    $synText = (@($Sample.SynRetrans) | ForEach-Object { [string]$_ }) -join " / "
+    $rttText = (@($Sample.RttUs) | ForEach-Object { [string]([math]::Round($_ / 1000.0, 1)) }) -join " / "
+    $telemetry = [bool]$Sample.TelemetryComplete
+    $retransmitted = [int]$Sample.RetransmittedSyns
     $timed = @($Sample.Times).Count
     $reached = @($Sample.AtOrAbove).Count
     $judged = [int]$Sample.Judged
@@ -3324,21 +3375,29 @@ function Get-TcpConnectSampleText {
     $rtoMs = [int]$Sample.RtoMs
     $failedIndex = [int]$Sample.FailedIndex
     $rtoText = ("{0} ms" -f $rtoMs)
-    if ([string]$Sample.RtoSource -ne "setting") { $rtoText = ("{0} ms（假設值）" -f $rtoMs) }
+    if ([string]$Sample.RtoSource -ne "setting") { $rtoText = ("{0} ms (assumed)" -f $rtoMs) }
+    $telemetryError = [string]$Sample.TelemetryError
+    if ($telemetryError -eq "") { $telemetryError = "沒有錯誤文字" }
 
     $lead = ("{0} 次連線計時：{1} ms" -f $timed, $timesText)
     if ($failedIndex -gt 0) {
         $lead = ("計畫 {0} 次連線，完成計時 {1} 次，第 {2} 次失敗、其餘未再嘗試：{3} ms" -f $planned, $timed, $failedIndex, $timesText)
     }
     $message = ""
-    if ($judged -eq 0) {
-        $message = $lead + ("；名稱目標的第一次連線含名稱查詢，因此沒有拿它和重傳逾時 {0} 比較。" -f $rtoText)
+    if ($telemetry -and $retransmitted -eq 0) {
+        $message = $lead + ("；各次 SYN 重傳 {0}，由各個 socket 自己計數。" -f $synText)
+    }
+    elseif ($telemetry) {
+        $message = $lead + ("；各次 SYN 重傳 {0}，由各個 socket 自己計數：共 {1} 個 SYN 曾被重送。" -f $synText, $retransmitted)
+    }
+    elseif ($judged -eq 0) {
+        $message = $lead + ("；socket 自己的重傳計數器讀不到，而名稱目標的第一次連線含名稱查詢，因此沒有東西拿來和重傳逾時 {0} 比較。" -f $rtoText)
     }
     elseif ($reached -eq 0) {
-        $message = $lead + ("；{1} 次中有 {0} 次達到重傳逾時 {2}。" -f $reached, $judged, $rtoText)
+        $message = $lead + ("；socket 自己的重傳計數器讀不到，改以時間代替：{1} 次中有 {0} 次達到重傳逾時 {2}——這是 SYN 重傳的代理指標，不是計數。" -f $reached, $judged, $rtoText)
     }
     else {
-        $message = $lead + ("；{1} 次中有 {0} 次達到重傳逾時 {2}——那正是 SYN 被重送的時刻。" -f $reached, $judged, $rtoText)
+        $message = $lead + ("；socket 自己的重傳計數器讀不到，改以時間代替：{1} 次中有 {0} 次達到重傳逾時 {2}——那正是 SYN 被重送的時刻——這是 SYN 重傳的代理指標，不是計數。" -f $reached, $judged, $rtoText)
     }
 
     $lines = New-Object System.Collections.ArrayList
@@ -3351,7 +3410,11 @@ function Get-TcpConnectSampleText {
         $from = ("、從 {0} 送出" -f $Sample.LocalAddress)
     }
     $first = ("連線：計畫 {1} 次、實際 {0} 次，每一次都是一次新的 TCP 交握，{2}{3}；依序耗時：{4} ms。" -f $attempted, $planned, $where, $from, $timesText)
-    if ($Sample.HostIsName) {
+    if ($Sample.HostIsName -and $telemetry) {
+        if ($attempted -gt 1) { $first += (" 第一次連線解析了名稱，耗時含那次查詢；它的 SYN 計數是 socket 自己的，和其他各次一樣採用；後面 {0} 次連到解析出的位址。" -f ($attempted - 1)) }
+        else { $first += " 第一次連線解析了名稱，耗時含那次查詢；它的 SYN 計數是 socket 自己的；之後沒有再連線。" }
+    }
+    elseif ($Sample.HostIsName) {
         if ($attempted -gt 1) { $first += (" 第一次連線解析了名稱，耗時含那次查詢，因此不拿它和逾時比較；後面 {0} 次連到解析出的位址。" -f ($attempted - 1)) }
         else { $first += " 第一次連線解析了名稱，耗時含那次查詢，因此不拿它和逾時比較；之後沒有再連線。" }
     }
@@ -3360,12 +3423,15 @@ function Get-TcpConnectSampleText {
         [void]$lines.Add(("第 {0} 次連線失敗，其後的連線未再嘗試：" -f $failedIndex))
         [void]$lines.Add([string]$Sample.FailedError)
     }
+    if ($telemetry) { [void]$lines.Add(("各次連線的 SYN 重傳：{0}；各次連線的往返時間估計：{1} ms（TCP_INFO_v0 的 SynRetrans 與 RttUs，連線建立後經 SIO_TCP_INFO 從各個 socket 讀取）。" -f $synText, $rttText)) }
+    else { [void]$lines.Add(("SYN 重傳：這台電腦的 socket 讀不到（{0}）——SIO_TCP_INFO 需要 Windows 10 1703 版或 Windows Server 2016——因此改拿各次時間和下面的初始重傳逾時比較。" -f $telemetryError)) }
     $rtoLine = ("初始重傳逾時（RTO）：{0} ms，" -f $rtoMs)
     if ([string]$Sample.RtoSource -eq "setting") { $rtoLine += "取自 Get-NetTCPSetting 回報的 Internet 範本 InitialRtoMs。" }
     else { $rtoLine += ("為假設值：這台電腦的 Get-NetTCPSetting 沒有回報數值，而 {0} ms 是 Windows 未另行設定時採用的值（netsh int tcp show global 會顯示生效中的值）。" -f $rtoMs) }
     [void]$lines.Add($rtoLine)
-    if ($judged -eq 0) { [void]$lines.Add("判讀：沒有連線被拿來比較——唯一完成的那一次含名稱查詢。耗時達到初始重傳逾時的連線，判讀為 SYN 或 SYN-ACK 曾被重送，因為那個逾時正是這台電腦第二次送出 SYN 的時刻。這些是工具自己的連線、對這一個目標、在這一刻——正是系統級「TCP 重傳」列無法歸屬的數字——而且它們不做判定：這一列的狀態由第一次連線決定。") }
-    else { [void]$lines.Add(("判讀：{1} 次中有 {0} 次達到或超過它。耗時達到初始重傳逾時的連線，判讀為 SYN 或 SYN-ACK 曾被重送，因為那個逾時正是這台電腦第二次送出 SYN 的時刻；低於它的連線，這台電腦沒有重送 SYN。這些是工具自己的連線、對這一個目標、在這一刻——正是系統級「TCP 重傳」列無法歸屬的數字——而且它們不做判定：這一列的狀態由第一次連線決定。" -f $reached, $judged)) }
+    if ($telemetry) { [void]$lines.Add(("判讀：{1} 次連線共有 {0} 個 SYN 曾被重送，由 socket 自己計數。這些是工具自己的連線、對這一個目標、在這一刻——正是系統級「TCP 重傳」列無法歸屬的數字——而且它們不做判定：這一列的狀態由第一次連線決定。耗時達到初始重傳逾時的連線，就是重傳的 SYN 會在時間上顯現的地方。" -f $retransmitted, $timed)) }
+    elseif ($judged -eq 0) { [void]$lines.Add("判讀：什麼都沒有比較——socket 的計數器讀不到，而唯一完成的那一次連線含名稱查詢。這些是工具自己的連線、對這一個目標、在這一刻——正是系統級「TCP 重傳」列無法歸屬的數字——而且它們不做判定：這一列的狀態由第一次連線決定。") }
+    else { [void]$lines.Add(("判讀：{1} 次中有 {0} 次達到或超過逾時。耗時達到初始重傳逾時的連線，是重傳的 SYN 會顯現的地方，但這段時間也包含 SYN 之前與回覆之後所發生的事，所以它是重傳的代理指標，不是計數；低於它的連線，這台電腦沒有重送 SYN。這些是工具自己的連線、對這一個目標、在這一刻——正是系統級「TCP 重傳」列無法歸屬的數字——而且它們不做判定：這一列的狀態由第一次連線決定。" -f $reached, $judged)) }
 
     return [pscustomobject][ordered]@{
         Message = $message
@@ -3449,8 +3515,9 @@ function Test-ConnectivityTargets {
                 $repeats += $repeat
                 if (-not $repeat.Success) { break }
             }
-            # 第一次連線是否含名稱查詢，照 TcpClient 自己判斷要不要查詢的方式決定：IPAddress.TryParse 接受的值直接送 SYN，
-            # 其他的都先交給解析器。
+            # 第一次連線是否含名稱查詢，照 framework 自己的判斷方式決定：TcpClient 把字串交給 Dns，其解析輔助函數先用
+            # IPAddress.TryParse 解析，解析得出的值不查詢任何東西（.NET Framework 參考原始碼的 Dns.HostResolutionBeginHelper，
+            # 2026-09-12 讀取），所以這裡用同一個測試就能說出解析器有沒有被問過。
             $parsedAddress = $null
             $hostIsName = -not [System.Net.IPAddress]::TryParse($hostName, [ref]$parsedAddress)
             $sample = New-TcpConnectSample -First $result -Repeats $repeats -Planned $connectCount -HostIsName $hostIsName -InitialRto $initialRto
@@ -4312,7 +4379,7 @@ function Compare-TcpCounters {
     # backlog #52：這次執行有替自己的連線計時時，系統級的列就指出歸屬得了的數字在哪裡；沒有時——沒有 TCP 目標，或沒有一個
     # 有回應——就沒有東西可指，這一行寧可不寫，也不承諾一個不存在的列。
     $attributionLine = $null
-    if ($script:TcpConnectSampleCount -gt 0) { $attributionLine = "「TCP 連線」那幾列有這一列給不了的東西：工具自己對單一具名目標的連線、逐次計時，以及其中幾次達到了重傳逾時。" }
+    if ($script:TcpConnectSampleCount -gt 0) { $attributionLine = "「TCP 連線」那幾列有這一列給不了的東西：工具自己對單一具名目標的連線、逐次計時，以及各次不得不重送的 SYN。" }
 
     foreach ($protocol in @("TCPv4", "TCPv6")) {
         if (-not $Before.Counters.ContainsKey($protocol) -or -not $After.Counters.ContainsKey($protocol)) {

@@ -544,27 +544,33 @@ Set-RunOptions -Overrides @{} | Out-Null
 
 # --- Scenario M: backlog #52 - a TCP target that answers is connected to PingCount times, and the sample decides nothing ---
 # Driven through Test-ConnectivityTargets with the socket and the timeout read mocked, so that nothing here needs a
-# network: the mock answers with scripted times, fails from a chosen connection on, and counts what it was asked.
+# network: the mock answers with scripted times and the socket's own SYN count, fails from a chosen connection on,
+# can leave the counters unreadable (PR #53, round 1), and counts what it was asked.
 $originalTcp = ${function:Invoke-TcpConnectionTest}
 $originalRto = ${function:Get-TcpInitialRto}
 $script:MockCalls = New-Object System.Collections.ArrayList
 $script:MockTimes = @(23, 7, 7, 7)
 $script:MockFailAt = 0
+$script:MockSynAt = 0
+$script:MockNoTelemetry = $false
 $script:MockRtoReads = 0
 function Invoke-TcpConnectionTest {
     param([string]$HostName, [int]$Port, [int]$TimeoutMs)
     [void]$script:MockCalls.Add($HostName)
     $n = $script:MockCalls.Count
     if ($script:MockFailAt -gt 0 -and $n -ge $script:MockFailAt) {
-        return [pscustomobject]@{ Success = $false; Host = $HostName; Port = $Port; ElapsedMs = [double]$TimeoutMs; Error = ('Cause: the tool''s own limit expired [ToolTimeout]' + "`r`n" + 'TCP connection timed out'); RemoteAddress = ''; LocalAddress = '' }
+        return [pscustomobject]@{ Success = $false; Host = $HostName; Port = $Port; ElapsedMs = [double]$TimeoutMs; Error = ('Cause: the tool''s own limit expired [ToolTimeout]' + "`r`n" + 'TCP connection timed out'); RemoteAddress = ''; LocalAddress = ''; SynRetrans = -1; RttUs = -1; TelemetryError = '' }
     }
-    return [pscustomobject]@{ Success = $true; Host = $HostName; Port = $Port; ElapsedMs = [double]$script:MockTimes[[math]::Min($n, $script:MockTimes.Count) - 1]; Error = ''; RemoteAddress = '198.51.100.7'; LocalAddress = '192.0.2.10' }
+    $syn = $(if ($script:MockNoTelemetry) { -1 } elseif ($n -eq $script:MockSynAt) { 1 } else { 0 })
+    $rtt = $(if ($script:MockNoTelemetry) { -1 } else { 6301 })
+    $why = $(if ($script:MockNoTelemetry) { 'The attempted operation is not supported for the type of object referenced' } else { '' })
+    return [pscustomobject]@{ Success = $true; Host = $HostName; Port = $Port; ElapsedMs = [double]$script:MockTimes[[math]::Min($n, $script:MockTimes.Count) - 1]; Error = ''; RemoteAddress = '198.51.100.7'; LocalAddress = '192.0.2.10'; SynRetrans = $syn; RttUs = $rtt; TelemetryError = $why }
 }
 function Get-TcpInitialRto { $script:MockRtoReads++; return [pscustomobject]@{ Ms = 1000; Source = 'default' } }
 function Reset-ScenarioM([int]$FailAt, [int]$PingCount, [object[]]$Targets) {
     $script:Results = New-Object System.Collections.ArrayList
     $script:TcpConnectSampleCount = 0
-    $script:MockCalls.Clear(); $script:MockFailAt = $FailAt; $script:MockRtoReads = 0
+    $script:MockCalls.Clear(); $script:MockFailAt = $FailAt; $script:MockSynAt = 0; $script:MockNoTelemetry = $false; $script:MockRtoReads = 0
     $script:Config = Get-DefaultConfig
     $script:Config.Tests.PingCount = $PingCount
     $script:Config.Tests.HttpTargets = @()
@@ -576,13 +582,21 @@ Reset-ScenarioM 0 4 @((New-MTarget 'Answering' '198.51.100.7' $false))
 Test-ConnectivityTargets
 $mRows = @($script:Results | Where-Object { $_.Tag -eq 'tcp' })
 Assert-Equal 'M: a target that answers is connected to four times, all to one address' (($script:MockCalls.Count -eq 4) -and ((@($script:MockCalls | Sort-Object -Unique) -join ',') -eq '198.51.100.7')) True
-Assert-Equal 'M: one row, passed, weighted, the sample in its message and the reading in its details' (($mRows.Count -eq 1) -and ($mRows[0].Status -eq 'PASS') -and (-not [bool]$mRows[0].Weightless) -and ($mRows[0].Message -match '23 / 7 / 7 / 7 ms') -and ($mRows[0].Details -match 'RTO[^\r\n]*1000 ms')) True
+Assert-Equal 'M: one row, passed, weighted, the sample and the sockets'' counts in its message, the counters and the timeout in its details' (($mRows.Count -eq 1) -and ($mRows[0].Status -eq 'PASS') -and (-not [bool]$mRows[0].Weightless) -and ($mRows[0].Message -match '23 / 7 / 7 / 7 ms') -and ($mRows[0].Message -match '0 / 0 / 0 / 0') -and ($mRows[0].Details -match 'SIO_TCP_INFO') -and ($mRows[0].Details -match 'RTO[^\r\n]*1000 ms')) True
 Assert-Equal 'M: the sample count moved once and the timeout was read once' ("{0}/{1}" -f $script:TcpConnectSampleCount, $script:MockRtoReads) '1/1'
+Reset-ScenarioM 0 4 @((New-MTarget 'Answering' '198.51.100.7' $true)); $script:MockSynAt = 3
+Test-ConnectivityTargets
+$mSyn = @($script:Results | Where-Object { $_.Tag -eq 'tcp' })[0]
+Assert-Equal 'M: a SYN the third socket had to send again is in the message per connection and in total, and moves nothing' (("{0}/{1}/{2}" -f $mSyn.Status, (Get-OverallStatus).Code, ($mSyn.Message -match '0 / 0 / 1 / 0')) + '/' + ($mSyn.Message -match '(^|[^0-9.])1([^0-9.]|$)')) 'PASS/PASS/True/True'
+Reset-ScenarioM 0 4 @((New-MTarget 'Answering' '198.51.100.7' $true)); $script:MockNoTelemetry = $true
+Test-ConnectivityTargets
+$mProxy = @($script:Results | Where-Object { $_.Tag -eq 'tcp' })[0]
+Assert-Equal 'M: sockets whose counters cannot be read leave the row passed, the times read against the timeout as a proxy, and the reason in the details' (("{0}/{1}" -f $mProxy.Status, (Get-OverallStatus).Code) + '/' + ($mProxy.Message -match '1000 ms \(|1000 ms（') + '/' + ($mProxy.Message -match 'proxy|代理') + '/' + ($mProxy.Details -match 'not supported') + '/' + ($mProxy.Details -match 'RTO[^\r\n]*1000 ms')) 'PASS/PASS/True/True/True/True'
 Reset-ScenarioM 0 4 @((New-MTarget 'Named' 'www.example.com' $false), (New-MTarget 'Second' '198.51.100.8' $false))
 Test-ConnectivityTargets
 Assert-Equal 'M: a name is asked once and its address three times; the timeout is read once for both targets' (((@($script:MockCalls)[0..3]) -join ',') + '/' + $script:MockRtoReads + '/' + $script:MockCalls.Count) 'www.example.com,198.51.100.7,198.51.100.7,198.51.100.7/1/8'
 $mNamed = @($script:Results | Where-Object { $_.Tag -eq 'tcp' -and $_.Check -eq 'Named' })[0]
-Assert-Equal 'M: the name row names the address it resolved to and reads three of its four' (($mNamed.Details -match '198\.51\.100\.7') -and ($mNamed.Message -match '(^|[^0-9.])3([^0-9.]|$)')) True
+Assert-Equal 'M: the name row names the address it resolved to and counts all four of its sockets' (($mNamed.Details -match '198\.51\.100\.7') -and ($mNamed.Message -match '0 / 0 / 0 / 0')) True
 Reset-ScenarioM 1 4 @((New-MTarget 'Down' '198.51.100.9' $true))
 Test-ConnectivityTargets
 $mDown = @($script:Results | Where-Object { $_.Tag -eq 'tcp' })[0]
@@ -595,7 +609,7 @@ Assert-Equal 'M: the row still passes on its first connection, names the failure
 Assert-Equal 'M: and its details carry the failed connection''s cause' ($mFlaky.Details -match 'ToolTimeout') True
 Reset-ScenarioM 0 1 @((New-MTarget 'Once' '198.51.100.7' $false))
 Test-ConnectivityTargets
-Assert-Equal 'M: PingCount 1 is one connection, still read against the timeout' ("{0}/{1}" -f $script:MockCalls.Count, (@($script:Results | Where-Object { $_.Tag -eq 'tcp' })[0].Details -match 'RTO')) '1/True'
+Assert-Equal 'M: PingCount 1 is one connection, its socket counted, the timeout still in the details' ("{0}/{1}/{2}" -f $script:MockCalls.Count, (@($script:Results | Where-Object { $_.Tag -eq 'tcp' })[0].Message -match '(^|[^0-9.])0([^0-9.]|$)'), (@($script:Results | Where-Object { $_.Tag -eq 'tcp' })[0].Details -match 'RTO')) '1/True/True'
 ${function:Invoke-TcpConnectionTest} = $originalTcp
 ${function:Get-TcpInitialRto} = $originalRto
 $script:TcpConnectSampleCount = 0
