@@ -3928,12 +3928,24 @@ function ConvertFrom-NetshWlanOutput {
         # Values are matched by shape (MAC, percentage, 802.11x, GHz, plain numbers) because labels are localized
         # and their order differs between Windows 10 and Windows 11 builds.
         $macs = @($block | Where-Object { $_.Value -match $macPattern })
+        # The BSSID by its LABEL first (PR #54, round 3): netsh does not translate the acronym - the label is BSSID on Windows
+        # 10 and AP BSSID on Windows 11 - and a network named like a MAC address would otherwise be the block's second MAC-shaped
+        # value and be stored as the access point, with the connection state as the network's name. The second-MAC rule stays
+        # as the fallback for an output without the label; the SSID is read from its own label the same way, else from the
+        # line before the BSSID, which is where both layouts print it.
         $bssidIndex = -1
         for ($k = 0; $k -lt $block.Count; $k++) {
-            if ($block[$k].Value -match $macPattern -and $macs.Count -ge 2 -and $block[$k].Value -eq $macs[1].Value) { $bssidIndex = $k; break }
+            if ($block[$k].Label -match '(^|\s)BSSID$' -and $block[$k].Value -match $macPattern) { $bssidIndex = $k; break }
+        }
+        if ($bssidIndex -lt 0) {
+            for ($k = 0; $k -lt $block.Count; $k++) {
+                if ($block[$k].Value -match $macPattern -and $macs.Count -ge 2 -and $block[$k].Value -eq $macs[1].Value) { $bssidIndex = $k; break }
+            }
         }
         $ssid = ""
-        if ($bssidIndex -gt 0) { $ssid = $block[$bssidIndex - 1].Value }
+        $ssidLine = @($block | Where-Object { $_.Label -match '^SSID$' } | Select-Object -First 1)
+        if ($ssidLine.Count -gt 0) { $ssid = $ssidLine[0].Value }
+        elseif ($bssidIndex -gt 0) { $ssid = $block[$bssidIndex - 1].Value }
         # The interface's own GUID, kept lower-case: it is what the association rows are keyed and named by.
         $guid = ""
         if ($block.Count -ge 3 -and $block[2].Value -match $guidPattern) { $guid = $block[2].Value.ToLowerInvariant() }
@@ -4205,7 +4217,7 @@ function Compare-WifiAssociation {
                 # The same address under more than one network name (PR #54, round 2): the access point was renamed or
                 # reconfigured during the run, which the steady sentence would have hidden behind the first name.
                 $ssidSequence = @()
-                foreach ($reading in $withBssid) { if ($ssidSequence.Count -eq 0 -or $ssidSequence[$ssidSequence.Count - 1] -ne $reading.Ssid) { $ssidSequence += $reading.Ssid } }
+                foreach ($reading in $withBssid) { if ($ssidSequence.Count -eq 0 -or $ssidSequence[$ssidSequence.Count - 1] -cne $reading.Ssid) { $ssidSequence += $reading.Ssid } }
                 $message = "{0}: the same access point (BSSID {1}) at the {2} of {3} samples that reported one, but under more than one network name - SSID {4} - so the access point was renamed or reconfigured during the run." -f $name, $first.Bssid, $withBssid.Count, $readings.Count, (@($ssidSequence | ForEach-Object { ConvertTo-DisplayString $_ }) -join ", then ")
             }
             elseif ($distinctBssids.Count -eq 1) {
@@ -4273,8 +4285,13 @@ function Get-MacRelation {
     return "different"
 }
 
-function Get-AccessPointGatewayText {
+function Get-AccessPointGatewayEvidence {
     param([string]$Gateway, [string]$GatewayMac, [object[]]$PrimaryAdapters, [object[]]$Samples, [int]$InterfaceIndex = 0)
+
+    # The comparison behind the hint, as evidence and as the sentence (PR #54, round 3): the access point's address, how it
+    # stands to the gateway's (Get-MacRelation's word, nobssid where the interface reported none, empty where nothing was
+    # compared), the interface's name, and the text the row prints. The refresh after the last sample compares the address
+    # and the relation, never the sentence - an interface renamed during the run changes the sentence and nothing else.
 
     # The hint's sentence, or nothing (backlog #61's other half). The one thing to know before trying to separate the air
     # from the wire on a wireless machine is whether there is a wire at all: the access point that answers the radio and
@@ -4285,8 +4302,9 @@ function Get-AccessPointGatewayText {
     # device, but an all-in-one's radio and bridge addresses commonly differ by an octet or the locally-administered
     # bit, so a difference proves nothing. A gateway supplied by a wired adapter has no access point to compare with,
     # and the Wi-Fi data switched off leaves nothing to compare from: in both cases the line is absent.
+    $evidence = [pscustomobject][ordered]@{ Text = ""; Bssid = ""; Relation = ""; Interface = "" }
     $gatewayHex = ([string]$GatewayMac) -replace '[^0-9a-fA-F]', ''
-    if ($gatewayHex.Length -ne 12 -or $gatewayHex -eq "000000000000") { return "" }
+    if ($gatewayHex.Length -ne 12 -or $gatewayHex -eq "000000000000") { return $evidence }
     # The adapter is the one the neighbour entry was learned on (PR #54, round 1): on a machine whose wired and wireless
     # adapters name the same gateway address, the entry's MAC may belong to the wired network, and a comparison with the
     # wireless network's access point would then set two unrelated addresses side by side. -InterfaceIndex is the entry's
@@ -4301,27 +4319,40 @@ function Get-AccessPointGatewayText {
         $adapterMac = ([string](Get-PropertyValue $adapter "MacAddress" "")) -replace '[^0-9a-fA-F]', ''
         if ($adapterMac.Length -eq 12) { $adapterMacs += $adapterMac.ToUpperInvariant() }
     }
-    if ($adapterMacs.Count -eq 0) { return "" }
-    if ($InterfaceIndex -le 0 -and $candidates -gt 1) { return "" }
+    if ($adapterMacs.Count -eq 0) { return $evidence }
+    if ($InterfaceIndex -le 0 -and $candidates -gt 1) { return $evidence }
     $latest = @(@($Samples) | Where-Object { $null -ne $_ -and [string]::IsNullOrWhiteSpace([string]$_.Error) } | Select-Object -Last 1)
-    if ($latest.Count -eq 0) { return "" }
+    if ($latest.Count -eq 0) { return $evidence }
     foreach ($wifi in @($latest[0].Interfaces)) {
         $physical = ([string]$wifi.PhysicalAddress) -replace '[^0-9a-fA-F]', ''
         if ($physical.Length -ne 12 -or $adapterMacs -notcontains $physical.ToUpperInvariant()) { continue }
         $name = ConvertTo-DisplayString $wifi.Name
         $bssid = ([string]$wifi.Bssid).Trim().ToLowerInvariant()
+        $evidence.Interface = $name
         if ([string]::IsNullOrWhiteSpace($bssid)) {
-            return ("Access point and gateway: this gateway is reached over the wireless interface {0}, for which no BSSID was reported, so the two addresses could not be compared." -f $name)
+            $evidence.Relation = "nobssid"
+            $evidence.Text = ("Access point and gateway: this gateway is reached over the wireless interface {0}, for which no BSSID was reported, so the two addresses could not be compared." -f $name)
+            return $evidence
         }
-        switch (Get-MacRelation -First $GatewayMac -Second $bssid) {
-            "identical" { return ("Access point and gateway: the gateway's MAC address is the BSSID of the access point {0} is associated with ({1}), so the access point and the gateway are one device - a router with its own radio - and on this network there is no boundary between the air and the wire for a wired-versus-wireless comparison to stand on." -f $name, $bssid) }
-            "near-ul"   { return ("Access point and gateway: the gateway's MAC address differs from the BSSID of the access point {0} is associated with ({1}) only in the locally-administered bit, the shape one device's radio and bridge addresses commonly take; read the two as probably one device - a hint, not a topology claim." -f $name, $bssid) }
-            "near-last" { return ("Access point and gateway: the gateway's MAC address differs from the BSSID of the access point {0} is associated with ({1}) only in its last octet, the shape one device's radio and bridge addresses commonly take; read the two as probably one device - a hint, not a topology claim." -f $name, $bssid) }
-            "vendor"    { return ("Access point and gateway: the gateway's MAC address shares its vendor prefix (the first three octets) with the BSSID of the access point {0} is associated with ({1}) - the same maker, one device or two; a hint, not a topology claim." -f $name, $bssid) }
-            default     { return ("Access point and gateway: the gateway's MAC address and the BSSID of the access point {0} is associated with ({1}) share no vendor prefix, which suggests two devices - an access point and a router - and so a boundary between the air and the wire that a wired station on the same segment could measure from; a hint, not a topology claim, since a router with its own radio can use unrelated addresses for the two." -f $name, $bssid) }
+        $evidence.Bssid = $bssid
+        $evidence.Relation = Get-MacRelation -First $GatewayMac -Second $bssid
+        switch ($evidence.Relation) {
+            "identical" { $evidence.Text = ("Access point and gateway: the gateway's MAC address is the BSSID of the access point {0} is associated with ({1}), so the access point and the gateway are one device - a router with its own radio - and on this network there is no boundary between the air and the wire for a wired-versus-wireless comparison to stand on." -f $name, $bssid) }
+            "near-ul"   { $evidence.Text = ("Access point and gateway: the gateway's MAC address differs from the BSSID of the access point {0} is associated with ({1}) only in the locally-administered bit, the shape one device's radio and bridge addresses commonly take; read the two as probably one device - a hint, not a topology claim." -f $name, $bssid) }
+            "near-last" { $evidence.Text = ("Access point and gateway: the gateway's MAC address differs from the BSSID of the access point {0} is associated with ({1}) only in its last octet, the shape one device's radio and bridge addresses commonly take; read the two as probably one device - a hint, not a topology claim." -f $name, $bssid) }
+            "vendor"    { $evidence.Text = ("Access point and gateway: the gateway's MAC address shares its vendor prefix (the first three octets) with the BSSID of the access point {0} is associated with ({1}) - the same maker, one device or two; a hint, not a topology claim." -f $name, $bssid) }
+            default     { $evidence.Text = ("Access point and gateway: the gateway's MAC address and the BSSID of the access point {0} is associated with ({1}) share no vendor prefix, which suggests two devices - an access point and a router - and so a boundary between the air and the wire that a wired station on the same segment could measure from; a hint, not a topology claim, since a router with its own radio can use unrelated addresses for the two." -f $name, $bssid) }
         }
+        return $evidence
     }
-    return ""
+    return $evidence
+}
+
+function Get-AccessPointGatewayText {
+    param([string]$Gateway, [string]$GatewayMac, [object[]]$PrimaryAdapters, [object[]]$Samples, [int]$InterfaceIndex = 0)
+
+    # The sentence alone, for the callers that print it; the evidence behind it is Get-AccessPointGatewayEvidence's.
+    return ([string](Get-AccessPointGatewayEvidence -Gateway $Gateway -GatewayMac $GatewayMac -PrimaryAdapters $PrimaryAdapters -Samples $Samples -InterfaceIndex $InterfaceIndex).Text)
 }
 
 function Update-AccessPointGatewayHints {
@@ -4335,8 +4366,11 @@ function Update-AccessPointGatewayHints {
     # point the interface was on at the end, or says that none was reported then, and points at the association row.
     foreach ($entry in @($script:GatewayNeighborRows)) {
         if ($null -eq $entry -or $null -eq $entry.Row) { continue }
-        $fresh = Get-AccessPointGatewayText -Gateway ([string]$entry.Gateway) -GatewayMac ([string]$entry.Mac) -PrimaryAdapters @($script:PrimaryAdapters) -Samples @($Samples) -InterfaceIndex (ConvertTo-IntSafe $entry.InterfaceIndex 0)
-        if ([string]$fresh -eq [string]$entry.Hint) { continue }
+        $freshEvidence = Get-AccessPointGatewayEvidence -Gateway ([string]$entry.Gateway) -GatewayMac ([string]$entry.Mac) -PrimaryAdapters @($script:PrimaryAdapters) -Samples @($Samples) -InterfaceIndex (ConvertTo-IntSafe $entry.InterfaceIndex 0)
+        # The evidence is compared, not the sentence (round 3): the same address in the same relation is the same finding,
+        # whatever the interface is called by now.
+        if (([string]$freshEvidence.Bssid -eq [string](Get-PropertyValue $entry "Bssid" "")) -and ([string]$freshEvidence.Relation -eq [string](Get-PropertyValue $entry "Relation" ""))) { continue }
+        $fresh = [string]$freshEvidence.Text
         if ([string]::IsNullOrWhiteSpace([string]$fresh)) {
             $line = "Access point and gateway, after the last sample: no BSSID was reported for the interface any more, so the comparison above could not be repeated; the Wi-Fi association row records what the samples saw."
         }
@@ -4354,6 +4388,8 @@ function Update-AccessPointGatewayHints {
         else { $lines = @($(if ($at -ge 0) { $lines[0..$at] } else { @() })) + @($line) + @($(if ($at + 1 -lt $lines.Count) { $lines[($at + 1)..($lines.Count - 1)] } else { @() })) }
         $entry.Row.Details = ($lines -join [Environment]::NewLine)
         $entry.Hint = [string]$fresh
+        $entry.Bssid = [string]$freshEvidence.Bssid
+        $entry.Relation = [string]$freshEvidence.Relation
         Write-UiLog -Status "INFO" -Text ("{0} / {1}: {2}" -f $entry.Row.Category, $entry.Row.Check, $line)
     }
 }
@@ -4451,15 +4487,17 @@ function Add-GatewayNeighborResult {
         # air from the wire on a wireless machine, published as a hint - Get-AccessPointGatewayText says what each shape
         # of the comparison does and does not establish - and absent where the gateway's adapter is wired or the Wi-Fi
         # data was not read.
-        $accessPointLine = Get-AccessPointGatewayText -Gateway ([string]$gateway) -GatewayMac $mac -PrimaryAdapters $PrimaryAdapters -Samples @($script:WifiAssociationSamples) -InterfaceIndex $neighborIfIndex
+        $accessPointEvidence = Get-AccessPointGatewayEvidence -Gateway ([string]$gateway) -GatewayMac $mac -PrimaryAdapters $PrimaryAdapters -Samples @($script:WifiAssociationSamples) -InterfaceIndex $neighborIfIndex
+        $accessPointLine = [string]$accessPointEvidence.Text
         if (-not [string]::IsNullOrWhiteSpace($accessPointLine)) { $lines += $accessPointLine }
         if ($null -eq $script:GatewayNeighborRows) { $script:GatewayNeighborRows = New-Object System.Collections.ArrayList }
         $lines += "Method: Get-NetNeighbor -AddressFamily IPv4 (fallback: arp -a)"
         $lines += "Manual check: arp -a"
         $message = "Gateway {0}: neighbor state {1}, MAC {2}." -f $gateway, $state, (ConvertTo-DisplayString $mac)
         $neighborRow = Add-CheckResult -Category "IT Diagnostics" -Check "Gateway neighbor (ARP)" -Status "INFO" -Message $message -Details ($lines -join [Environment]::NewLine) -Tag "gateway-neighbor" -Scope "IT"
-        # Kept so that Update-AccessPointGatewayHints can make the comparison again once the last access-point sample exists (PR #54, round 2).
-        [void]$script:GatewayNeighborRows.Add([pscustomobject]@{ Row = $neighborRow; Gateway = [string]$gateway; Mac = [string]$mac; InterfaceIndex = $neighborIfIndex; Hint = [string]$accessPointLine })
+        # Kept so that Update-AccessPointGatewayHints can make the comparison again once the last access-point sample exists (PR #54,
+        # round 2) - the address and the relation, which is what the refresh compares, beside the sentence it printed (round 3).
+        [void]$script:GatewayNeighborRows.Add([pscustomobject]@{ Row = $neighborRow; Gateway = [string]$gateway; Mac = [string]$mac; InterfaceIndex = $neighborIfIndex; Hint = [string]$accessPointLine; Bssid = [string]$accessPointEvidence.Bssid; Relation = [string]$accessPointEvidence.Relation })
     }
 }
 

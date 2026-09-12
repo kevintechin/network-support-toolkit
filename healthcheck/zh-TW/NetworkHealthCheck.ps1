@@ -3805,12 +3805,24 @@ function ConvertFrom-NetshWlanOutput {
         # Values are matched by shape (MAC, percentage, 802.11x, GHz, plain numbers) because labels are localized
         # and their order differs between Windows 10 and Windows 11 builds.
         $macs = @($block | Where-Object { $_.Value -match $macPattern })
+        # The BSSID by its LABEL first (PR #54, round 3): netsh does not translate the acronym - the label is BSSID on Windows
+        # 10 and AP BSSID on Windows 11 - and a network named like a MAC address would otherwise be the block's second MAC-shaped
+        # value and be stored as the access point, with the connection state as the network's name. The second-MAC rule stays
+        # as the fallback for an output without the label; the SSID is read from its own label the same way, else from the
+        # line before the BSSID, which is where both layouts print it.
         $bssidIndex = -1
         for ($k = 0; $k -lt $block.Count; $k++) {
-            if ($block[$k].Value -match $macPattern -and $macs.Count -ge 2 -and $block[$k].Value -eq $macs[1].Value) { $bssidIndex = $k; break }
+            if ($block[$k].Label -match '(^|\s)BSSID$' -and $block[$k].Value -match $macPattern) { $bssidIndex = $k; break }
+        }
+        if ($bssidIndex -lt 0) {
+            for ($k = 0; $k -lt $block.Count; $k++) {
+                if ($block[$k].Value -match $macPattern -and $macs.Count -ge 2 -and $block[$k].Value -eq $macs[1].Value) { $bssidIndex = $k; break }
+            }
         }
         $ssid = ""
-        if ($bssidIndex -gt 0) { $ssid = $block[$bssidIndex - 1].Value }
+        $ssidLine = @($block | Where-Object { $_.Label -match '^SSID$' } | Select-Object -First 1)
+        if ($ssidLine.Count -gt 0) { $ssid = $ssidLine[0].Value }
+        elseif ($bssidIndex -gt 0) { $ssid = $block[$bssidIndex - 1].Value }
         # The interface's own GUID, kept lower-case: it is what the association rows are keyed and named by.
         $guid = ""
         if ($block.Count -ge 3 -and $block[2].Value -match $guidPattern) { $guid = $block[2].Value.ToLowerInvariant() }
@@ -4077,7 +4089,7 @@ function Compare-WifiAssociation {
                 # 同一個位址、卻不只一個網路名稱（PR #54，第 2 回合）：存取點在執行期間被改名或重新設定，穩定不變那一句會把它藏在
                 # 第一個名稱後面。
                 $ssidSequence = @()
-                foreach ($reading in $withBssid) { if ($ssidSequence.Count -eq 0 -or $ssidSequence[$ssidSequence.Count - 1] -ne $reading.Ssid) { $ssidSequence += $reading.Ssid } }
+                foreach ($reading in $withBssid) { if ($ssidSequence.Count -eq 0 -or $ssidSequence[$ssidSequence.Count - 1] -cne $reading.Ssid) { $ssidSequence += $reading.Ssid } }
                 $message = "{0}：有回報存取點的 {2} 次樣本（共 {3} 次）都是同一個存取點（BSSID {1}），但網路名稱不只一個——SSID {4}——所以存取點在執行期間被改名或重新設定。" -f $name, $first.Bssid, $withBssid.Count, $readings.Count, (@($ssidSequence | ForEach-Object { ConvertTo-DisplayString $_ }) -join "、然後 ")
             }
             elseif ($distinctBssids.Count -eq 1) {
@@ -4143,8 +4155,12 @@ function Get-MacRelation {
     return "different"
 }
 
-function Get-AccessPointGatewayText {
+function Get-AccessPointGatewayEvidence {
     param([string]$Gateway, [string]$GatewayMac, [object[]]$PrimaryAdapters, [object[]]$Samples, [int]$InterfaceIndex = 0)
+
+    # 提示背後的比較，同時以證據和句子的形式給出（PR #54，第 3 回合）：存取點的位址、它和閘道位址的關係（Get-MacRelation 的字眼，
+    # 介面沒有回報存取點時是 nobssid，什麼都沒比時是空的）、介面名稱，以及這一列印出的文字。最後一次樣本之後的重比對比的是位址
+    # 和關係，絕不是句子——執行期間被改名的介面只會改變句子，其他什麼都不變。
 
     # 提示的那一句話，或者什麼都不寫（backlog #61 的另一半）。在無線機器上想把空氣和有線分開之前，最該先知道的是到底
     # 有沒有一段有線：回應無線電的存取點和回應 ping 的閘道可能是同一台盒子。BSSID 是存取點自己的位址，鄰居表裡有閘道
@@ -4152,8 +4168,9 @@ function Get-AccessPointGatewayText {
     # 實體位址），取自最近一次讀得到的存取點樣本——並照它本來的身分發表：提示。位址完全相同就是同一台設備，但一體機的
     # 無線電位址和橋接位址常常只差一個八位元組或本地管理位元，所以不同並不能證明什麼。閘道由有線網卡提供時沒有存取點
     # 可比，Wi-Fi 資料關掉時沒有東西可比：兩種情況都不寫這一行。
+    $evidence = [pscustomobject][ordered]@{ Text = ""; Bssid = ""; Relation = ""; Interface = "" }
     $gatewayHex = ([string]$GatewayMac) -replace '[^0-9a-fA-F]', ''
-    if ($gatewayHex.Length -ne 12 -or $gatewayHex -eq "000000000000") { return "" }
+    if ($gatewayHex.Length -ne 12 -or $gatewayHex -eq "000000000000") { return $evidence }
     # 網卡取「鄰居項目是在哪張介面上學到的」那一張（PR #54，第 1 回合）：有線和無線網卡指向同一個閘道位址的機器上，項目的 MAC
     # 可能屬於有線那個網路，拿它和無線網路的存取點比較，就是把兩個毫不相關的位址擺在一起。-InterfaceIndex 是項目的介面；項目
     # 沒帶介面時——arp -a 備援——而且提供這個閘道的網卡不只一張，就什麼都不比。
@@ -4166,27 +4183,40 @@ function Get-AccessPointGatewayText {
         $adapterMac = ([string](Get-PropertyValue $adapter "MacAddress" "")) -replace '[^0-9a-fA-F]', ''
         if ($adapterMac.Length -eq 12) { $adapterMacs += $adapterMac.ToUpperInvariant() }
     }
-    if ($adapterMacs.Count -eq 0) { return "" }
-    if ($InterfaceIndex -le 0 -and $candidates -gt 1) { return "" }
+    if ($adapterMacs.Count -eq 0) { return $evidence }
+    if ($InterfaceIndex -le 0 -and $candidates -gt 1) { return $evidence }
     $latest = @(@($Samples) | Where-Object { $null -ne $_ -and [string]::IsNullOrWhiteSpace([string]$_.Error) } | Select-Object -Last 1)
-    if ($latest.Count -eq 0) { return "" }
+    if ($latest.Count -eq 0) { return $evidence }
     foreach ($wifi in @($latest[0].Interfaces)) {
         $physical = ([string]$wifi.PhysicalAddress) -replace '[^0-9a-fA-F]', ''
         if ($physical.Length -ne 12 -or $adapterMacs -notcontains $physical.ToUpperInvariant()) { continue }
         $name = ConvertTo-DisplayString $wifi.Name
         $bssid = ([string]$wifi.Bssid).Trim().ToLowerInvariant()
+        $evidence.Interface = $name
         if ([string]::IsNullOrWhiteSpace($bssid)) {
-            return ("存取點與閘道：這個閘道經由無線介面 {0} 到達，但該介面沒有回報 BSSID，兩個位址無法比較。" -f $name)
+            $evidence.Relation = "nobssid"
+            $evidence.Text = ("存取點與閘道：這個閘道經由無線介面 {0} 到達，但該介面沒有回報 BSSID，兩個位址無法比較。" -f $name)
+            return $evidence
         }
-        switch (Get-MacRelation -First $GatewayMac -Second $bssid) {
-            "identical" { return ("存取點與閘道：閘道的 MAC 位址就是 {0} 所連存取點的 BSSID（{1}），所以存取點和閘道是同一台設備——自帶無線電的路由器——在這個網路上，空氣與有線之間沒有可供「有線對無線」比較立足的邊界。" -f $name, $bssid) }
-            "near-ul"   { return ("存取點與閘道：閘道的 MAC 位址與 {0} 所連存取點的 BSSID（{1}）只差在本地管理位元，這是同一台設備的無線電位址和橋接位址常見的形狀；把兩者當成大概是同一台設備——這是提示，不是拓樸結論。" -f $name, $bssid) }
-            "near-last" { return ("存取點與閘道：閘道的 MAC 位址與 {0} 所連存取點的 BSSID（{1}）只差在最後一個八位元組，這是同一台設備的無線電位址和橋接位址常見的形狀；把兩者當成大概是同一台設備——這是提示，不是拓樸結論。" -f $name, $bssid) }
-            "vendor"    { return ("存取點與閘道：閘道的 MAC 位址與 {0} 所連存取點的 BSSID（{1}）的廠商前綴（前三個八位元組）相同——同一家廠商，可能是一台設備、也可能是兩台；這是提示，不是拓樸結論。" -f $name, $bssid) }
-            default     { return ("存取點與閘道：閘道的 MAC 位址與 {0} 所連存取點的 BSSID（{1}）廠商前綴不同，暗示是兩台設備——一台存取點加一台路由器——因此空氣與有線之間有一道邊界，同一網段上的有線工作站可以從那裡量起；這是提示，不是拓樸結論，因為自帶無線電的路由器也可能為兩者使用毫不相關的位址。" -f $name, $bssid) }
+        $evidence.Bssid = $bssid
+        $evidence.Relation = Get-MacRelation -First $GatewayMac -Second $bssid
+        switch ($evidence.Relation) {
+            "identical" { $evidence.Text = ("存取點與閘道：閘道的 MAC 位址就是 {0} 所連存取點的 BSSID（{1}），所以存取點和閘道是同一台設備——自帶無線電的路由器——在這個網路上，空氣與有線之間沒有可供「有線對無線」比較立足的邊界。" -f $name, $bssid) }
+            "near-ul"   { $evidence.Text = ("存取點與閘道：閘道的 MAC 位址與 {0} 所連存取點的 BSSID（{1}）只差在本地管理位元，這是同一台設備的無線電位址和橋接位址常見的形狀；把兩者當成大概是同一台設備——這是提示，不是拓樸結論。" -f $name, $bssid) }
+            "near-last" { $evidence.Text = ("存取點與閘道：閘道的 MAC 位址與 {0} 所連存取點的 BSSID（{1}）只差在最後一個八位元組，這是同一台設備的無線電位址和橋接位址常見的形狀；把兩者當成大概是同一台設備——這是提示，不是拓樸結論。" -f $name, $bssid) }
+            "vendor"    { $evidence.Text = ("存取點與閘道：閘道的 MAC 位址與 {0} 所連存取點的 BSSID（{1}）的廠商前綴（前三個八位元組）相同——同一家廠商，可能是一台設備、也可能是兩台；這是提示，不是拓樸結論。" -f $name, $bssid) }
+            default     { $evidence.Text = ("存取點與閘道：閘道的 MAC 位址與 {0} 所連存取點的 BSSID（{1}）廠商前綴不同，暗示是兩台設備——一台存取點加一台路由器——因此空氣與有線之間有一道邊界，同一網段上的有線工作站可以從那裡量起；這是提示，不是拓樸結論，因為自帶無線電的路由器也可能為兩者使用毫不相關的位址。" -f $name, $bssid) }
         }
+        return $evidence
     }
-    return ""
+    return $evidence
+}
+
+function Get-AccessPointGatewayText {
+    param([string]$Gateway, [string]$GatewayMac, [object[]]$PrimaryAdapters, [object[]]$Samples, [int]$InterfaceIndex = 0)
+
+    # 只給句子，供印出它的呼叫者使用；背後的證據在 Get-AccessPointGatewayEvidence。
+    return ([string](Get-AccessPointGatewayEvidence -Gateway $Gateway -GatewayMac $GatewayMac -PrimaryAdapters $PrimaryAdapters -Samples $Samples -InterfaceIndex $InterfaceIndex).Text)
 }
 
 function Update-AccessPointGatewayHints {
@@ -4198,8 +4228,10 @@ function Update-AccessPointGatewayHints {
     # 或者說那時已沒有回報存取點，並指向存取點列。
     foreach ($entry in @($script:GatewayNeighborRows)) {
         if ($null -eq $entry -or $null -eq $entry.Row) { continue }
-        $fresh = Get-AccessPointGatewayText -Gateway ([string]$entry.Gateway) -GatewayMac ([string]$entry.Mac) -PrimaryAdapters @($script:PrimaryAdapters) -Samples @($Samples) -InterfaceIndex (ConvertTo-IntSafe $entry.InterfaceIndex 0)
-        if ([string]$fresh -eq [string]$entry.Hint) { continue }
+        $freshEvidence = Get-AccessPointGatewayEvidence -Gateway ([string]$entry.Gateway) -GatewayMac ([string]$entry.Mac) -PrimaryAdapters @($script:PrimaryAdapters) -Samples @($Samples) -InterfaceIndex (ConvertTo-IntSafe $entry.InterfaceIndex 0)
+        # 比的是證據，不是句子（第 3 回合）：同一個位址、同一種關係就是同一個發現，不管介面現在叫什麼名字。
+        if (([string]$freshEvidence.Bssid -eq [string](Get-PropertyValue $entry "Bssid" "")) -and ([string]$freshEvidence.Relation -eq [string](Get-PropertyValue $entry "Relation" ""))) { continue }
+        $fresh = [string]$freshEvidence.Text
         if ([string]::IsNullOrWhiteSpace([string]$fresh)) {
             $line = "存取點與閘道（最後一次樣本之後）：介面已不再回報 BSSID，所以上面的比較無法重做；Wi-Fi 存取點列記錄了各次樣本看到的東西。"
         }
@@ -4217,6 +4249,8 @@ function Update-AccessPointGatewayHints {
         else { $lines = @($(if ($at -ge 0) { $lines[0..$at] } else { @() })) + @($line) + @($(if ($at + 1 -lt $lines.Count) { $lines[($at + 1)..($lines.Count - 1)] } else { @() })) }
         $entry.Row.Details = ($lines -join [Environment]::NewLine)
         $entry.Hint = [string]$fresh
+        $entry.Bssid = [string]$freshEvidence.Bssid
+        $entry.Relation = [string]$freshEvidence.Relation
         Write-UiLog -Status "INFO" -Text ("{0} / {1}: {2}" -f $entry.Row.Category, $entry.Row.Check, $line)
     }
 }
@@ -4311,15 +4345,17 @@ function Add-GatewayNeighborResult {
         # backlog #61 的另一半：存取點就是閘道嗎？在無線機器上想把空氣和有線分開之前最該先知道的一件事，以提示的身分
         # 發表——Get-AccessPointGatewayText 說明比較的每一種形狀能確立什麼、不能確立什麼——閘道的網卡是有線的、或 Wi-Fi
         # 資料沒有讀取時，這一行不出現。
-        $accessPointLine = Get-AccessPointGatewayText -Gateway ([string]$gateway) -GatewayMac $mac -PrimaryAdapters $PrimaryAdapters -Samples @($script:WifiAssociationSamples) -InterfaceIndex $neighborIfIndex
+        $accessPointEvidence = Get-AccessPointGatewayEvidence -Gateway ([string]$gateway) -GatewayMac $mac -PrimaryAdapters $PrimaryAdapters -Samples @($script:WifiAssociationSamples) -InterfaceIndex $neighborIfIndex
+        $accessPointLine = [string]$accessPointEvidence.Text
         if (-not [string]::IsNullOrWhiteSpace($accessPointLine)) { $lines += $accessPointLine }
         if ($null -eq $script:GatewayNeighborRows) { $script:GatewayNeighborRows = New-Object System.Collections.ArrayList }
         $lines += "檢測方式：Get-NetNeighbor -AddressFamily IPv4（備援：arp -a）"
         $lines += "手動驗證：arp -a"
         $message = "閘道 {0}：鄰居狀態 {1}，MAC {2}。" -f $gateway, $state, (ConvertTo-DisplayString $mac)
         $neighborRow = Add-CheckResult -Category "IT 診斷資料" -Check "閘道鄰居（ARP）" -Status "INFO" -Message $message -Details ($lines -join [Environment]::NewLine) -Tag "gateway-neighbor" -Scope "IT"
-        # 留下來，讓 Update-AccessPointGatewayHints 在最後一次存取點樣本出現後再比一次（PR #54，第 2 回合）。
-        [void]$script:GatewayNeighborRows.Add([pscustomobject]@{ Row = $neighborRow; Gateway = [string]$gateway; Mac = [string]$mac; InterfaceIndex = $neighborIfIndex; Hint = [string]$accessPointLine })
+        # 留下來，讓 Update-AccessPointGatewayHints 在最後一次存取點樣本出現後再比一次（PR #54，第 2 回合）——重比對比的是位址和關係，
+        # 印出的句子放在旁邊（第 3 回合）。
+        [void]$script:GatewayNeighborRows.Add([pscustomobject]@{ Row = $neighborRow; Gateway = [string]$gateway; Mac = [string]$mac; InterfaceIndex = $neighborIfIndex; Hint = [string]$accessPointLine; Bssid = [string]$accessPointEvidence.Bssid; Relation = [string]$accessPointEvidence.Relation })
     }
 }
 
