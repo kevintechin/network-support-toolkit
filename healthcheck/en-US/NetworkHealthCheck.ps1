@@ -4391,6 +4391,18 @@ function Compare-WifiAssociation {
     }
     $seconds = 0
     if ($samples.Count -ge 2) { try { $seconds = [math]::Round((([datetime]$samples[$samples.Count - 1].Timestamp) - ([datetime]$samples[0].Timestamp)).TotalSeconds, 0) } catch { $seconds = 0 } }
+    # Whether the tool's own WLAN API reader answered in this run, as a token the aggregate rows carry after their reason
+    # (PR #55, round 4): wlanapi=ok, or the reader's reason code - addtype, open, enumerate, error. The chain's oracle reads it
+    # where netsh was refused: a reader that could not answer leaves the tool no interface to write a row for, and the
+    # aggregate rows are then the right shape rather than a missing one. The last sample that carried a reading decides.
+    $apiToken = ""
+    foreach ($sample in $samples) {
+        $sampleApi = Get-PropertyValue $sample "Api" $null
+        if ($null -eq $sampleApi) { continue }
+        $apiError = [string](Get-PropertyValue $sampleApi "Error" "")
+        $apiToken = $(if ([string]::IsNullOrWhiteSpace($apiError)) { "ok" } else { $apiError })
+    }
+    $apiSuffix = $(if ($apiToken) { "; wlanapi=" + $apiToken } else { "" })
     $methodLines = @(
         ("Method: netsh wlan show interfaces, read {0} time(s) during the test - before the first measurement, with the IT diagnostics and after the last measurement - and the BSSID of each reading compared with the others; the access point is sampled, not watched. Beside each read, the WLAN service's own list of the wireless interfaces and each one's connection state (WlanEnumInterfaces), so that an interface netsh printed nothing for is still known, with its state." -f $samples.Count),
         "Manual check: netsh wlan show interfaces, repeated while the problem is happening",
@@ -4408,7 +4420,7 @@ function Compare-WifiAssociation {
         $reason = [string]$first.Error
         $message = "The Wi-Fi association could not be sampled: netsh.exe was not found."
         if ($reason -ne "netsh") { $message = "The Wi-Fi association could not be sampled: netsh wlan show interfaces could not be read." }
-        $lines = @(("Reading: {0}" -f $reason))
+        $lines = @(("Reading: {0}{1}" -f $reason, $apiSuffix))
         foreach ($entry in $entries) {
             $apiSummary = Get-WifiApiSummaryText -Sample $entry.Sample
             $lines += ("{0}: could not be read - {1}{2}" -f $entry.Prefix, [string]$entry.Sample.ErrorText, $(if ($apiSummary) { "; " + $apiSummary } else { "" }))
@@ -4436,7 +4448,7 @@ function Compare-WifiAssociation {
         }
     }
     if ($keys.Count -eq 0) {
-        $lines = @("Reading: none")
+        $lines = @(("Reading: none{0}" -f $apiSuffix))
         foreach ($entry in $entries) {
             $sample = $entry.Sample
             if ([string]::IsNullOrWhiteSpace([string]$sample.Error)) {

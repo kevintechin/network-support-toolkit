@@ -4251,6 +4251,17 @@ function Compare-WifiAssociation {
     }
     $seconds = 0
     if ($samples.Count -ge 2) { try { $seconds = [math]::Round((([datetime]$samples[$samples.Count - 1].Timestamp) - ([datetime]$samples[0].Timestamp)).TotalSeconds, 0) } catch { $seconds = 0 } }
+    # 這次執行裡工具自己的 WLAN API 讀取器有沒有回答，做成彙總列在原因後面帶的記號（PR #55，第 4 回合）：wlanapi=ok，或讀取器的
+    # 原因代碼——addtype、open、enumerate、error。測試鏈的 oracle 在 netsh 被拒時讀它：讀取器答不出來，工具就沒有介面可以
+    # 寫列，彙總列這時是對的形狀、不是漏掉的列。以最後一個帶讀數的樣本為準。
+    $apiToken = ""
+    foreach ($sample in $samples) {
+        $sampleApi = Get-PropertyValue $sample "Api" $null
+        if ($null -eq $sampleApi) { continue }
+        $apiError = [string](Get-PropertyValue $sampleApi "Error" "")
+        $apiToken = $(if ([string]::IsNullOrWhiteSpace($apiError)) { "ok" } else { $apiError })
+    }
+    $apiSuffix = $(if ($apiToken) { "; wlanapi=" + $apiToken } else { "" })
     $methodLines = @(
         ("檢測方式：netsh wlan show interfaces，本次測試共讀取 {0} 次——第一項量測之前、收集 IT 診斷資料時、最後一項量測之後——並把各次讀到的 BSSID 互相比較；存取點是取樣的，不是持續監看的。每次讀取旁邊另有 WLAN 服務自己列出的無線介面與各介面的連線狀態（WlanEnumInterfaces），所以 netsh 什麼都沒印的介面仍然知道存在、狀態也知道。" -f $samples.Count),
         "手動驗證：問題發生時反覆執行 netsh wlan show interfaces",
@@ -4268,7 +4279,7 @@ function Compare-WifiAssociation {
         $reason = [string]$first.Error
         $message = "無法取樣 Wi-Fi 存取點：找不到 netsh.exe。"
         if ($reason -ne "netsh") { $message = "無法取樣 Wi-Fi 存取點：netsh wlan show interfaces 無法讀取。" }
-        $lines = @(("讀取：{0}" -f $reason))
+        $lines = @(("讀取：{0}{1}" -f $reason, $apiSuffix))
         foreach ($entry in $entries) {
             $apiSummary = Get-WifiApiSummaryText -Sample $entry.Sample
             $lines += ("{0}：無法讀取——{1}{2}" -f $entry.Prefix, [string]$entry.Sample.ErrorText, $(if ($apiSummary) { "；" + $apiSummary } else { "" }))
@@ -4296,7 +4307,7 @@ function Compare-WifiAssociation {
         }
     }
     if ($keys.Count -eq 0) {
-        $lines = @("讀取：none")
+        $lines = @(("讀取：none{0}" -f $apiSuffix))
         foreach ($entry in $entries) {
             $sample = $entry.Sample
             if ([string]::IsNullOrWhiteSpace([string]$sample.Error)) {

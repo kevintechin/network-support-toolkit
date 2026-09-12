@@ -741,7 +741,13 @@ function Test-ResultSet {
     # Where netsh was refused (backlog #62), the radio row is written from the WLAN service, one per connected interface,
     # and each names the interface's GUID on a details line; the wired-looking row a refused netsh used to produce names
     # none, and the count alone would not tell the two apart on a machine with one interface.
-    if ([bool]$Machine.WlanRefused -and [bool]$itTags['wifi'] -and [int]$(if ($null -eq $Machine.WifiInterfaces) { 0 } else { $Machine.WifiInterfaces }) -ge 1) {
+    $assocRowsForWifi = @($rows | Where-Object { $_.Tag -eq 'wifi-association' })
+    $wifiReaderFailed = $false
+    foreach ($r in $assocRowsForWifi) {
+        $firstLine = [string](@(([string]$r.Details) -split "`r`n|`n")[0])
+        if ($firstLine -match '[:：]\s*(netsh|exception|none);\s*wlanapi=(addtype|open|enumerate|error)\s*$') { $wifiReaderFailed = $true }
+    }
+    if ([bool]$Machine.WlanRefused -and -not $wifiReaderFailed -and [bool]$itTags['wifi'] -and [int]$(if ($null -eq $Machine.WifiInterfaces) { 0 } else { $Machine.WifiInterfaces }) -ge 1) {
         foreach ($r in @($rows | Where-Object { $_.Tag -eq 'wifi' })) {
             if (([string]$r.Details) -notmatch '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}') { $bad += ('wifi: a row without an interface GUID on a machine where netsh was refused ({0})' -f $r.Message) }
         }
@@ -790,13 +796,24 @@ function Test-ResultSet {
     # Unable-to-Check row whose first details line ends with the reason code (netsh, exception), which a per-interface
     # row's first line - a sample line - never does. They ride the radio row's switch (Checks.WifiRf, -NoWifi).
     $assocRows = @($rows | Where-Object { $_.Tag -eq 'wifi-association' })
+    # The aggregate rows' first line ends with the reason and, since backlog #62 (PR #55, round 4), an optional token saying
+    # whether the tool's own WLAN API reader answered - wlanapi=ok, or its reason code. Where netsh was refused, the facts
+    # stand the adapters' GUIDs in for the GUID lines netsh did not print; but a reader that could not compile, open or
+    # enumerate leaves the tool no interface to write a row for, so on such a run the aggregate rows - and a radio row
+    # without a GUID - are the right shape, and the per-GUID demands below are not made.
+    $assocAggregatePattern = '[:：]\s*(netsh|exception|none)(;\s*wlanapi=(addtype|open|enumerate|error|ok))?\s*$'
+    $apiReaderFailed = $false
+    foreach ($r in $assocRows) {
+        $firstLine = [string](@(([string]$r.Details) -split "`r`n|`n")[0])
+        if ($firstLine -match $assocAggregatePattern -and $matches[3] -in @('addtype', 'open', 'enumerate', 'error')) { $apiReaderFailed = $true }
+    }
     $aggregateAssocFailure = $false
     if ($assocRows.Count -eq 1 -and [string]$assocRows[0].Status -eq 'ERROR') {
         $firstLine = [string](@(([string]$assocRows[0].Details) -split "`r`n|`n")[0])
-        $aggregateAssocFailure = ($firstLine -match '[:：]\s*(netsh|exception|none)\s*$')
+        $aggregateAssocFailure = ($firstLine -match $assocAggregatePattern)
     }
-    if ([int]$want['wifi-association'] -gt 1 -and $aggregateAssocFailure) { $want['wifi-association'] = 1 }
-    if (-not $aggregateAssocFailure -and $null -ne $Machine.WlanInterfaceIds -and [bool]$itTags['wifi-association']) {
+    if ([int]$want['wifi-association'] -gt 1 -and ($aggregateAssocFailure -or ([bool]$Machine.WlanRefused -and $apiReaderFailed))) { $want['wifi-association'] = 1 }
+    if (-not $aggregateAssocFailure -and -not ([bool]$Machine.WlanRefused -and $apiReaderFailed) -and $null -ne $Machine.WlanInterfaceIds -and [bool]$itTags['wifi-association']) {
         $assocIds = @(@($Machine.WlanInterfaceIds) + $wlanAfterIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).ToLowerInvariant() } | Sort-Object -Unique)
         # The GUID is read off the identity line only - the GUID that the samples token follows (PR #54, round 2): a
         # network named like a UUID is printed in the sample lines above it, and an unanchored match would have read the
@@ -810,7 +827,7 @@ function Test-ResultSet {
         $assocGuidOnIdentity = '([0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})[;；]\s*' + $assocToken
         foreach ($r in $assocRows) {
             $firstLine = [string](@(([string]$r.Details) -split "`r`n|`n")[0])
-            if ($firstLine -match '[:：]\s*(netsh|exception|none)\s*$') { continue }
+            if ($firstLine -match $assocAggregatePattern) { continue }
             if (([string]$r.Details) -notmatch $assocToken) { $bad += ('wifi-association: a per-interface row carries no valid samples token ({0})' -f $r.Message) }
         }
         foreach ($id in $assocIds) {
