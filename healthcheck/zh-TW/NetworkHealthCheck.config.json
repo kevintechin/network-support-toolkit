@@ -69,7 +69,8 @@
     "ProxySettings": true,
     "Traceroute": true,
     "TracerouteHops": 3,
-    "DriverInfo": true
+    "DriverInfo": true,
+    "WifiRetryCounters": true
   },
   "Thresholds": {
     "PacketLossWarningPercent": 5,

@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Compare-WifiRetryCounters', 'Get-WifiRetrySnapshot', 'Get-WifiInterfaceStateText', 'Get-Win32ErrorText'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -892,12 +892,13 @@ function Get-StepProgress($Call) {
     return -1
 }
 $weightlessSteps = @($stepCalls | Where-Object { (Get-StepParameter $_ 'Weightless').Count -gt 0 })
-# Five since 1.2.10. The fifth is the step that extends the TCP window (progress 90, backlog #51): it decides
-# how to sample rather than what the network is like, and the analysis step below it writes the measurement
-# either way - a step-error row from it must not make a run Test Incomplete.
-Assert-Equal '#39 steps: five of them declare the marking' $weightlessSteps.Count 5
-Assert-Equal '#39 steps: and they are the collectors, by their progress points' ((@($weightlessSteps | ForEach-Object { Get-StepProgress $_ } | Sort-Object) -join ',')) '10,13,82,89,90'
-Assert-Equal '#39 steps: the analysis steps beside them keep their weight' (@($stepCalls | Where-Object { (Get-StepProgress $_) -in @(85, 92) -and (Get-StepParameter $_ 'Weightless').Count -gt 0 }).Count) 0
+# Five since 1.2.10, seven since 1.2.12. The fifth is the step that extends the TCP window (progress 90, backlog #51):
+# it decides how to sample rather than what the network is like, and the analysis step below it writes the
+# measurement either way - a step-error row from it must not make a run Test Incomplete. The sixth and seventh are the
+# two Wi-Fi retry readings (9 and 91, backlog #61), collectors like the TCP ones.
+Assert-Equal '#39 steps: seven of them declare the marking' $weightlessSteps.Count 7
+Assert-Equal '#39 steps: and they are the collectors, by their progress points' ((@($weightlessSteps | ForEach-Object { Get-StepProgress $_ } | Sort-Object) -join ',')) '9,10,13,82,89,90,91'
+Assert-Equal '#39 steps: the analysis steps beside them keep their weight' (@($stepCalls | Where-Object { (Get-StepProgress $_) -in @(85, 92, 93) -and (Get-StepParameter $_ 'Weightless').Count -gt 0 }).Count) 0
 
 # The dropped-target rows must exist in every report this tool writes, including the two that end early - the
 # unsupported operating system and the unsupported PowerShell - because a notice about a target with no row where
@@ -1801,6 +1802,138 @@ Assert-Equal '#49 extension: and the reads that failed are named on the row of t
 # then say its window had already closed (PR #49, round 2).
 Assert-Equal '#49 extension: the protocol the extension closed says its window was extended' ($splitV6.Details -match 'MinimumTcpSegmentsForRate') True
 Assert-Equal '#49 extension: the one that kept the first reading does not, because its window was not' ($splitV4.Details -match 'MinimumTcpSegmentsForRate') False
+
+# --- Wi-Fi retry counters (backlog #61, the retry half; v1.2.12) ---
+# The analysis is pure and is tested on fixtures shaped like the reader's envelope; the reader is read off the AST
+# where the machine cannot be arranged, and called once for real, whatever this machine has.
+function New-WifiPhy($index, $tx, $failed, $retry, $multi, $ack, $rx) { return [pscustomobject]@{ Index = $index; Transmitted = [uint64]$tx; Failed = [uint64]$failed; Retry = [uint64]$retry; MultipleRetry = [uint64]$multi; AckFailure = [uint64]$ack; Received = [uint64]$rx } }
+function New-WifiInterface($guid, $state, $phys, $queryError = 0, $queryErrorText = '') { return [pscustomobject]@{ Guid = $guid; Description = 'Fixture Wi-Fi 6E'; State = $state; Phys = @($phys); QueryError = $queryError; QueryErrorText = $queryErrorText } }
+function New-WifiSnapshot($stamp, $interfaces, $error = '', $errorText = '') { return [pscustomobject]@{ Timestamp = $stamp; Interfaces = @($interfaces); Error = $error; ErrorText = $errorText; Diagnostics = '' } }
+function Get-WifiRows($before, $after) { $script:TcpRows = New-Object System.Collections.ArrayList; Compare-WifiRetryCounters -Before $before -After $after; return @($script:TcpRows) }
+$wifiT0 = Get-Date '2026-09-12 10:00:00'; $wifiT1 = $wifiT0.AddSeconds(24)
+$wifiGuid = 'e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb'
+# Six mirrored entries - the reference machine's driver writes the interface's totals into every one: one figure, counted once.
+$mirrorBefore = New-WifiSnapshot $wifiT0 (New-WifiInterface $wifiGuid 1 @(0..5 | ForEach-Object { New-WifiPhy $_ 1000 0 100 20 300 5000 }))
+$mirrorAfter = New-WifiSnapshot $wifiT1 (New-WifiInterface $wifiGuid 1 @(0..5 | ForEach-Object { New-WifiPhy $_ 1211 0 166 42 498 5342 }))
+$wifiRows = @(Get-WifiRows $mirrorBefore $mirrorAfter)
+Assert-Equal '#61 retry: one row for one interface' $wifiRows.Count 1
+$mirrorRow = $wifiRows[0]
+Assert-Equal '#61 retry: the row is informational, weightless and tagged' ("{0}/{1}/{2}" -f $mirrorRow.Status, $mirrorRow.Weightless, $mirrorRow.Tag) 'INFO/True/wifi-retry'
+Assert-Equal '#61 retry: the rate is retries over frames transmitted plus abandoned - 66 of 211, 31.3%' (($mirrorRow.Message -match '\b66\b') -and ($mirrorRow.Message -match '\b211\b') -and ($mirrorRow.Message -match '31\.3')) True
+Assert-Equal '#61 retry: the message names the interface and the window' (($mirrorRow.Message -match 'Fixture Wi-Fi 6E') -and ($mirrorRow.Message -match '\b24\b')) True
+Assert-Equal '#61 retry: the multiple-retry subset is listed and not added to the retries' (($mirrorRow.Message -match '\b22\b') -and -not ($mirrorRow.Message -match '\b88\b')) True
+Assert-Equal '#61 retry: the details carry the start and end values of the entry used' (($mirrorRow.Details -match 'Transmitted=1000') -and ($mirrorRow.Details -match 'Transmitted=1211') -and ($mirrorRow.Details -match 'ACKFailure=498')) True
+Assert-Equal '#61 retry: six entries moved and the figure is not six times larger' ($mirrorRow.Message -match '\b1266\b') False
+# Only entry 0 moved: the same figure, and a different sentence about the entries.
+$singleAfter = New-WifiSnapshot $wifiT1 (New-WifiInterface $wifiGuid 1 (@(New-WifiPhy 0 1211 0 166 42 498 5342) + @(1..5 | ForEach-Object { New-WifiPhy $_ 1000 0 100 20 300 5000 })))
+$singleRow = (Get-WifiRows $mirrorBefore $singleAfter)[0]
+Assert-Equal '#61 retry: one entry moving gives the same figure as six mirrored ones' $singleRow.Message $mirrorRow.Message
+Assert-Equal '#61 retry: and the entries line says which shape it was' ($singleRow.Details -eq $mirrorRow.Details) False
+# Two entries moved with different figures: the larger transmitted delta is the interface's figure, both are listed, nothing is added.
+$twoAfter = New-WifiSnapshot $wifiT1 (New-WifiInterface $wifiGuid 1 (@((New-WifiPhy 0 1211 0 166 42 498 5342), (New-WifiPhy 1 1300 0 130 20 300 5000)) + @(2..5 | ForEach-Object { New-WifiPhy $_ 1000 0 100 20 300 5000 })))
+$twoRow = (Get-WifiRows $mirrorBefore $twoAfter)[0]
+Assert-Equal '#61 retry: the entry with the larger transmitted delta is used - 30 of 300, not 66 of 211' (($twoRow.Message -match '\b30\b') -and ($twoRow.Message -match '\b300\b') -and -not ($twoRow.Message -match '\b211\b')) True
+Assert-Equal '#61 retry: and never their sum' ($twoRow.Message -match '\b511\b') False
+Assert-Equal '#61 retry: the differing entries are both listed in the details' (($twoRow.Details -match '\b211\b') -and ($twoRow.Details -match '\b300\b')) True
+# Abandoned frames are in the denominator: 30 retries over 100 transmitted + 20 abandoned is 25%, not 30%.
+$failedAfter = New-WifiSnapshot $wifiT1 (New-WifiInterface $wifiGuid 1 @(0..5 | ForEach-Object { New-WifiPhy $_ 1100 20 130 25 400 5100 }))
+$failedRow = (Get-WifiRows $mirrorBefore $failedAfter)[0]
+Assert-Equal '#61 retry: frames abandoned after the retry limit are in the denominator' (($failedRow.Message -match '\b25%') -and -not ($failedRow.Message -match '\b30%')) True
+Assert-Equal '#61 retry: and are named in the message' ($failedRow.Message -match '\b20\b') True
+# Nothing transmitted: the counts are reported and no rate is computed.
+$idleAfter = New-WifiSnapshot $wifiT1 (New-WifiInterface $wifiGuid 1 @(0..5 | ForEach-Object { New-WifiPhy $_ 1000 0 100 20 300 5000 }))
+$idleRow = (Get-WifiRows $mirrorBefore $idleAfter)[0]
+Assert-Equal '#61 retry: nothing transmitted is an Information row with no rate' (($idleRow.Status -eq 'INFO') -and -not ($idleRow.Message -match '%')) True
+Assert-Equal '#61 retry: and it is not the measured sentence' ($idleRow.Message -eq $mirrorRow.Message) False
+# The counters went backwards: the delta is not computed, both readings are shown.
+$resetAfter = New-WifiSnapshot $wifiT1 (New-WifiInterface $wifiGuid 1 @(0..5 | ForEach-Object { New-WifiPhy $_ 900 0 10 2 30 500 }))
+$resetRow = (Get-WifiRows $mirrorBefore $resetAfter)[0]
+Assert-Equal '#61 retry: a counter that went backwards is an Unable-to-Check row' ("{0}/{1}" -f $resetRow.Status, $resetRow.Weightless) 'ERROR/True'
+Assert-Equal '#61 retry: naming both readings' (($resetRow.Details -match 'Transmitted=1000') -and ($resetRow.Details -match 'Transmitted=900')) True
+# Readings that could not be taken: one row, weightless, the reason in it; no wireless interface is Information.
+$noneRows = @(Get-WifiRows (New-WifiSnapshot $wifiT0 @() 'none') (New-WifiSnapshot $wifiT1 @() 'none'))
+Assert-Equal '#61 retry: no wireless interface is one Information row' ("{0}/{1}/{2}" -f $noneRows.Count, $noneRows[0].Status, $noneRows[0].Weightless) '1/INFO/True'
+$addTypeRow = (Get-WifiRows (New-WifiSnapshot $wifiT0 @() 'addtype' 'refused by policy') $mirrorAfter)[0]
+Assert-Equal '#61 retry: a reader that could not be compiled is Unable to Check' ("{0}/{1}" -f $addTypeRow.Status, $addTypeRow.Weightless) 'ERROR/True'
+Assert-Equal '#61 retry: with the exception text in the details' ($addTypeRow.Details -match 'refused by policy') True
+$openRow = (Get-WifiRows $mirrorBefore (New-WifiSnapshot $wifiT1 @() 'open' 'error 1062: The service has not been started'))[0]
+Assert-Equal '#61 retry: a service that did not answer names its error' ($openRow.Message -match '1062') True
+Assert-Equal '#61 retry: one row when the ending reading failed and the baseline did not' (@(Get-WifiRows $mirrorBefore (New-WifiSnapshot $wifiT1 @() 'error' 'boom'))).Count 1
+Assert-Equal '#61 retry: no data at all is one Unable-to-Check row' ((Get-WifiRows $null $mirrorAfter)[0].Status) 'ERROR'
+$missingRow = (Get-WifiRows (New-WifiSnapshot $wifiT0 @()) $mirrorAfter)[0]
+Assert-Equal '#61 retry: an interface absent from the baseline has no delta' $missingRow.Status 'ERROR'
+$queryRow = (Get-WifiRows $mirrorBefore (New-WifiSnapshot $wifiT1 (New-WifiInterface $wifiGuid 1 @() 5 'error 5: Access is denied')))[0]
+Assert-Equal '#61 retry: a failed statistics query names its error' (($queryRow.Status -eq 'ERROR') -and ($queryRow.Message -match 'Access is denied')) True
+$everyWifiRow = @($mirrorRow, $singleRow, $twoRow, $failedRow, $idleRow, $resetRow, $noneRows[0], $addTypeRow, $openRow, $missingRow, $queryRow)
+Assert-Equal '#61 retry: every row this analysis writes is weightless' (@($everyWifiRow | Where-Object { -not $_.Weightless }).Count) 0
+Assert-Equal '#61 retry: and every one carries the tag' (@($everyWifiRow | Where-Object { $_.Tag -ne 'wifi-retry' }).Count) 0
+# The chain's oracle tells the aggregate reader-failure row from a per-interface error row by the first details line,
+# which ends with the reader's language-neutral reason code on the aggregate row and never on the others (PR #52, round 2).
+$reasonTail = '[:：]\s*(addtype|open|enumerate|error|none)\s*$'
+$errorRow = (Get-WifiRows $mirrorBefore (New-WifiSnapshot $wifiT1 @() 'error' 'boom'))[0]
+# An interface listed at only one of the two readings is a transition, not a wired machine (round 3): Unable to Check,
+# weightless, the aggregate shape, naming the side that listed none and the other reading's failure where it had one.
+$noneBeforeRow = (Get-WifiRows (New-WifiSnapshot $wifiT0 @() 'none') $mirrorAfter)[0]
+$noneAfterRow = (Get-WifiRows $mirrorBefore (New-WifiSnapshot $wifiT1 @() 'none'))[0]
+Assert-Equal '#61 retry: an interface listed at only one reading is Unable to Check, not a wired machine' ("{0}/{1}/{2}/{3}" -f $noneBeforeRow.Status, $noneBeforeRow.Weightless, $noneAfterRow.Status, $noneAfterRow.Weightless) 'ERROR/True/ERROR/True'
+Assert-Equal '#61 retry: and its sentence is not the wired-machine sentence' (($noneBeforeRow.Message -eq $noneRows[0].Message) -or ($noneAfterRow.Message -eq $noneRows[0].Message)) False
+Assert-Equal '#61 retry: a none beside a failed reading names the other failure too' (((Get-WifiRows (New-WifiSnapshot $wifiT0 @() 'none') (New-WifiSnapshot $wifiT1 @() 'open' 'error 1062: stopped'))[0]).Details -match '1062') True
+Assert-Equal '#61 shape: an aggregate reader-failure row ends its first details line with the reason code' (@(@($addTypeRow, $openRow, $errorRow, $noneBeforeRow, $noneAfterRow) | Where-Object { (Get-DetailLineAt $_ 0) -match $reasonTail }).Count) 5
+Assert-Equal '#61 shape: and no per-interface error row does' (@(@($resetRow, $missingRow, $queryRow) | Where-Object { (Get-DetailLineAt $_ 0) -match $reasonTail }).Count) 0
+# A second interface listed at the start and not at the end (round 5): its own Unable-to-Check row, per-interface shaped,
+# while the interface that stayed is measured exactly as before.
+$guidB = '0b3f7c2e-1111-4a2b-9c3d-000000000002'
+$twoStart = New-WifiSnapshot $wifiT0 @((New-WifiInterface $wifiGuid 1 @(0..5 | ForEach-Object { New-WifiPhy $_ 1000 0 100 20 300 5000 })), (New-WifiInterface $guidB 1 @(New-WifiPhy 0 10 0 1 0 1 10)))
+$goneRows = @(Get-WifiRows $twoStart $mirrorAfter)
+Assert-Equal '#61 retry: an interface listed at the start and not at the end gets its own row' $goneRows.Count 2
+$goneRow = @($goneRows | Where-Object { $_.Status -eq 'ERROR' })
+Assert-Equal '#61 retry: and it is Unable to Check, weightless, and not the aggregate shape' ("{0}/{1}/{2}" -f $goneRow.Count, $goneRow[0].Weightless, ((Get-DetailLineAt $goneRow[0] 0) -match $reasonTail)) '1/True/False'
+Assert-Equal '#61 retry: while the interface that stayed is measured as before' (@($goneRows | Where-Object { $_.Status -eq 'INFO' })[0].Message) $mirrorRow.Message
+# Every per-interface row names its interface GUID on a details line (round 7), which is what lets the oracle hold each
+# interface to exactly one row; the aggregate rows name none.
+Assert-Equal '#61 shape: every per-interface row names its interface GUID' (@(@($mirrorRow, $idleRow, $resetRow, $missingRow, $queryRow, $goneRow[0]) | Where-Object { $_.Details -notmatch ([regex]::Escape($wifiGuid)) -and $_.Details -notmatch ([regex]::Escape($guidB)) }).Count) 0
+Assert-Equal '#61 shape: and the aggregate rows name none' (@(@($addTypeRow, $openRow, $errorRow, $noneBeforeRow, $noneRows[0]) | Where-Object { $_.Details -match '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}' }).Count) 0
+# The rest of the matrix, walked in one pass before round 11 (PR #52): both readings failing, a failure beside a
+# one-sided none, an interface that stayed beside one that came and one that went, no PHY entry in common, and a
+# query that failed at the start rather than at the end.
+$bothFailedRow = (Get-WifiRows (New-WifiSnapshot $wifiT0 @() 'addtype' 'refused') (New-WifiSnapshot $wifiT1 @() 'open' 'error 1062: stopped'))[0]
+Assert-Equal '#61 matrix: two failed readings are one row for the first, naming the second' (($bothFailedRow.Status -eq 'ERROR') -and ((Get-DetailLineAt $bothFailedRow 0) -match $reasonTail) -and ($bothFailedRow.Details -match '1062')) True
+$failThenNoneRow = (Get-WifiRows (New-WifiSnapshot $wifiT0 @() 'enumerate' 'error 5: denied') (New-WifiSnapshot $wifiT1 @() 'none'))[0]
+Assert-Equal '#61 matrix: a failed reading beside a one-sided none reports the failure and names the none' (($failThenNoneRow.Status -eq 'ERROR') -and ((Get-DetailLineAt $failThenNoneRow 0) -match 'enumerate\s*$') -and ($failThenNoneRow.Details -match 'none')) True
+$guidC = '5d1e2f3a-2222-4b3c-8d4e-000000000003'
+$mixedAfter = New-WifiSnapshot $wifiT1 @((New-WifiInterface $wifiGuid 1 @(0..5 | ForEach-Object { New-WifiPhy $_ 1211 0 166 42 498 5342 })), (New-WifiInterface $guidC 1 @(New-WifiPhy 0 5 0 0 0 0 5)))
+$mixedRows = @(Get-WifiRows $twoStart $mixedAfter)
+Assert-Equal '#61 matrix: one that stayed, one that went and one that came are three rows' $mixedRows.Count 3
+Assert-Equal '#61 matrix: each naming its own interface once' ((@($mixedRows | Where-Object { $_.Details -match ([regex]::Escape($wifiGuid)) }).Count -eq 1) -and (@($mixedRows | Where-Object { $_.Details -match ([regex]::Escape($guidB)) }).Count -eq 1) -and (@($mixedRows | Where-Object { $_.Details -match ([regex]::Escape($guidC)) }).Count -eq 1)) True
+Assert-Equal '#61 matrix: the two transitions are Unable to Check and the one that stayed is measured' ((@($mixedRows | Where-Object { $_.Status -eq 'ERROR' }).Count -eq 2) -and (@($mixedRows | Where-Object { $_.Status -eq 'INFO' })[0].Message -eq $mirrorRow.Message)) True
+$noCommonAfter = New-WifiSnapshot $wifiT1 (New-WifiInterface $wifiGuid 1 @((New-WifiPhy 6 1 0 0 0 0 1), (New-WifiPhy 7 1 0 0 0 0 1)))
+$noCommonRow = (Get-WifiRows $mirrorBefore $noCommonAfter)[0]
+Assert-Equal '#61 matrix: readings with no PHY entry in common are Unable to Check, weightless, named' (($noCommonRow.Status -eq 'ERROR') -and $noCommonRow.Weightless -and ($noCommonRow.Details -match ([regex]::Escape($wifiGuid)))) True
+$startQueryRow = (Get-WifiRows (New-WifiSnapshot $wifiT0 (New-WifiInterface $wifiGuid 1 @() 5 'error 5: Access is denied at the start')) $mirrorAfter)[0]
+Assert-Equal '#61 matrix: a query that failed at the start names that failure' (($startQueryRow.Status -eq 'ERROR') -and ($startQueryRow.Message -match 'at the start')) True
+Assert-Equal '#61 retry: the connection states are words' (((Get-WifiInterfaceStateText 1) -ne (Get-WifiInterfaceStateText 4)) -and -not [string]::IsNullOrWhiteSpace((Get-WifiInterfaceStateText 1))) True
+Assert-Equal '#61 retry: an unknown state keeps its number' ((Get-WifiInterfaceStateText 9) -match '9') True
+Assert-Equal '#61 retry: a Win32 error keeps its number' ((Get-Win32ErrorText 1062) -match '1062') True
+# The reader: read off the AST, then a refused compile, then for real on whatever this machine is.
+Assert-Equal '#61 reader: Add-Type is called inside a try' ((Get-FunctionBody 'Get-WifiRetrySnapshot') -match 'try \{\s*Add-Type -Namespace NetworkHealthCheck') True
+Assert-Equal '#61 reader: and only where the type is not there yet' ((Get-FunctionBody 'Get-WifiRetrySnapshot') -match '"NetworkHealthCheck\.WlanApi" -as \[type\]') True
+$analysisBody = Get-FunctionBody 'Compare-WifiRetryCounters'
+Assert-Equal '#61 analysis: every row it writes declares the marking' (([regex]::Matches($analysisBody, 'Add-CheckResult ')).Count -eq ([regex]::Matches($analysisBody, ' -Weightless')).Count) True
+Assert-Equal '#61 analysis: and the tag is the same literal on every one' (([regex]::Matches($analysisBody, '-Tag "wifi-retry"')).Count -eq ([regex]::Matches($analysisBody, 'Add-CheckResult ')).Count) True
+Assert-Equal '#61 options: the flag is validated with the other check flags' ((Get-FunctionBody 'Test-ConfigurationSemantics') -match '"DriverInfo", "WifiRetryCounters"') True
+Assert-Equal '#61 options: and projected into the run options' ((Get-FunctionBody 'Set-RunOptions') -match 'WifiRetryCounters = Test-IsTrueFlag \$config\.Checks\.WifiRetryCounters') True
+Assert-Equal '#61 steps: the run reads and analyses the counters only where the flag is on' (([regex]::Matches((Get-FunctionBody 'Run-AllChecks'), 'if \(\$wifiRetryEnabled\) \{')).Count) 3
+function Add-Type { [CmdletBinding()] param($Namespace, $Name, $MemberDefinition) throw "compiler refused" }
+$refused = Get-WifiRetrySnapshot
+Remove-Item function:Add-Type -ErrorAction SilentlyContinue
+Assert-Equal '#61 reader: a refused compile is the addtype reason, with the text' ("{0}/{1}" -f $refused.Error, ($refused.ErrorText -match 'compiler refused')) 'addtype/True'
+$live = Get-WifiRetrySnapshot
+# A listed interface whose statistics query failed - a disconnected or driver-incompatible adapter - is a supported
+# reading too (round 10): it carries the query's error and no PHY entries, and the tool writes its Unable-to-Check row.
+Assert-Equal '#61 reader: read for real on this machine - every interface with PHY entries or a query error, or a named reason' ((([string]$live.Error -eq '') -and (@($live.Interfaces).Count -ge 1) -and (@(@($live.Interfaces) | Where-Object { -not ((@($_.Phys).Count -ge 1) -or ([int]$_.QueryError -ne 0)) }).Count -eq 0)) -or ([string]$live.Error -in @('none', 'open', 'enumerate'))) True
+$liveText = 'no reading: ' + $live.Error + ' ' + $live.ErrorText
+if ([string]$live.Error -eq '') { $liveText = ('{0} interface(s); first: {1}, state {2}, {3} PHY entries' -f @($live.Interfaces).Count, $live.Interfaces[0].Description, $live.Interfaces[0].State, @($live.Interfaces[0].Phys).Count) }
+Write-Output ('[INFO] #61 reader on this machine: ' + $liveText)
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails
