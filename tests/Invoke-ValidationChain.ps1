@@ -196,6 +196,10 @@ function Add-PrimaryFacts([hashtable]$Facts, [object[]]$Adapters) {
     $Facts.ConnectedAdapters = @($Adapters).Count
     $Facts.Gateways = @(@($primary | ForEach-Object { @($_.Gateways) }) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
     $Facts.DnsServers = @(@($primary | ForEach-Object { @($_.Dns) }) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
+    # The primary adapters as Test-NearEndTargetPlacement reads them - IPv4 addresses, address/prefix subnets and
+    # gateways - so that the oracle can place a configured near-end target with the tool's own function rather than a
+    # copy of it (backlog #60); an adapter whose prefix is unknown contributes no subnet, as in the tool.
+    $Facts.PrimaryAdapters = @($primary | ForEach-Object { [pscustomobject]@{ IPv4Addresses = @($_.Addresses); IPv4WithPrefix = @($_.Subnets); Gateways = @($_.Gateways) } })
 }
 function Test-ConfiguredTcpTarget($Target) {
     # The host is a name like any other since round 8: a valid port with 'http://example.com' beside it used to
@@ -281,7 +285,7 @@ function Get-ConfigConverterSource([string]$ScriptPath) {
     # languages.
     $tokens = $null; $errors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path -LiteralPath $ScriptPath).Path, [ref]$tokens, [ref]$errors)
-    $wanted = 'ConvertTo-DoubleSafe', 'ConvertTo-IntSafe', 'Test-IsNumericValue', 'Test-IsWholeNumber', 'Test-IsValidIPv4Address', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax'
+    $wanted = 'ConvertTo-DoubleSafe', 'ConvertTo-IntSafe', 'Test-IsNumericValue', 'Test-IsWholeNumber', 'Test-IsValidIPv4Address', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-IPv4InCidr', 'Resolve-PingTargets', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Test-NearEndTargetPlacement', 'ConvertTo-SafeString', 'Get-RouteSelection'
     $found = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true))
     $loaded = @($found | ForEach-Object { $_.Name })
     $missing = @($wanted | Where-Object { $loaded -notcontains $_ })
@@ -385,6 +389,15 @@ function Get-ConfigRowCount($Config, $Options, [hashtable]$Overrides) {
     foreach ($target in @($Config.Tests.HttpTargets)) { if ($null -ne $target -and -not (Test-ConfiguredHttpTarget $target)) { $badTargets += 1 } }
     foreach ($target in @($Config.Tests.DnsNames)) { if ($null -ne $target -and -not (Test-ConfiguredDnsTarget $target)) { $badTargets += 1 } }
     foreach ($target in @($Config.Tests.PingTargets)) { if ($null -ne $target -and -not (Test-ConfiguredPingAddress ([string](Get-Value $target 'Address')))) { $badTargets += 1 } }
+    # The near-end target (backlog #60): a non-blank address that is not dotted-decimal IPv4, or a blank address on an
+    # entry marked required, is a Configured Targets finding (PR #51, rounds 2 and 3); blank and optional is the
+    # shipped, disabled state.
+    $nearEndEntry = Get-Value $Config.Tests 'NearEndTarget'
+    if ($null -ne $nearEndEntry) {
+        $nearEndValue = ([string](Get-Value $nearEndEntry 'Address')).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($nearEndValue)) { if (-not (Test-NearEndAddressSyntax $nearEndValue)) { $badTargets += 1 } }
+        elseif (Test-TrueFlag (Get-Value $nearEndEntry 'Required')) { $badTargets += 1 }
+    }
     # Set-RunOptions appends the switch targets to the effective configuration before Test-ConfigurationSemantics
     # reads it, so an unusable -PingTarget, -DnsName or -HttpUrl is a Configured Targets row exactly as a
     # configured one is; this oracle read the file on disk and saw none of them (PR #41, round 6). A -TcpTarget is
@@ -478,7 +491,8 @@ function Get-MachineFacts {
                 if ($v4.Count -eq 0 -and $v6.Count -eq 0) { continue }
                 $gws = @(); foreach ($g in @($c.IPv4DefaultGateway)) { if ($null -ne $g -and -not [string]::IsNullOrWhiteSpace([string]$g.NextHop)) { $gws += [string]$g.NextHop } }
                 $dns = @(); if ($null -ne $c.DNSServer) { foreach ($srv in @($c.DNSServer.ServerAddresses)) { if (-not [string]::IsNullOrWhiteSpace([string]$srv)) { $dns += [string]$srv } } }
-                $items += @{ IPv4 = $v4.Count; Gateways = $gws; Dns = $dns }
+                $subs = @(); foreach ($a in $v4) { if ($null -ne $a.PrefixLength -and ([string]$a.PrefixLength) -match '^\d+$') { $subs += ('{0}/{1}' -f $a.IPAddress, $a.PrefixLength) } }
+                $items += @{ IPv4 = $v4.Count; Gateways = $gws; Dns = $dns; Subnets = $subs; Addresses = @($v4 | ForEach-Object { [string]$_.IPAddress }) }
             }
             if ($items.Count -gt 0) { Add-PrimaryFacts $facts $items; $useCim = $false }
         }
@@ -495,7 +509,16 @@ function Get-MachineFacts {
                 $ipv4 = @(@($c.IPAddress) | Where-Object { $p = $null; [System.Net.IPAddress]::TryParse([string]$_, [ref]$p) -and $p.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork })
                 $gws = @(); foreach ($g in @($c.DefaultIPGateway)) { $p = $null; if ([System.Net.IPAddress]::TryParse([string]$g, [ref]$p) -and $p.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $gws += [string]$g } }
                 $dns = @(@($c.DNSServerSearchOrder) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
-                $items += @{ IPv4 = $ipv4.Count; Gateways = $gws; Dns = $dns }
+                # IPSubnet is a dotted mask on this path; the prefix is its count of one bits, the conversion the tool makes.
+                $subs = @(); $allIps = @($c.IPAddress); $allMasks = @($c.IPSubnet)
+                for ($i = 0; $i -lt $allIps.Count; $i++) {
+                    $p = $null
+                    if (-not ([System.Net.IPAddress]::TryParse([string]$allIps[$i], [ref]$p) -and $p.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) -or $i -ge $allMasks.Count) { continue }
+                    $m = $null
+                    if (([string]$allMasks[$i]) -match '^\d+$') { $subs += ('{0}/{1}' -f $allIps[$i], $allMasks[$i]) }
+                    elseif ([System.Net.IPAddress]::TryParse([string]$allMasks[$i], [ref]$m) -and $m.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { $subs += ('{0}/{1}' -f $allIps[$i], (@($m.GetAddressBytes() | ForEach-Object { [Convert]::ToString([int]$_, 2) }) -join '' -replace '0', '').Length) }
+                }
+                $items += @{ IPv4 = $ipv4.Count; Gateways = $gws; Dns = $dns; Subnets = $subs; Addresses = @($ipv4 | ForEach-Object { [string]$_ }) }
             }
         }
         catch { $items = @(); $facts.SnapshotStepFailed = $true }
@@ -549,6 +572,34 @@ function Test-ResultSet {
     $gateways = @($Machine.Gateways)
     $dnsServerCount = Get-Count $Machine.DnsServers
     $connected = [int]$Machine.ConnectedAdapters
+    # The near-end rung (backlog #60): none where the address is blank, which is the shipped configuration; otherwise
+    # one row - the measured one, or the weightless one saying the target is the gateway, this machine's own address,
+    # a network or broadcast address, not an IPv4 address or not on this network - and, where it is required and was
+    # not probed, the weighted row saying the required check did not run. Where it sits is judged with the tool's own
+    # placement function, loaded from the package, over the primary adapters the facts carry.
+    $nearEndRows = 0
+    $nearEndTargetRows = 0
+    $nearEndTarget = Get-Value $Config.Tests 'NearEndTarget'
+    $nearEndAddress = ([string](Get-Value $nearEndTarget 'Address')).Trim()
+    $nearEndRequired = Test-TrueFlag (Get-Value $nearEndTarget 'Required')
+    if ([string]::IsNullOrWhiteSpace($nearEndAddress)) {
+        # Blank and required is a required check that did not run: the weightless notice and the weighted row (PR #51, round 3).
+        if ($nearEndRequired) { $nearEndRows = 2 }
+    }
+    else {
+        $nearEndRows = 1
+        $nearEndPlacement = Test-NearEndTargetPlacement -Address $nearEndAddress -PrimaryAdapters @($Machine.PrimaryAdapters)
+        $placed = (Test-NearEndAddressSyntax $nearEndAddress) -and ($nearEndPlacement.Placement -eq 'on-subnet')
+        if (-not $placed) { if ($nearEndRequired) { $nearEndRows = 2 } }
+        else {
+            # A measured near-end row claims the rung - and its tag - only where the route table selects a source on
+            # the target's subnet before and after the probes; otherwise the run writes it as a ping-target row. The
+            # run reads the selection twice and this oracle once, so a route that changed during the run is the one
+            # shape it cannot predict, and the resultset note is what says so.
+            $nearEndSelection = Get-RouteSelection -Target $nearEndAddress
+            if (-not ($nearEndSelection.Resolved -and $nearEndSelection.OnLink -eq $true -and (Test-IPv4InCidr -IpAddress $nearEndSelection.SourceAddress -Cidr ([string]$nearEndPlacement.Subnet)))) { $nearEndRows = 0; $nearEndTargetRows = 1 }
+        }
+    }
     # The two TCP counter samples are read independently (baseline, then ending): a class readable in both gives one
     # result row, unreadable in both two error rows, readable in one of them one error row and no result row. The
     # pre-launch facts stand for the baseline sample, the post-run facts for the ending one.
@@ -587,7 +638,8 @@ function Test-ResultSet {
         # A literal target is one row; AUTO_DNS is one row per DNS server of the primary adapters, or one "no target" row.
         # A ping target that cannot be used costs the same two rows as the other families when it is required
         # (PR #41, round 2): the weightless notice, and the weighted row saying the check did not run.
-        'ping-target' = ($pingTargets.Count - $gatewayTargets - $dnsTargets) + $dnsTargets * [math]::Max(1, $dnsServerCount) + (Get-Count $o.ExtraTargets.Ping) + (Get-UnusablePingExtraRows $Config)
+        'ping-target' = ($pingTargets.Count - $gatewayTargets - $dnsTargets) + $dnsTargets * [math]::Max(1, $dnsServerCount) + (Get-Count $o.ExtraTargets.Ping) + (Get-UnusablePingExtraRows $Config) + $nearEndTargetRows
+        'ping-near-end' = $nearEndRows
         # A target the run cannot test is reported where its result belonged instead of vanishing, and a required one
         # adds the weighted row saying the check did not run (backlog #39); a dropped extra target - one the parser
         # refused, so it is in RawTargets and not in ExtraTargets - leaves a row of its own in the same section, and

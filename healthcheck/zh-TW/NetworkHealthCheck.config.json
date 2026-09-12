@@ -29,6 +29,11 @@
         "Required": false
       }
     ],
+    "NearEndTarget": {
+      "Name": "近端主機",
+      "Address": "",
+      "Required": false
+    },
     "DnsNames": [
       {
         "Name": "DNS 名稱解析",

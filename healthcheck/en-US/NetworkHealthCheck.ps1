@@ -50,7 +50,7 @@ param(
 # - Traceability: exception type, message, and inner exceptions are stored in every
 #   report; script location and call stack go to the JSON report only (Diagnostics).
 
-$script:ToolVersion = "1.2.11"
+$script:ToolVersion = "1.2.12"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -620,7 +620,9 @@ function Add-CheckResult {
         [string]$Diagnostics = "",
         [string]$Tag = "",
         [string]$Scope = "Main",
-        [switch]$Weightless
+        [switch]$Weightless,
+        [string]$Rule = "",
+        [string]$Path = ""
     )
 
     # -Weightless marks a row that keeps its badge, its message and its place in the counts but does not decide the
@@ -628,6 +630,15 @@ function Add-CheckResult {
     # nothing was measured, that a sample was too coarse for the threshold applied to it, or that states a fact about
     # this run's own input. Everything else keeps its weight by default - a check added later cannot become weightless
     # by forgetting something, which is the failure nobody would notice.
+    # -Path is the adapter the route table selected for a ping row's probes where the lookups before and after them
+    # agreed - the interface alias - and empty where they did not, or where the target was given as a name (PR #51,
+    # round 4). The summary uses it to pair a near-end row with a failed gateway row: a near-end host reached through
+    # one adapter says nothing about another adapter's cable, radio or switch. Additive under JSON schema 2 as well.
+    # -Rule names the measurement a row's status follows from, where a row has more than one (backlog #67): a ping row
+    # is decided by its loss or by its latency, and until 1.2.12 nothing outside the row's prose said which, so the
+    # fingerprint titled a gateway that answered every probe slowly as one that did not answer. It is empty on every
+    # row that has nothing to say - a row that passed, or one that carries a single measurement - and it is additive
+    # under JSON schema 2, like Weightless.
     $item = [pscustomobject][ordered]@{
         Time     = Get-Date
         Category = $Category
@@ -639,6 +650,8 @@ function Add-CheckResult {
         Tag         = $Tag
         Scope       = $Scope
         Weightless  = [bool]$Weightless
+        Rule        = $Rule
+        Path        = $Path
     }
 
     [void]$script:Results.Add($item)
@@ -711,6 +724,16 @@ function Get-DefaultConfig {
                     Required = $false
                 }
             )
+            # backlog #60: the near-end rung of the ping ladder - a host on this computer's own subnet that is not the
+            # gateway, so that the local path is measured without the gateway's control plane or the WAN in it. Absent
+            # by default: the tool cannot choose one, because whether a candidate is a stable host that answers ICMP
+            # is a person's judgement, so IT names it here. Given as an IPv4 address, never a name: the check has to
+            # know the host is on the local subnet before anything is sent.
+            NearEndTarget = [pscustomobject][ordered]@{
+                Name     = "Near-end host"
+                Address  = ""
+                Required = $false
+            }
             DnsNames = @(
                 [pscustomobject][ordered]@{
                     Name     = "DNS Name Resolution"
@@ -1221,9 +1244,31 @@ function Convert-LinkSpeedToText {
     }
 }
 
+function Get-DhcpServerTable {
+    # backlog #32: which server answered the lease. The NetTCPIP cmdlets carry the DHCP mode and not the server, so
+    # the one source is Win32_NetworkAdapterConfiguration.DHCPServer - the same class the CIM fallback reads for
+    # everything. One query for every IP-enabled configuration, keyed by interface index, so that the preferred path
+    # pays one CIM call and not one per adapter. $null means the class could not be read at all, which the adapter
+    # row reports as the datum being unavailable rather than as the adapter having no lease (closed item #5's shape:
+    # an unknown is never reported as a value). The query is not attempted twice - it is not a performance-counter
+    # read, and 1.2.8 recorded why the adapter-configuration queries keep their single attempt.
+    $table = @{}
+    try {
+        $configs = @(Get-CimOrWmiInstance -ClassName "Win32_NetworkAdapterConfiguration" | Where-Object { $null -ne $_ -and $_.IPEnabled })
+    }
+    catch {
+        return $null
+    }
+    foreach ($config in $configs) {
+        $table[(ConvertTo-IntSafe $config.InterfaceIndex -1)] = (ConvertTo-SafeString (Get-PropertyValue $config "DHCPServer" "")).Trim()
+    }
+    return $table
+}
+
 function Get-NetworkSnapshotFromNetCmdlets {
     $items = New-Object System.Collections.ArrayList
     $configs = @(Get-NetIPConfiguration -ErrorAction Stop)
+    $dhcpServers = Get-DhcpServerTable
 
     foreach ($config in $configs) {
         $adapter = $config.NetAdapter
@@ -1321,6 +1366,9 @@ function Get-NetworkSnapshotFromNetCmdlets {
             Gateways        = $gateways
             DnsServers      = $dnsServers
             DhcpEnabled     = $dhcpEnabled
+            # $null where the class could not be read; otherwise the server's address, or "" where the configuration
+            # holds none (a static address, or a lease that never came).
+            DhcpServer      = $(if ($null -eq $dhcpServers) { $null } elseif ($dhcpServers.ContainsKey((ConvertTo-IntSafe -Value $config.InterfaceIndex -DefaultValue 0))) { [string]$dhcpServers[(ConvertTo-IntSafe -Value $config.InterfaceIndex -DefaultValue 0)] } else { "" })
             IsPhysical      = -not (Test-IsVirtualAdapter -Description ([string]$adapter.InterfaceDescription) -VirtualFlag (Get-PropertyValue $adapter "Virtual") -HardwareFlag (Get-PropertyValue $adapter "HardwareInterface"))
             MediaType       = ConvertTo-SafeString (Get-PropertyValue $adapter "PhysicalMediaType" "")
             DriverVersion   = ConvertTo-SafeString (Get-PropertyValue $adapter "DriverVersion" "")
@@ -1451,6 +1499,7 @@ function Get-NetworkSnapshotFromCim {
             Gateways        = $gateways
             DnsServers      = @($config.DNSServerSearchOrder)
             DhcpEnabled     = $dhcpEnabled
+            DhcpServer      = (ConvertTo-SafeString (Get-PropertyValue $config "DHCPServer" "")).Trim()
             IsPhysical      = $isPhysical
             MediaType       = $mediaType
             DriverVersion   = ""
@@ -1639,6 +1688,24 @@ function Test-ConfigurationSemantics {
         }
     }
 
+    # The near-end target (backlog #60) has a narrower rule than the other ping targets: an IPv4 address, because the
+    # run has to know it is on the local subnet before anything is sent, and a name would put that rung behind the
+    # resolver. A placeholder fails the same rule - the gateway cannot serve as the near-end rung, and AUTO_DNS may
+    # resolve to the gateway or to a server beyond it. Which subnet it is on is a fact about this machine, so that is
+    # judged where the probes are sent, not here.
+    $nearEnd = Get-PropertyValue $tests "NearEndTarget" $null
+    if ($null -ne $nearEnd) {
+        $nearEndAddress = (ConvertTo-SafeString (Get-PropertyValue $nearEnd "Address" "")).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($nearEndAddress) -and -not (Test-NearEndAddressSyntax $nearEndAddress)) {
+            [void]$inputErrors.Add("The address for NearEndTarget cannot be used as the near-end target, which has to be an IPv4 address in dotted-decimal form on this computer's own subnet and not the gateway: $nearEndAddress")
+        }
+        elseif ([string]::IsNullOrWhiteSpace($nearEndAddress) -and [bool](Get-PropertyValue $nearEnd "Required" $false)) {
+            # Blank and optional is the shipped, disabled state; blank and required is a required check with nothing
+            # to check, which the run reports as a required check that did not run (PR #51, round 3).
+            [void]$inputErrors.Add("NearEndTarget is marked as required but has no address: give it the address of a host on this computer's own subnet, or set Required to false")
+        }
+    }
+
     foreach ($dnsTarget in @($tests.DnsNames)) {
         if ($null -eq $dnsTarget) { continue }
         if ($dnsTarget -is [string]) {
@@ -1762,6 +1829,19 @@ function Get-PrimaryAdapters {
     return @($Adapters | Where-Object { @($_.IPv4Addresses).Count -gt 0 })
 }
 
+function Get-DhcpServerText {
+    param([object]$DhcpEnabled, [object]$DhcpServer)
+
+    # Four shapes, and the order matters (backlog #32). A static address has no lease, so no server is named whatever
+    # the configuration holds. Then the datum being unavailable - the class could not be read - which is said as such.
+    # Then the address that answered. Last, a configuration that holds no server address although nothing says the
+    # address is static: DHCP that never got a lease, or a mode this run could not read.
+    if ($DhcpEnabled -eq $false) { return "none (static address, no lease)" }
+    if ($null -eq $DhcpServer) { return "unavailable (read from Win32_NetworkAdapterConfiguration, which could not be queried; the NetTCPIP cmdlets have no such field)" }
+    if (-not [string]::IsNullOrWhiteSpace([string]$DhcpServer)) { return [string]$DhcpServer }
+    return "none recorded (no server address is held for this adapter)"
+}
+
 function Add-NetworkSnapshotResults {
     param([object[]]$Adapters)
 
@@ -1788,6 +1868,10 @@ function Add-NetworkSnapshotResults {
         $dhcpText = "Unknown"
         if ($adapter.DhcpEnabled -eq $true) { $dhcpText = "Enabled" }
         elseif ($adapter.DhcpEnabled -eq $false) { $dhcpText = "Disabled (static IP)" }
+        # backlog #32: the server that answered the lease, beside the mode it qualifies - the SOP's rogue-DHCP question
+        # is answered by this line. A static address has no lease to name; a class that could not be read leaves the
+        # datum unavailable rather than absent, because an empty field would read as "no server", which is a claim.
+        $dhcpServerText = Get-DhcpServerText -DhcpEnabled $adapter.DhcpEnabled -DhcpServer (Get-PropertyValue $adapter "DhcpServer" $null)
 
         $details = @(
             "Interface name: $($adapter.Name)",
@@ -1801,6 +1885,7 @@ function Add-NetworkSnapshotResults {
             "Default Gateway: $(ConvertTo-DisplayString $adapter.Gateways)",
             "DNS: $(ConvertTo-DisplayString $adapter.DnsServers)",
             "DHCP: $dhcpText",
+            "DHCP server: $dhcpServerText",
             ("Adapter type: {0}" -f $(if ($adapter.IsPhysical -eq $true) { "Physical" } else { "Virtual" })),
             ("Media: {0}" -f (ConvertTo-DisplayString $adapter.MediaType)),
             ("Driver: {0}" -f (ConvertTo-DisplayString (@($adapter.DriverVersion, $adapter.DriverDate, $adapter.DriverProvider) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }))),
@@ -1990,7 +2075,7 @@ function Get-RouteSelection {
     # is warm, and by the time a run reaches the ping checks the adapter checks have already paid the warm-up.
     # Absence and failure are the datum being unavailable, never the row failing - closed item #5's shape.
     if (-not (Get-Command Find-NetRoute -ErrorAction SilentlyContinue)) {
-        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "cmdlet"; SourceAddress = ""; InterfaceAlias = "" }
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "cmdlet"; SourceAddress = ""; InterfaceAlias = ""; NextHop = ""; OnLink = $false }
     }
 
     # An empty result is not one outcome, and round 1 of PR #45 was right that calling it 'no route' publishes a
@@ -2006,7 +2091,7 @@ function Get-RouteSelection {
         $found = @(Find-NetRoute -RemoteIPAddress ([string]$Target) -ErrorAction SilentlyContinue -ErrorVariable lookupErrors)
     }
     catch {
-        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "error"; SourceAddress = ""; InterfaceAlias = "" }
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = "error"; SourceAddress = ""; InterfaceAlias = ""; NextHop = ""; OnLink = $false }
     }
 
     $localAddress = @($found | Where-Object { -not [string]::IsNullOrWhiteSpace((ConvertTo-SafeString $_.IPAddress)) } | Select-Object -First 1)
@@ -2018,24 +2103,44 @@ function Get-RouteSelection {
         if ($errorId -match 'Error 1231') { $reason = "noroute" }
         elseif ($errorId -match 'Error 87') { $reason = "notaddress" }
         elseif ([string]::IsNullOrWhiteSpace($errorId)) { $reason = "noroute" }
-        return [pscustomobject][ordered]@{ Resolved = $false; Reason = $reason; SourceAddress = ""; InterfaceAlias = "" }
+        return [pscustomobject][ordered]@{ Resolved = $false; Reason = $reason; SourceAddress = ""; InterfaceAlias = ""; NextHop = ""; OnLink = $false }
     }
 
+    # The route object carries the next hop (PR #51, round 5): 0.0.0.0 - or :: - is an on-link route, the network the
+    # adapter is attached to; any other next hop is a router, and a probe that crosses a router has not measured the
+    # local path however local its target is. A /32 to a host on the subnet via the default gateway keeps the same
+    # source and interface, which is why the source alone cannot attest a rung.
+    $route = @($found | Where-Object { $null -ne $_.PSObject.Properties["NextHop"] } | Select-Object -First 1)
+    $nextHop = ""
+    if ($route.Count -gt 0) { $nextHop = ConvertTo-SafeString $route[0].NextHop }
     return [pscustomobject][ordered]@{
         Resolved       = $true
         Reason         = ""
         SourceAddress  = ConvertTo-SafeString $localAddress[0].IPAddress
         InterfaceAlias = ConvertTo-SafeString $localAddress[0].InterfaceAlias
+        NextHop        = $nextHop
+        OnLink         = ($nextHop -eq "0.0.0.0" -or $nextHop -eq "::")
     }
 }
 
 function Get-RouteSelectionText {
-    param([object]$Selection)
+    param([object]$Selection, [switch]$NoHop)
 
     # One side of the pair, as the row says it. Every unavailable case names its own reason, because "unavailable"
     # without one is the kind of field a reader has to guess at.
     if ($null -eq $Selection) { return "unavailable (the route selection was not read)" }
-    if ($Selection.Resolved) { return ("source {0} via {1}" -f $Selection.SourceAddress, $Selection.InterfaceAlias) }
+    if ($Selection.Resolved) {
+        $text = ("source {0} via {1}" -f $Selection.SourceAddress, $Selection.InterfaceAlias)
+        # The next hop is the part of a selection that decides whether a rung can be claimed (PR #51, round 6): on-link
+        # is the connected network, anything else is a router the probes crossed. So the reading names it, and a next
+        # hop that changed between the two lookups reads as a change - which is what the rung line's refusal rests on.
+        # -NoHop is the comparison that asks WHICH ADAPTER and nothing more; a shape without a hop reads as before.
+        $nextHop = ConvertTo-SafeString $Selection.NextHop
+        if (-not $NoHop -and -not [string]::IsNullOrWhiteSpace($nextHop)) {
+            if ($Selection.OnLink -eq $true) { $text += ", on-link" } else { $text += (" through {0}" -f $nextHop) }
+        }
+        return $text
+    }
     switch ([string]$Selection.Reason) {
         "cmdlet"     { return "unavailable (Find-NetRoute is not available on this system)" }
         "noroute"    { return "unavailable (the route table returned no route for this target)" }
@@ -2073,6 +2178,7 @@ function Format-RouteSelection {
     # say why, once.
     $beforeText = Get-RouteSelectionText $Before
     $afterText = Get-RouteSelectionText $After
+    $afterKey = Get-RouteSelectionText $After -NoHop
 
     # A target given as a name has no address to ask the route table about until something replies, so no pair can be
     # taken and the row says so rather than implying one (PR #45, round 1). The tool does not resolve the name itself:
@@ -2090,7 +2196,7 @@ function Format-RouteSelection {
         foreach ($other in @($Others)) {
             $otherText = Get-RouteSelectionText $other.Selection
             $eachText += ("{0}: {1}" -f $other.Address, $otherText)
-            if ($otherText -ne $afterText) { $agree = $false }
+            if ((Get-RouteSelectionText $other.Selection -NoHop) -ne $afterKey) { $agree = $false }
             if ($null -eq $other.Selection -or -not $other.Selection.Resolved) { $allResolved = $false }
             elseif ($primaryResolved -and $other.Selection.InterfaceAlias -ne $After.InterfaceAlias) { $sameInterface = $false }
         }
@@ -2128,7 +2234,8 @@ function Format-RouteSelection {
     }
 
     if ($null -ne $Before -and $null -ne $After -and $Before.Resolved -and $After.Resolved -and
-        $Before.SourceAddress -eq $After.SourceAddress -and $Before.InterfaceAlias -eq $After.InterfaceAlias) {
+        $Before.SourceAddress -eq $After.SourceAddress -and $Before.InterfaceAlias -eq $After.InterfaceAlias -and
+        [string]$Before.NextHop -eq [string]$After.NextHop) {
         return ("Route selection: {0} - the route the table chooses for this target, looked up before and after the probes. The probes are not bound to it, so this is what was selected and not the path the replies took." -f $beforeText)
     }
 
@@ -2396,6 +2503,95 @@ function Invoke-PingMeasurement {
     }
 }
 
+function Get-CanonicalIPv4Text {
+    param([string]$Value)
+
+    # The dotted-decimal spelling of an IPv4 address, or the trimmed text as given where it is not one. .NET's parser
+    # accepts a single number, hexadecimal parts, fewer than four parts and leading zeros read as octal - 3221225994,
+    # 0xC0.0.2.10, 192.0.2 and 192.0.2.010 all parse, the last one to 192.0.2.8 - so a comparison between a configured
+    # spelling and an address the operating system reports has to be made on the parsed form (PR #51, round 2).
+    $text = ([string]$Value).Trim()
+    $parsed = $null
+    if ([System.Net.IPAddress]::TryParse($text, [ref]$parsed) -and $parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) { return $parsed.ToString() }
+    return $text
+}
+
+function Test-NearEndAddressSyntax {
+    param([string]$Value)
+
+    # The near-end target's rule (backlog #60): an IPv4 address spelled the one way every parser reads alike - four
+    # decimal numbers with dots and nothing else. The other forms .NET accepts mean different addresses to different
+    # readers (192.0.2.010 is 192.0.2.8 to .NET and 192.0.2.10 to a person), and a row that probed one address while
+    # the file named another would be the confusion this key exists to prevent. What the file says and what the probe
+    # is sent to are therefore required to be the same string, here and in the configuration check.
+    $text = ([string]$Value).Trim()
+    if (-not (Test-IsValidIPv4Address $text)) { return $false }
+    return ((Get-CanonicalIPv4Text $text) -eq $text)
+}
+
+function Test-NearEndTargetPlacement {
+    param(
+        [string]$Address,
+        [object[]]$PrimaryAdapters
+    )
+
+    # Where the configured near-end target sits relative to this machine (backlog #60), decided before anything is
+    # sent, because the row's whole claim is which segments its probes cross. Five answers: the address is one of the
+    # primary adapters' gateways, so it cannot be the near-end rung - the gateway answers from its control plane and is
+    # the next rung already; it is one of this computer's own addresses, so a probe to it is answered by this stack and
+    # crosses no cable, radio or switch at all (PR #51, round 1); it is the network or the broadcast address of the
+    # subnet it falls in, which no host holds; it is inside one of the primary adapters' IPv4 subnets, so it is the
+    # near-end host; or it is none of these, so a probe to it would go through the gateway and measure the wrong thing.
+    # The subnets are the address-with-prefix values the snapshot already carries; an adapter whose prefix is unknown
+    # contributes no subnet, and a machine with no known subnet places nothing - which the row says rather than guessing.
+    # Every comparison is made on the parsed, dotted-decimal form (PR #51, round 2): the rule the configuration check
+    # applies refuses any other spelling, but the placement does not rely on that - a caller handing it 3221225994
+    # gets the same answer as one handing it 192.0.2.10, and the row is told which form was placed.
+    $canonical = Get-CanonicalIPv4Text $Address
+    $subnets = @()
+    $ownAddresses = @()
+    foreach ($adapter in @($PrimaryAdapters)) {
+        foreach ($entry in @($adapter.IPv4WithPrefix)) {
+            if (([string]$entry) -match '/\d+$') { $subnets += [string]$entry }
+        }
+        foreach ($own in @($adapter.IPv4Addresses)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$own)) { $ownAddresses += (Get-CanonicalIPv4Text $own) }
+        }
+    }
+    $gateways = @(@(Resolve-PingTargets -Address "AUTO_GATEWAY" -PrimaryAdapters $PrimaryAdapters) | ForEach-Object { Get-CanonicalIPv4Text $_ })
+    $placement = "off-subnet"
+    $matchedSubnet = ""
+    if ($gateways -contains $canonical) { $placement = "gateway" }
+    elseif ($ownAddresses -contains $canonical) { $placement = "self" }
+    else {
+        foreach ($subnet in $subnets) {
+            if (Test-IPv4InCidr -IpAddress $canonical -Cidr $subnet) {
+                $placement = "on-subnet"
+                $matchedSubnet = [string]$subnet
+                # The all-zeros and all-ones host parts are the subnet's own network and broadcast addresses, not a
+                # host; a /31 and a /32 have neither (RFC 3021), so they are left alone.
+                $prefix = [int]($subnet.Split('/')[1])
+                if ($prefix -le 30) {
+                    $bytes = [System.Net.IPAddress]::Parse($canonical).GetAddressBytes()
+                    $value = ([int64]$bytes[0] * 16777216) + ([int64]$bytes[1] * 65536) + ([int64]$bytes[2] * 256) + [int64]$bytes[3]
+                    $hostMax = [int64][math]::Pow(2, (32 - $prefix)) - 1
+                    $hostPart = $value -band $hostMax
+                    if ($hostPart -eq 0 -or $hostPart -eq $hostMax) { $placement = "not-a-host" }
+                }
+                break
+            }
+        }
+    }
+    # Subnet is the address/prefix the target fell in, which the row uses to ask whether the route table really
+    # selected that adapter for the probes (PR #51, round 3); empty where nothing placed it.
+    return [pscustomobject][ordered]@{
+        Placement = $placement
+        Canonical = $canonical
+        Subnet    = $matchedSubnet
+        Subnets   = @($subnets | Select-Object -Unique)
+    }
+}
+
 function Resolve-PingTargets {
     param(
         [string]$Address,
@@ -2441,7 +2637,7 @@ function Get-PingRouteAfter {
     if (@($lookupAddresses).Count -gt 0) { $lookupAddress = ConvertTo-SafeString @($lookupAddresses)[0] }
     $routeOthers = @()
     if ([string]::IsNullOrWhiteSpace($lookupAddress)) {
-        $routeAfter = [pscustomobject][ordered]@{ Resolved = $false; Reason = "noreply"; SourceAddress = ""; InterfaceAlias = "" }
+        $routeAfter = [pscustomobject][ordered]@{ Resolved = $false; Reason = "noreply"; SourceAddress = ""; InterfaceAlias = ""; NextHop = ""; OnLink = $false }
     }
     else {
         $routeAfter = Get-RouteSelection -Target $lookupAddress
@@ -2466,7 +2662,9 @@ function Add-PingTargetResult {
         [bool]$TargetIsAddress,
         [int]$TimeoutMs,
         [string]$SampleNote = "",
-        [object]$Row = $null
+        [object]$Row = $null,
+        [bool]$NearEnd = $false,
+        [string[]]$RungSubnets = @()
     )
 
     # One ping row. It is a function of its own because a target whose first pass was not conclusive has its row
@@ -2486,17 +2684,52 @@ function Add-PingTargetResult {
     # through a parameter, a property or a helper's return value would be a live tag outside every check that
     # holds the documents to the program. A copied two-line rule is the price of that step being able to see
     # this one.
+    # Whether this row may claim its rung at all (PR #51, rounds 3 and 4). Subnet membership says where a host is,
+    # not which interface the probes left by: they are sent unbound, and a VPN, a second connection or a more specific
+    # route can carry a probe to an on-subnet address - or to a gateway's address - somewhere else entirely. A row
+    # therefore claims its rung only where the route table selected, both before and after the probes, a source
+    # address on one of the subnets the rung belongs to: the near-end host's own, or the subnets of the adapters that
+    # supplied this gateway - the connected route, which is the adapter attached to that subnet. Where it did not, or
+    # the selection changed, or the lookup was unavailable, the row keeps its title and its measurement and says why
+    # it cannot claim the rung; a near-end row is then tagged as an ordinary ping target, so that the summary never
+    # reads it as a witness for a path it may not have crossed, while a gateway row keeps its tag, because the gateway
+    # is still the target it measured. Path - the adapter the rung was claimed on - is what the summary pairs a near-end
+    # row with a failed gateway row by; round 6 moved it from "the lookups agreed" to "the rung was claimed", because
+    # a selection that agreed can still run through a router. The tag assignment stays a literal for backlog #33's
+    # document-fact step.
+    $selectionAgreed = ($null -ne $RouteBefore -and $null -ne $RouteAfter.Selection -and $RouteBefore.Resolved -and $RouteAfter.Selection.Resolved -and
+        $RouteBefore.SourceAddress -eq $RouteAfter.Selection.SourceAddress -and $RouteBefore.InterfaceAlias -eq $RouteAfter.Selection.InterfaceAlias -and
+        [string]$RouteBefore.NextHop -eq [string]$RouteAfter.Selection.NextHop)
+    $rungAttested = $false
+    # On-link as well (PR #51, round 5): a next hop is a router, and a probe through a router has not measured the
+    # local path however local its target is.
+    if ($selectionAgreed -and $RouteBefore.OnLink -eq $true) {
+        foreach ($rungSubnet in @($RungSubnets)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$rungSubnet) -and (Test-IPv4InCidr -IpAddress $RouteBefore.SourceAddress -Cidr ([string]$rungSubnet))) { $rungAttested = $true; break }
+        }
+    }
+    # Path is the adapter whose local path this row is attested to have crossed (PR #51, round 6): set only where the
+    # rung was claimed, so that the one field the summary pairs by means what the inference needs. A gateway row whose
+    # lookups agreed but ran through a router, and a far-end row, which claims no rung, carry none.
+    $path = ""
+    if ($rungAttested) { $path = [string]$RouteBefore.InterfaceAlias }
     $pingTag = "ping-target"
     if ($ConfiguredAddress -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
+    if ($NearEnd -and $rungAttested) { $pingTag = "ping-near-end" }
     $status = "PASS"
     $weightless = $false
     $coarseNote = ""
     $blockedIcmpNote = $false
     $lossStatus = ""
     $latencyStatus = ""
+    # Which measurement the status follows from (backlog #67): "loss" where the loss band decided it - a row nothing
+    # answered included - "latency" where the replies that did arrive did, and empty where nothing did. The fingerprint
+    # reads it, because a gateway that answered every probe slowly is not a gateway that did not answer.
+    $rule = ""
     $loss = Get-PingLossClassification -Sent $Measurement.Sent -Lost $Measurement.Lost -WarningPercent $warningLoss -CriticalPercent $criticalLoss
 
     if ($Measurement.Received -eq 0) {
+        $rule = "loss"
         # An optional ICMP target may intentionally block Ping. Nothing replying at all used to keep its verdict
         # however small the sample was, on the ground that 100 % loss is conclusive at four probes and no larger
         # count makes it more so - which is an argument about four and was applied to one (PR #49, round 5).
@@ -2550,9 +2783,11 @@ function Add-PingTargetResult {
         # coarse. A latency threshold reached on the replies that did arrive is a measurement, and a row that
         # reached one keeps its weight.
         $status = $lossStatus
+        if ($lossStatus -ne "PASS") { $rule = "loss" }
         if ($latencyStatus -ne "PASS" -and ($weightless -or $lossStatus -eq "PASS")) {
             $status = $latencyStatus
             $weightless = $false
+            $rule = "latency"
         }
     }
 
@@ -2575,6 +2810,23 @@ function Add-PingTargetResult {
     $detailLines = @()
     $detailLines += @($Measurement.AttemptDetails)
     $detailLines += (Format-RouteSelection -Before $RouteBefore -After $RouteAfter.Selection -LookupAddress $RouteAfter.LookupAddress -Others $RouteAfter.Others)
+    # backlog #60: the rung this row is, said as which segments its probes crossed and which they did not. Two rows
+    # say it - the near-end host, which is what makes the ping rows a ladder at all, and the gateway, whose probes are
+    # answered by a control plane rather than by a host - and the near-end row carries the reading rule, because that
+    # is the row a reader looks at when they are about to subtract one rung from another. A far-end target's row does
+    # not claim a rung: where an extra target sits relative to the gateway is not something this row has measured.
+    if ($NearEnd -and $rungAttested) {
+        $detailLines += ("Rung: near end - {0} is on a subnet this computer is attached to and is not the gateway, so these probes crossed the local path only - this computer's adapter, its cable or Wi-Fi link, and the switch or access point - and were answered by an ordinary host rather than by the gateway's control plane; they did not cross the gateway or anything beyond it. The route table selected source {1} via {2} - an address on that subnet, on-link with no next hop - before and after the probes, which is what lets this row claim the local path; the probes themselves are sent unbound. Read the ping rows as a ladder: a rung that passes clears what it crossed, at that moment; the first rung that fails puts the problem beyond the last rung that passed, and no closer than that - the figures of two rungs are separate traffic sent at separate moments, so they cannot be subtracted into a loss figure for the segment between them." -f $Target, $RouteBefore.SourceAddress, $RouteBefore.InterfaceAlias)
+    }
+    elseif ($NearEnd) {
+        $detailLines += ("Rung: near end - not claimed. {0} is on a subnet this computer is attached to, but the probes are sent unbound, and the route selection above is not one on-link address on that subnet chosen both before and after the probes - a VPN, a second connection or a more specific route through a router may have carried them, or the lookup was unavailable - so this row cannot say which segments they crossed. It is counted as an ordinary ping target, not as the near-end rung, and the summary does not read it as a witness for the local path." -f $Target)
+    }
+    elseif ($pingTag -eq "ping-gateway" -and $rungAttested) {
+        $detailLines += ("Rung: gateway - these probes crossed the local path - this computer's adapter, its cable or Wi-Fi link, and the switch or access point - and were answered by the gateway's own control plane; they did not cross anything beyond the gateway. The route table selected source {0} via {1} - an address on the subnet of the adapter that supplied this gateway, on-link with no next hop - before and after the probes; the probes themselves are sent unbound." -f $RouteBefore.SourceAddress, $RouteBefore.InterfaceAlias)
+    }
+    elseif ($pingTag -eq "ping-gateway") {
+        $detailLines += "Rung: gateway - not claimed. The probes are sent unbound, and the route selection above is not one on-link address on the subnet of the adapter that supplied this gateway, chosen both before and after the probes - a VPN, a second connection or a more specific route through a router may have carried them, or the lookup was unavailable - so this row cannot say which segments they crossed. The gateway is still the target this row measured, and the summary reads its result as it always has."
+    }
     if (-not [string]::IsNullOrWhiteSpace($SampleNote)) { $detailLines += $SampleNote }
     if (-not [string]::IsNullOrWhiteSpace($coarseNote)) { $detailLines += $coarseNote }
     # The method line counts the probes that were actually sent rather than the number configured: PingCount is a
@@ -2609,12 +2861,17 @@ function Add-PingTargetResult {
         $details += [Environment]::NewLine + "Informational: this optional target may simply block ICMP - see the Connectivity group for the authoritative internet verdict."
     }
     if ($null -eq $Row) {
-        return (Add-CheckResult -Category "Latency and Packet Loss" -Check ("{0}: {1}" -f $Name, $Target) -Status $status -Message $message -Details $details -Tag $pingTag -Weightless:$weightless)
+        return (Add-CheckResult -Category "Latency and Packet Loss" -Check ("{0}: {1}" -f $Name, $Target) -Status $status -Message $message -Details $details -Tag $pingTag -Weightless:$weightless -Rule $rule -Path $path)
     }
     $Row.Status = $status
     $Row.Message = $message
     $Row.Details = $details
     $Row.Weightless = $weightless
+    $Row.Rule = $rule
+    $Row.Path = $path
+    # The tag can move with the second pass: a near-end row whose route selection after the last probe no longer
+    # matches the one before them stops claiming the rung, and the summary must see that (PR #51, round 3).
+    $Row.Tag = $pingTag
     # The log is a narrative of the run, so the second reading gets a line of its own rather than quietly replacing
     # the first: a person watching the window saw the provisional figures and is owed the ones that replaced them.
     Write-UiLog -Status $status -Text ("{0} / {1}: {2}" -f $Row.Category, $Row.Check, $message)
@@ -2668,7 +2925,7 @@ function Complete-PingSamples {
             }
             # The route table is asked again, because "after the probes" has to mean after the last of them.
             $routeAfter = Get-PingRouteAfter -Target $item.Target -TargetIsAddress $item.TargetIsAddress -Measurement $measurement
-            Add-PingTargetResult -Name $item.Name -Target $item.Target -ConfiguredAddress $item.Address -Required $item.Required -Measurement $measurement -RouteBefore $item.RouteBefore -RouteAfter $routeAfter -TargetIsAddress $item.TargetIsAddress -TimeoutMs $timeout -SampleNote $note -Row $item.Row | Out-Null
+            Add-PingTargetResult -Name $item.Name -Target $item.Target -ConfiguredAddress $item.Address -Required $item.Required -Measurement $measurement -RouteBefore $item.RouteBefore -RouteAfter $routeAfter -TargetIsAddress $item.TargetIsAddress -TimeoutMs $timeout -SampleNote $note -Row $item.Row -NearEnd $item.NearEnd -RungSubnets $item.RungSubnets | Out-Null
         }
         catch {
             # The row is already in the report with what the first pass measured, so what is lost here is the
@@ -2689,25 +2946,96 @@ function Test-PingTargets {
     $timeout = [math]::Max(250, (ConvertTo-IntSafe $script:Config.Tests.PingTimeoutMs 1200))
     $warningLoss = ConvertTo-DoubleSafe $script:Config.Thresholds.PacketLossWarningPercent 5
 
+    # The ladder, in order (backlog #60): the near-end host first where one is configured, then the targets of the
+    # list - the gateway, then whatever lies beyond it. The near-end entry is built here rather than read from the
+    # list, so that a configuration file cannot promote a list entry to the near-end rung, and so that the traceroute
+    # - which traces toward the first literal ping target - never picks the near-end host on the strength of this key.
+    $entries = @()
+    $nearEnd = Get-PropertyValue $script:Config.Tests "NearEndTarget" $null
+    $nearEndAddress = ""
+    if ($null -ne $nearEnd) { $nearEndAddress = (ConvertTo-SafeString (Get-PropertyValue $nearEnd "Address" "")).Trim() }
+    # A blank address is the shipped, disabled state - unless the entry is marked required, in which case it is a
+    # required check that cannot run, and dropping it would let the run pass a check it never made (PR #51, round 3).
+    if (-not [string]::IsNullOrWhiteSpace($nearEndAddress) -or ($null -ne $nearEnd -and [bool](Get-PropertyValue $nearEnd "Required" $false))) {
+        $entries += [pscustomobject][ordered]@{ Target = $nearEnd; NearEnd = $true }
+    }
     foreach ($targetConfig in @($script:Config.Tests.PingTargets)) {
-        if ($null -eq $targetConfig) { continue }
+        if ($null -ne $targetConfig) { $entries += [pscustomobject][ordered]@{ Target = $targetConfig; NearEnd = $false } }
+    }
 
-        $name = ConvertTo-SafeString (Get-PropertyValue $targetConfig "Name" "Ping")
+    foreach ($entry in $entries) {
+        $targetConfig = $entry.Target
+        $isNearEnd = [bool]$entry.NearEnd
+
+        $name = ConvertTo-SafeString (Get-PropertyValue $targetConfig "Name" $(if ($isNearEnd) { "Near-end host" } else { "Ping" }))
         $address = (ConvertTo-SafeString (Get-PropertyValue $targetConfig "Address" "")).Trim()
         $pingTag = "ping-target"
         if ($address -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
+        if ($isNearEnd) { $pingTag = "ping-near-end" }
         $required = [bool](Get-PropertyValue $targetConfig "Required" $false)
         # Decided before anything is sent (backlog #39): a value that cannot become a ping target is a fact about this
         # run's input, and attempting it anyway would turn a typo into a measurement - 'http://example.com' resolves
         # to nothing and reports 100% loss, which reads as a network that dropped every packet. What remains below,
         # where a well-formed address resolved to nothing, is a measurement and keeps its weight.
-        if (-not (Test-PingTargetSyntax $address)) {
-            Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured address cannot be used as a ping target." -Details ("Configured value: $address") -Tag $pingTag -Weightless | Out-Null
+        # The near-end target has the narrower rule the configuration check applies: an IPv4 address in dotted-decimal
+        # form, never a name, a placeholder or another spelling, because the run has to place it before anything is
+        # sent and the probe has to go to the address the file names (backlog #60; PR #51, round 2).
+        if ($isNearEnd -and [string]::IsNullOrWhiteSpace($address)) {
+            # Only a required entry reaches here with no address; an optional one was never added to the ladder.
+            Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The near-end target is marked as required, but no address is configured." -Details "Configured value: (blank). A required near-end target has to name a host on this computer's own subnet; with no address there is nothing to probe, and the run says so rather than passing a check it did not make." -Tag $pingTag -Weightless | Out-Null
+            Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "This required check did not run, because no target was given." -Details "Configured value: (blank)" -Tag $pingTag | Out-Null
+            continue
+        }
+        $usable = $(if ($isNearEnd) { Test-NearEndAddressSyntax $address } else { Test-PingTargetSyntax $address })
+        if (-not $usable) {
+            if ($isNearEnd) {
+                Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured near-end target cannot be used: it has to be an IPv4 address in dotted-decimal form." -Details ("Configured value: {0}. A near-end target is an IPv4 address on one of this computer's subnets that is not the gateway, given as four decimal numbers with dots - not as a single number, in hexadecimal or with leading zeros, which different parsers read as different addresses - and as an address rather than a name, because the check has to know it is on the local subnet before anything is sent and a name would put the near-end rung behind the resolver." -f $address) -Tag $pingTag -Weightless | Out-Null
+            }
+            else {
+                Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured address cannot be used as a ping target." -Details ("Configured value: $address") -Tag $pingTag -Weightless | Out-Null
+            }
             if ($required) {
                 Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details ("Configured value: $address") -Tag $pingTag | Out-Null
             }
             continue
         }
+        if ($isNearEnd) {
+            # Placed before it is probed (backlog #60): the row's whole claim is which segments its probes crossed, so
+            # a target that is the gateway, or that sits beyond it, must not be measured under that claim. The gateway
+            # case is a configuration mistake and is reported as one; the off-subnet case is a fact about where this
+            # machine is right now - a laptop at home with the office's configuration - and is reported as that:
+            # nothing sent, nothing claimed, the overall result untouched. A required near-end target that was not
+            # probed still costs the weighted row every required target costs when it did not run.
+            $placement = Test-NearEndTargetPlacement -Address $address -PrimaryAdapters $PrimaryAdapters
+            if ($placement.Placement -eq "gateway" -or $placement.Placement -eq "self" -or $placement.Placement -eq "not-a-host") {
+                # Three configuration mistakes, one shape (PR #51, round 1 added the second and the third): the row
+                # says which, and a probe that would have measured the wrong thing is not sent.
+                if ($placement.Placement -eq "self") {
+                    Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured near-end target is one of this computer's own addresses, which cannot serve as the near-end rung." -Details ("Configured value: {0}. A ping to this computer's own address is answered by its own stack and crosses no cable, radio or switch; a near-end target has to be another host on the same subnet." -f $address) -Tag $pingTag -Weightless | Out-Null
+                }
+                elseif ($placement.Placement -eq "not-a-host") {
+                    Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured near-end target is the network or broadcast address of this computer's subnet, not a host." -Details ("Configured value: {0}. The all-zeros and all-ones addresses of a subnet belong to no host; a near-end target has to be a host on the same subnet." -f $address) -Tag $pingTag -Weightless | Out-Null
+                }
+                else {
+                    Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured near-end target is this computer's default gateway, which cannot serve as the near-end rung." -Details ("Configured value: {0}. The gateway answers pings from its own control plane and is already the next rung of the ladder; a near-end target has to be an ordinary host on the same subnet, so that the local path is measured without the gateway in it." -f $address) -Tag $pingTag -Weightless | Out-Null
+                }
+                if ($required) {
+                    Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details ("Configured value: $address") -Tag $pingTag | Out-Null
+                }
+                continue
+            }
+            if ($placement.Placement -ne "on-subnet") {
+                $subnetText = "none known"
+                if (@($placement.Subnets).Count -gt 0) { $subnetText = (@($placement.Subnets) -join ", ") }
+                Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "INFO" -Message "The configured near-end target is not on a subnet this computer is attached to, so it was not probed." -Details ("Configured value: {0}. This computer's IPv4 subnets: {1}. A host reached through the gateway is not a near-end rung, so nothing was sent; this row says nothing about the network and does not change the overall result." -f $address, $subnetText) -Tag $pingTag -Weightless | Out-Null
+                if ($required) {
+                    Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given is not on this computer's network." -Details ("Configured value: {0}. This computer's IPv4 subnets: {1}." -f $address, $subnetText) -Tag $pingTag | Out-Null
+                }
+                continue
+            }
+        }
+        $rungSubnets = @()
+        if ($isNearEnd) { $rungSubnets = @([string]$placement.Subnet) }
         $targets = @(Resolve-PingTargets -Address $address -PrimaryAdapters $PrimaryAdapters)
 
         if ($targets.Count -eq 0) {
@@ -2727,6 +3055,14 @@ function Test-PingTargets {
                 # all, which the row says instead of naming a route nobody took (PR #45, round 1).
                 $parsedTarget = $null
                 $targetIsAddress = [System.Net.IPAddress]::TryParse([string]$target, [ref]$parsedTarget)
+                $targetRungSubnets = @($rungSubnets)
+                if ($address -eq "AUTO_GATEWAY") {
+                    foreach ($adapter in @($PrimaryAdapters)) {
+                        if (@($adapter.Gateways) -contains [string]$target) {
+                            foreach ($entry in @($adapter.IPv4WithPrefix)) { if (([string]$entry) -match '/\d+$') { $targetRungSubnets += [string]$entry } }
+                        }
+                    }
+                }
                 $routeBefore = $null
                 if ($targetIsAddress) { $routeBefore = Get-RouteSelection -Target ([string]$target) }
                 $measurement = Invoke-PingMeasurement -Target ([string]$target) -Count $count -TimeoutMs $timeout
@@ -2741,7 +3077,7 @@ function Test-PingTargets {
                     # never reaches the end still reports what it did measure, which a row held back until then
                     # would not.
                     $pendingNote = ("This sample was not conclusive: {0} of the first {1} replies were lost, so it is continued later in this run and these figures are the first {1} alone." -f $measurement.Lost, $measurement.Sent)
-                    $pendingRow = Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -SampleNote $pendingNote
+                    $pendingRow = Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -SampleNote $pendingNote -NearEnd $isNearEnd -RungSubnets $targetRungSubnets
                     [void]$script:PendingPingSamples.Add([pscustomobject][ordered]@{
                         Name            = $name
                         Target          = [string]$target
@@ -2752,10 +3088,12 @@ function Test-PingTargets {
                         Measurement     = $measurement
                         Plan            = $plan
                         Row             = $pendingRow
+                        NearEnd         = $isNearEnd
+                        RungSubnets     = $targetRungSubnets
                     })
                     continue
                 }
-                Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout | Out-Null
+                Add-PingTargetResult -Name $name -Target ([string]$target) -ConfiguredAddress $address -Required $required -Measurement $measurement -RouteBefore $routeBefore -RouteAfter $routeAfter -TargetIsAddress $targetIsAddress -TimeoutMs $timeout -NearEnd $isNearEnd -RungSubnets $targetRungSubnets | Out-Null
             }
             catch {
                 $status = if ($required) { "ERROR" } else { "INFO" }
@@ -4281,13 +4619,33 @@ function Get-FingerprintSummary {
     $adaptersFail = @($results | Where-Object { $_.Tag -eq "adapters" -and $_.Status -eq "FAIL" }).Count -gt 0
     $gatewayConfigFail = @($results | Where-Object { $_.Tag -eq "gateway-config" -and $_.Status -eq "FAIL" }).Count -gt 0
     $gatewayPingPass = @($results | Where-Object { $_.Tag -eq "ping-gateway" -and $_.Status -eq "PASS" }).Count -gt 0
-    $gatewayPingBad = @($results | Where-Object { $_.Tag -eq "ping-gateway" -and $_.Status -eq "FAIL" }).Count -gt 0
+    # A gateway row that failed on its latency answered every probe it is judged on (backlog #67): that is a quality
+    # finding on a gateway that is reachable, not a gateway that does not answer, so it takes the quality lane below
+    # like any other slow target - and where something else failed as well, the mixed one. Only a row whose loss
+    # decided it - replies that did not come back - can select the gateway-unreachable key.
+    $gatewayLostRows = @($results | Where-Object { $_.Tag -eq "ping-gateway" -and $_.Status -eq "FAIL" -and [string]$_.Rule -ne "latency" })
+    $gatewayPingBad = @($gatewayLostRows).Count -gt 0
+    # The near-end rung (backlog #60) does not select a key of its own: it says which side of the gateway a failure
+    # is on, which is what the gateway-unreachable summary reads it for below - and only for gateway rows whose probes
+    # the route table sent through the same adapter (PR #51, round 4): on a multihomed machine a near-end host reached
+    # through adapter A says nothing about the cable, radio or switch behind adapter B. Path is the interface the
+    # row's two lookups agreed on; a near-end row carries one whenever it carries the tag, and a failed gateway row
+    # without one, or with another, keeps the neutral line.
+    $nearEndPass = $false
+    $nearEndLost = $false
+    foreach ($nearEndRow in @($results | Where-Object { $_.Tag -eq "ping-near-end" })) {
+        $nearEndPath = [string]$nearEndRow.Path
+        if ([string]::IsNullOrWhiteSpace($nearEndPath)) { continue }
+        if (@($gatewayLostRows | Where-Object { [string]$_.Path -ne $nearEndPath }).Count -gt 0) { continue }
+        if ($nearEndRow.Status -eq "PASS") { $nearEndPass = $true }
+        elseif ($nearEndRow.Status -eq "FAIL" -and [string]$nearEndRow.Rule -ne "latency") { $nearEndLost = $true }
+    }
     $groupFail = @($results | Where-Object { $_.Tag -eq "connectivity-group" -and $_.Status -eq "FAIL" }).Count -gt 0
     $groupPass = @($results | Where-Object { $_.Tag -eq "connectivity-group" -and $_.Status -eq "PASS" }).Count -gt 0
     $dnsFail = @($results | Where-Object { $_.Tag -eq "dns" -and ($_.Status -eq "FAIL" -or $_.Status -eq "WARN") }).Count -gt 0
     $dnsPass = @($results | Where-Object { $_.Tag -eq "dns" -and $_.Status -eq "PASS" }).Count -gt 0
     $tcpPass = @($results | Where-Object { $_.Tag -eq "tcp" -and $_.Status -eq "PASS" }).Count -gt 0
-    $qualityTags = @("ping-target", "ping-gateway", "tcp-retransmissions", "adapter-errors")
+    $qualityTags = @("ping-target", "ping-gateway", "ping-near-end", "tcp-retransmissions", "adapter-errors")
     $qualityIssue = @($results | Where-Object { ($qualityTags -contains $_.Tag) -and ($_.Status -eq "WARN" -or $_.Status -eq "FAIL") }).Count -gt 0
     $otherProblem = @($results | Where-Object { [string]$_.Scope -ne "IT" -and ($_.Status -eq "WARN" -or $_.Status -eq "FAIL") -and ($qualityTags -notcontains $_.Tag) }).Count -gt 0
 
@@ -4305,7 +4663,19 @@ function Get-FingerprintSummary {
     $lines = @()
     switch ($key) {
         "local" { $title = "Local link problem"; $lines = @("No working network adapter or no default gateway was found.", "The fault is on this computer or its link: cable, Wi-Fi association, adapter disabled, or DHCP not answering.", "Try another device on the same network to see whether only this computer is affected.") }
-        "gateway-unreachable" { $title = "Gateway does not answer"; $lines = @("The default gateway is configured but does not answer pings.", "The fault is between this computer and the router: link, Wi-Fi, switch, or the router itself.", "Check the link light or Wi-Fi signal and whether other devices reach the router.", "A gateway that fails this check - not answering pings sent to itself, or answering them slowly - is a suspect, not a conviction: it may be forwarding traffic normally while dropping or deprioritising those pings. A connection that succeeded proves that only if its route ran through this gateway - a same-subnet host, a VPN or a proxy can succeed without touching it - so check the link to it first and treat the gateway as unproven rather than broken.") }
+        "gateway-unreachable" {
+            $title = "Gateway does not answer"
+            # The second line is chosen from what the near-end rung measured (backlog #60): a near-end host that
+            # answered clears the local path and leaves the gateway itself; one that did not answer either puts the
+            # fault on the local path before it; without one, or with one that neither passed nor lost its replies,
+            # the line names the whole stretch as it always did.
+            $pathLine = "The fault is between this computer and the router: link, Wi-Fi, switch, or the router itself."
+            if ($nearEndPass) { $pathLine = "A host on this computer's own network answered its pings normally (the near-end row), so the local path - adapter, cable or Wi-Fi, switch or access point - carried traffic during this run; what did not answer is the gateway itself." }
+            # "Lost its replies" and not "did not answer" (PR #51, round 2): a required near-end row fails on its loss
+            # band with some replies back as well as with none, and the line must not say the host was silent.
+            elseif ($nearEndLost) { $pathLine = "The near-end host on this computer's own network lost its replies too - all of them, or too many - which points at the local path before the gateway: link, Wi-Fi, switch or access point. The host itself is the other possibility, so check it as well." }
+            $lines = @("The default gateway is configured but did not answer the pings sent to it, or lost too many of them.", $pathLine, "Check the link light or Wi-Fi signal and whether other devices reach the router.", "A gateway that fails this check - not answering pings sent to itself - is a suspect, not a conviction: it may be forwarding traffic normally while dropping or rate-limiting those pings. A connection that succeeded proves that only if its route ran through this gateway - a same-subnet host, a VPN or a proxy can succeed without touching it - so check the link to it first and treat the gateway as unproven rather than broken.")
+        }
         "gateway-up-internet-dead" { $title = "Gateway answers, internet does not"; $lines = @("The router answers, but connections beyond it fail.", "The fault is at or beyond the router: WAN link, ISP, or an upstream firewall.", "Check the router's WAN status and whether other devices lose the internet too.") }
         "dns" { $title = "Name resolution fails"; $lines = @("Direct connections by IP address work, but host names do not resolve.", "The fault is DNS: the configured DNS servers, a filtering service, or the name itself.", "Compare the DNS servers in this report with the expected company settings.") }
         "quality" { $title = "Connected, but quality is poor"; $lines = @("Connectivity works, but packet loss, latency, retransmissions, or adapter errors were above the thresholds.", "Typical causes: weak Wi-Fi, a congested link, or a faulty cable or port.", "Run the tool again while the problem is occurring and compare the numbers.") }
@@ -4318,7 +4688,7 @@ function Get-FingerprintSummary {
             # failed outright - an INFO row by design - read as if nothing had failed, a few lines above the row
             # that did (backlog #35). The claim is now the one the verdict actually makes, and the targets that did
             # not answer are named where the reader is looking.
-            $quietOptional = @($results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "INFO" -and (@("ping-target", "tcp", "http") -contains [string]$_.Tag) })
+            $quietOptional = @($results | Where-Object { [string]$_.Scope -ne "IT" -and $_.Status -eq "INFO" -and (@("ping-target", "ping-near-end", "tcp", "http") -contains [string]$_.Tag) })
             if ($quietOptional.Count -gt 0) {
                 $quietNames = @(@($quietOptional | ForEach-Object { [string]$_.Check }) | Select-Object -Unique)
                 $lines = @("All required checks passed during this run.", ("These optional targets did not answer, which does not change the result: {0}." -f ($quietNames -join ", ")), "If the problem persists, it is likely on the application or server side, or it comes and goes; run the tool again while it is happening.")
