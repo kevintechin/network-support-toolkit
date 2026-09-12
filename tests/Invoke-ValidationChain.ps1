@@ -476,10 +476,16 @@ function Get-MachineFacts {
     }
     # How many wireless interfaces the machine has at all, connected or not - the set WlanEnumInterfaces lists, which is
     # what the Wi-Fi retry row (backlog #61) writes one row per; netsh prints one interface GUID per interface, and a
-    # GUID's shape is not localized. A machine with none, or without the WLAN service, gets one row saying so.
+    # GUID's shape is not localized. A machine with none, or without the WLAN service, gets one row saying so. The GUIDs
+    # themselves are kept as well (PR #52, round 6): an interface enabled or removed during the run gets a transition row
+    # of its own, so the row count the oracle expects is the union of the lists read before the launch and after the report.
     $facts.WlanInterfaces = 0
+    $facts.WlanInterfaceIds = @()
     if (Test-Path -LiteralPath $netsh) {
-        try { $facts.WlanInterfaces = @(& $netsh wlan show interfaces 2>&1 | Where-Object { ([string]$_) -match '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}' }).Count } catch { }
+        try {
+            $facts.WlanInterfaceIds = @(& $netsh wlan show interfaces 2>&1 | ForEach-Object { if (([string]$_) -match '([0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})') { $matches[1].ToLowerInvariant() } } | Sort-Object -Unique)
+            $facts.WlanInterfaces = @($facts.WlanInterfaceIds).Count
+        } catch { }
     }
     # Whether adapter statistics can be sampled, the way Get-AdapterStatisticsSnapshot samples them; without them both
     # sampling steps end as step-error rows and the analysis step writes one aggregate adapter-errors row.
@@ -619,6 +625,9 @@ function Test-ResultSet {
         $tcpRows += $(if ([bool]$tcpBefore.$protocol -and [bool]$tcpAfter.$protocol) { 1 } elseif ((-not [bool]$tcpBefore.$protocol) -and (-not [bool]$tcpAfter.$protocol)) { 2 } else { 1 })
     }
     $statsReadable = $(if ($null -eq $Machine.AdapterStatistics) { $true } else { [bool]$Machine.AdapterStatistics })
+    $wlanAfterIds = $(if ($null -ne $MachineAfter -and $null -ne $MachineAfter.WlanInterfaceIds) { @($MachineAfter.WlanInterfaceIds) } else { @($Machine.WlanInterfaceIds) })
+    $wlanUnion = @(@($Machine.WlanInterfaceIds) + $wlanAfterIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).ToLowerInvariant() } | Sort-Object -Unique).Count
+    if ($null -eq $Machine.WlanInterfaceIds) { $wlanUnion = [int]$(if ($null -eq $Machine.WlanInterfaces) { 0 } else { $Machine.WlanInterfaces }) }
     # One connectivity-group row per group named on a TCP or HTTP target or listed in RequiredConnectivityGroups (a
     # required group without targets gets its own "no executable items" row), the way Test-ConnectivityTargets writes them.
     $groupKeys = @{}
@@ -663,9 +672,12 @@ function Test-ResultSet {
         # class could be read is returned rather than thrown away, so the analysis writes one row per read that failed
         # instead of a step-error row and one generic row (backlog #38, PR #40 rounds 5 and 9).
         'tcp-retransmissions' = $tcpRows
-        # One weightless Wi-Fi retry row per wireless interface the machine lists, or one row saying there is none or
-        # that the reader was unavailable (backlog #61); none at all when the configuration switches it off.
-        'wifi-retry' = $(if (Test-TrueFlag $Config.Checks.WifiRetryCounters) { [math]::Max(1, [int]$(if ($null -eq $Machine.WlanInterfaces) { 0 } else { $Machine.WlanInterfaces })) } else { 0 })
+        # One weightless Wi-Fi retry row per wireless interface listed at either reading - the union of the GUID lists
+        # read before the launch and after the report, since an interface enabled or removed during the run gets a
+        # transition row of its own (PR #52, round 6) - or one row saying there is none or that the reader was
+        # unavailable (backlog #61); none at all when the configuration switches it off. A fact without the list falls
+        # back to the count.
+        'wifi-retry' = $(if (Test-TrueFlag $Config.Checks.WifiRetryCounters) { [math]::Max(1, $wlanUnion) } else { 0 })
         # Step failures the machine facts explain: both adapter-statistics samples without the cmdlet (or one of them
         # when a sample failed on its own - see below) and the network snapshot when its fallback failed too. The TCP
         # baseline is no longer among them, whatever its counters do. Any other step-error row is unexpected.
@@ -762,7 +774,7 @@ function Test-ResultSet {
     return $bad
 }
 function ConvertTo-FactsKey([hashtable]$F) {
-    return ('{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}' -f $F.ConnectedAdapters, (@($F.Gateways) -join ','), (@($F.DnsServers) -join ','), $F.WifiInterfaces, [bool]$F.TcpCounters.TCPv4, [bool]$F.TcpCounters.TCPv6, [bool]$F.AdapterStatistics, [bool]$F.DataSourceRow, [bool]$F.SnapshotStepFailed, $F.WlanInterfaces)
+    return ('{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}' -f $F.ConnectedAdapters, (@($F.Gateways) -join ','), (@($F.DnsServers) -join ','), $F.WifiInterfaces, [bool]$F.TcpCounters.TCPv4, [bool]$F.TcpCounters.TCPv6, [bool]$F.AdapterStatistics, [bool]$F.DataSourceRow, [bool]$F.SnapshotStepFailed, $F.WlanInterfaces, (@($F.WlanInterfaceIds) -join ','))
 }
 function Test-ResultSetForRun {
     # The machine can change while a run samples for two minutes (an adapter connecting or dropping, a Wi-Fi roaming),

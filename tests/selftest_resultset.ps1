@@ -36,7 +36,7 @@ $text = Get-Content -LiteralPath $json.FullName -Raw -Encoding UTF8
 function Load { $text | ConvertFrom-Json }
 
 # The fixture and its facts.
-$facts = @{ ConnectedAdapters = 3; Gateways = @('192.0.2.1'); DnsServers = @(); Source = 'NetCmdlets'; DataSourceRow = $false; SnapshotStepFailed = $false; TcpCounters = @{ TCPv4 = $true; TCPv6 = $true }; AdapterStatistics = $true; WifiInterfaces = 1; WlanInterfaces = 1 }
+$facts = @{ ConnectedAdapters = 3; Gateways = @('192.0.2.1'); DnsServers = @(); Source = 'NetCmdlets'; DataSourceRow = $false; SnapshotStepFailed = $false; TcpCounters = @{ TCPv4 = $true; TCPv6 = $true }; AdapterStatistics = $true; WifiInterfaces = 1; WlanInterfaces = 1; WlanInterfaceIds = @('e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb') }
 function New-Row($Template, [string]$Tag, [string]$Check, [string]$Status, [string]$Scope = 'Main') {
     $row = $Template.PSObject.Copy(); $row.Tag = $Tag; $row.Check = $Check; $row.Status = $Status; $row.Scope = $Scope; $row.Message = 'fixture row'; return $row
 }
@@ -153,11 +153,18 @@ $r = New-Fixture; $r.Results = @($r.Results) + @(New-Row $r.Results[0] 'wifi' 'W
 $r = New-Fixture; Assert-Case 'two connected wireless interfaces but one wifi row' @(Test-ResultSet $r $cfg @{} $twoWifi) $false 'wifi: 1 row(s), expected 2'
 # The Wi-Fi retry row (backlog #61): one per wireless interface the machine lists, none when the configuration switches
 # the reader off - and the report's own ChecksEnabled has to agree with the file.
-$twoWlan = With $facts @{ WlanInterfaces = 2 }
+$twoWlan = With $facts @{ WlanInterfaces = 2; WlanInterfaceIds = @('e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb', '0b3f7c2e-1111-4a2b-9c3d-000000000002') }
 $r = New-Fixture; $r.Results = @($r.Results) + @(New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'INFO'); Assert-Case 'two wireless interfaces with two wifi-retry rows' @(Test-ResultSet $r $cfg @{} $twoWlan) $true ''
 $r = New-Fixture; Assert-Case 'two wireless interfaces but one wifi-retry row' @(Test-ResultSet $r $cfg @{} $twoWlan) $false 'wifi-retry: 1 row(s), expected 2'
 $r = New-Fixture; $agg = New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'ERROR'; $agg.Details = 'Reading at the start: addtype'; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }) + @($agg); Assert-Case 'two wireless interfaces and the one aggregate row of a reader that failed before listing them' @(Test-ResultSet $r $cfg @{} $twoWlan) $true ''
 $r = New-Fixture; $one = New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'ERROR'; $one.Details = 'Connection state: connected at the start, connected at the end.'; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }) + @($one); Assert-Case 'two wireless interfaces but one per-interface error row is a missing row, not the aggregate shape' @(Test-ResultSet $r $cfg @{} $twoWlan) $false 'wifi-retry: 1 row(s), expected 2'
+# An interface that appeared or was replaced during the run (round 6): the expected count is the union of the lists read
+# before the launch and after the report, one measured row plus one transition row, or two transition rows.
+$transition = New-Row $r.Results[0] 'wifi-retry' 'Wireless retries' 'ERROR'; $transition.Details = 'Connection state: not listed at the start, connected at the end.'
+$r = New-Fixture; $r.Results = @($r.Results) + @($transition); Assert-Case 'a second interface enabled during the run: the union of both readings, one measured row and one transition row' @(Test-ResultSet $r $cfg @{} $facts $twoWlan) $true ''
+$r = New-Fixture; Assert-Case 'a second interface enabled during the run but no transition row' @(Test-ResultSet $r $cfg @{} $facts $twoWlan) $false 'wifi-retry: 1 row(s), expected 2'
+$replaced = With $facts @{ WlanInterfaceIds = @('0b3f7c2e-1111-4a2b-9c3d-000000000002') }
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }) + @($transition, $transition); Assert-Case 'one interface replaced by another during the run: two transition rows' @(Test-ResultSet $r $cfg @{} $facts $replaced) $true ''
 $cfgNoRetry = Read-Config $ConfigDir; $cfgNoRetry.Checks.WifiRetryCounters = $false
 $r = New-Fixture; Assert-Case 'the reader switched off in the file but the row still written' @(Test-ResultSet $r $cfgNoRetry @{} $facts) $false 'wifi-retry: 1 row(s), expected 0'
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi-retry' }); $r.RunOptions.ChecksEnabled.WifiRetryCounters = $false; Assert-Case 'the reader switched off: no row, and the report says so' @(Test-ResultSet $r $cfgNoRetry @{} $facts) $true ''
