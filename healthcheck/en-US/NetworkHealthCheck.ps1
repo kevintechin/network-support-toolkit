@@ -167,6 +167,7 @@ $script:RunOptions = $null
 $script:RunOptionMessages = New-Object System.Collections.ArrayList
 $script:DroppedTargets = New-Object System.Collections.ArrayList
 $script:RetransmissionRateComputed = $false
+$script:TcpConnectSampleCount = 0
 $script:PendingPingSamples = New-Object System.Collections.ArrayList
 $script:PanelWarned = $false
 $script:PanelHints = $null
@@ -3206,22 +3207,67 @@ function Invoke-TcpConnectionTest {
         $client.EndConnect($asyncResult)
         $stopwatch.Stop()
 
+        # backlog #52: the two addresses the socket actually used, read before finally closes it. The remote one is
+        # where the connections that follow this one go - to the address the first reached, never through the
+        # resolver again - and the local one says which adapter's address the handshakes left from. Neither is a
+        # measurement, so a read that fails leaves an empty string and the connection stays a success.
+        $remoteAddress = ""
+        $localAddress = ""
+        try {
+            if ($null -ne $client.Client.RemoteEndPoint) { $remoteAddress = [string]$client.Client.RemoteEndPoint.Address }
+            if ($null -ne $client.Client.LocalEndPoint) { $localAddress = [string]$client.Client.LocalEndPoint.Address }
+        }
+        catch {}
+        # backlog #52, PR #53 round 1: the socket's own account of its handshake, read before finally closes it.
+        # SIO_TCP_INFO (0xD8000027, the Int32 below) fills a TCP_INFO_v0 - 88 bytes, SynRetrans the UCHAR at offset 84,
+        # RttUs the ULONG at offset 20, the layout the mstcpip.h reference documents and this machine returned (read
+        # 2026-09-12) - for the socket that asks, without elevation, on Windows 10 version 1703 and Windows Server
+        # 2016 or later. A build that does not have it, or a socket that refuses, leaves -1 and the reason, and the
+        # row falls back to reading the times against the retransmission timeout, saying so.
+        $synRetrans = -1
+        $rttUs = -1
+        $telemetryError = ""
+        try {
+            $infoOut = New-Object byte[] 128
+            $infoBytes = $client.Client.IOControl([int]-671088601, [System.BitConverter]::GetBytes([uint32]0), $infoOut)
+            if ($infoBytes -ge 88) {
+                $synRetrans = [int]$infoOut[84]
+                $rttUs = [int][System.BitConverter]::ToUInt32($infoOut, 20)
+            }
+            else {
+                $telemetryError = ("SIO_TCP_INFO returned {0} byte(s)" -f $infoBytes)
+            }
+        }
+        catch {
+            $telemetryError = [string]$_.Exception.Message
+        }
+
         return [pscustomobject][ordered]@{
-            Success   = $true
-            Host      = $HostName
-            Port      = $Port
-            ElapsedMs = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
-            Error     = ""
+            Success        = $true
+            Host           = $HostName
+            Port           = $Port
+            ElapsedMs      = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
+            Error          = ""
+            RemoteAddress  = $remoteAddress
+            LocalAddress   = $localAddress
+            SynRetrans     = $synRetrans
+            RttUs          = $rttUs
+            TelemetryError = $telemetryError
         }
     }
     catch {
         $stopwatch.Stop()
         return [pscustomobject][ordered]@{
-            Success   = $false
-            Host      = $HostName
-            Port      = $Port
-            ElapsedMs = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
-            Error     = (Add-NetworkErrorCause $_.Exception $_.Exception.Message)
+            Success       = $false
+            Host          = $HostName
+            Port          = $Port
+            ElapsedMs     = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
+            Error         = (Add-NetworkErrorCause $_.Exception $_.Exception.Message)
+            RemoteAddress  = ""
+            LocalAddress   = ""
+            SynRetrans     = -1
+            RttUs          = -1
+            TelemetryError = ""
         }
     }
     finally {
@@ -3325,6 +3371,189 @@ function Invoke-HttpConnectionTest {
     }
 }
 
+function Get-TcpInitialRto {
+    # backlog #52: the timeout the connection times are read against is the operating system's own, not a threshold
+    # of this tool. Set-NetTCPSetting documents InitialRtoMs as "the period, in milliseconds, before connect, or SYN,
+    # retransmit" (300 to 3000 ms in steps of 10; read 2026-09-12), so a handshake that lasts at least that long is
+    # one in which that timer expired. Asked of the Internet template, one of the two Windows ships. The reference
+    # machine's Windows 11 build has no InitialRtoMs property on the object at all, while netsh int tcp show global
+    # reports one global value, 1000 - the value Windows uses where none was set - so 1000 ms is assumed where the
+    # cmdlet reports nothing, and the row says which of the two it got.
+    $rto = [pscustomobject][ordered]@{
+        Ms     = 1000
+        Source = "default"
+    }
+    try {
+        $setting = @(Get-NetTCPSetting -SettingName "Internet" -ErrorAction Stop)
+        $value = 0
+        if ($setting.Count -gt 0) { $value = ConvertTo-IntSafe (Get-PropertyValue $setting[0] "InitialRtoMs" $null) 0 }
+        if ($value -gt 0) {
+            $rto.Ms = $value
+            $rto.Source = "setting"
+        }
+    }
+    catch {}
+    return $rto
+}
+
+function New-TcpConnectSample {
+    param(
+        [object]$First,
+        [object[]]$Repeats,
+        [int]$Planned,
+        [bool]$HostIsName,
+        [object]$InitialRto
+    )
+
+    # backlog #52: what the run measured for one target, counted here so that the text is a function of this object
+    # and the unit tests hold both scripts to the counting. The first connection is the one the row's status rests
+    # on; the repeats follow it in order and end at the first that failed, because the loop that made them stops
+    # there - a target that stopped answering costs one more timeout and not PingCount of them.
+    $results = @(@(@($First) + @($Repeats)) | Where-Object { $null -ne $_ })
+    $times = New-Object System.Collections.ArrayList
+    $synCounts = New-Object System.Collections.ArrayList
+    $rtts = New-Object System.Collections.ArrayList
+    $telemetryError = ""
+    $failedIndex = 0
+    $failedError = ""
+    for ($i = 0; $i -lt $results.Count; $i++) {
+        if ($results[$i].Success) {
+            [void]$times.Add([int](ConvertTo-IntSafe $results[$i].ElapsedMs 0))
+            $synCount = [int](ConvertTo-IntSafe (Get-PropertyValue $results[$i] "SynRetrans" -1) -1)
+            [void]$synCounts.Add($synCount)
+            [void]$rtts.Add([int](ConvertTo-IntSafe (Get-PropertyValue $results[$i] "RttUs" -1) -1))
+            if ($synCount -lt 0 -and $telemetryError -eq "") { $telemetryError = [string](Get-PropertyValue $results[$i] "TelemetryError" "") }
+        }
+        elseif ($failedIndex -eq 0) {
+            $failedIndex = $i + 1
+            $failedError = [string]$results[$i].Error
+        }
+    }
+    # The retransmission figure is the sockets' own where every connection that completed could be asked (PR #53,
+    # round 1): SynRetrans per connection, summed. Where any could not - a build older than Windows 10 1703, a socket
+    # that refused - the sample says so and the times are read against the timeout instead, as the proxy they are.
+    $telemetryComplete = ($synCounts.Count -gt 0) -and (@($synCounts | Where-Object { $_ -lt 0 }).Count -eq 0)
+    $retransmittedSyns = 0
+    foreach ($synCount in $synCounts) { if ($synCount -gt 0) { $retransmittedSyns += $synCount } }
+    # The proxy: a target given as a name has its first connection timed with the name lookup inside it - TcpClient
+    # resolves the name before it sends the SYN - so that time is listed and not read against the timeout; the repeats
+    # went to the address the first connection reached and are read. An address target's first connection is read
+    # like the rest. With the sockets' own counts none of this matters, because a count is not a time.
+    $judged = @($times)
+    if ($HostIsName -and $judged.Count -gt 0) { $judged = @($judged | Select-Object -Skip 1) }
+    $rtoMs = [math]::Max(1, (ConvertTo-IntSafe (Get-PropertyValue $InitialRto "Ms" 1000) 1000))
+    $atOrAbove = @($judged | Where-Object { $_ -ge $rtoMs })
+
+    return [pscustomobject][ordered]@{
+        Planned           = [math]::Max(1, $Planned)
+        Attempted         = $results.Count
+        Times             = @($times)
+        SynRetrans        = @($synCounts)
+        RttUs             = @($rtts)
+        TelemetryComplete = [bool]$telemetryComplete
+        TelemetryError    = $telemetryError
+        RetransmittedSyns = $retransmittedSyns
+        Judged            = $judged.Count
+        AtOrAbove         = @($atOrAbove)
+        RtoMs             = $rtoMs
+        RtoSource         = [string](Get-PropertyValue $InitialRto "Source" "default")
+        RemoteAddress     = [string](Get-PropertyValue $First "RemoteAddress" "")
+        LocalAddress      = [string](Get-PropertyValue $First "LocalAddress" "")
+        HostIsName        = [bool]$HostIsName
+        FailedIndex       = $failedIndex
+        FailedError       = $failedError
+    }
+}
+
+function Get-TcpConnectSampleText {
+    param(
+        [object]$Sample,
+        [string]$HostName,
+        [int]$Port
+    )
+
+    # backlog #52: the message carries the times and the retransmission figure - the sockets' own counts where they
+    # could be read, otherwise how many of the connections read reached the timeout, named as the proxy it is - the
+    # one figure a reader is owed at a glance; the rule, the timeout's provenance and the addresses are details.
+    # Nothing here decides anything: the row's status was set by the first connection before this text existed.
+    $target = "{0}:{1}" -f $HostName, $Port
+    $timesText = (@($Sample.Times) | ForEach-Object { [string]$_ }) -join " / "
+    $synText = (@($Sample.SynRetrans) | ForEach-Object { [string]$_ }) -join " / "
+    $rttText = (@($Sample.RttUs) | ForEach-Object { [string]([math]::Round($_ / 1000.0, 1)) }) -join " / "
+    $telemetry = [bool]$Sample.TelemetryComplete
+    $retransmitted = [int]$Sample.RetransmittedSyns
+    $timed = @($Sample.Times).Count
+    $reached = @($Sample.AtOrAbove).Count
+    $judged = [int]$Sample.Judged
+    $attempted = [int]$Sample.Attempted
+    $planned = [int]$Sample.Planned
+    $rtoMs = [int]$Sample.RtoMs
+    $failedIndex = [int]$Sample.FailedIndex
+    $rtoText = ("{0} ms" -f $rtoMs)
+    if ([string]$Sample.RtoSource -ne "setting") { $rtoText = ("{0} ms (assumed)" -f $rtoMs) }
+    $telemetryError = [string]$Sample.TelemetryError
+    if ($telemetryError -eq "") { $telemetryError = "no error text" }
+
+    $lead = ("{0} connection(s) timed: {1} ms" -f $timed, $timesText)
+    if ($failedIndex -gt 0) {
+        $lead = ("{0} connection(s) planned, {1} timed before connection {2} failed and the rest were left unattempted: {3} ms" -f $planned, $timed, $failedIndex, $timesText)
+    }
+    $message = ""
+    if ($telemetry -and $retransmitted -eq 0) {
+        $message = $lead + ("; SYN retransmissions {0}, counted by each socket." -f $synText)
+    }
+    elseif ($telemetry) {
+        $message = $lead + ("; SYN retransmissions {0}, counted by each socket: {1} SYN(s) had to be sent again." -f $synText, $retransmitted)
+    }
+    elseif ($judged -eq 0) {
+        $message = $lead + ("; the sockets' own retransmission counters could not be read, and a name target's first connection includes its name lookup, so nothing was read against the {0} retransmission timeout." -f $rtoText)
+    }
+    elseif ($reached -eq 0) {
+        $message = $lead + ("; the sockets' own retransmission counters could not be read, so the times stand in: {0} of {1} took at least the {2} retransmission timeout - a proxy for a retransmitted SYN, not a count of one." -f $reached, $judged, $rtoText)
+    }
+    else {
+        $message = $lead + ("; the sockets' own retransmission counters could not be read, so the times stand in: {0} of {1} took at least the {2} retransmission timeout, where a retransmitted SYN could appear - a proxy for a retransmitted SYN, not a count of one." -f $reached, $judged, $rtoText)
+    }
+
+    $lines = New-Object System.Collections.ArrayList
+    $where = ("to {0}" -f $target)
+    if ($Sample.HostIsName -and -not [string]::IsNullOrWhiteSpace([string]$Sample.RemoteAddress)) {
+        $where = ("to {0}, which resolved to {1}" -f $target, $Sample.RemoteAddress)
+    }
+    $from = ""
+    if (-not [string]::IsNullOrWhiteSpace([string]$Sample.LocalAddress)) {
+        $from = (" from {0}" -f $Sample.LocalAddress)
+    }
+    $first = ("Connections: {0} of {1} planned, each a new TCP handshake {2}{3}; times in the order made: {4} ms." -f $attempted, $planned, $where, $from, $timesText)
+    if ($Sample.HostIsName -and $telemetry) {
+        if ($attempted -gt 1) { $first += (" The first connection resolved the name and its time includes that lookup; its SYN count is the socket's own and is read like the rest; the {0} that followed went to the address." -f ($attempted - 1)) }
+        else { $first += " The first connection resolved the name and its time includes that lookup; its SYN count is the socket's own; no connection followed it." }
+    }
+    elseif ($Sample.HostIsName) {
+        if ($attempted -gt 1) { $first += (" The first connection resolved the name and its time includes that lookup, so it is not read against the timeout; the {0} that followed went to the address." -f ($attempted - 1)) }
+        else { $first += " The first connection resolved the name and its time includes that lookup, so it is not read against the timeout; no connection followed it." }
+    }
+    [void]$lines.Add($first)
+    if ($failedIndex -gt 0) {
+        [void]$lines.Add(("Connection {0} failed, and the ones after it were not attempted:" -f $failedIndex))
+        [void]$lines.Add([string]$Sample.FailedError)
+    }
+    if ($telemetry) { [void]$lines.Add(("SYN retransmissions per connection: {0}; round-trip estimate per connection: {1} ms (TCP_INFO_v0 SynRetrans and RttUs, read from each socket through SIO_TCP_INFO once it had connected)." -f $synText, $rttText)) }
+    else { [void]$lines.Add(("SYN retransmissions: not readable from the sockets on this computer ({0}) - SIO_TCP_INFO needs Windows 10 version 1703 or Windows Server 2016 - so the times are read against the initial retransmission timeout below instead." -f $telemetryError)) }
+    $rtoLine = ("Initial retransmission timeout (RTO): {0} ms, " -f $rtoMs)
+    if ([string]$Sample.RtoSource -eq "setting") { $rtoLine += "the Internet template's InitialRtoMs as Get-NetTCPSetting reports it." }
+    else { $rtoLine += ("assumed: Get-NetTCPSetting reports no value on this computer, and {0} ms is the value Windows uses where none was set (netsh int tcp show global shows the value in force)." -f $rtoMs) }
+    [void]$lines.Add($rtoLine)
+    if ($telemetry) { [void]$lines.Add(("Reading: {0} SYN(s) sent again across {1} connection(s), counted by the sockets themselves. These are this tool's own connections, to this one target, at this moment - the figure the system-wide TCP Retransmissions rows cannot attribute - and they decide nothing: the status of this row is the first connection's. A connection that took at least the initial retransmission timeout is where a retransmitted SYN would show in the times; the socket's count says whether one did." -f $retransmitted, $timed)) }
+    elseif ($judged -eq 0) { [void]$lines.Add("Reading: nothing was read - the sockets' counters were not available, and the only connection that completed carried the name lookup. These are this tool's own connections, to this one target, at this moment - the figure the system-wide TCP Retransmissions rows cannot attribute - and they decide nothing: the status of this row is the first connection's.") }
+    else { [void]$lines.Add(("Reading: {0} of {1} at or above the timeout. A connection that takes at least the initial retransmission timeout is where a retransmitted SYN would show, but its time also holds whatever ran before the SYN and after the reply, so this is a proxy for a retransmission and not a count of one; and a connection below it rules a retransmission out only if the timeout read here is the one the connection used, which this tool cannot confirm - which template a connection gets cannot be read without administrator rights, and an assumed value is an assumption. These are this tool's own connections, to this one target, at this moment - the figure the system-wide TCP Retransmissions rows cannot attribute - and they decide nothing: the status of this row is the first connection's." -f $reached, $judged)) }
+
+    return [pscustomobject][ordered]@{
+        Message = $message
+        Lines   = @($lines)
+    }
+}
+
 function Add-ConnectivityGroupResult {
     param(
         [hashtable]$GroupResults,
@@ -3361,6 +3590,13 @@ function Test-ConnectivityTargets {
     $tcpMethod = "Method: TcpClient.BeginConnect, timeout $tcpTimeout ms."
     $httpMethod = "Method: HttpWebRequest GET via the system proxy, TLS 1.2, timeout $httpTimeout ms."
     $groupResults = @{}
+    # backlog #52: PingCount is also the number of TCP connections a target that answers gets - the one that decides
+    # the row and PingCount - 1 more to the address it reached, timed one by one - so that the run holds one
+    # retransmission figure it can attribute: its own SYNs, to one named target, at this moment. The system-wide
+    # counters keep their rows and say what they are. The timeout the times are read against is read once, and only
+    # after a connection has succeeded, so a run whose TCP targets all fail pays nothing for it.
+    $connectCount = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.PingCount 4))
+    $initialRto = $null
 
     foreach ($target in @($script:Config.Tests.TcpTargets)) {
         if ($null -eq $target) { continue }
@@ -3386,7 +3622,29 @@ function Test-ConnectivityTargets {
 
         $result = Invoke-TcpConnectionTest -HostName $hostName -Port $port -TimeoutMs $tcpTimeout
         if ($result.Success) {
-            Add-CheckResult -Category "TCP Connection" -Check $name -Status "PASS" -Message ("Connected to {0}:{1} in {2} ms." -f $hostName, $port, $result.ElapsedMs) -Details ($tcpMethod + [Environment]::NewLine + "Manual check: Test-NetConnection $hostName -Port $port") -Tag "tcp" | Out-Null
+            # backlog #52: the connections that follow the one that decided the row. They go to the address the
+            # first connection reached, so that a name is resolved once and the times are handshakes and nothing
+            # else; and they stop at the first that fails, so that a target which stops answering costs one more
+            # timeout and not PingCount of them.
+            if ($null -eq $initialRto) { $initialRto = Get-TcpInitialRto }
+            $repeatHost = $hostName
+            if (-not [string]::IsNullOrWhiteSpace([string]$result.RemoteAddress)) { $repeatHost = [string]$result.RemoteAddress }
+            $repeats = @()
+            for ($i = 2; $i -le $connectCount; $i++) {
+                $repeat = Invoke-TcpConnectionTest -HostName $repeatHost -Port $port -TimeoutMs $tcpTimeout
+                $repeats += $repeat
+                if (-not $repeat.Success) { break }
+            }
+            # Whether the first connection carried a name lookup is decided the way the framework decides it: TcpClient
+            # hands the string to Dns, whose resolution helper parses it with IPAddress.TryParse first and queries nothing
+            # for a value that parses (Dns.HostResolutionBeginHelper in the .NET Framework reference source, read
+            # 2026-09-12), so the same test here says whether a resolver was ever asked.
+            $parsedAddress = $null
+            $hostIsName = -not [System.Net.IPAddress]::TryParse($hostName, [ref]$parsedAddress)
+            $sample = New-TcpConnectSample -First $result -Repeats $repeats -Planned $connectCount -HostIsName $hostIsName -InitialRto $initialRto
+            $sampleText = Get-TcpConnectSampleText -Sample $sample -HostName $hostName -Port $port
+            $script:TcpConnectSampleCount++
+            Add-CheckResult -Category "TCP Connection" -Check $name -Status "PASS" -Message (("Connected to {0}:{1} in {2} ms." -f $hostName, $port, $result.ElapsedMs) + " " + $sampleText.Message) -Details ((@($sampleText.Lines) + @($tcpMethod, "Manual check: Test-NetConnection $hostName -Port $port")) -join [Environment]::NewLine) -Tag "tcp" | Out-Null
         }
         else {
             $status = if ($required) { "FAIL" } else { "INFO" }
@@ -4256,6 +4514,11 @@ function Compare-TcpCounters {
     # not close kept the stamp it already had (PR #49, round 1).
     $extendedProtocols = @(Get-PropertyValue $After "ExtendedProtocols" @())
     $configuredSeconds = [math]::Max(1, (ConvertTo-IntSafe (Get-PropertyValue $script:RunOptions "SampleSeconds" 8) 8))
+    # backlog #52: where the run timed its own connections, the system-wide rows say where the attributable figure
+    # is; where it did not - no TCP target, or none that answered - there is nothing to point at, and the line is
+    # left out rather than promising a row that is not there.
+    $attributionLine = $null
+    if ($script:TcpConnectSampleCount -gt 0) { $attributionLine = "The TCP Connection rows carry what this row cannot: the tool's own connections to one named target, timed one by one, with the SYNs each of them had to send again." }
 
     foreach ($protocol in @("TCPv4", "TCPv6")) {
         if (-not $Before.Counters.ContainsKey($protocol) -or -not $After.Counters.ContainsKey($protocol)) {
@@ -4333,6 +4596,7 @@ function Compare-TcpCounters {
             "Method: Win32_PerfRawData_Tcpip_$protocol cumulative counters; delta over the sample window.",
             "Manual check: Get-CimInstance Win32_PerfRawData_Tcpip_$protocol — sample twice and compare the deltas.",
             "Explanation: This is a system-wide statistic for the entire computer during the test, not for a single application.",
+            $attributionLine,
             # backlog #57: the denominator is the Segments Sent/sec counter as Windows defines it, and the row says so,
             # because the printed percentage is not the quantity any published retransmission rate refers to. The sentence
             # follows the counter's own help text and Microsoft's TCP Object reference (both read 2026-09-10): Segments Sent
@@ -5537,6 +5801,7 @@ function Run-AllChecks {
     # Cleared with the results, not at process start: the window is reused, so a rate computed by one run would
     # otherwise still be explained in the report of a later Run Again whose counters failed (PR #35, round 1).
     $script:RetransmissionRateComputed = $false
+    $script:TcpConnectSampleCount = 0
     # The same reason (backlog #51): a ping sample one run put aside must never be finished in a later run's report.
     $script:PendingPingSamples = New-Object System.Collections.ArrayList
     $script:LastHtmlReport = $null

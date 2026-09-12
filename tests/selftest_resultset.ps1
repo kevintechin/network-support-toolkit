@@ -3,12 +3,13 @@
 # functions are lifted out of the runner by AST; a real report from an earlier run must pass intact against the real
 # machine facts (the positive control); and a fixture normalised out of that report - three adapter rows and three counter
 # rows, one gateway row naming a synthetic TEST-NET gateway, gateway and DNS settings rows, one TCPv4 and one TCPv6
-# retransmission row, no data-source row, a passing aggregate row - is checked against fixed synthetic facts: intact it
+# retransmission row, no data-source row, a passing aggregate row, a passed tcp row carrying its
+# connection sample - is checked against fixed synthetic facts: intact it
 # must be clean, and every tampered variant must be reported (a row removed, a rogue tag, an IT row moved to the Main
 # scope, an extra-target row expected but absent, the counter rows removed, an empty set, a diagnostic dropped by the run
 # and by ChecksEnabled alike, a gateway row naming another address, the zero-adapter shape on a machine with adapters,
 # two configured standard rules against one row, a required connectivity group without targets, the CIM fallback's
-# data-source row missing, three retransmission rows with both counter classes readable, a protocol never named), while
+# data-source row missing, three retransmission rows with both counter classes readable, a protocol never named, a passed tcp row stripped of its connection sample), while
 # the zero-adapter shape on a machine without a connected adapter, a present data-source row after a cmdlet failure and
 # the TCPv6 error rows with the TCPv6 class unreadable, the four error rows and no step error with neither TCP class
 # readable, and the two step-error rows and one aggregate counter row without adapter statistics are accepted. Nothing
@@ -45,7 +46,7 @@ function New-Fixture {
     $template = $r.Results[0]
     # Environment-dependent rows are dropped and rebuilt, step-error rows included: the fixture's facts declare every
     # collector healthy, whatever the live machine had to say.
-    $rows = @($r.Results | Where-Object { $_.Tag -notin @('adapter', 'adapter-errors', 'gateway-config', 'dns-config', 'ping-gateway', 'tcp-retransmissions', 'data-source', 'step-error', 'wifi-retry') })
+    $rows = @($r.Results | Where-Object { $_.Tag -notin @('adapter', 'adapter-errors', 'gateway-config', 'dns-config', 'ping-gateway', 'tcp-retransmissions', 'data-source', 'step-error', 'wifi-retry', 'tcp') })
     foreach ($x in $rows) { if ($x.Tag -eq 'adapters') { $x.Status = 'PASS' } }
     foreach ($i in 1..3) { $rows += New-Row $template 'adapter' "Adapter: fixture $i" 'PASS' }
     $rows += New-Row $template 'gateway-config' 'Default Gateway' 'PASS'
@@ -58,6 +59,11 @@ function New-Fixture {
     # rebuilt here for the fixture's one wireless interface, whose GUID the synthetic facts declare.
     $retry = New-Row $template 'wifi-retry' 'Wireless retries' 'INFO'; $retry.Weightless = $true; $retry.Details = 'Connection state: connected at the start, connected at the end.' + [Environment]::NewLine + 'Interface GUID: e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb'
     $rows += $retry
+    # The live tcp row is the shipped target's real connection, which the machine running this may or may not have
+    # made (backlog #52): it is dropped above and rebuilt as a passed row carrying the connection sample's RTO line, so
+    # that the tampered variant below is the same case on every machine.
+    $tcp = New-Row $template 'tcp' 'Direct HTTPS Test' 'PASS'; $tcp.Details = 'Connections: 4 of 4 planned, each a new TCP handshake to 1.1.1.1:443 from 192.0.2.10; times in the order made: 23 / 7 / 7 / 7 ms.' + [Environment]::NewLine + 'Initial retransmission timeout (RTO): 1000 ms, assumed' + [Environment]::NewLine + 'Method: TcpClient.BeginConnect, timeout 4000 ms.'
+    $rows += $tcp
     $r.Results = $rows
     return $r
 }
@@ -81,6 +87,8 @@ $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'adapter
 $r = New-Fixture; $r.Results = @(); Assert-Case 'empty result set' @(Test-ResultSet $r $cfg @{} $facts) $false 'adapters: 0 row(s)'
 $r = New-Fixture; $r.RunOptions.ChecksEnabled.WifiRf = $false; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi' }); Assert-Case 'Wi-Fi diagnostic dropped by the run and by ChecksEnabled alike' @(Test-ResultSet $r $cfg @{} $facts) $false 'ChecksEnabled for wifi reported as False'
 $r = New-Fixture; foreach ($x in $r.Results) { if ($x.Tag -eq 'ping-gateway') { $x.Check = 'Default Gateway: 10.255.255.254' } }; Assert-Case 'ping-gateway row naming an address that is not a gateway of the machine' @(Test-ResultSet $r $cfg @{} $facts) $false 'not a default gateway of this machine (192.0.2.1)'
+$r = New-Fixture; foreach ($x in $r.Results) { if ($x.Tag -eq 'tcp' -and $x.Status -eq 'PASS') { $x.Details = ($x.Details -replace 'RTO', 'timeout') } }; Assert-Case 'a passed tcp row stripped of its connection sample' @(Test-ResultSet $r $cfg @{} $facts) $false 'tcp: a row that passed carries no connection sample'
+$r = New-Fixture; foreach ($x in $r.Results) { if ($x.Tag -eq 'tcp') { $x.Status = 'INFO'; $x.Details = 'Cause: no route [SocketError HostUnreachable]' + [Environment]::NewLine + 'Method: TcpClient.BeginConnect, timeout 4000 ms.' } }; Assert-Case 'a tcp row that did not connect carries no sample and is not held to one' @(Test-ResultSet $r $cfg @{} $facts) $true ''
 # The zero-adapter shape (all adapters disabled or disconnected): the aggregate adapters row fails and there are no
 # adapter, gateway-config or dns-config rows; counter rows may still name whatever the counter sample saw. Legitimate on a
 # machine without a connected adapter, a regression on a machine with three.

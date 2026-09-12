@@ -800,6 +800,13 @@ function Test-ResultSet {
     foreach ($protocol in @('TCPv4', 'TCPv6')) {
         if (@($rows | Where-Object { $_.Tag -eq 'tcp-retransmissions' -and (([string]$_.Check) -like ('*' + $protocol + '*')) }).Count -eq 0) { $bad += ('no tcp-retransmissions row for {0}' -f $protocol) }
     }
+    # A TCP target that answered carries its connection sample (backlog #52): PingCount connections timed one by one and
+    # read against the initial retransmission timeout, whose details line names the value in ms beside the token RTO
+    # in both languages. A passed tcp row without that line is a tool that stopped sampling; a row that did not
+    # connect carries no sample by design and is not held to one.
+    foreach ($r in @($rows | Where-Object { $_.Tag -eq 'tcp' -and [string]$_.Status -eq 'PASS' })) {
+        if (([string]$r.Details) -notmatch 'RTO[^\r\n]*?\d+ ms') { $bad += ('tcp: a row that passed carries no connection sample ({0})' -f $r.Check) }
+    }
     foreach ($pair in @(@('ExtraPing', 'ping-target'), @('ExtraTcp', 'tcp'))) {
         if (-not $Expect.ContainsKey($pair[0])) { continue }
         foreach ($value in @($Expect[$pair[0]])) {
