@@ -694,6 +694,11 @@ function Test-ResultSet {
     $counterRows = @($rows | Where-Object { $_.Tag -eq 'adapter-errors' })
     $oneSampleFailed = $statsReadable -and ($counterRows.Count -eq 1) -and ([string]$counterRows[0].Status -eq 'ERROR')
     if ($oneSampleFailed) { $want['step-error'] = [int]$want['step-error'] + 1 }
+    # The Wi-Fi retry reader that fails before it can list the interfaces - the type refused, the WLAN service silent -
+    # writes one aggregate Unable-to-Check row and no per-interface row (PR #52, round 1), so on a machine with several
+    # wireless interfaces a single ERROR row is that shape and not a missing row; a single Information row is not.
+    $retryRows = @($rows | Where-Object { $_.Tag -eq 'wifi-retry' })
+    if ([int]$want['wifi-retry'] -gt 1 -and $retryRows.Count -eq 1 -and [string]$retryRows[0].Status -eq 'ERROR') { $want['wifi-retry'] = 1 }
     foreach ($k in @($want.Keys)) {
         $have = $(if ($byTag.ContainsKey($k)) { $byTag[$k] } else { 0 })
         if ($have -ne $want[$k]) { $bad += ('{0}: {1} row(s), expected {2}' -f $k, $have, $want[$k]) }
