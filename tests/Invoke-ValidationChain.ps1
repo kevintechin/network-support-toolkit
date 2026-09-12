@@ -775,10 +775,21 @@ function Test-ResultSet {
             $n = @($assocRows | Where-Object { ([string]$_.Details).ToLowerInvariant().Contains($id) }).Count
             if ($n -ne 1) { $bad += ('wifi-association: interface {0} has {1} row(s), expected 1' -f $id, $n) }
         }
+        # An interface present at the middle sample only - enabled after the pre-launch facts were read and gone before
+        # the post-run ones - has a legitimate row that neither reading can have listed (PR #54, round 1). Every row names
+        # the samples its interface was listed at as a language-neutral token, samples=start,middle,end; a row naming a GUID
+        # outside the union is that transient interface when the token names neither start nor end, and then it is one
+        # more expected row; any other such row names an interface nobody listed and is refused.
+        $transientAssoc = 0
         foreach ($r in $assocRows) {
             $m = [regex]::Match([string]$r.Details, '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}')
-            if ($m.Success -and ($assocIds -notcontains $m.Value.ToLowerInvariant())) { $bad += ('wifi-association: a row names interface {0}, which neither reading listed' -f $m.Value) }
+            if (-not $m.Success -or ($assocIds -contains $m.Value.ToLowerInvariant())) { continue }
+            $listed = [regex]::Match([string]$r.Details, 'samples=([a-z,]+)')
+            $moments = @($(if ($listed.Success) { $listed.Groups[1].Value -split ',' } else { @() }))
+            if ($listed.Success -and $moments -notcontains 'start' -and $moments -notcontains 'end') { $transientAssoc++ }
+            else { $bad += ('wifi-association: a row names interface {0}, which neither reading listed' -f $m.Value) }
         }
+        if ($transientAssoc -gt 0) { $want['wifi-association'] = [math]::Max(1, $wlanUnion + $transientAssoc) }
     }
     foreach ($k in @($want.Keys)) {
         $have = $(if ($byTag.ContainsKey($k)) { $byTag[$k] } else { 0 })

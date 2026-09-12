@@ -4172,22 +4172,27 @@ function Compare-WifiAssociation {
             $sample = $entry.Sample
             if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error)) {
                 $lines += ("{0}: could not be read - {1}" -f $entry.Prefix, [string]$sample.ErrorText)
+                # A sample that failed is still one of the run's samples (PR #54, round 1): it counts in every total the
+                # message names, and it is neither a reading of the access point nor evidence that the interface was absent.
+                $readings += [pscustomobject]@{ State = "failed"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = "" }
                 continue
             }
             $match = @(@($sample.Interfaces) | Where-Object { (([string]$_.Guid).ToLowerInvariant() -eq $key) -or ([string]::IsNullOrWhiteSpace([string]$_.Guid) -and ("mac:" + ([string]$_.PhysicalAddress).ToLowerInvariant()) -eq $key) } | Select-Object -First 1)
             if ($match.Count -eq 0) {
                 $lines += ("{0}: interface not listed" -f $entry.Prefix)
-                $readings += [pscustomobject]@{ Listed = $false; Bssid = ""; Ssid = "" }
+                $readings += [pscustomobject]@{ State = "absent"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = "" }
                 continue
             }
             $wifi = $match[0]
             $bssid = ([string]$wifi.Bssid).Trim().ToLowerInvariant()
             if ([string]::IsNullOrWhiteSpace($bssid)) { $lines += ("{0}: no BSSID reported" -f $entry.Prefix) }
             else { $lines += ("{0}: SSID {1}, BSSID {2}" -f $entry.Prefix, (ConvertTo-DisplayString $wifi.Ssid), $bssid) }
-            $readings += [pscustomobject]@{ Listed = $true; Bssid = $bssid; Ssid = [string]$wifi.Ssid }
+            $readings += [pscustomobject]@{ State = $(if ([string]::IsNullOrWhiteSpace($bssid)) { "nobssid" } else { "bssid" }); Moment = [string]$sample.Moment; Bssid = $bssid; Ssid = [string]$wifi.Ssid }
         }
-        $withBssid = @($readings | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Bssid) })
-        $listedCount = @($readings | Where-Object { $_.Listed }).Count
+        $withBssid = @($readings | Where-Object { $_.State -eq "bssid" })
+        $absentCount = @($readings | Where-Object { $_.State -eq "absent" }).Count
+        $failedCount = @($readings | Where-Object { $_.State -eq "failed" }).Count
+        $listedMoments = @($readings | Where-Object { $_.State -eq "bssid" -or $_.State -eq "nobssid" } | ForEach-Object { $_.Moment })
         # Never "disconnected" from an absent BSSID (backlog #62): the field can be withheld from an associated radio.
         if ($withBssid.Count -eq 0) {
             $message = "{0}: no access point (BSSID) was reported at any of the {1} sample(s) - the interface was not associated, or netsh did not print the field; see the Wi-Fi radio row." -f $name, $readings.Count
@@ -4201,7 +4206,7 @@ function Compare-WifiAssociation {
                     $message = "{0}: SSID {1} on the same access point (BSSID {2}) at all {3} samples over {4} seconds; a change between two samples that returned to it cannot be seen." -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $readings.Count, $seconds
                 }
                 else {
-                    $message = "{0}: SSID {1} on the same access point (BSSID {2}) at the {3} of {4} samples that reported one; at the other(s) no BSSID was reported, or the interface was not listed." -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $withBssid.Count, $readings.Count
+                    $message = "{0}: SSID {1} on the same access point (BSSID {2}) at the {3} of {4} samples that reported one; at the other(s) no BSSID was reported, the interface was not listed, or the sample could not be read." -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $withBssid.Count, $readings.Count
                 }
             }
             else {
@@ -4228,9 +4233,13 @@ function Compare-WifiAssociation {
                 }
             }
         }
-        if ($listedCount -lt $readings.Count) { $message += (" The interface was not listed at {0} of the samples (disabled or removed at that moment)." -f ($readings.Count - $listedCount)) }
+        if ($absentCount -gt 0) { $message += (" The interface was not listed at {0} of the samples (disabled or removed at that moment)." -f $absentCount) }
+        if ($failedCount -gt 0) { $message += (" {0} of the samples could not be read." -f $failedCount) }
+        # The identity line ends with the samples the interface was listed at, as a language-neutral token (samples=start,middle,end):
+        # the chain's oracle reads it to tell an interface present at the middle sample only - which neither of its two
+        # readings can have listed - from a row naming an interface nobody listed (PR #54, round 1).
         $identity = @()
-        if ($key -like "mac:*") { $identity += ("Interface address: {0}" -f $key.Substring(4)) } else { $identity += ("Interface GUID: {0}" -f $key) }
+        if ($key -like "mac:*") { $identity += ("Interface address: {0}; samples={1}" -f $key.Substring(4), ($listedMoments -join ",")) } else { $identity += ("Interface GUID: {0}; samples={1}" -f $key, ($listedMoments -join ",")) }
         Add-CheckResult -Category $category -Check $check -Status "INFO" -Message $message -Details ((@($lines) + $identity + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
     }
 }
@@ -4258,7 +4267,7 @@ function Get-MacRelation {
 }
 
 function Get-AccessPointGatewayText {
-    param([string]$Gateway, [string]$GatewayMac, [object[]]$PrimaryAdapters, [object[]]$Samples)
+    param([string]$Gateway, [string]$GatewayMac, [object[]]$PrimaryAdapters, [object[]]$Samples, [int]$InterfaceIndex = 0)
 
     # The hint's sentence, or nothing (backlog #61's other half). The one thing to know before trying to separate the air
     # from the wire on a wireless machine is whether there is a wire at all: the access point that answers the radio and
@@ -4271,13 +4280,22 @@ function Get-AccessPointGatewayText {
     # and the Wi-Fi data switched off leaves nothing to compare from: in both cases the line is absent.
     $gatewayHex = ([string]$GatewayMac) -replace '[^0-9a-fA-F]', ''
     if ($gatewayHex.Length -ne 12 -or $gatewayHex -eq "000000000000") { return "" }
+    # The adapter is the one the neighbour entry was learned on (PR #54, round 1): on a machine whose wired and wireless
+    # adapters name the same gateway address, the entry's MAC may belong to the wired network, and a comparison with the
+    # wireless network's access point would then set two unrelated addresses side by side. -InterfaceIndex is the entry's
+    # interface; where the entry carries none - the arp -a fallback - and more than one adapter supplies the gateway,
+    # nothing is compared.
     $adapterMacs = @()
+    $candidates = 0
     foreach ($adapter in @($PrimaryAdapters)) {
         if ($null -eq $adapter -or @($adapter.Gateways) -notcontains [string]$Gateway) { continue }
+        $candidates++
+        if ($InterfaceIndex -gt 0 -and (ConvertTo-IntSafe (Get-PropertyValue $adapter "InterfaceIndex" 0) 0) -ne $InterfaceIndex) { continue }
         $adapterMac = ([string](Get-PropertyValue $adapter "MacAddress" "")) -replace '[^0-9a-fA-F]', ''
         if ($adapterMac.Length -eq 12) { $adapterMacs += $adapterMac.ToUpperInvariant() }
     }
     if ($adapterMacs.Count -eq 0) { return "" }
+    if ($InterfaceIndex -le 0 -and $candidates -gt 1) { return "" }
     $latest = @(@($Samples) | Where-Object { $null -ne $_ -and [string]::IsNullOrWhiteSpace([string]$_.Error) } | Select-Object -Last 1)
     if ($latest.Count -eq 0) { return "" }
     foreach ($wifi in @($latest[0].Interfaces)) {
@@ -4361,12 +4379,16 @@ function Add-GatewayNeighborResult {
     foreach ($gateway in $gateways) {
         $state = "(unknown)"
         $mac = ""
+        # The interface the entry was learned on, for the access-point hint below (PR #54, round 1); 0 where the arp -a
+        # fallback, which prints no interface index, supplied the address.
+        $neighborIfIndex = 0
         try {
             if (Get-Command Get-NetNeighbor -ErrorAction SilentlyContinue) {
                 $neighbor = Get-NetNeighbor -IPAddress ([string]$gateway) -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($null -ne $neighbor) {
                     $state = [string]$neighbor.State
                     $mac = [string]$neighbor.LinkLayerAddress
+                    $neighborIfIndex = ConvertTo-IntSafe (Get-PropertyValue $neighbor "InterfaceIndex" 0) 0
                 }
             }
             else {
@@ -4388,7 +4410,7 @@ function Add-GatewayNeighborResult {
         # air from the wire on a wireless machine, published as a hint - Get-AccessPointGatewayText says what each shape
         # of the comparison does and does not establish - and absent where the gateway's adapter is wired or the Wi-Fi
         # data was not read.
-        $accessPointLine = Get-AccessPointGatewayText -Gateway ([string]$gateway) -GatewayMac $mac -PrimaryAdapters $PrimaryAdapters -Samples @($script:WifiAssociationSamples)
+        $accessPointLine = Get-AccessPointGatewayText -Gateway ([string]$gateway) -GatewayMac $mac -PrimaryAdapters $PrimaryAdapters -Samples @($script:WifiAssociationSamples) -InterfaceIndex $neighborIfIndex
         if (-not [string]::IsNullOrWhiteSpace($accessPointLine)) { $lines += $accessPointLine }
         $lines += "Method: Get-NetNeighbor -AddressFamily IPv4 (fallback: arp -a)"
         $lines += "Manual check: arp -a"

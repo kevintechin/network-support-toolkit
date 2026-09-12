@@ -4044,22 +4044,27 @@ function Compare-WifiAssociation {
             $sample = $entry.Sample
             if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error)) {
                 $lines += ("{0}：無法讀取——{1}" -f $entry.Prefix, [string]$sample.ErrorText)
+                # 失敗的樣本仍然是這次執行的樣本之一（PR #54，第 1 回合）：訊息裡的每個總數都要算它，而它既不是存取點的一次
+                # 讀數，也不是介面不在場的證據。
+                $readings += [pscustomobject]@{ State = "failed"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = "" }
                 continue
             }
             $match = @(@($sample.Interfaces) | Where-Object { (([string]$_.Guid).ToLowerInvariant() -eq $key) -or ([string]::IsNullOrWhiteSpace([string]$_.Guid) -and ("mac:" + ([string]$_.PhysicalAddress).ToLowerInvariant()) -eq $key) } | Select-Object -First 1)
             if ($match.Count -eq 0) {
                 $lines += ("{0}：介面未列出" -f $entry.Prefix)
-                $readings += [pscustomobject]@{ Listed = $false; Bssid = ""; Ssid = "" }
+                $readings += [pscustomobject]@{ State = "absent"; Moment = [string]$sample.Moment; Bssid = ""; Ssid = "" }
                 continue
             }
             $wifi = $match[0]
             $bssid = ([string]$wifi.Bssid).Trim().ToLowerInvariant()
             if ([string]::IsNullOrWhiteSpace($bssid)) { $lines += ("{0}：未回報 BSSID" -f $entry.Prefix) }
             else { $lines += ("{0}：SSID {1}，BSSID {2}" -f $entry.Prefix, (ConvertTo-DisplayString $wifi.Ssid), $bssid) }
-            $readings += [pscustomobject]@{ Listed = $true; Bssid = $bssid; Ssid = [string]$wifi.Ssid }
+            $readings += [pscustomobject]@{ State = $(if ([string]::IsNullOrWhiteSpace($bssid)) { "nobssid" } else { "bssid" }); Moment = [string]$sample.Moment; Bssid = $bssid; Ssid = [string]$wifi.Ssid }
         }
-        $withBssid = @($readings | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Bssid) })
-        $listedCount = @($readings | Where-Object { $_.Listed }).Count
+        $withBssid = @($readings | Where-Object { $_.State -eq "bssid" })
+        $absentCount = @($readings | Where-Object { $_.State -eq "absent" }).Count
+        $failedCount = @($readings | Where-Object { $_.State -eq "failed" }).Count
+        $listedMoments = @($readings | Where-Object { $_.State -eq "bssid" -or $_.State -eq "nobssid" } | ForEach-Object { $_.Moment })
         # 沒有 BSSID 絕不寫成「已斷線」（backlog #62）：已關聯的無線電也可能被扣住這個欄位。
         if ($withBssid.Count -eq 0) {
             $message = "{0}：{1} 次樣本都沒有回報存取點（BSSID）——介面未關聯，或 netsh 沒有印出這個欄位；請看 Wi-Fi 無線訊號那一列。" -f $name, $readings.Count
@@ -4073,7 +4078,7 @@ function Compare-WifiAssociation {
                     $message = "{0}：SSID {1}，{3} 次樣本（跨 {4} 秒）都在同一個存取點（BSSID {2}）；兩個樣本之間換出去又回到它的變化看不見。" -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $readings.Count, $seconds
                 }
                 else {
-                    $message = "{0}：SSID {1}，有回報存取點的 {3} 次樣本（共 {4} 次）都是同一個（BSSID {2}）；其餘樣本沒有回報 BSSID，或介面未列出。" -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $withBssid.Count, $readings.Count
+                    $message = "{0}：SSID {1}，有回報存取點的 {3} 次樣本（共 {4} 次）都是同一個（BSSID {2}）；其餘樣本沒有回報 BSSID、介面未列出，或樣本無法讀取。" -f $name, (ConvertTo-DisplayString $first.Ssid), $first.Bssid, $withBssid.Count, $readings.Count
                 }
             }
             else {
@@ -4100,9 +4105,12 @@ function Compare-WifiAssociation {
                 }
             }
         }
-        if ($listedCount -lt $readings.Count) { $message += ("介面在其中 {0} 次樣本未列出（那一刻被停用或移除）。" -f ($readings.Count - $listedCount)) }
+        if ($absentCount -gt 0) { $message += ("介面在其中 {0} 次樣本未列出（那一刻被停用或移除）。" -f $absentCount) }
+        if ($failedCount -gt 0) { $message += ("其中 {0} 次樣本無法讀取。" -f $failedCount) }
+        # 身分那一行以介面被列出的樣本收尾，用不隨語言改變的記號（samples=start,middle,end）：測試鏈的 oracle 靠它分辨「只在中間
+        # 樣本出現的介面」——它的兩次讀取都不可能列出——和「寫了一張誰都沒列出的介面」的列（PR #54，第 1 回合）。
         $identity = @()
-        if ($key -like "mac:*") { $identity += ("介面位址：{0}" -f $key.Substring(4)) } else { $identity += ("介面 GUID：{0}" -f $key) }
+        if ($key -like "mac:*") { $identity += ("介面位址：{0}；samples={1}" -f $key.Substring(4), ($listedMoments -join ",")) } else { $identity += ("介面 GUID：{0}；samples={1}" -f $key, ($listedMoments -join ",")) }
         Add-CheckResult -Category $category -Check $check -Status "INFO" -Message $message -Details ((@($lines) + $identity + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
     }
 }
@@ -4129,7 +4137,7 @@ function Get-MacRelation {
 }
 
 function Get-AccessPointGatewayText {
-    param([string]$Gateway, [string]$GatewayMac, [object[]]$PrimaryAdapters, [object[]]$Samples)
+    param([string]$Gateway, [string]$GatewayMac, [object[]]$PrimaryAdapters, [object[]]$Samples, [int]$InterfaceIndex = 0)
 
     # 提示的那一句話，或者什麼都不寫（backlog #61 的另一半）。在無線機器上想把空氣和有線分開之前，最該先知道的是到底
     # 有沒有一段有線：回應無線電的存取點和回應 ping 的閘道可能是同一台盒子。BSSID 是存取點自己的位址，鄰居表裡有閘道
@@ -4139,13 +4147,20 @@ function Get-AccessPointGatewayText {
     # 可比，Wi-Fi 資料關掉時沒有東西可比：兩種情況都不寫這一行。
     $gatewayHex = ([string]$GatewayMac) -replace '[^0-9a-fA-F]', ''
     if ($gatewayHex.Length -ne 12 -or $gatewayHex -eq "000000000000") { return "" }
+    # 網卡取「鄰居項目是在哪張介面上學到的」那一張（PR #54，第 1 回合）：有線和無線網卡指向同一個閘道位址的機器上，項目的 MAC
+    # 可能屬於有線那個網路，拿它和無線網路的存取點比較，就是把兩個毫不相關的位址擺在一起。-InterfaceIndex 是項目的介面；項目
+    # 沒帶介面時——arp -a 備援——而且提供這個閘道的網卡不只一張，就什麼都不比。
     $adapterMacs = @()
+    $candidates = 0
     foreach ($adapter in @($PrimaryAdapters)) {
         if ($null -eq $adapter -or @($adapter.Gateways) -notcontains [string]$Gateway) { continue }
+        $candidates++
+        if ($InterfaceIndex -gt 0 -and (ConvertTo-IntSafe (Get-PropertyValue $adapter "InterfaceIndex" 0) 0) -ne $InterfaceIndex) { continue }
         $adapterMac = ([string](Get-PropertyValue $adapter "MacAddress" "")) -replace '[^0-9a-fA-F]', ''
         if ($adapterMac.Length -eq 12) { $adapterMacs += $adapterMac.ToUpperInvariant() }
     }
     if ($adapterMacs.Count -eq 0) { return "" }
+    if ($InterfaceIndex -le 0 -and $candidates -gt 1) { return "" }
     $latest = @(@($Samples) | Where-Object { $null -ne $_ -and [string]::IsNullOrWhiteSpace([string]$_.Error) } | Select-Object -Last 1)
     if ($latest.Count -eq 0) { return "" }
     foreach ($wifi in @($latest[0].Interfaces)) {
@@ -4228,12 +4243,15 @@ function Add-GatewayNeighborResult {
     foreach ($gateway in $gateways) {
         $state = "（未知）"
         $mac = ""
+        # 項目是在哪張介面上學到的，供下面的存取點提示使用（PR #54，第 1 回合）；arp -a 備援不印介面索引，由它提供位址時為 0。
+        $neighborIfIndex = 0
         try {
             if (Get-Command Get-NetNeighbor -ErrorAction SilentlyContinue) {
                 $neighbor = Get-NetNeighbor -IPAddress ([string]$gateway) -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($null -ne $neighbor) {
                     $state = [string]$neighbor.State
                     $mac = [string]$neighbor.LinkLayerAddress
+                    $neighborIfIndex = ConvertTo-IntSafe (Get-PropertyValue $neighbor "InterfaceIndex" 0) 0
                 }
             }
             else {
@@ -4254,7 +4272,7 @@ function Add-GatewayNeighborResult {
         # backlog #61 的另一半：存取點就是閘道嗎？在無線機器上想把空氣和有線分開之前最該先知道的一件事，以提示的身分
         # 發表——Get-AccessPointGatewayText 說明比較的每一種形狀能確立什麼、不能確立什麼——閘道的網卡是有線的、或 Wi-Fi
         # 資料沒有讀取時，這一行不出現。
-        $accessPointLine = Get-AccessPointGatewayText -Gateway ([string]$gateway) -GatewayMac $mac -PrimaryAdapters $PrimaryAdapters -Samples @($script:WifiAssociationSamples)
+        $accessPointLine = Get-AccessPointGatewayText -Gateway ([string]$gateway) -GatewayMac $mac -PrimaryAdapters $PrimaryAdapters -Samples @($script:WifiAssociationSamples) -InterfaceIndex $neighborIfIndex
         if (-not [string]::IsNullOrWhiteSpace($accessPointLine)) { $lines += $accessPointLine }
         $lines += "檢測方式：Get-NetNeighbor -AddressFamily IPv4（備援：arp -a）"
         $lines += "手動驗證：arp -a"

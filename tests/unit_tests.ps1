@@ -2193,5 +2193,23 @@ Assert-Equal '#61 run: the steps share the radio row''s switch' ((Get-FunctionBo
 Assert-Equal '#61 run: the samples are reset with the results' ((Get-FunctionBody 'Run-AllChecks') -match '\$script:WifiAssociationSamples = New-Object System\.Collections\.ArrayList') True
 Assert-Equal '#61 run: the radio row takes the middle sample from the same read' ((Get-FunctionBody 'Add-WifiRfResult') -match 'Add-WifiAssociationSample -Moment "middle"') True
 
+# PR #54, round 1: a failed sample stays in the totals; the identity line names the samples the interface was listed at;
+# the hint pairs the neighbour entry with the adapter it was learned on.
+Assert-Equal '#61 assoc r1: a failed sample beside two good ones keeps three in the total and two in the count' (($oneFailedRow.Message -match '\b3\b') -and ($oneFailedRow.Message -match '\b2\b') -and ($oneFailedRow.Message -ne $steadyRow.Message)) True
+Assert-Equal '#61 assoc r1: and its details still list three samples' (Get-DetailLineCount $oneFailedRow) (Get-DetailLineCount $steadyRow)
+Assert-Equal '#61 assoc r1: the identity line names the samples the interface was listed at' (($steadyRow.Details -match 'samples=start,middle,end') -and ($absentRow.Details -match 'samples=start,end') -and ($oneFailedRow.Details -match 'samples=middle,end')) True
+$middleOnlyRow = (Get-AssocRows @((New-AssocSample 'start' $assocT0 @()), (New-AssocSample 'middle' $assocT1 (& $ifA $apA)), (New-AssocSample 'end' $assocT2 @())))[0]
+Assert-Equal '#61 assoc r1: an interface present at the middle sample only is one row whose token names the middle alone' ("{0}/{1}" -f $middleOnlyRow.Status, ($middleOnlyRow.Details -match 'samples=middle\s*$|samples=middle\r?$|samples=middle\r?\n')) 'INFO/True'
+Assert-Equal '#61 assoc r1: the token is on the GUID line' (([regex]::Match($middleOnlyRow.Details, '(?m)^[^\r\n]*e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb[^\r\n]*')).Value -match 'samples=middle') True
+$dualAdapters = @([pscustomobject]@{ Name = 'Ethernet'; InterfaceIndex = 5; Gateways = @('192.0.2.1'); MacAddress = '00-11-22-33-44-55' }, [pscustomobject]@{ Name = 'Wi-Fi'; InterfaceIndex = 12; Gateways = @('192.0.2.1'); MacAddress = '10-F6-0A-DB-FC-E5' })
+$dualSample = @((New-AssocSample 'middle' $assocT1 (& $ifA $apA)))
+Assert-Equal '#61 hint r1: an entry learned on the wired adapter of a dual-homed machine leaves no line' (Get-AccessPointGatewayText -Gateway '192.0.2.1' -GatewayMac $apA -PrimaryAdapters $dualAdapters -Samples $dualSample -InterfaceIndex 5) ''
+Assert-Equal '#61 hint r1: the same entry learned on the wireless adapter is compared' ((Get-AccessPointGatewayText -Gateway '192.0.2.1' -GatewayMac $apA -PrimaryAdapters $dualAdapters -Samples $dualSample -InterfaceIndex 12) -eq $hintTexts['identical']) True
+Assert-Equal '#61 hint r1: no interface on the entry and two adapters supplying the gateway: nothing is compared' (Get-AccessPointGatewayText -Gateway '192.0.2.1' -GatewayMac $apA -PrimaryAdapters $dualAdapters -Samples $dualSample -InterfaceIndex 0) ''
+Assert-Equal '#61 hint r1: no interface on the entry and one adapter: compared as before' ((Get-AccessPointGatewayText -Gateway '192.0.2.1' -GatewayMac $apA -PrimaryAdapters $hintAdapters -Samples $dualSample -InterfaceIndex 0) -eq $hintTexts['identical']) True
+Assert-Equal '#61 hint r1: an interface index no primary adapter carries leaves no line' (Get-AccessPointGatewayText -Gateway '192.0.2.1' -GatewayMac $apA -PrimaryAdapters $dualAdapters -Samples $dualSample -InterfaceIndex 99) ''
+$gatewayBody = Get-FunctionBody 'Add-GatewayNeighborResult'
+Assert-Equal '#61 hint r1: the gateway row reads the entry''s interface index and hands it to the hint' (($gatewayBody -match '\$neighborIfIndex = ConvertTo-IntSafe \(Get-PropertyValue \$neighbor "InterfaceIndex" 0\) 0') -and ($gatewayBody -match '-Samples @\(\$script:WifiAssociationSamples\) -InterfaceIndex \$neighborIfIndex')) True
+
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails
