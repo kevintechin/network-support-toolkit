@@ -256,7 +256,7 @@
     <table>
       <tr><th>鍵</th><th>預設</th><th>收集什麼</th></tr>
       <tr><td><code>WifiRf</code></td><td><code>true</code></td><td>無線介面的 SSID、BSSID、頻段、頻道、速率與訊號，從 <code>netsh wlan show interfaces</code> 解析</td></tr>
-      <tr><td><code>WifiRetryCounters</code></td><td><code>true</code></td><td>不是 IT 診斷資料：無線網卡在這次執行期間的 802.11 重傳計數器，由執行時在記憶體內編譯的幾行 P/Invoke（每個程序一次約 0.7 秒，不寫任何東西到磁碟）透過 Native Wifi API 讀取，以一列不決定任何結果的「資訊」列寫進主報告——重送的框除以嘗試送出的框，並列出到達重傳上限後放棄的框，這台機器的每個無線介面各一列。讀取器無法編譯或載入、WLAN 服務沒有回應或沒有無線介面時，一列不計權重的列會說明。沒有面板核取方塊、沒有參數：只能在這裡切換</td></tr>
+      <tr><td><code>WifiRetryCounters</code></td><td><code>true</code></td><td>不是 IT 診斷資料：無線網卡在這次執行期間的 802.11 重傳計數器，由執行時在記憶體內編譯的幾行 P/Invoke（每個程序一次約 0.7 秒，不寫任何東西到磁碟）透過 Native Wifi API 讀取，以一列不決定任何結果的「資訊」列寫進主報告——重送的框除以嘗試送出的框，並列出到達重傳上限後放棄的框，這台機器的每個無線介面各一列。讀取器無法編譯或載入、WLAN 服務沒有回應或沒有無線介面時，一列不計權重的列會說明，執行期間出現或消失的介面則各自得到一列不計權重的「無法檢查」列。沒有面板核取方塊、沒有參數：只能在這裡切換</td></tr>
       <tr><td><code>RouteTable</code></td><td><code>true</code></td><td>IPv4 預設路由，依 Windows 使用的順序</td></tr>
       <tr><td><code>GatewayNeighbor</code></td><td><code>true</code></td><td>鄰居（ARP）表裡閘道的硬體位址</td></tr>
       <tr><td><code>ProxySettings</code></td><td><code>true</code></td><td>使用者的 Proxy 設定、WinHTTP Proxy，以及 Windows 對第一個 HTTP 目標（沒有時是 <code>https://www.microsoft.com/</code>）會用哪個 Proxy：只問解析器，不發請求</td></tr>

@@ -1893,6 +1893,24 @@ Assert-Equal '#61 retry: while the interface that stayed is measured as before' 
 # interface to exactly one row; the aggregate rows name none.
 Assert-Equal '#61 shape: every per-interface row names its interface GUID' (@(@($mirrorRow, $idleRow, $resetRow, $missingRow, $queryRow, $goneRow[0]) | Where-Object { $_.Details -notmatch ([regex]::Escape($wifiGuid)) -and $_.Details -notmatch ([regex]::Escape($guidB)) }).Count) 0
 Assert-Equal '#61 shape: and the aggregate rows name none' (@(@($addTypeRow, $openRow, $errorRow, $noneBeforeRow, $noneRows[0]) | Where-Object { $_.Details -match '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}' }).Count) 0
+# The rest of the matrix, walked in one pass before round 11 (PR #52): both readings failing, a failure beside a
+# one-sided none, an interface that stayed beside one that came and one that went, no PHY entry in common, and a
+# query that failed at the start rather than at the end.
+$bothFailedRow = (Get-WifiRows (New-WifiSnapshot $wifiT0 @() 'addtype' 'refused') (New-WifiSnapshot $wifiT1 @() 'open' 'error 1062: stopped'))[0]
+Assert-Equal '#61 matrix: two failed readings are one row for the first, naming the second' (($bothFailedRow.Status -eq 'ERROR') -and ((Get-DetailLineAt $bothFailedRow 0) -match $reasonTail) -and ($bothFailedRow.Details -match '1062')) True
+$failThenNoneRow = (Get-WifiRows (New-WifiSnapshot $wifiT0 @() 'enumerate' 'error 5: denied') (New-WifiSnapshot $wifiT1 @() 'none'))[0]
+Assert-Equal '#61 matrix: a failed reading beside a one-sided none reports the failure and names the none' (($failThenNoneRow.Status -eq 'ERROR') -and ((Get-DetailLineAt $failThenNoneRow 0) -match 'enumerate\s*$') -and ($failThenNoneRow.Details -match 'none')) True
+$guidC = '5d1e2f3a-2222-4b3c-8d4e-000000000003'
+$mixedAfter = New-WifiSnapshot $wifiT1 @((New-WifiInterface $wifiGuid 1 @(0..5 | ForEach-Object { New-WifiPhy $_ 1211 0 166 42 498 5342 })), (New-WifiInterface $guidC 1 @(New-WifiPhy 0 5 0 0 0 0 5)))
+$mixedRows = @(Get-WifiRows $twoStart $mixedAfter)
+Assert-Equal '#61 matrix: one that stayed, one that went and one that came are three rows' $mixedRows.Count 3
+Assert-Equal '#61 matrix: each naming its own interface once' ((@($mixedRows | Where-Object { $_.Details -match ([regex]::Escape($wifiGuid)) }).Count -eq 1) -and (@($mixedRows | Where-Object { $_.Details -match ([regex]::Escape($guidB)) }).Count -eq 1) -and (@($mixedRows | Where-Object { $_.Details -match ([regex]::Escape($guidC)) }).Count -eq 1)) True
+Assert-Equal '#61 matrix: the two transitions are Unable to Check and the one that stayed is measured' ((@($mixedRows | Where-Object { $_.Status -eq 'ERROR' }).Count -eq 2) -and (@($mixedRows | Where-Object { $_.Status -eq 'INFO' })[0].Message -eq $mirrorRow.Message)) True
+$noCommonAfter = New-WifiSnapshot $wifiT1 (New-WifiInterface $wifiGuid 1 @((New-WifiPhy 6 1 0 0 0 0 1), (New-WifiPhy 7 1 0 0 0 0 1)))
+$noCommonRow = (Get-WifiRows $mirrorBefore $noCommonAfter)[0]
+Assert-Equal '#61 matrix: readings with no PHY entry in common are Unable to Check, weightless, named' (($noCommonRow.Status -eq 'ERROR') -and $noCommonRow.Weightless -and ($noCommonRow.Details -match ([regex]::Escape($wifiGuid)))) True
+$startQueryRow = (Get-WifiRows (New-WifiSnapshot $wifiT0 (New-WifiInterface $wifiGuid 1 @() 5 'error 5: Access is denied at the start')) $mirrorAfter)[0]
+Assert-Equal '#61 matrix: a query that failed at the start names that failure' (($startQueryRow.Status -eq 'ERROR') -and ($startQueryRow.Message -match 'at the start')) True
 Assert-Equal '#61 retry: the connection states are words' (((Get-WifiInterfaceStateText 1) -ne (Get-WifiInterfaceStateText 4)) -and -not [string]::IsNullOrWhiteSpace((Get-WifiInterfaceStateText 1))) True
 Assert-Equal '#61 retry: an unknown state keeps its number' ((Get-WifiInterfaceStateText 9) -match '9') True
 Assert-Equal '#61 retry: a Win32 error keeps its number' ((Get-Win32ErrorText 1062) -match '1062') True
