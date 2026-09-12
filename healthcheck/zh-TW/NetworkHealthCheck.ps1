@@ -156,6 +156,7 @@ $script:RunOptions = $null
 $script:RunOptionMessages = New-Object System.Collections.ArrayList
 $script:DroppedTargets = New-Object System.Collections.ArrayList
 $script:RetransmissionRateComputed = $false
+$script:TcpConnectSampleCount = 0
 $script:PendingPingSamples = New-Object System.Collections.ArrayList
 $script:PanelWarned = $false
 $script:PanelHints = $null
@@ -3099,22 +3100,37 @@ function Invoke-TcpConnectionTest {
         $client.EndConnect($asyncResult)
         $stopwatch.Stop()
 
+        # backlog #52：socket 實際使用的兩個位址，在 finally 關閉它之前讀取。遠端位址是後續連線要去的地方——連到第一次
+        # 到達的位址，不再經過解析器——本機位址則說明交握是從哪一張網卡的位址送出的。兩者都不是量測，所以讀取失敗只留下
+        # 空字串，連線仍算成功。
+        $remoteAddress = ""
+        $localAddress = ""
+        try {
+            if ($null -ne $client.Client.RemoteEndPoint) { $remoteAddress = [string]$client.Client.RemoteEndPoint.Address }
+            if ($null -ne $client.Client.LocalEndPoint) { $localAddress = [string]$client.Client.LocalEndPoint.Address }
+        }
+        catch {}
+
         return [pscustomobject][ordered]@{
-            Success   = $true
-            Host      = $HostName
-            Port      = $Port
-            ElapsedMs = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
-            Error     = ""
+            Success       = $true
+            Host          = $HostName
+            Port          = $Port
+            ElapsedMs     = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
+            Error         = ""
+            RemoteAddress = $remoteAddress
+            LocalAddress  = $localAddress
         }
     }
     catch {
         $stopwatch.Stop()
         return [pscustomobject][ordered]@{
-            Success   = $false
-            Host      = $HostName
-            Port      = $Port
-            ElapsedMs = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
-            Error     = (Add-NetworkErrorCause $_.Exception $_.Exception.Message)
+            Success       = $false
+            Host          = $HostName
+            Port          = $Port
+            ElapsedMs     = [math]::Round($stopwatch.Elapsed.TotalMilliseconds, 0)
+            Error         = (Add-NetworkErrorCause $_.Exception $_.Exception.Message)
+            RemoteAddress = ""
+            LocalAddress  = ""
         }
     }
     finally {
@@ -3218,6 +3234,145 @@ function Invoke-HttpConnectionTest {
     }
 }
 
+function Get-TcpInitialRto {
+    # backlog #52：連線時間拿來比較的逾時值是作業系統自己的，不是這支工具的門檻。Set-NetTCPSetting 把 InitialRtoMs 記載為
+    # 「connect（即 SYN）重送之前的時間（毫秒）」（300 到 3000 ms，以 10 為級距；2026-09-12 讀取），所以一次交握若至少持續
+    # 這麼久，就代表那個計時器到期過。向 Internet 範本詢問——Windows 出廠兩個範本之一。參考機的 Windows 11 版本，物件上根本
+    # 沒有 InitialRtoMs 這個屬性，而 netsh int tcp show global 回報一個全域值 1000——Windows 未另行設定時採用的值——所以
+    # cmdlet 沒回報時就假設 1000 ms，而那一列會寫明拿到的是哪一種。
+    $rto = [pscustomobject][ordered]@{
+        Ms     = 1000
+        Source = "default"
+    }
+    try {
+        $setting = @(Get-NetTCPSetting -SettingName "Internet" -ErrorAction Stop)
+        $value = 0
+        if ($setting.Count -gt 0) { $value = ConvertTo-IntSafe (Get-PropertyValue $setting[0] "InitialRtoMs" $null) 0 }
+        if ($value -gt 0) {
+            $rto.Ms = $value
+            $rto.Source = "setting"
+        }
+    }
+    catch {}
+    return $rto
+}
+
+function New-TcpConnectSample {
+    param(
+        [object]$First,
+        [object[]]$Repeats,
+        [int]$Planned,
+        [bool]$HostIsName,
+        [object]$InitialRto
+    )
+
+    # backlog #52：這次執行對單一目標量到的東西，在這裡計數，讓文字成為這個物件的函數，也讓 unit test 能拿同一套計數規則
+    # 檢驗兩支腳本。第一次連線是這一列狀態所依據的那一次；後續連線依序跟在後面，在第一次失敗處結束，因為做這些連線的
+    # 迴圈就停在那裡——停止回應的目標多花的是一次逾時，不是 PingCount 次。
+    $results = @(@(@($First) + @($Repeats)) | Where-Object { $null -ne $_ })
+    $times = New-Object System.Collections.ArrayList
+    $failedIndex = 0
+    $failedError = ""
+    for ($i = 0; $i -lt $results.Count; $i++) {
+        if ($results[$i].Success) {
+            [void]$times.Add([int](ConvertTo-IntSafe $results[$i].ElapsedMs 0))
+        }
+        elseif ($failedIndex -eq 0) {
+            $failedIndex = $i + 1
+            $failedError = [string]$results[$i].Error
+        }
+    }
+    # 以名稱給定的目標，第一次連線的計時裡含名稱查詢——TcpClient 先解析名稱再送 SYN——所以那個時間會列出，但不拿來和
+    # 逾時比較；後續連線連的是第一次到達的位址，會拿來比較。以位址給定的目標，第一次連線和其他各次一樣比較。
+    $judged = @($times)
+    if ($HostIsName -and $judged.Count -gt 0) { $judged = @($judged | Select-Object -Skip 1) }
+    $rtoMs = [math]::Max(1, (ConvertTo-IntSafe (Get-PropertyValue $InitialRto "Ms" 1000) 1000))
+    $atOrAbove = @($judged | Where-Object { $_ -ge $rtoMs })
+
+    return [pscustomobject][ordered]@{
+        Planned       = [math]::Max(1, $Planned)
+        Attempted     = $results.Count
+        Times         = @($times)
+        Judged        = $judged.Count
+        AtOrAbove     = @($atOrAbove)
+        RtoMs         = $rtoMs
+        RtoSource     = [string](Get-PropertyValue $InitialRto "Source" "default")
+        RemoteAddress = [string](Get-PropertyValue $First "RemoteAddress" "")
+        LocalAddress  = [string](Get-PropertyValue $First "LocalAddress" "")
+        HostIsName    = [bool]$HostIsName
+        FailedIndex   = $failedIndex
+        FailedError   = $failedError
+    }
+}
+
+function Get-TcpConnectSampleText {
+    param(
+        [object]$Sample,
+        [string]$HostName,
+        [int]$Port
+    )
+
+    # backlog #52：訊息帶著各次時間，以及被比較的連線裡有幾次達到逾時——讀者一眼該看到的那一個數字；判讀規則、逾時值
+    # 的出處與位址則放在詳細資料。這裡不決定任何事：這一列的狀態在這段文字存在之前，就已由第一次連線決定。
+    $target = "{0}:{1}" -f $HostName, $Port
+    $timesText = (@($Sample.Times) | ForEach-Object { [string]$_ }) -join " / "
+    $timed = @($Sample.Times).Count
+    $reached = @($Sample.AtOrAbove).Count
+    $judged = [int]$Sample.Judged
+    $attempted = [int]$Sample.Attempted
+    $planned = [int]$Sample.Planned
+    $rtoMs = [int]$Sample.RtoMs
+    $failedIndex = [int]$Sample.FailedIndex
+    $rtoText = ("{0} ms" -f $rtoMs)
+    if ([string]$Sample.RtoSource -ne "setting") { $rtoText = ("{0} ms（假設值）" -f $rtoMs) }
+
+    $lead = ("{0} 次連線計時：{1} ms" -f $timed, $timesText)
+    if ($failedIndex -gt 0) {
+        $lead = ("計畫 {0} 次連線，完成計時 {1} 次，第 {2} 次失敗、其餘未再嘗試：{3} ms" -f $planned, $timed, $failedIndex, $timesText)
+    }
+    $message = ""
+    if ($judged -eq 0) {
+        $message = $lead + ("；名稱目標的第一次連線含名稱查詢，因此沒有拿它和重傳逾時 {0} 比較。" -f $rtoText)
+    }
+    elseif ($reached -eq 0) {
+        $message = $lead + ("；{1} 次中有 {0} 次達到重傳逾時 {2}。" -f $reached, $judged, $rtoText)
+    }
+    else {
+        $message = $lead + ("；{1} 次中有 {0} 次達到重傳逾時 {2}——那正是 SYN 被重送的時刻。" -f $reached, $judged, $rtoText)
+    }
+
+    $lines = New-Object System.Collections.ArrayList
+    $where = ("連到 {0}" -f $target)
+    if ($Sample.HostIsName -and -not [string]::IsNullOrWhiteSpace([string]$Sample.RemoteAddress)) {
+        $where = ("連到 {0}（解析為 {1}）" -f $target, $Sample.RemoteAddress)
+    }
+    $from = ""
+    if (-not [string]::IsNullOrWhiteSpace([string]$Sample.LocalAddress)) {
+        $from = ("、從 {0} 送出" -f $Sample.LocalAddress)
+    }
+    $first = ("連線：計畫 {1} 次、實際 {0} 次，每一次都是一次新的 TCP 交握，{2}{3}；依序耗時：{4} ms。" -f $attempted, $planned, $where, $from, $timesText)
+    if ($Sample.HostIsName) {
+        if ($attempted -gt 1) { $first += (" 第一次連線解析了名稱，耗時含那次查詢，因此不拿它和逾時比較；後面 {0} 次連到解析出的位址。" -f ($attempted - 1)) }
+        else { $first += " 第一次連線解析了名稱，耗時含那次查詢，因此不拿它和逾時比較；之後沒有再連線。" }
+    }
+    [void]$lines.Add($first)
+    if ($failedIndex -gt 0) {
+        [void]$lines.Add(("第 {0} 次連線失敗，其後的連線未再嘗試：" -f $failedIndex))
+        [void]$lines.Add([string]$Sample.FailedError)
+    }
+    $rtoLine = ("初始重傳逾時（RTO）：{0} ms，" -f $rtoMs)
+    if ([string]$Sample.RtoSource -eq "setting") { $rtoLine += "取自 Get-NetTCPSetting 回報的 Internet 範本 InitialRtoMs。" }
+    else { $rtoLine += ("為假設值：這台電腦的 Get-NetTCPSetting 沒有回報數值，而 {0} ms 是 Windows 未另行設定時採用的值（netsh int tcp show global 會顯示生效中的值）。" -f $rtoMs) }
+    [void]$lines.Add($rtoLine)
+    if ($judged -eq 0) { [void]$lines.Add("判讀：沒有連線被拿來比較——唯一完成的那一次含名稱查詢。耗時達到初始重傳逾時的連線，判讀為 SYN 或 SYN-ACK 曾被重送，因為那個逾時正是這台電腦第二次送出 SYN 的時刻。這些是工具自己的連線、對這一個目標、在這一刻——正是系統級「TCP 重傳」列無法歸屬的數字——而且它們不做判定：這一列的狀態由第一次連線決定。") }
+    else { [void]$lines.Add(("判讀：{1} 次中有 {0} 次達到或超過它。耗時達到初始重傳逾時的連線，判讀為 SYN 或 SYN-ACK 曾被重送，因為那個逾時正是這台電腦第二次送出 SYN 的時刻；低於它的連線，這台電腦沒有重送 SYN。這些是工具自己的連線、對這一個目標、在這一刻——正是系統級「TCP 重傳」列無法歸屬的數字——而且它們不做判定：這一列的狀態由第一次連線決定。" -f $reached, $judged)) }
+
+    return [pscustomobject][ordered]@{
+        Message = $message
+        Lines   = @($lines)
+    }
+}
+
 function Add-ConnectivityGroupResult {
     param(
         [hashtable]$GroupResults,
@@ -3254,6 +3409,12 @@ function Test-ConnectivityTargets {
     $tcpMethod = "檢測方式：TcpClient.BeginConnect，逾時 $tcpTimeout ms。"
     $httpMethod = "檢測方式：HttpWebRequest GET（系統 Proxy、TLS 1.2），逾時 $httpTimeout ms。"
     $groupResults = @{}
+    # backlog #52：PingCount 也是「有回應的 TCP 目標」會被連線的次數——決定這一列的那一次，加上再連 PingCount - 1 次到它
+    # 到達的位址、逐次計時——讓這次執行握有一個歸屬得了的重傳數字：自己的 SYN、對單一具名目標、在這一刻。系統級計數器
+    # 的列保留，並寫明它們是什麼。比較用的逾時值只讀一次，而且只在某次連線成功之後才讀，所以 TCP 目標全數失敗的執行
+    # 不為它付出任何代價。
+    $connectCount = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.PingCount 4))
+    $initialRto = $null
 
     foreach ($target in @($script:Config.Tests.TcpTargets)) {
         if ($null -eq $target) { continue }
@@ -3277,7 +3438,25 @@ function Test-ConnectivityTargets {
 
         $result = Invoke-TcpConnectionTest -HostName $hostName -Port $port -TimeoutMs $tcpTimeout
         if ($result.Success) {
-            Add-CheckResult -Category "TCP 連線" -Check $name -Status "PASS" -Message ("可連線至 {0}:{1}，耗時 {2} ms。" -f $hostName, $port, $result.ElapsedMs) -Details ($tcpMethod + [Environment]::NewLine + "手動驗證：Test-NetConnection $hostName -Port $port") -Tag "tcp" | Out-Null
+            # backlog #52：跟在決定這一列那一次之後的連線。它們連到第一次連線到達的位址，所以名稱只解析一次，各次時間
+            # 就純粹是交握；並且在第一次失敗處停止，所以停止回應的目標多花的是一次逾時，不是 PingCount 次。
+            if ($null -eq $initialRto) { $initialRto = Get-TcpInitialRto }
+            $repeatHost = $hostName
+            if (-not [string]::IsNullOrWhiteSpace([string]$result.RemoteAddress)) { $repeatHost = [string]$result.RemoteAddress }
+            $repeats = @()
+            for ($i = 2; $i -le $connectCount; $i++) {
+                $repeat = Invoke-TcpConnectionTest -HostName $repeatHost -Port $port -TimeoutMs $tcpTimeout
+                $repeats += $repeat
+                if (-not $repeat.Success) { break }
+            }
+            # 第一次連線是否含名稱查詢，照 TcpClient 自己判斷要不要查詢的方式決定：IPAddress.TryParse 接受的值直接送 SYN，
+            # 其他的都先交給解析器。
+            $parsedAddress = $null
+            $hostIsName = -not [System.Net.IPAddress]::TryParse($hostName, [ref]$parsedAddress)
+            $sample = New-TcpConnectSample -First $result -Repeats $repeats -Planned $connectCount -HostIsName $hostIsName -InitialRto $initialRto
+            $sampleText = Get-TcpConnectSampleText -Sample $sample -HostName $hostName -Port $port
+            $script:TcpConnectSampleCount++
+            Add-CheckResult -Category "TCP 連線" -Check $name -Status "PASS" -Message (("可連線至 {0}:{1}，耗時 {2} ms。" -f $hostName, $port, $result.ElapsedMs) + " " + $sampleText.Message) -Details ((@($sampleText.Lines) + @($tcpMethod, "手動驗證：Test-NetConnection $hostName -Port $port")) -join [Environment]::NewLine) -Tag "tcp" | Out-Null
         }
         else {
             $status = if ($required) { "FAIL" } else { "INFO" }
@@ -4130,6 +4309,10 @@ function Compare-TcpCounters {
     # 內，而落在其他每一個通訊協定的窗外，因為延長沒有關掉的那些，保留的是它原本就有的時間戳（PR #49 第 1 輪）。
     $extendedProtocols = @(Get-PropertyValue $After "ExtendedProtocols" @())
     $configuredSeconds = [math]::Max(1, (ConvertTo-IntSafe (Get-PropertyValue $script:RunOptions "SampleSeconds" 8) 8))
+    # backlog #52：這次執行有替自己的連線計時時，系統級的列就指出歸屬得了的數字在哪裡；沒有時——沒有 TCP 目標，或沒有一個
+    # 有回應——就沒有東西可指，這一行寧可不寫，也不承諾一個不存在的列。
+    $attributionLine = $null
+    if ($script:TcpConnectSampleCount -gt 0) { $attributionLine = "「TCP 連線」那幾列有這一列給不了的東西：工具自己對單一具名目標的連線、逐次計時，以及其中幾次達到了重傳逾時。" }
 
     foreach ($protocol in @("TCPv4", "TCPv6")) {
         if (-not $Before.Counters.ContainsKey($protocol) -or -not $After.Counters.ContainsKey($protocol)) {
@@ -4203,6 +4386,7 @@ function Compare-TcpCounters {
             "檢測方式：Win32_PerfRawData_Tcpip_$protocol 累積計數器，取樣期間增量。",
             "手動驗證：Get-CimInstance Win32_PerfRawData_Tcpip_$protocol（取樣兩次比較增量）",
             "說明：此為整台電腦在檢測期間的系統級統計，不只包含單一程式。",
+            $attributionLine,
             # backlog #57：分母是 Windows 定義下的 Segments Sent/sec 計數器，這一列要把它說出來，因為印出來的百分比並不是
             # 任何公開發表的重傳率所指的那個量。句子依據計數器自己的說明文字與 Microsoft 的 TCP Object 參考（皆於 2026-09-10
             # 讀取）：Segments Sent 不含「只帶重傳位元組」的 segment，Segments Retransmitted 則算入每一個「帶有一個以上先前
@@ -5366,6 +5550,7 @@ function Run-AllChecks {
     # 跟著結果一起清掉，而不是只在行程啟動時設定一次：視窗會被重複使用，否則某一次算出的比例，會被拿去解釋之後
     # 那次「重新檢測」的報告 —— 即使那一次的計數器根本讀失敗（PR #35 第 1 輪）。
     $script:RetransmissionRateComputed = $false
+    $script:TcpConnectSampleCount = 0
     # 同樣的理由（backlog #51）：一次執行擱下的 ping 取樣，絕不能跑到下一次執行的報告裡。
     $script:PendingPingSamples = New-Object System.Collections.ArrayList
     $script:LastHtmlReport = $null

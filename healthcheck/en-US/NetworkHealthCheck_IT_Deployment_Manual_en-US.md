@@ -30,7 +30,7 @@ This manual covers the English package (the `en-US` folder). The Traditional Chi
 
 Every launcher runs PowerShell with `-NoProfile -ExecutionPolicy Bypass` and its own fixed switches, and forwards nothing typed after the `.cmd`. Section 4 says how to pass options.
 
-**What it contacts, as shipped.** The default gateway of the machine (ping), `1.1.1.1` (ping, a TCP connection to port 443, and the first three hops of a traceroute toward it), `www.microsoft.com` (a name lookup through the operating system's resolver and one HTTPS request through the proxy Windows is set to use, following redirects). Section 3.3 says how to replace them. No near-end host as shipped: `NearEndTarget` is empty until you name one (section 3.3). Nothing is uploaded: the reports are files in the report folder.
+**What it contacts, as shipped.** The default gateway of the machine (ping), `1.1.1.1` (ping, `PingCount` TCP connections to port 443 — four as shipped, since 1.2.12 — and the first three hops of a traceroute toward it), `www.microsoft.com` (a name lookup through the operating system's resolver and one HTTPS request through the proxy Windows is set to use, following redirects). Section 3.3 says how to replace them. No near-end host as shipped: `NearEndTarget` is empty until you name one (section 3.3). Nothing is uploaded: the reports are files in the report folder.
 
 ---
 
@@ -152,11 +152,11 @@ An Information row never moves the verdict, so an optional TCP or HTTP target ca
 
 | Key | Default | Floor | Notes |
 |---|---|---|---|
-| `PingCount` | 4 | 1 | Echo requests per ping target **to begin with**. This is a starting count, where earlier versions sent a fixed one: where some replies are lost but not all, the sample continues up to `PingCountMaximum`; where every reply arrives, and where none does, nothing more is sent |
+| `PingCount` | 4 | 1 | Echo requests per ping target **to begin with**. This is a starting count, where earlier versions sent a fixed one: where some replies are lost but not all, the sample continues up to `PingCountMaximum`; where every reply arrives, and where none does, nothing more is sent. Since 1.2.12 it is also the number of TCP connections made to a TCP target that answers — the first, then `PingCount` − 1 more to the address it reached, timed one by one and read against Windows' initial retransmission timeout (backlog #52); they decide nothing, and a target that does not answer is connected to once |
 | `PingCountMaximum` | 21 | `PingCount` | The furthest a continued sample goes for one ping target. **The tool computes the count it needs and this value only caps it**, so it does not have to be set to that count. 21 is the smallest count at which one lost reply is below the shipped 5 % warning threshold **as the row prints it** — the printed figure is rounded to one decimal, so 100 ÷ 21 prints as 4.8 % while 20 is exactly 5 % and still warns; a calibrated threshold moves it, and at 4.8 % the count is 22 rather than 21. A value below `PingCount` is reported in the *Configuration Thresholds* row and the starting count is used as the ceiling. There is no upper limit: the IT panel's two ping spinners open at this value, so raising it raises them |
 | `PingTimeoutMs` | 1200 | 250 | Per echo request |
 | `DnsTimeoutMs` | 4000 | 500 | Per name |
-| `TcpTimeoutMs` | 4000 | 500 | Per connection |
+| `TcpTimeoutMs` | 4000 | 500 | Per connection — and since 1.2.12 a target that answers gets `PingCount` connections, one after another, stopping at the first that fails (backlog #52), so a target that answers costs `PingCount` − 1 more handshakes — milliseconds on the reference machine — and a target that stops answering costs at most one more timeout; a target that never answers still costs one |
 | `HttpTimeoutMs` | 6000 | 500 | Per request, connect and read alike |
 | `RetransmissionSampleSeconds` | 8 | 1 | The TCP counters are sampled at the start and again once this many seconds have passed, so this is the run's minimum length; the tests run inside the window and, when targets do not answer, their timeouts add up on top of it; the wireless retry counters (section 3.4) are sampled over the same window |
 

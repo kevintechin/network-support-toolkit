@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Compare-WifiRetryCounters', 'Get-WifiRetrySnapshot', 'Get-WifiInterfaceStateText', 'Get-Win32ErrorText'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Compare-WifiRetryCounters', 'Get-WifiRetrySnapshot', 'Get-WifiInterfaceStateText', 'Get-Win32ErrorText', 'Get-TcpInitialRto', 'New-TcpConnectSample', 'Get-TcpConnectSampleText', 'Invoke-TcpConnectionTest'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -528,6 +528,18 @@ Compare-TcpCounters -Before $cleanBefore -After $cleanAfter
 $cleanV4 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv4' })
 Assert-Equal '#38 clean run: one row per protocol' (@($script:TcpRows).Count) 2
 Assert-Equal '#38 clean run: no row is about an unreadable counter' (@($script:TcpRows | Where-Object { $_.Status -eq 'ERROR' }).Count) 0
+# backlog #52: the system-wide rows point at the attributable figure - the TCP Connection rows' connection times - only
+# where the run took one, so that a run without a TCP target that answered is not sent to a row it does not have.
+$script:TcpConnectSampleCount = 0
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $cleanBefore -After $cleanAfter
+$withoutSample = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv4' })[0]
+$script:TcpConnectSampleCount = 1
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $cleanBefore -After $cleanAfter
+$withSample = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv4' })[0]
+$script:TcpConnectSampleCount = 0
+Assert-Equal '#52 rows: the system-wide row names the TCP Connection rows only where a sample was taken' (("{0}/{1}/{2}" -f (@($withSample.Details -split "`r`n").Count - @($withoutSample.Details -split "`r`n").Count), ($withSample.Details -match 'TCP Connection|TCP 連線'), ($withoutSample.Details -match 'TCP Connection|TCP 連線'))) '1/True/False'
 Assert-Equal '#38 clean run: the window is the protocol''s own' ($cleanV4[0].Details -match '10\.5') True
 Assert-Equal '#38 clean run: nothing is said about attempts that did not fail' ($cleanV4[0].Details -match '#') False
 
@@ -1934,6 +1946,80 @@ Assert-Equal '#61 reader: read for real on this machine - every interface with P
 $liveText = 'no reading: ' + $live.Error + ' ' + $live.ErrorText
 if ([string]$live.Error -eq '') { $liveText = ('{0} interface(s); first: {1}, state {2}, {3} PHY entries' -f @($live.Interfaces).Count, $live.Interfaces[0].Description, $live.Interfaces[0].State, @($live.Interfaces[0].Phys).Count) }
 Write-Output ('[INFO] #61 reader on this machine: ' + $liveText)
+
+# backlog #52: the connection times of a TCP target that answered, read against the operating system's own initial
+# retransmission timeout - the one retransmission figure a run can attribute to a target. New-TcpConnectSample does
+# the counting and Get-TcpConnectSampleText the wording, on synthetic results, so that both scripts are held to the
+# same rules without a network; Get-TcpInitialRto is held to its two sources with the cmdlet mocked, then read for
+# real; Invoke-TcpConnectionTest is run for real against a listener on the loopback, which every machine has.
+function New-TcpResult([bool]$Success, [int]$Ms, [string]$Remote = '203.0.113.5', [string]$Local = '192.0.2.10') {
+    $errorText = ''
+    if (-not $Success) { $errorText = 'Cause: the target refused the connection [SocketError ConnectionRefused]' + "`r`n" + 'No connection could be made because the target machine actively refused it' }
+    return [pscustomobject]@{ Success = $Success; Host = 'h'; Port = 443; ElapsedMs = [double]$Ms; Error = $errorText; RemoteAddress = $(if ($Success) { $Remote } else { '' }); LocalAddress = $(if ($Success) { $Local } else { '' }) }
+}
+function Test-HasNumber([string]$Text, [int]$Number) { return ($Text -match ('(^|[^0-9.])' + $Number + '([^0-9.]|$)')) }
+$rto1000 = [pscustomobject]@{ Ms = 1000; Source = 'default' }
+$quiet = New-TcpConnectSample -First (New-TcpResult $true 23) -Repeats @((New-TcpResult $true 7), (New-TcpResult $true 7), (New-TcpResult $true 7)) -Planned 4 -HostIsName $false -InitialRto $rto1000
+Assert-Equal '#52 sample: four connections to an address are four times, all read, none at the timeout' ("{0}/{1}/{2}/{3}" -f $quiet.Attempted, (@($quiet.Times) -join ','), $quiet.Judged, @($quiet.AtOrAbove).Count) '4/23,7,7,7/4/0'
+$slow = New-TcpConnectSample -First (New-TcpResult $true 1032) -Repeats @((New-TcpResult $true 7), (New-TcpResult $true 7), (New-TcpResult $true 7)) -Planned 4 -HostIsName $false -InitialRto $rto1000
+$atBoundary = New-TcpConnectSample -First (New-TcpResult $true 1000) -Repeats @() -Planned 1 -HostIsName $false -InitialRto $rto1000
+$underBoundary = New-TcpConnectSample -First (New-TcpResult $true 999) -Repeats @() -Planned 1 -HostIsName $false -InitialRto $rto1000
+Assert-Equal '#52 sample: a connection at or above the timeout is counted with its time, and the boundary is inclusive' ("{0}/{1}/{2}" -f (@($slow.AtOrAbove) -join ','), @($atBoundary.AtOrAbove).Count, @($underBoundary.AtOrAbove).Count) '1032/1/0'
+$named = New-TcpConnectSample -First (New-TcpResult $true 24) -Repeats @((New-TcpResult $true 9), (New-TcpResult $true 6), (New-TcpResult $true 7)) -Planned 4 -HostIsName $true -InitialRto $rto1000
+Assert-Equal '#52 sample: a name target lists four times and reads three - the first carried the lookup' ("{0}/{1}" -f (@($named.Times) -join ','), $named.Judged) '24,9,6,7/3'
+$namedSlowFirst = New-TcpConnectSample -First (New-TcpResult $true 1500) -Repeats @((New-TcpResult $true 9)) -Planned 2 -HostIsName $true -InitialRto $rto1000
+Assert-Equal '#52 sample: so a slow first connection of a name target is not read as a retransmission' (@($namedSlowFirst.AtOrAbove).Count) 0
+$broken = New-TcpConnectSample -First (New-TcpResult $true 23) -Repeats @((New-TcpResult $false 4000)) -Planned 4 -HostIsName $false -InitialRto $rto1000
+Assert-Equal '#52 sample: a failed repeat is named by its position and keeps its error; the times are the successes' ("{0}/{1}/{2}/{3}" -f $broken.Attempted, $broken.FailedIndex, (@($broken.Times) -join ','), ($broken.FailedError -match 'ConnectionRefused')) '2/2/23/True'
+Assert-Equal '#52 sample: the timeout and its source travel with the sample, the addresses come from the first connection' ("{0}/{1}/{2}/{3}" -f $quiet.RtoMs, $quiet.RtoSource, $quiet.RemoteAddress, $quiet.LocalAddress) '1000/default/203.0.113.5/192.0.2.10'
+$custom = New-TcpConnectSample -First (New-TcpResult $true 1500) -Repeats @() -Planned 1 -HostIsName $false -InitialRto ([pscustomobject]@{ Ms = 2000; Source = 'setting' })
+Assert-Equal '#52 sample: a timeout the setting reports is the one read against' ("{0}/{1}" -f $custom.RtoMs, @($custom.AtOrAbove).Count) '2000/0'
+# The text, in whichever language this script speaks: the numbers a reader is owed are in it.
+$quietText = Get-TcpConnectSampleText -Sample $quiet -HostName '1.1.1.1' -Port 443
+Assert-Equal '#52 text: the message lists the times and counts none of four at the timeout, without the SYN sentence' (($quietText.Message -match '23 / 7 / 7 / 7 ms') -and (Test-HasNumber $quietText.Message 0) -and (Test-HasNumber $quietText.Message 4) -and ($quietText.Message -match '1000 ms') -and ($quietText.Message -notmatch 'SYN')) True
+$slowText = Get-TcpConnectSampleText -Sample $slow -HostName '1.1.1.1' -Port 443
+Assert-Equal '#52 text: one of four at the timeout is said, with the SYN sentence' (($slowText.Message -match '1032 / 7 / 7 / 7 ms') -and (Test-HasNumber $slowText.Message 1) -and (Test-HasNumber $slowText.Message 4) -and ($slowText.Message -match 'SYN')) True
+$quietRto = @($quietText.Lines | Where-Object { $_ -match 'RTO' })
+Assert-Equal '#52 text: the first line names the target and the local address; the RTO line carries the value, its source and the check' ((@($quietText.Lines)[0] -match '1\.1\.1\.1:443') -and (@($quietText.Lines)[0] -match '192\.0\.2\.10') -and ($quietRto.Count -eq 1) -and ($quietRto[0] -match '1000 ms') -and ($quietRto[0] -match 'Get-NetTCPSetting') -and ($quietRto[0] -match 'netsh int tcp show global')) True
+$customText = Get-TcpConnectSampleText -Sample $custom -HostName '1.1.1.1' -Port 443
+$customRto = @($customText.Lines | Where-Object { $_ -match 'RTO' })
+Assert-Equal '#52 text: a timeout read from the setting names the property and does not call itself assumed' (($customRto.Count -eq 1) -and ($customRto[0] -match '2000 ms') -and ($customRto[0] -match 'InitialRtoMs') -and ($customRto[0] -notmatch 'netsh') -and ($customText.Message -match '2000 ms') -and ($customText.Message -notmatch '2000 ms \(|2000 ms（')) True
+Assert-Equal '#52 text: an assumed timeout is named as assumed in the message itself, not only in the details' ($quietText.Message -match '1000 ms \(|1000 ms（') True
+$namedText = Get-TcpConnectSampleText -Sample $named -HostName 'www.example.com' -Port 443
+Assert-Equal '#52 text: a name target names the address it resolved to, and its message reads three of four' ((@($namedText.Lines)[0] -match 'www\.example\.com:443') -and (@($namedText.Lines)[0] -match '203\.0\.113\.5') -and (Test-HasNumber $namedText.Message 3) -and (Test-HasNumber $namedText.Message 0)) True
+$aloneText = Get-TcpConnectSampleText -Sample (New-TcpConnectSample -First (New-TcpResult $true 24) -Repeats @() -Planned 1 -HostIsName $true -InitialRto $rto1000) -HostName 'www.example.com' -Port 443
+Assert-Equal '#52 text: a name target with one connection says nothing was read, and prints no count of nothing' (($aloneText.Message -match '1000 ms') -and ($aloneText.Message -notmatch '0[^0-9]+0') -and (@($aloneText.Lines | Where-Object { $_ -match 'SYN' }).Count -eq 1)) True
+$brokenText = Get-TcpConnectSampleText -Sample $broken -HostName '1.1.1.1' -Port 443
+Assert-Equal '#52 text: a failed repeat is in the message by its position and in the details with its error' ((Test-HasNumber $brokenText.Message 2) -and ((@($brokenText.Lines) -join "`n") -match 'ConnectionRefused')) True
+$reading = @($quietText.Lines | Where-Object { $_ -match 'SYN' })
+Assert-Equal '#52 text: one reading line, naming both halves of the rule and the count it read' (($reading.Count -eq 1) -and ($reading[0] -match 'SYN-ACK') -and (Test-HasNumber $reading[0] 0) -and (Test-HasNumber $reading[0] 4)) True
+# The timeout: its two sources, with the cmdlet mocked, then the real one.
+function Get-NetTCPSetting { param($SettingName, $ErrorAction) return [pscustomobject]@{ SettingName = $SettingName; InitialRtoMs = [uint32]2000 } }
+$fromSetting = Get-TcpInitialRto
+Assert-Equal '#52 rto: a value the cmdlet reports is used and named as the setting' ("{0}/{1}" -f $fromSetting.Ms, $fromSetting.Source) '2000/setting'
+function Get-NetTCPSetting { param($SettingName, $ErrorAction) return [pscustomobject]@{ SettingName = $SettingName; InitialRtoMs = $null } }
+$fromNull = Get-TcpInitialRto
+function Get-NetTCPSetting { param($SettingName, $ErrorAction) return [pscustomobject]@{ SettingName = $SettingName } }
+$fromAbsent = Get-TcpInitialRto
+function Get-NetTCPSetting { param($SettingName, $ErrorAction) throw 'no such cmdlet' }
+$fromThrow = Get-TcpInitialRto
+Remove-Item function:Get-NetTCPSetting -ErrorAction SilentlyContinue
+Assert-Equal '#52 rto: an empty value, an absent property and a cmdlet that throws are all the 1000 ms default, and say so' ("{0}/{1}|{2}/{3}|{4}/{5}" -f $fromNull.Ms, $fromNull.Source, $fromAbsent.Ms, $fromAbsent.Source, $fromThrow.Ms, $fromThrow.Source) '1000/default|1000/default|1000/default'
+$liveRto = Get-TcpInitialRto
+Assert-Equal '#52 rto: read for real on this machine - within the documented 300 to 3000 ms, from one of the two sources' (($liveRto.Ms -ge 300) -and ($liveRto.Ms -le 3000) -and ($liveRto.Source -in @('setting', 'default'))) True
+Write-Output ('[INFO] #52 initial RTO on this machine: ' + $liveRto.Ms + ' ms (' + $liveRto.Source + ')')
+# The socket, for real, on the loopback: the addresses it reports are the ones the repeats and the row use.
+$listener = New-Object System.Net.Sockets.TcpListener -ArgumentList ([System.Net.IPAddress]::Loopback), 0
+$listener.Start()
+try {
+    $loopback = Invoke-TcpConnectionTest -HostName '127.0.0.1' -Port ([int]$listener.LocalEndpoint.Port) -TimeoutMs 4000
+    Assert-Equal '#52 connect: a real handshake on the loopback reports both addresses beside its time' ("{0}/{1}/{2}/{3}" -f $loopback.Success, $loopback.RemoteAddress, $loopback.LocalAddress, ($loopback.ElapsedMs -ge 0)) 'True/127.0.0.1/127.0.0.1/True'
+}
+finally { $listener.Stop() }
+# The run: read off the AST, because the loop needs a target that answers.
+$connectivityBody = Get-FunctionBody 'Test-ConnectivityTargets'
+Assert-Equal '#52 run: the repeats are made only after a connection succeeded, go to the address it reached, and stop at the first that fails' ($connectivityBody -match '(?s)if \(\$result\.Success\) \{.*?\$repeatHost = \[string\]\$result\.RemoteAddress.*?for \(\$i = 2; \$i -le \$connectCount; \$i\+\+\) \{.*?if \(-not \$repeat\.Success\) \{ break \}') True
+Assert-Equal '#52 run: the count is PingCount, never below one, and the timeout is read once a connection has succeeded' (($connectivityBody -match '\$connectCount = \[math\]::Max\(1, \(ConvertTo-IntSafe \$script:Config\.Tests\.PingCount 4\)\)') -and ($connectivityBody -match '(?s)if \(\$result\.Success\) \{.*?if \(\$null -eq \$initialRto\) \{ \$initialRto = Get-TcpInitialRto \}')) True
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails
