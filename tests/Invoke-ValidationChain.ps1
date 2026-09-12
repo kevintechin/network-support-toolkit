@@ -715,6 +715,9 @@ function Test-ResultSet {
     # per-interface rows' first line - the connection-state sentence -
     # never does; the unit tests hold both scripts to that.
     $retryRows = @($rows | Where-Object { $_.Tag -eq 'wifi-retry' })
+    # Every wifi-retry row decides nothing, whatever its shape (backlog #61's decision): a weighted one would turn a
+    # healthy report Test Incomplete on a reader failure, so the marking is checked on each row (PR #52, round 9).
+    foreach ($r in $retryRows) { if (-not [bool]$r.Weightless) { $bad += ('wifi-retry: a row that is not weightless ({0}, {1})' -f $r.Status, $r.Check) } }
     $aggregateRetryFailure = $false
     if ($retryRows.Count -eq 1 -and [string]$retryRows[0].Status -eq 'ERROR') {
         $firstLine = [string](@(([string]$retryRows[0].Details) -split "`r`n|`n")[0])
