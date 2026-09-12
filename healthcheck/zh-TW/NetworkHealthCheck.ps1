@@ -3965,6 +3965,9 @@ function Get-WifiInterfaceView {
     if ($null -ne $api -and [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $api "Error" ""))) { $apiInterfaces = @(Get-PropertyValue $api "Interfaces" @()) }
     $exitCode = ConvertTo-IntSafe (Get-PropertyValue $Sample "NetshExitCode" 0) 0
     $netshFailed = (-not [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" ""))) -or ($exitCode -ne 0)
+    $consent = $null
+    if ($null -ne $api) { $consent = Get-PropertyValue $api "LocationConsent" $null }
+    $locationDenied = ($null -ne $consent -and [bool](Get-PropertyValue $consent "Denied" $false) -and [bool](Get-PropertyValue $consent "Gated" $false))
     $seen = @{}
     foreach ($wifi in @(Get-PropertyValue $Sample "Interfaces" @())) {
         if ($null -eq $wifi) { continue }
@@ -4005,6 +4008,7 @@ function Get-WifiInterfaceView {
             NetshListed      = $true
             ApiListed        = ($null -ne $entry)
             NetshFailed      = $netshFailed
+            AccessDenied     = $false
             Refused          = $false
         }
         $seen[$key] = $true
@@ -4040,7 +4044,8 @@ function Get-WifiInterfaceView {
             NetshListed      = $false
             ApiListed        = $true
             NetshFailed      = $netshFailed
-            Refused          = ($netshFailed -and $query -eq 5)
+            AccessDenied     = ($netshFailed -and $query -eq 5)
+            Refused          = ($netshFailed -and $query -eq 5 -and $locationDenied)
         }
         $seen[$guid] = $true
     }
@@ -4141,8 +4146,17 @@ function Add-WifiRfResult {
             $queryText = "未詢問"
             if ($wifi.ConnectionQuery -eq 0) { $queryText = "已回答" }
             elseif ($wifi.ConnectionQuery -gt 0) { $queryText = Get-Win32ErrorText $wifi.ConnectionQuery }
+            $consent = $null
+            if ($null -ne $api) { $consent = Get-PropertyValue $api "LocationConsent" $null }
+            $consentText = ""
+            if ($null -ne $consent) { $consentText = [string](Get-PropertyValue $consent "Text" "") }
             if ($wifi.Refused) {
-                $message = "{0}：已連線（WLAN 服務），{1}；無法讀取網路名稱、存取點、訊號與速率——{2}，且 WLAN 服務拒絕了連線查詢（錯誤 5，存取被拒）：在 Windows 11 24H2 及之後的版本，連線細節需要位置設定允許桌面應用程式（設定 > 隱私權與安全性 > 位置）。" -f (ConvertTo-DisplayString $name), $channelText, $netshReason
+                $message = "{0}：已連線（WLAN 服務），{1}；無法讀取網路名稱、存取點、訊號與速率——{2}，且 WLAN 服務拒絕了連線查詢（錯誤 5，存取被拒），而位置權限存放區顯示 Deny（{3}）：在 Windows 11 24H2 及之後的版本，連線細節需要位置設定允許桌面應用程式（設定 > 隱私權與安全性 > 位置）。" -f (ConvertTo-DisplayString $name), $channelText, $netshReason, $consentText
+            }
+            elseif ($wifi.AccessDenied) {
+                # 錯誤 5 只是存取被拒、沒有更多（PR #55，第 1 回合）：沒有權限存放區的 Deny、也沒有會擋住細節的版本，就不指認原因——
+                # 限制 WLAN 查詢的原則否則會被指向錯的設定。
+                $message = "{0}：已連線（WLAN 服務），{1}；無法讀取網路名稱、存取點、訊號與速率——{2}，且 WLAN 服務拒絕了連線查詢（錯誤 5，存取被拒），但位置權限存放區沒有顯示拒絕（{3}）{4}；原因未能確認——例如限制 WLAN 查詢的原則。" -f (ConvertTo-DisplayString $name), $channelText, $netshReason, $(if ($consentText) { $consentText } else { "未讀取" }), $(if ($null -ne $consent -and -not [bool](Get-PropertyValue $consent "Gated" $false)) { "，而且這個 Windows 早於把 Wi-Fi 細節擋在那個設定後面的版本（24H2）" } else { "" })
             }
             else {
                 $reason = $netshReason
@@ -4160,7 +4174,7 @@ function Add-WifiRfResult {
             $details = @()
             $details += ("介面（WLAN 服務）：{0}" -f (ConvertTo-DisplayString $wifi.Description))
             $details += ("介面 GUID：{0}" -f $wifi.Guid)
-            $details += ("連線狀態：{0}（WLAN 服務）；netsh 結束碼 {1}；連線查詢：{2}" -f (Get-WifiInterfaceStateText $wifi.State), (ConvertTo-IntSafe (Get-PropertyValue $sample "NetshExitCode" 0) 0), $queryText)
+            $details += ("連線狀態：{0}（WLAN 服務）；netsh 結束碼 {1}；連線查詢：{2}{3}" -f (Get-WifiInterfaceStateText $wifi.State), (ConvertTo-IntSafe (Get-PropertyValue $sample "NetshExitCode" 0) 0), $queryText, $(if ($consentText) { "；位置權限：" + $consentText } else { "" }))
             $details += ("頻道：{0}{1}" -f $(if ($null -ne $wifi.Channel) { [string]$wifi.Channel } else { "未讀取" }), $(if ($radio) { "；" + $radio } else { "" }))
             $details += "未回報：SSID、BSSID、頻段、無線規格、訊號、接收與傳送速率、設定檔"
             $details += $netshLines
@@ -4316,6 +4330,7 @@ function Compare-WifiAssociation {
             $apiState = $view.State
             $stateSuffix = ""
             if ($null -ne $apiState) { $stateSuffix = "；WLAN 服務：{0}" -f (Get-WifiInterfaceStateText $apiState) }
+            if ((ConvertTo-IntSafe $view.ConnectionQuery -1) -gt 0) { $stateSuffix += ("；連線查詢：{0}" -f (Get-Win32ErrorText $view.ConnectionQuery)) }
             if (-not $view.NetshListed) {
                 # WLAN 服務有列出、netsh 什麼都沒印（backlog #62）：既不是存取點的一次讀數，也不是不在場——是介面存在卻無法
                 # 取樣的一次樣本，附上樣本記錄到的原因和服務給的狀態。
@@ -5340,6 +5355,49 @@ function Get-WlanApiType {
     return $result
 }
 
+function Get-LocationConsentState {
+    # Windows 記錄的位置權限，讀出來當作第二個見證：連線查詢被拒之後，這一列要先有它才可以把位置設定指認為原因（PR #55，
+    # 第 1 回合）：錯誤 5 只是存取被拒、沒有更多，限制 WLAN 查詢的原則、或沒有這道閘門的 Windows，否則都會被寫成權限問題、
+    # 被指向錯的設定。權限存放區（CapabilityAccessManager\ConsentStore\location）每一層一個值——使用者、裝置、桌面應用程式，
+    # 以及 NonPackaged 底下 netsh 自己的項目——任一層是 Deny 就是拒絕（2026-09-12 在使用者層與裝置層量到）；Wi-Fi 細節被擋在
+    # 它後面，是從 Windows 11 24H2、build 26100 開始的事。讀不到的存放區不算見證。
+    $consent = [pscustomobject][ordered]@{
+        Known  = $false
+        Denied = $false
+        Build  = 0
+        Gated  = $false
+        Levels = @()
+        Text   = ""
+    }
+    try { $consent.Build = [int][Environment]::OSVersion.Version.Build } catch { $consent.Build = 0 }
+    $consent.Gated = ($consent.Build -ge 26100)
+    $store = "Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location"
+    $levels = @(
+        [pscustomobject]@{ Name = "使用者"; Path = ("HKCU:\" + $store) },
+        [pscustomobject]@{ Name = "裝置"; Path = ("HKLM:\" + $store) },
+        [pscustomobject]@{ Name = "桌面應用程式"; Path = ("HKCU:\" + $store + "\NonPackaged") },
+        [pscustomobject]@{ Name = "netsh"; Path = ("HKCU:\" + $store + "\NonPackaged\C:#Windows#System32#netsh.exe") }
+    )
+    $readings = @()
+    foreach ($level in $levels) {
+        $value = "（無項目）"
+        if (Test-Path -LiteralPath $level.Path) {
+            $value = "（空白）"
+            try {
+                $consent.Known = $true
+                $raw = [string](Get-PropertyValue (Get-ItemProperty -LiteralPath $level.Path -ErrorAction Stop) "Value" "")
+                if (-not [string]::IsNullOrWhiteSpace($raw)) { $value = $raw }
+            }
+            catch { $value = "（無法讀取）" }
+        }
+        if ($value -eq "Deny") { $consent.Denied = $true }
+        $readings += [pscustomobject]@{ Name = $level.Name; Value = $value }
+    }
+    $consent.Levels = @($readings)
+    $consent.Text = (@($readings | ForEach-Object { "{0} {1}" -f $_.Name, $_.Value }) -join "、")
+    return $consent
+}
+
 function Get-WlanInterfaceStates {
     # WLAN 服務自己對每張無線介面的說法，一次讀取（backlog #62）：介面清單與各介面的連線狀態（WlanEnumInterfaces）、頻道
     # （WlanQueryInterface，opcode 8）與無線電開關（opcode 4）——而對服務稱為已連線的介面，再問服務願不願意把連線細節交給
@@ -5353,7 +5411,9 @@ function Get-WlanInterfaceStates {
         Error       = ""
         ErrorText   = ""
         Diagnostics = ""
+        LocationConsent = $null
     }
+    $reading.LocationConsent = Get-LocationConsentState
     $api = Get-WlanApiType
     if ($null -eq $api.Type) {
         $reading.Error = $api.Error

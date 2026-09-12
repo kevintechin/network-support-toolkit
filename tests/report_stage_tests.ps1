@@ -663,7 +663,7 @@ Set-RunOptions -Overrides @{} | Out-Null
 # answers; nothing connected; and netsh missing with the service unreadable.
 $originalKeeper = ${function:Add-WifiAssociationSample}
 $refusedO = @('There is 1 interface on the system: ', 'Network shell commands need location permission to access WLAN information.', 'start ms-settings:privacy-location', 'Function WlanQueryInterface returns error 5:', 'The requested operation requires elevation (Run as administrator).')
-function New-ReadingO($state, $query, $error = '') { return [pscustomobject]@{ Timestamp = (Get-Date); Interfaces = @($(if ($error) { @() } else { [pscustomobject]@{ Guid = 'e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb'; Description = 'Fixture AX211'; State = $state; Channel = 149; RadioSoftware = 'on'; RadioHardware = 'on'; ConnectionQuery = $query } })); Error = $error; ErrorText = ''; Diagnostics = '' } }
+function New-ReadingO($state, $query, $error = '', $denied = $true) { return [pscustomobject]@{ Timestamp = (Get-Date); Interfaces = @($(if ($error) { @() } else { [pscustomobject]@{ Guid = 'e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb'; Description = 'Fixture AX211'; State = $state; Channel = 149; RadioSoftware = 'on'; RadioHardware = 'on'; ConnectionQuery = $query } })); Error = $error; ErrorText = ''; Diagnostics = ''; LocationConsent = [pscustomobject]@{ Known = $true; Denied = $denied; Build = 26200; Gated = $true; Levels = @(); Text = $(if ($denied) { 'user Deny, device Allow, desktop apps Allow, netsh (no entry)' } else { 'user Allow, device Allow, desktop apps Allow, netsh (no entry)' }) } } }
 function New-SampleO($lines, $exit, $api) { return [pscustomobject]@{ Moment = 'middle'; Timestamp = (Get-Date); Interfaces = @(ConvertFrom-NetshWlanOutput -Lines $lines); Error = ''; ErrorText = ''; Diagnostics = ''; NetshExitCode = $exit; NetshLines = @($lines); Api = $api } }
 $script:SampleO = New-SampleO $refusedO 1 (New-ReadingO 1 5)
 function Add-WifiAssociationSample { param([string]$Moment) return $script:SampleO }
@@ -674,6 +674,13 @@ $rowsO = @($script:Results | Where-Object { $_.Tag -eq 'wifi' })
 Assert-Equal 'O: one IT Information row for the interface the service lists as connected' ("{0}/{1}/{2}" -f $rowsO.Count, $rowsO[0].Status, $rowsO[0].Scope) '1/INFO/IT'
 Assert-Equal 'O: it names error 5 and the interface GUID, and carries what netsh printed' ("{0}/{1}/{2}" -f ($rowsO[0].Message -match '\b5\b'), ($rowsO[0].Details -match 'e6b08c8a-3feb-4c3e-88c3-dee94dd2f0eb'), ($rowsO[0].Details -match 'ms-settings:privacy-location')) 'True/True/True'
 Assert-Equal 'O: and the verdict and the fingerprint do not move' ("{0}/{1}" -f (Get-OverallStatus).Code, (Get-FingerprintSummary).Key) 'PASS/healthy'
+Assert-Equal 'O r1: with the consent store at Deny the row names the setting (24H2) and carries the consent text' (("{0}/{1}" -f ($rowsO[0].Message -match '24H2'), ($rowsO[0].Details -match 'Deny'))) 'True/True'
+# Error 5 without the consent store's Deny (PR #55, round 1): access denied, the cause not named, no setting to open.
+$script:SampleO = New-SampleO $refusedO 1 (New-ReadingO 1 5 '' $false)
+$script:Results = New-Object System.Collections.ArrayList
+Add-WifiRfResult
+$rowsO5 = @($script:Results | Where-Object { $_.Tag -eq 'wifi' })
+Assert-Equal 'O r1: error 5 with the consent store at Allow is one row that names error 5 but not the location setting' ("{0}/{1}/{2}/{3}" -f $rowsO5.Count, $rowsO5[0].Status, ($rowsO5[0].Message -match '\b5\b'), ($rowsO5[0].Message -match '24H2')) '1/INFO/True/False'
 $script:SampleO = New-SampleO $refusedO 1 (New-ReadingO 1 0)
 $script:Results = New-Object System.Collections.ArrayList
 Add-WifiRfResult

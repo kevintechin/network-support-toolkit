@@ -4096,6 +4096,9 @@ function Get-WifiInterfaceView {
     if ($null -ne $api -and [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $api "Error" ""))) { $apiInterfaces = @(Get-PropertyValue $api "Interfaces" @()) }
     $exitCode = ConvertTo-IntSafe (Get-PropertyValue $Sample "NetshExitCode" 0) 0
     $netshFailed = (-not [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" ""))) -or ($exitCode -ne 0)
+    $consent = $null
+    if ($null -ne $api) { $consent = Get-PropertyValue $api "LocationConsent" $null }
+    $locationDenied = ($null -ne $consent -and [bool](Get-PropertyValue $consent "Denied" $false) -and [bool](Get-PropertyValue $consent "Gated" $false))
     $seen = @{}
     foreach ($wifi in @(Get-PropertyValue $Sample "Interfaces" @())) {
         if ($null -eq $wifi) { continue }
@@ -4136,6 +4139,7 @@ function Get-WifiInterfaceView {
             NetshListed      = $true
             ApiListed        = ($null -ne $entry)
             NetshFailed      = $netshFailed
+            AccessDenied     = $false
             Refused          = $false
         }
         $seen[$key] = $true
@@ -4171,7 +4175,8 @@ function Get-WifiInterfaceView {
             NetshListed      = $false
             ApiListed        = $true
             NetshFailed      = $netshFailed
-            Refused          = ($netshFailed -and $query -eq 5)
+            AccessDenied     = ($netshFailed -and $query -eq 5)
+            Refused          = ($netshFailed -and $query -eq 5 -and $locationDenied)
         }
         $seen[$guid] = $true
     }
@@ -4278,8 +4283,17 @@ function Add-WifiRfResult {
             $queryText = "not asked"
             if ($wifi.ConnectionQuery -eq 0) { $queryText = "answered" }
             elseif ($wifi.ConnectionQuery -gt 0) { $queryText = Get-Win32ErrorText $wifi.ConnectionQuery }
+            $consent = $null
+            if ($null -ne $api) { $consent = Get-PropertyValue $api "LocationConsent" $null }
+            $consentText = ""
+            if ($null -ne $consent) { $consentText = [string](Get-PropertyValue $consent "Text" "") }
             if ($wifi.Refused) {
-                $message = "{0}: connected (WLAN service), {1}; the network name, access point, signal and rates could not be read - {2}, and the WLAN service refused the connection query (error 5, access denied): on Windows 11 24H2 and later the connection's details need the location setting to allow desktop programs (Settings > Privacy & security > Location)." -f (ConvertTo-DisplayString $name), $channelText, $netshReason
+                $message = "{0}: connected (WLAN service), {1}; the network name, access point, signal and rates could not be read - {2}, and the WLAN service refused the connection query (error 5, access denied) while the location consent store shows Deny ({3}): on Windows 11 24H2 and later the connection's details need the location setting to allow desktop programs (Settings > Privacy & security > Location)." -f (ConvertTo-DisplayString $name), $channelText, $netshReason, $consentText
+            }
+            elseif ($wifi.AccessDenied) {
+                # Error 5 alone is access denied and no more (PR #55, round 1): without the consent store's Deny on a build that
+                # gates the details, the cause is not named - a policy that restricts WLAN queries would be sent to the wrong setting.
+                $message = "{0}: connected (WLAN service), {1}; the network name, access point, signal and rates could not be read - {2}, and the WLAN service refused the connection query (error 5, access denied) while the location consent store shows no denial ({3}){4}; the cause was not identified - a policy restricting WLAN queries, for example." -f (ConvertTo-DisplayString $name), $channelText, $netshReason, $(if ($consentText) { $consentText } else { "not read" }), $(if ($null -ne $consent -and -not [bool](Get-PropertyValue $consent "Gated" $false)) { ", and this Windows predates the gating of Wi-Fi details behind that setting (24H2)" } else { "" })
             }
             else {
                 $reason = $netshReason
@@ -4297,7 +4311,7 @@ function Add-WifiRfResult {
             $details = @()
             $details += ("Interface (WLAN service): {0}" -f (ConvertTo-DisplayString $wifi.Description))
             $details += ("Interface GUID: {0}" -f $wifi.Guid)
-            $details += ("Connection state: {0} (WLAN service); netsh exit code {1}; connection query: {2}" -f (Get-WifiInterfaceStateText $wifi.State), (ConvertTo-IntSafe (Get-PropertyValue $sample "NetshExitCode" 0) 0), $queryText)
+            $details += ("Connection state: {0} (WLAN service); netsh exit code {1}; connection query: {2}{3}" -f (Get-WifiInterfaceStateText $wifi.State), (ConvertTo-IntSafe (Get-PropertyValue $sample "NetshExitCode" 0) 0), $queryText, $(if ($consentText) { "; location consent: " + $consentText } else { "" }))
             $details += ("Channel: {0}{1}" -f $(if ($null -ne $wifi.Channel) { [string]$wifi.Channel } else { "not read" }), $(if ($radio) { "; " + $radio } else { "" }))
             $details += "Not reported: SSID, BSSID, band, radio type, signal, receive and transmit rates, profile"
             $details += $netshLines
@@ -4456,6 +4470,7 @@ function Compare-WifiAssociation {
             $apiState = $view.State
             $stateSuffix = ""
             if ($null -ne $apiState) { $stateSuffix = "; WLAN service: {0}" -f (Get-WifiInterfaceStateText $apiState) }
+            if ((ConvertTo-IntSafe $view.ConnectionQuery -1) -gt 0) { $stateSuffix += ("; connection query: {0}" -f (Get-Win32ErrorText $view.ConnectionQuery)) }
             if (-not $view.NetshListed) {
                 # Listed by the WLAN service, nothing printed by netsh (backlog #62): not a reading of the access point and
                 # not an absence either - a sample at which the interface existed and could not be sampled, with the
@@ -5541,6 +5556,51 @@ function Get-WlanApiType {
     return $result
 }
 
+function Get-LocationConsentState {
+    # The location consent as Windows records it, read so that a denied connection query has a second witness before a
+    # row may name the location setting as the cause (PR #55, round 1): error 5 is access denied and no more, and a
+    # policy that restricts WLAN queries, or a Windows without the gating, would otherwise be reported as a consent
+    # problem and sent to the wrong setting. The consent store (CapabilityAccessManager\ConsentStore\location) holds one
+    # value per level - the user's, the device's, the desktop programs' and, under NonPackaged, netsh's own entry - and
+    # Deny at any of them denies (measured at the user level and at the device level on 2026-09-12); the gating of
+    # Wi-Fi details behind it exists since Windows 11 24H2, build 26100. A store that cannot be read is no witness.
+    $consent = [pscustomobject][ordered]@{
+        Known  = $false
+        Denied = $false
+        Build  = 0
+        Gated  = $false
+        Levels = @()
+        Text   = ""
+    }
+    try { $consent.Build = [int][Environment]::OSVersion.Version.Build } catch { $consent.Build = 0 }
+    $consent.Gated = ($consent.Build -ge 26100)
+    $store = "Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location"
+    $levels = @(
+        [pscustomobject]@{ Name = "user"; Path = ("HKCU:\" + $store) },
+        [pscustomobject]@{ Name = "device"; Path = ("HKLM:\" + $store) },
+        [pscustomobject]@{ Name = "desktop apps"; Path = ("HKCU:\" + $store + "\NonPackaged") },
+        [pscustomobject]@{ Name = "netsh"; Path = ("HKCU:\" + $store + "\NonPackaged\C:#Windows#System32#netsh.exe") }
+    )
+    $readings = @()
+    foreach ($level in $levels) {
+        $value = "(no entry)"
+        if (Test-Path -LiteralPath $level.Path) {
+            $value = "(empty)"
+            try {
+                $consent.Known = $true
+                $raw = [string](Get-PropertyValue (Get-ItemProperty -LiteralPath $level.Path -ErrorAction Stop) "Value" "")
+                if (-not [string]::IsNullOrWhiteSpace($raw)) { $value = $raw }
+            }
+            catch { $value = "(unreadable)" }
+        }
+        if ($value -eq "Deny") { $consent.Denied = $true }
+        $readings += [pscustomobject]@{ Name = $level.Name; Value = $value }
+    }
+    $consent.Levels = @($readings)
+    $consent.Text = (@($readings | ForEach-Object { "{0} {1}" -f $_.Name, $_.Value }) -join ", ")
+    return $consent
+}
+
 function Get-WlanInterfaceStates {
     # One reading of what the WLAN service itself says about every wireless interface (backlog #62): the list of them
     # and each one's connection state (WlanEnumInterfaces), its channel (WlanQueryInterface, opcode 8) and its radio
@@ -5557,7 +5617,9 @@ function Get-WlanInterfaceStates {
         Error       = ""
         ErrorText   = ""
         Diagnostics = ""
+        LocationConsent = $null
     }
+    $reading.LocationConsent = Get-LocationConsentState
     $api = Get-WlanApiType
     if ($null -eq $api.Type) {
         $reading.Error = $api.Error
