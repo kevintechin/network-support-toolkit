@@ -4698,14 +4698,15 @@ function Compare-WifiRetryCounters {
 
     # A snapshot that could not be taken names why, once, and the row is weightless: an absent reader is a fact about
     # this machine, not a measurement of its network. No wireless interface is the ordinary wired case and reads as one.
-    foreach ($pair in @(@{ Snapshot = $Before; Side = "at the start" }, @{ Snapshot = $After; Side = "at the end" })) {
+    $bothNone = ([string]$Before.Error -eq "none" -and [string]$After.Error -eq "none")
+    foreach ($pair in @(@{ Snapshot = $Before; Side = "at the start"; Other = $After }, @{ Snapshot = $After; Side = "at the end"; Other = $Before })) {
         $snapshot = $pair.Snapshot
         if ([string]::IsNullOrWhiteSpace([string]$snapshot.Error)) { continue }
         $reason = [string]$snapshot.Error
         $status = "ERROR"
         $message = ""
         switch ($reason) {
-            "none"      { $status = "INFO"; $message = "No wireless interface on this computer, so there is no wireless retry figure; the TCP retransmission rows are the link's statistics." }
+            "none"      { if ($bothNone) { $status = "INFO"; $message = "No wireless interface on this computer, so there is no wireless retry figure; the TCP retransmission rows are the link's statistics." } else { $message = "The wireless interface was listed at only one of the two readings ({0} it was not), so no delta could be calculated: the adapter was enabled or disabled during the test, or the other reading failed." -f $pair.Side } }
             "addtype"   { $message = "The Wi-Fi retry counters could not be read: the reader (a small P/Invoke type compiled at run time) could not be compiled or loaded, which an application-control policy can refuse." }
             "open"      { $message = "The Wi-Fi retry counters could not be read: the WLAN service did not answer ({0})." -f $snapshot.ErrorText }
             "enumerate" { $message = "The Wi-Fi retry counters could not be read: the wireless interfaces could not be listed ({0})." -f $snapshot.ErrorText }
@@ -4716,6 +4717,7 @@ function Compare-WifiRetryCounters {
         $details = @(
             ("Reading {0}: {1}" -f $pair.Side, $reason),
             $(if (-not [string]::IsNullOrWhiteSpace([string]$snapshot.ErrorText)) { [string]$snapshot.ErrorText } else { $null }),
+            $(if (-not $bothNone -and -not [string]::IsNullOrWhiteSpace([string]$pair.Other.Error)) { "The other reading: {0} {1}" -f $pair.Other.Error, $pair.Other.ErrorText } else { $null }),
             "Method: Native Wifi API, WlanQueryInterface with wlan_intf_opcode_statistics through P/Invoke (wlanapi.dll), read before and after the run.",
             "Explanation: this row decides nothing; where it is absent, the TCP retransmission rows and the ping rows are the link's statistics, and a wireless retry is visible in neither."
         )

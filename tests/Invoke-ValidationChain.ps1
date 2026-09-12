@@ -699,13 +699,14 @@ function Test-ResultSet {
     # several wireless interfaces that single row is the shape and not a missing row. A per-interface error row - a
     # reset counter, a failed query - carries the same tag and status, so the shape is read off the row itself: the
     # aggregate row's first details line ends with the reader's reason code, a language-neutral token like a tag
-    # (addtype, open, enumerate, error), which the per-interface rows' first line - the connection-state sentence -
+    # (addtype, open, enumerate, error, or none where an interface was listed at only one reading - round 3), which the
+    # per-interface rows' first line - the connection-state sentence -
     # never does; the unit tests hold both scripts to that.
     $retryRows = @($rows | Where-Object { $_.Tag -eq 'wifi-retry' })
     $aggregateRetryFailure = $false
     if ($retryRows.Count -eq 1 -and [string]$retryRows[0].Status -eq 'ERROR') {
         $firstLine = [string](@(([string]$retryRows[0].Details) -split "`r`n|`n")[0])
-        $aggregateRetryFailure = ($firstLine -match '[:：]\s*(addtype|open|enumerate|error)\s*$')
+        $aggregateRetryFailure = ($firstLine -match '[:：]\s*(addtype|open|enumerate|error|none)\s*$')
     }
     if ([int]$want['wifi-retry'] -gt 1 -and $aggregateRetryFailure) { $want['wifi-retry'] = 1 }
     foreach ($k in @($want.Keys)) {

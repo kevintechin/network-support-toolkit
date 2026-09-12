@@ -4544,14 +4544,15 @@ function Compare-WifiRetryCounters {
 
     # 取不到的快照說明原因，說一次，而且那一列不計權重：讀取器不存在是這台機器的事實，不是它網路的量測。沒有無線介面是
     # 一般有線機器的情形，也照那樣讀。
-    foreach ($pair in @(@{ Snapshot = $Before; Side = "開始時" }, @{ Snapshot = $After; Side = "結束時" })) {
+    $bothNone = ([string]$Before.Error -eq "none" -and [string]$After.Error -eq "none")
+    foreach ($pair in @(@{ Snapshot = $Before; Side = "開始時"; Other = $After }, @{ Snapshot = $After; Side = "結束時"; Other = $Before })) {
         $snapshot = $pair.Snapshot
         if ([string]::IsNullOrWhiteSpace([string]$snapshot.Error)) { continue }
         $reason = [string]$snapshot.Error
         $status = "ERROR"
         $message = ""
         switch ($reason) {
-            "none"      { $status = "INFO"; $message = "這台電腦沒有無線介面，所以沒有無線重傳數字；連線的統計看 TCP 重傳那幾列。" }
+            "none"      { if ($bothNone) { $status = "INFO"; $message = "這台電腦沒有無線介面，所以沒有無線重傳數字；連線的統計看 TCP 重傳那幾列。" } else { $message = "兩次讀取只有一次列出了無線介面（{0}沒有），所以無法計算差值：網卡在檢測期間被啟用或停用，或另一次讀取失敗了。" -f $pair.Side } }
             "addtype"   { $message = "無法讀取 Wi-Fi 重傳計數器：讀取器（執行時編譯的一個小型 P/Invoke 型別）無法編譯或載入，應用程式控制政策可能會拒絕它。" }
             "open"      { $message = "無法讀取 Wi-Fi 重傳計數器：WLAN 服務沒有回應（{0}）。" -f $snapshot.ErrorText }
             "enumerate" { $message = "無法讀取 Wi-Fi 重傳計數器：無法列出無線介面（{0}）。" -f $snapshot.ErrorText }
@@ -4562,6 +4563,7 @@ function Compare-WifiRetryCounters {
         $details = @(
             ("讀取{0}：{1}" -f $pair.Side, $reason),
             $(if (-not [string]::IsNullOrWhiteSpace([string]$snapshot.ErrorText)) { [string]$snapshot.ErrorText } else { $null }),
+            $(if (-not $bothNone -and -not [string]::IsNullOrWhiteSpace([string]$pair.Other.Error)) { "另一次讀取：{0} {1}" -f $pair.Other.Error, $pair.Other.ErrorText } else { $null }),
             "方法：Native Wifi API，透過 P/Invoke（wlanapi.dll）以 wlan_intf_opcode_statistics 呼叫 WlanQueryInterface，在執行前後各讀一次。",
             "說明：這一列不決定任何結果；它不存在時，連線的統計看 TCP 重傳列與 ping 列，而無線重傳在這兩者裡都看不到。"
         )
