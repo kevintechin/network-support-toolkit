@@ -808,7 +808,8 @@ function Test-ResultSet {
     # stand the adapters' GUIDs in for the GUID lines netsh did not print; but a reader that could not compile, open or
     # enumerate leaves the tool no interface to write a row for, so on such a run the aggregate rows - and a radio row
     # without a GUID - are the right shape, and the per-GUID demands below are not made.
-    $assocAggregatePattern = '[:：]\s*(netsh|exception|none)(;\s*wlanapi=(addtype|open|enumerate|error|ok))?\s*$'
+    # refused (PR #55, round 10): netsh ran and exited non-zero with nothing listed while the service reading failed too.
+    $assocAggregatePattern = '[:：]\s*(netsh|exception|none|refused)(;\s*wlanapi=(addtype|open|enumerate|error|ok))?\s*$'
     $apiReaderFailed = $false
     foreach ($r in $assocRows) {
         $firstLine = [string](@(([string]$r.Details) -split "`r`n|`n")[0])

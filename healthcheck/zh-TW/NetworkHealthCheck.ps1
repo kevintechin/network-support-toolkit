@@ -4222,7 +4222,9 @@ function Test-WifiSampleReadable {
     # 而 WLAN 服務仍然列出了介面與狀態，只因 netsh 失敗就跳過的樣本會漏掉服務看見的介面。兩個讀取來源都失敗的樣本才算
     # 不可讀，而每次樣本都如此才是彙總失敗列。
     if ($null -eq $Sample) { return $false }
-    if ([string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" ""))) { return $true }
+    # netsh 有執行且以 0 結束才算有回答（PR #55，第 10 回合）：非零結束碼、什麼都沒列，和擲出例外一樣是失敗的讀取，旁邊的
+    # 服務讀取也失敗時，得到的是彙總列，不是有線電腦那一列。
+    if ([string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" "")) -and (ConvertTo-IntSafe (Get-PropertyValue $Sample "NetshExitCode" 0) 0) -eq 0) { return $true }
     $api = Get-PropertyValue $Sample "Api" $null
     return ($null -ne $api -and [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $api "Error" "")))
 }
@@ -4295,12 +4297,18 @@ function Compare-WifiAssociation {
         # 分辨這個彙總列和逐介面的列。
         $first = $samples[0]
         $reason = [string]$first.Error
+        # netsh 有執行、以非零結束碼結束、什麼都沒列，旁邊的服務讀取也失敗（第 10 回合）：原因記號是 refused，訊息寫出兩個讀取來源，
+        # 因為兩邊都沒回答。
+        if ([string]::IsNullOrWhiteSpace($reason)) { $reason = "refused" }
         $message = "無法取樣 Wi-Fi 存取點：找不到 netsh.exe。"
-        if ($reason -ne "netsh") { $message = "無法取樣 Wi-Fi 存取點：netsh wlan show interfaces 無法讀取。" }
+        if ($reason -eq "refused") { $message = "無法取樣 Wi-Fi 存取點：netsh wlan show interfaces 沒有印出任何介面，而 WLAN 服務也無法讀取。" }
+        elseif ($reason -ne "netsh") { $message = "無法取樣 Wi-Fi 存取點：netsh wlan show interfaces 無法讀取。" }
         $lines = @(("讀取：{0}{1}" -f $reason, $apiSuffix))
         foreach ($entry in $entries) {
             $apiSummary = Get-WifiApiSummaryText -Sample $entry.Sample
-            $lines += ("{0}：無法讀取——{1}{2}" -f $entry.Prefix, [string]$entry.Sample.ErrorText, $(if ($apiSummary) { "；" + $apiSummary } else { "" }))
+            $netshText = [string]$entry.Sample.ErrorText
+            if ([string]::IsNullOrWhiteSpace($netshText)) { $netshText = Get-WifiNetshReasonText -Sample $entry.Sample }
+            $lines += ("{0}：無法讀取——{1}{2}" -f $entry.Prefix, $netshText, $(if ($apiSummary) { "；" + $apiSummary } else { "" }))
         }
         Add-CheckResult -Category $category -Check $check -Status "ERROR" -Message $message -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Diagnostics ([string]$first.Diagnostics) -Tag "wifi-association" -Scope "IT" | Out-Null
         return

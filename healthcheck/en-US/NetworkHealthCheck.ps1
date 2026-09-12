@@ -4361,7 +4361,9 @@ function Test-WifiSampleReadable {
     # sample skipped on netsh's failure alone would have dropped an interface the service saw. Only a sample both readers
     # failed is unreadable, and only a run of those is the aggregate failure row.
     if ($null -eq $Sample) { return $false }
-    if ([string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" ""))) { return $true }
+    # netsh answered only where it ran and exited 0 (PR #55, round 10): a non-zero exit with nothing listed is a failed read as
+    # much as a thrown one, and beside a failed service reading it makes the aggregate row, not the wired computer's.
+    if ([string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" "")) -and (ConvertTo-IntSafe (Get-PropertyValue $Sample "NetshExitCode" 0) 0) -eq 0) { return $true }
     $api = Get-PropertyValue $Sample "Api" $null
     return ($null -ne $api -and [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $api "Error" "")))
 }
@@ -4438,12 +4440,18 @@ function Compare-WifiAssociation {
         # token like a tag - which is how the chain's oracle tells this aggregate row from a per-interface row.
         $first = $samples[0]
         $reason = [string]$first.Error
+        # netsh that ran and exited non-zero with nothing listed, beside a service reading that failed (round 10): the reason
+        # token is refused, and the message says both readers, because neither answered.
+        if ([string]::IsNullOrWhiteSpace($reason)) { $reason = "refused" }
         $message = "The Wi-Fi association could not be sampled: netsh.exe was not found."
-        if ($reason -ne "netsh") { $message = "The Wi-Fi association could not be sampled: netsh wlan show interfaces could not be read." }
+        if ($reason -eq "refused") { $message = "The Wi-Fi association could not be sampled: netsh wlan show interfaces printed no interface, and the WLAN service could not be read." }
+        elseif ($reason -ne "netsh") { $message = "The Wi-Fi association could not be sampled: netsh wlan show interfaces could not be read." }
         $lines = @(("Reading: {0}{1}" -f $reason, $apiSuffix))
         foreach ($entry in $entries) {
             $apiSummary = Get-WifiApiSummaryText -Sample $entry.Sample
-            $lines += ("{0}: could not be read - {1}{2}" -f $entry.Prefix, [string]$entry.Sample.ErrorText, $(if ($apiSummary) { "; " + $apiSummary } else { "" }))
+            $netshText = [string]$entry.Sample.ErrorText
+            if ([string]::IsNullOrWhiteSpace($netshText)) { $netshText = Get-WifiNetshReasonText -Sample $entry.Sample }
+            $lines += ("{0}: could not be read - {1}{2}" -f $entry.Prefix, $netshText, $(if ($apiSummary) { "; " + $apiSummary } else { "" }))
         }
         Add-CheckResult -Category $category -Check $check -Status "ERROR" -Message $message -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Diagnostics ([string]$first.Diagnostics) -Tag "wifi-association" -Scope "IT" | Out-Null
         return

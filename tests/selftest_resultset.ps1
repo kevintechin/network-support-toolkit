@@ -275,6 +275,9 @@ $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -ne 'wifi' }
 $assocReaderFailed = New-Row $assocTemplate 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assocReaderFailed.Details = 'Reading: none; wlanapi=addtype'
 $assocReaderOk = New-Row $assocTemplate 'wifi-association' 'Wi-Fi association' 'INFO' 'IT'; $assocReaderOk.Details = 'Reading: none; wlanapi=ok'
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -notin @('wifi', 'wifi-association') }) + @($wifiReaderFailedRow, $assocReaderFailed); Assert-Case 'netsh refused and the WLAN API reader failed: the aggregate rows without a GUID are the right shape' @(Test-ResultSet $r $cfg @{} $refusedFacts) $true ''
+# PR #55, round 10: both readers failing at every sample is the aggregate Unable-to-Check row with the reason refused.
+$assocBothFailed = New-Row $assocTemplate 'wifi-association' 'Wi-Fi association' 'ERROR' 'IT'; $assocBothFailed.Details = 'Reading: refused; wlanapi=addtype'
+$r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -notin @('wifi', 'wifi-association') }) + @($wifiReaderFailedRow, $assocBothFailed); Assert-Case 'netsh refused and the reader failed at every sample: the aggregate Unable-to-Check row with the reason refused' @(Test-ResultSet $r $cfg @{} $refusedFacts) $true ''
 # PR #55, round 5: the radio row is judged by its own read - a middle read that failed while the start and end reads answered
 # leaves a GUID-less radio row beside per-interface association rows, accepted; the same row written from a read that answered is not.
 $r = New-Fixture; $r.Results = @($r.Results | Where-Object { $_.Tag -notin @('wifi', 'wifi-association') }) + @($wifiReaderFailedRow, $assocRefused); Assert-Case 'netsh refused, the middle read failed, the start and end reads answered: the GUID-less radio row beside a per-interface association row' @(Test-ResultSet $r $cfg @{} $refusedFacts) $true ''
