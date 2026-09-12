@@ -741,15 +741,13 @@ function Test-ResultSet {
     # Where netsh was refused (backlog #62), the radio row is written from the WLAN service, one per connected interface,
     # and each names the interface's GUID on a details line; the wired-looking row a refused netsh used to produce names
     # none, and the count alone would not tell the two apart on a machine with one interface.
-    $assocRowsForWifi = @($rows | Where-Object { $_.Tag -eq 'wifi-association' })
-    $wifiReaderFailed = $false
-    foreach ($r in $assocRowsForWifi) {
-        $firstLine = [string](@(([string]$r.Details) -split "`r`n|`n")[0])
-        if ($firstLine -match '[:：]\s*(netsh|exception|none);\s*wlanapi=(addtype|open|enumerate|error)\s*$') { $wifiReaderFailed = $true }
-    }
-    if ([bool]$Machine.WlanRefused -and -not $wifiReaderFailed -and [bool]$itTags['wifi'] -and [int]$(if ($null -eq $Machine.WifiInterfaces) { 0 } else { $Machine.WifiInterfaces }) -ge 1) {
+    # Each radio row is judged by the read it was written from (PR #55, round 5): its WLAN-service line ends with that read's
+    # own token - wlanapi=ok, or the reader's reason code - and a row without a GUID is legitimate only where that read
+    # failed; the association rows' token, decided by another sample, cannot stand for the radio row's middle read.
+    if ([bool]$Machine.WlanRefused -and [bool]$itTags['wifi'] -and [int]$(if ($null -eq $Machine.WifiInterfaces) { 0 } else { $Machine.WifiInterfaces }) -ge 1) {
         foreach ($r in @($rows | Where-Object { $_.Tag -eq 'wifi' })) {
-            if (([string]$r.Details) -notmatch '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}') { $bad += ('wifi: a row without an interface GUID on a machine where netsh was refused ({0})' -f $r.Message) }
+            $ownReaderFailed = (([string]$r.Details) -match '(?m)wlanapi=(addtype|open|enumerate|error)\s*$')
+            if (-not $ownReaderFailed -and (([string]$r.Details) -notmatch '[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}')) { $bad += ('wifi: a row without an interface GUID on a machine where netsh was refused, written from a read that answered ({0})' -f $r.Message) }
         }
     }
     # The two adapter-statistics samples are taken independently: when exactly one of them fails on a machine where the

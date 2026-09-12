@@ -4226,9 +4226,12 @@ function Add-WifiRfResult {
     $views = @(Get-WifiInterfaceView -Sample $sample)
     $api = Get-PropertyValue $sample "Api" $null
     $apiLine = ""
+    # The line ends with this read's own outcome as a token (PR #55, round 5) - wlanapi=ok, or the reader's reason code -
+    # because the chain's oracle judges a radio row without an interface GUID by the read that row was written from,
+    # which the association rows' token, decided by another sample, cannot stand for.
     if ($null -eq $api) { $apiLine = "WLAN service: not read" }
-    elseif (-not [string]::IsNullOrWhiteSpace([string]$api.Error)) { $apiLine = ("WLAN service: not read - {0} {1}" -f $api.Error, $api.ErrorText).Trim() }
-    else { $apiLine = ("WLAN service: {0} wireless interface(s) listed" -f @($api.Interfaces).Count) }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$api.Error)) { $apiLine = (("WLAN service: not read - {0} {1}" -f $api.Error, $api.ErrorText).Trim() + ("; wlanapi={0}" -f $api.Error)) }
+    else { $apiLine = ("WLAN service: {0} wireless interface(s) listed; wlanapi=ok" -f @($api.Interfaces).Count) }
     $netshReason = Get-WifiNetshReasonText -Sample $sample
     if ([string]$sample.Error -eq "netsh" -and $views.Count -eq 0) {
         Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message "netsh.exe was not found; Wi-Fi radio data is unavailable." -Details $apiLine -Tag "wifi" -Scope "IT" | Out-Null

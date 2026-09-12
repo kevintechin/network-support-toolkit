@@ -703,6 +703,7 @@ $script:Results = New-Object System.Collections.ArrayList
 Add-WifiRfResult
 $rowsO4 = @($script:Results | Where-Object { $_.Tag -eq 'wifi' })
 Assert-Equal 'O: netsh missing and the service unreadable is the one Information row it always was, naming the service reason' ("{0}/{1}/{2}" -f $rowsO4.Count, $rowsO4[0].Status, ($rowsO4[0].Details -match 'addtype')) '1/INFO/True'
+Assert-Equal 'O r5: the radio rows written without an interface end their WLAN-service line with the read''s own token - the reason where it failed, ok where it answered' ("{0}/{1}" -f ($rowsO4[0].Details -match '(?m)wlanapi=addtype\s*$'), ($rowsO3[0].Details -match '(?m)wlanapi=ok\s*$')) 'True/True'
 Set-Item -Path function:Add-WifiAssociationSample -Value $originalKeeper
 $script:Results = New-Object System.Collections.ArrayList
 Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null

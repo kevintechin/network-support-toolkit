@@ -4092,9 +4092,11 @@ function Add-WifiRfResult {
     $views = @(Get-WifiInterfaceView -Sample $sample)
     $api = Get-PropertyValue $sample "Api" $null
     $apiLine = ""
+    # 這一行以這次讀取自己的結果做記號收尾（PR #55，第 5 回合）——wlanapi=ok，或讀取器的原因代碼——因為測試鏈的 oracle 判斷沒有
+    # 介面 GUID 的無線訊號列時，看的是寫出這一列的那次讀取，而存取點列的記號由另一個樣本決定，代表不了它。
     if ($null -eq $api) { $apiLine = "WLAN 服務：未讀取" }
-    elseif (-not [string]::IsNullOrWhiteSpace([string]$api.Error)) { $apiLine = ("WLAN 服務：未讀取——{0} {1}" -f $api.Error, $api.ErrorText).Trim() }
-    else { $apiLine = ("WLAN 服務：列出 {0} 個無線介面" -f @($api.Interfaces).Count) }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$api.Error)) { $apiLine = (("WLAN 服務：未讀取——{0} {1}" -f $api.Error, $api.ErrorText).Trim() + ("; wlanapi={0}" -f $api.Error)) }
+    else { $apiLine = ("WLAN 服務：列出 {0} 個無線介面; wlanapi=ok" -f @($api.Interfaces).Count) }
     $netshReason = Get-WifiNetshReasonText -Sample $sample
     if ([string]$sample.Error -eq "netsh" -and $views.Count -eq 0) {
         Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message "找不到 netsh.exe，無法取得 Wi-Fi 無線資料。" -Details $apiLine -Tag "wifi" -Scope "IT" | Out-Null
