@@ -1178,6 +1178,25 @@ $selSameAliasOtherSource = [pscustomobject]@{ Resolved = $true; Reason = ''; Sou
 $othersSameAlias = @([pscustomobject]@{ Address = '2606:2800::1'; Selection = $selSameAliasOtherSource })
 $sameAliasText = Format-RouteSelection -Before $null -After $selName -LookupAddress '93.184.216.34' -Others $othersSameAlias
 Assert-Equal 'route #59: one interface from two sources is not adapter ambiguity' ($sameAliasText -eq (Format-RouteSelection -Before $null -After $selName -LookupAddress '93.184.216.34' -Others $othersDiffer)) False
+# Round 6: the next hop is part of the reading and of the two-lookup comparison - and only of those: a name's several
+# addresses are still asked WHICH ADAPTER, so a hop that differs between them is not a routing difference.
+$selOnLink = [pscustomobject]@{ Resolved = $true; Reason = ''; SourceAddress = '192.168.1.106'; InterfaceAlias = 'Wi-Fi'; NextHop = '0.0.0.0'; OnLink = $true }
+$selViaRouter = [pscustomobject]@{ Resolved = $true; Reason = ''; SourceAddress = '192.168.1.106'; InterfaceAlias = 'Wi-Fi'; NextHop = '192.168.1.1'; OnLink = $false }
+$onLinkText = Get-RouteSelectionText $selOnLink
+$viaRouterText = Get-RouteSelectionText $selViaRouter
+Assert-Equal 'route #60: a route through a router names its next hop' ($viaRouterText -match '192\.168\.1\.1$') True
+Assert-Equal 'route #60: an on-link route names none, and reads differently' (($onLinkText -match '192\.168\.1\.1$') -or ($onLinkText -eq $viaRouterText)) False
+Assert-Equal 'route #60: both read differently from a selection that carries no hop' (($onLinkText -eq (Get-RouteSelectionText $selA)) -or ($viaRouterText -eq (Get-RouteSelectionText $selA))) False
+Assert-Equal 'route #60: without the hop, both read as the adapter alone' (((Get-RouteSelectionText $selOnLink -NoHop) -eq (Get-RouteSelectionText $selA)) -and ((Get-RouteSelectionText $selViaRouter -NoHop) -eq (Get-RouteSelectionText $selA))) True
+$onLinkSameText = Format-RouteSelection -Before $selOnLink -After $selOnLink
+$hopChangedText = Format-RouteSelection -Before $selOnLink -After $selViaRouter
+Assert-Equal 'route #60: an unchanged on-link pair reads as one selection' ($onLinkSameText.Contains($onLinkText) -and -not $onLinkSameText.Contains($viaRouterText)) True
+Assert-Equal 'route #60: a next hop that changed between the lookups is a changed selection, with both hops named' ($hopChangedText.Contains($onLinkText) -and $hopChangedText.Contains($viaRouterText) -and ($hopChangedText -ne $onLinkSameText)) True
+$othersHopDiffers = @([pscustomobject]@{ Address = '23.39.61.99'; Selection = $selViaRouter })
+$othersHopSame = @([pscustomobject]@{ Address = '23.39.61.99'; Selection = $selOnLink })
+$twoHopsText = Format-RouteSelection -Before $null -After $selOnLink -LookupAddress '93.184.216.34' -Others $othersHopDiffers
+Assert-Equal 'route #60: two addresses of a name through one adapter by different hops still agree on the adapter' ($twoHopsText -eq (Format-RouteSelection -Before $null -After $selOnLink -LookupAddress '93.184.216.34' -Others $othersHopSame)) True
+Assert-Equal 'route #60: and are not reported as a routing difference' ($twoHopsText -eq (Format-RouteSelection -Before $null -After $selOnLink -LookupAddress '93.184.216.34' -Others $othersDiffer)) False
 Assert-Equal 'route #59: it names the one interface they share' ($sameAliasText -match 'Wi-Fi') True
 Assert-Equal 'route #59: it still names both source addresses' (($sameAliasText -match 'fe80::1') -and ($sameAliasText -match '192\.168\.1\.106')) True
 Assert-Equal 'route #59: two interfaces are still adapter ambiguity' ($differText -match 'Ethernet') True
@@ -1556,10 +1575,10 @@ Assert-Equal '#60 rung: a gateway reached through another adapter''s selection d
 Assert-Equal '#60 rung: but keeps its tag, because the gateway is still what it measured' $rowGatewayElsewhere.Tag 'ping-gateway'
 Assert-Equal '#60 rung: and its line names no address it did not have' ((Get-DetailLineAt $rowGatewayElsewhere 2) -match '\d+\.\d+\.\d+\.\d+') False
 Assert-Equal '#60 rung: still one line longer than a far-end row' ((Get-DetailLineCount $rowGatewayElsewhere) - (Get-DetailLineCount $rowFarEnd)) 1
-Assert-Equal '#60 path: an attested near-end row names the adapter its lookups agreed on' $rowAttested.Path 'Ethernet'
+Assert-Equal '#60 path: an attested near-end row names the adapter it claimed its rung on' $rowAttested.Path 'Ethernet'
 Assert-Equal '#60 path: so does a gateway row' $rowGatewayPass.Path 'Wi-Fi'
-Assert-Equal '#60 path: and a far-end row whose lookups agreed' $rowFarEnd.Path 'Wi-Fi'
-Assert-Equal '#60 path: a near-end row off its subnet still says which adapter it was selected for' $rowElsewhere.Path 'Wi-Fi'
+Assert-Equal '#60 path: a far-end row claims no rung, so it carries none' $rowFarEnd.Path ''
+Assert-Equal '#60 path: a near-end row off its subnet claimed nothing, so it carries none' $rowElsewhere.Path ''
 Assert-Equal '#60 path: a selection that changed leaves it empty' $rowChanged.Path ''
 Assert-Equal '#60 path: an unavailable lookup leaves it empty' $rowUnresolved.Path ''
 Assert-Equal '#60 path: the second pass rewrites it with the tag' $provisionalNear.Path ''
@@ -1573,15 +1592,19 @@ $viaRouter = [pscustomobject]@{
 }
 $rowViaRouter = Get-NearEndRow $viaRouter.Selection $viaRouter @('203.0.113.0/24')
 Assert-Equal '#60 rung: a route through a router, same source and interface, does not claim the rung' $rowViaRouter.Tag 'ping-target'
-Assert-Equal '#60 rung: though its lookups agreed, so the row still names the adapter' $rowViaRouter.Path 'Ethernet'
+Assert-Equal '#60 rung: and though its lookups agreed, it names no path, so the summary cannot pair it' $rowViaRouter.Path ''
+Assert-Equal '#60 rung: its route line reads the hop it went through' ((Get-DetailLineAt $rowViaRouter 1) -match '203\.0\.113\.1(?!\d)') True
 $rowHopChanged = Get-NearEndRow $nearRoute.Selection $viaRouter @('203.0.113.0/24')
 Assert-Equal '#60 rung: a next hop that changed between the lookups is a changed selection' $rowHopChanged.Path ''
+Assert-Equal '#60 rung: and its route line says so, rather than reading as unchanged beside a refused rung' (((Get-DetailLineAt $rowHopChanged 1) -eq (Get-DetailLineAt $rowAttested 1)) -or -not ((Get-DetailLineAt $rowHopChanged 1) -match '203\.0\.113\.1(?!\d)')) False
 $script:TcpRows = New-Object System.Collections.ArrayList
 Add-PingTargetResult -Name 'Default Gateway' -Target '203.0.113.9' -ConfiguredAddress 'AUTO_GATEWAY' -Required $true -Measurement (New-PingFixture 4 4 5) -RouteBefore $viaRouter.Selection -RouteAfter $viaRouter -TargetIsAddress $true -TimeoutMs 1200 -RungSubnets @('203.0.113.0/24') | Out-Null
 $rowGatewayViaRouter = @($script:TcpRows)[0]
 Assert-Equal '#60 rung: a gateway reached through a router does not claim its rung' ((Get-DetailLineAt $rowGatewayViaRouter 2) -eq (Get-DetailLineAt $rowGatewayPass 2)) False
 Assert-Equal '#60 rung: and keeps its tag' $rowGatewayViaRouter.Tag 'ping-gateway'
 Assert-Equal '#60 rung: the attestation reads the on-link flag' ((Get-FunctionBody 'Add-PingTargetResult') -match '\$RouteBefore\.OnLink -eq \$true') True
+Assert-Equal '#60 rung: a gateway reached through a router carries no path either' $rowGatewayViaRouter.Path ''
+Assert-Equal '#60 path: the field reads the attestation, not the agreement' ((Get-FunctionBody 'Add-PingTargetResult') -match 'if \(\$rungAttested\) \{ \$path = ') True
 Assert-Equal '#60 placement: the subnet the target fell in is reported' (Test-NearEndTargetPlacement -Address '192.0.2.20' -PrimaryAdapters $nearAdapters).Subnet '192.0.2.10/24'
 Assert-Equal '#60 placement: and is empty where nothing placed it' (Test-NearEndTargetPlacement -Address '198.51.100.5' -PrimaryAdapters $nearAdapters).Subnet ''
 # The near-end entry is built in the run and never read from the ping list, so a list entry cannot promote itself

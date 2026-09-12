@@ -2124,12 +2124,23 @@ function Get-RouteSelection {
 }
 
 function Get-RouteSelectionText {
-    param([object]$Selection)
+    param([object]$Selection, [switch]$NoHop)
 
     # One side of the pair, as the row says it. Every unavailable case names its own reason, because "unavailable"
     # without one is the kind of field a reader has to guess at.
     if ($null -eq $Selection) { return "unavailable (the route selection was not read)" }
-    if ($Selection.Resolved) { return ("source {0} via {1}" -f $Selection.SourceAddress, $Selection.InterfaceAlias) }
+    if ($Selection.Resolved) {
+        $text = ("source {0} via {1}" -f $Selection.SourceAddress, $Selection.InterfaceAlias)
+        # The next hop is the part of a selection that decides whether a rung can be claimed (PR #51, round 6): on-link
+        # is the connected network, anything else is a router the probes crossed. So the reading names it, and a next
+        # hop that changed between the two lookups reads as a change - which is what the rung line's refusal rests on.
+        # -NoHop is the comparison that asks WHICH ADAPTER and nothing more; a shape without a hop reads as before.
+        $nextHop = ConvertTo-SafeString $Selection.NextHop
+        if (-not $NoHop -and -not [string]::IsNullOrWhiteSpace($nextHop)) {
+            if ($Selection.OnLink -eq $true) { $text += ", on-link" } else { $text += (" through {0}" -f $nextHop) }
+        }
+        return $text
+    }
     switch ([string]$Selection.Reason) {
         "cmdlet"     { return "unavailable (Find-NetRoute is not available on this system)" }
         "noroute"    { return "unavailable (the route table returned no route for this target)" }
@@ -2167,6 +2178,7 @@ function Format-RouteSelection {
     # say why, once.
     $beforeText = Get-RouteSelectionText $Before
     $afterText = Get-RouteSelectionText $After
+    $afterKey = Get-RouteSelectionText $After -NoHop
 
     # A target given as a name has no address to ask the route table about until something replies, so no pair can be
     # taken and the row says so rather than implying one (PR #45, round 1). The tool does not resolve the name itself:
@@ -2184,7 +2196,7 @@ function Format-RouteSelection {
         foreach ($other in @($Others)) {
             $otherText = Get-RouteSelectionText $other.Selection
             $eachText += ("{0}: {1}" -f $other.Address, $otherText)
-            if ($otherText -ne $afterText) { $agree = $false }
+            if ((Get-RouteSelectionText $other.Selection -NoHop) -ne $afterKey) { $agree = $false }
             if ($null -eq $other.Selection -or -not $other.Selection.Resolved) { $allResolved = $false }
             elseif ($primaryResolved -and $other.Selection.InterfaceAlias -ne $After.InterfaceAlias) { $sameInterface = $false }
         }
@@ -2222,7 +2234,8 @@ function Format-RouteSelection {
     }
 
     if ($null -ne $Before -and $null -ne $After -and $Before.Resolved -and $After.Resolved -and
-        $Before.SourceAddress -eq $After.SourceAddress -and $Before.InterfaceAlias -eq $After.InterfaceAlias) {
+        $Before.SourceAddress -eq $After.SourceAddress -and $Before.InterfaceAlias -eq $After.InterfaceAlias -and
+        [string]$Before.NextHop -eq [string]$After.NextHop) {
         return ("Route selection: {0} - the route the table chooses for this target, looked up before and after the probes. The probes are not bound to it, so this is what was selected and not the path the replies took." -f $beforeText)
     }
 
@@ -2680,14 +2693,13 @@ function Add-PingTargetResult {
     # the selection changed, or the lookup was unavailable, the row keeps its title and its measurement and says why
     # it cannot claim the rung; a near-end row is then tagged as an ordinary ping target, so that the summary never
     # reads it as a witness for a path it may not have crossed, while a gateway row keeps its tag, because the gateway
-    # is still the target it measured. Path - the interface the two lookups agreed on - goes on every ping row whose
-    # lookups agreed, and is what the summary pairs a near-end row with a failed gateway row by. The tag assignment
-    # stays a literal for backlog #33's document-fact step.
+    # is still the target it measured. Path - the adapter the rung was claimed on - is what the summary pairs a near-end
+    # row with a failed gateway row by; round 6 moved it from "the lookups agreed" to "the rung was claimed", because
+    # a selection that agreed can still run through a router. The tag assignment stays a literal for backlog #33's
+    # document-fact step.
     $selectionAgreed = ($null -ne $RouteBefore -and $null -ne $RouteAfter.Selection -and $RouteBefore.Resolved -and $RouteAfter.Selection.Resolved -and
         $RouteBefore.SourceAddress -eq $RouteAfter.Selection.SourceAddress -and $RouteBefore.InterfaceAlias -eq $RouteAfter.Selection.InterfaceAlias -and
         [string]$RouteBefore.NextHop -eq [string]$RouteAfter.Selection.NextHop)
-    $path = ""
-    if ($selectionAgreed) { $path = [string]$RouteBefore.InterfaceAlias }
     $rungAttested = $false
     # On-link as well (PR #51, round 5): a next hop is a router, and a probe through a router has not measured the
     # local path however local its target is.
@@ -2696,6 +2708,11 @@ function Add-PingTargetResult {
             if (-not [string]::IsNullOrWhiteSpace([string]$rungSubnet) -and (Test-IPv4InCidr -IpAddress $RouteBefore.SourceAddress -Cidr ([string]$rungSubnet))) { $rungAttested = $true; break }
         }
     }
+    # Path is the adapter whose local path this row is attested to have crossed (PR #51, round 6): set only where the
+    # rung was claimed, so that the one field the summary pairs by means what the inference needs. A gateway row whose
+    # lookups agreed but ran through a router, and a far-end row, which claims no rung, carry none.
+    $path = ""
+    if ($rungAttested) { $path = [string]$RouteBefore.InterfaceAlias }
     $pingTag = "ping-target"
     if ($ConfiguredAddress -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
     if ($NearEnd -and $rungAttested) { $pingTag = "ping-near-end" }

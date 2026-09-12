@@ -2076,12 +2076,22 @@ function Get-RouteSelection {
 }
 
 function Get-RouteSelectionText {
-    param([object]$Selection)
+    param([object]$Selection, [switch]$NoHop)
 
     # 這一對查詢的其中一側，照這一列會說出來的樣子。每一種「無法取得」都自己說明原因，因為沒有原因的「無法取得」
     # 只會讓讀的人去猜。
     if ($null -eq $Selection) { return "無法取得（沒有讀取路由選擇）" }
-    if ($Selection.Resolved) { return ("來源 {0}，經由 {1}" -f $Selection.SourceAddress, $Selection.InterfaceAlias) }
+    if ($Selection.Resolved) {
+        $text = ("來源 {0}，經由 {1}" -f $Selection.SourceAddress, $Selection.InterfaceAlias)
+        # 下一跳是路由選擇裡決定能不能主張一階的那一部分（PR #51 第 6 輪）：直連就是連接的網路，其他都是探測經過的路由器。
+        # 所以讀法把它寫出來，而兩次查詢之間下一跳變了就讀成改變——階梯句的拒絕就是建立在這上面。
+        # -NoHop 是只問「哪一張網卡」的比較；沒有下一跳的形狀照舊讀。
+        $nextHop = ConvertTo-SafeString $Selection.NextHop
+        if (-not $NoHop -and -not [string]::IsNullOrWhiteSpace($nextHop)) {
+            if ($Selection.OnLink -eq $true) { $text += "，直連" } else { $text += ("，下一跳 {0}" -f $nextHop) }
+        }
+        return $text
+    }
     switch ([string]$Selection.Reason) {
         "cmdlet"     { return "無法取得（這個系統沒有 Find-NetRoute）" }
         "noroute"    { return "無法取得（路由表對這個目標沒有回傳路由）" }
@@ -2118,6 +2128,7 @@ function Format-RouteSelection {
     # 兩次都失敗而且原因相同時，原因只說一次。
     $beforeText = Get-RouteSelectionText $Before
     $afterText = Get-RouteSelectionText $After
+    $afterKey = Get-RouteSelectionText $After -NoHop
 
     # 以名稱給定的目標，在有回應之前沒有任何位址可以拿去問路由表，所以根本組不成一對，
     # 這一列就直接說出來而不是暗示有一對（PR #45 第 1 輪）。工具不自己去解析名稱：那會讓 ping
@@ -2134,7 +2145,7 @@ function Format-RouteSelection {
         foreach ($other in @($Others)) {
             $otherText = Get-RouteSelectionText $other.Selection
             $eachText += ("{0}：{1}" -f $other.Address, $otherText)
-            if ($otherText -ne $afterText) { $agree = $false }
+            if ((Get-RouteSelectionText $other.Selection -NoHop) -ne $afterKey) { $agree = $false }
             if ($null -eq $other.Selection -or -not $other.Selection.Resolved) { $allResolved = $false }
             elseif ($primaryResolved -and $other.Selection.InterfaceAlias -ne $After.InterfaceAlias) { $sameInterface = $false }
         }
@@ -2170,7 +2181,8 @@ function Format-RouteSelection {
     }
 
     if ($null -ne $Before -and $null -ne $After -and $Before.Resolved -and $After.Resolved -and
-        $Before.SourceAddress -eq $After.SourceAddress -and $Before.InterfaceAlias -eq $After.InterfaceAlias) {
+        $Before.SourceAddress -eq $After.SourceAddress -and $Before.InterfaceAlias -eq $After.InterfaceAlias -and
+        [string]$Before.NextHop -eq [string]$After.NextHop) {
         return ("路由選擇：{0} —— 這是路由表為這個目標選出的路由，在探測前後各查一次。探測本身沒有綁定它，所以這是「被選出的路由」，不是回應實際走過的路徑。" -f $beforeText)
     }
 
@@ -2605,13 +2617,11 @@ function Add-PingTargetResult {
     # 路由表在探測前後都選了這一階所屬子網段之一上的來源位址——近端主機自己的子網段，或提供這個閘道的那些網卡的子網段，
     # 也就是連接路由，接在那個子網段上的那張網卡——這一列才主張這一階。若不是、或選擇變了、或查詢無法取得，這一列保留
     # 標題與量測並說明它為什麼不能主張這一階；近端列此時標成一般的 ping 目標，讓摘要永遠不會把它當成一條它可能沒走過的
-    # 路徑的證人，閘道列則保留標籤，因為閘道仍然是它量測的目標。Path——兩次查詢一致的那張網卡——寫在每一列查詢一致的
-    # ping 列上，摘要就是靠它把近端列和失敗的閘道列配對。標籤的指派維持常值，這是 backlog #33 文件事實步驟的要求。
+    # 路徑的證人，閘道列則保留標籤，因為閘道仍然是它量測的目標。Path——主張了那一階時的那張網卡——是摘要用來把近端列和失敗的閘道列配對的欄位；
+    # 第 6 輪把它從「兩次查詢一致」改成「主張了那一階」，因為一致的選擇仍可能經過路由器。標籤的指派維持常值，這是 backlog #33 文件事實步驟的要求。
     $selectionAgreed = ($null -ne $RouteBefore -and $null -ne $RouteAfter.Selection -and $RouteBefore.Resolved -and $RouteAfter.Selection.Resolved -and
         $RouteBefore.SourceAddress -eq $RouteAfter.Selection.SourceAddress -and $RouteBefore.InterfaceAlias -eq $RouteAfter.Selection.InterfaceAlias -and
         [string]$RouteBefore.NextHop -eq [string]$RouteAfter.Selection.NextHop)
-    $path = ""
-    if ($selectionAgreed) { $path = [string]$RouteBefore.InterfaceAlias }
     $rungAttested = $false
     # On-link as well (PR #51, round 5): a next hop is a router, and a probe through a router has not measured the
     # local path however local its target is.
@@ -2620,6 +2630,10 @@ function Add-PingTargetResult {
             if (-not [string]::IsNullOrWhiteSpace([string]$rungSubnet) -and (Test-IPv4InCidr -IpAddress $RouteBefore.SourceAddress -Cidr ([string]$rungSubnet))) { $rungAttested = $true; break }
         }
     }
+    # Path 是這一列經證明走過本地路徑的那張網卡（PR #51 第 6 輪）：只在主張了那一階時才寫，讓摘要用來配對的那個欄位
+    # 就是推論需要的意思。查詢一致卻經過路由器的閘道列，以及從不主張任何一階的遠端列，都不帶它。
+    $path = ""
+    if ($rungAttested) { $path = [string]$RouteBefore.InterfaceAlias }
     $pingTag = "ping-target"
     if ($ConfiguredAddress -eq "AUTO_GATEWAY") { $pingTag = "ping-gateway" }
     if ($NearEnd -and $rungAttested) { $pingTag = "ping-near-end" }
