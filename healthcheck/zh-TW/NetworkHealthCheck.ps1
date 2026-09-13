@@ -5415,7 +5415,8 @@ function Start-TcpIntervalSampling {
     param(
         [int]$IntervalSeconds,
         [datetime]$Since,
-        [switch]$Extension
+        [switch]$Extension,
+        [object]$Boundary
     )
 
     # 打開窗內讀取：從基準時間戳開始，延長取樣窗（backlog #51）時再從延長的起點開始。被失敗讀取停掉的取樣在延長期間
@@ -5435,6 +5436,11 @@ function Start-TcpIntervalSampling {
     $state = $script:TcpIntervalSampling
     $state.Extension = [bool]$Extension
     $state.LastRead = $Since
+    # PR #56 第 2 輪：延長取樣窗時，關閉第一個窗的那次讀數是表裡的一個點，這樣第一個窗與延長段的各段才分得開；它不花任何
+    # 成本——那是量測自己的讀取——而且不論取樣是否還開著都保留。
+    if ($null -ne $Boundary -and $null -ne $Boundary.Counters) {
+        [void]$state.Reads.Add([pscustomobject][ordered]@{ Timestamp = $Boundary.Timestamp; Counters = $Boundary.Counters; FailedAttempts = @(); Extension = $false; Boundary = $true })
+    }
     if ($state.IntervalSeconds -le 0 -or $null -ne $state.StoppedAt) {
         $state.Active = $false
         return
@@ -6125,6 +6131,9 @@ function Wait-ForMinimumTcpSample {
         $remainingSeconds = [int][math]::Ceiling($remainingMs / 1000.0)
         Set-UiProgress -Percent $ProgressPercent -Text ("TCP 重傳取樣中，尚餘約 $remainingSeconds 秒")
         Start-Sleep -Milliseconds ([math]::Min(1000, $remainingMs))
+        # PR #56 第 2 輪：在最後一次睡眠時到期的讀取會在最短時間過後才跑，把整個成本疊到執行上；所以先再檢查一次
+        # 期限，接著的結束讀取就會關窗。
+        if (((Get-Date) - $StartTime).TotalSeconds -ge $MinimumSeconds) { return }
         Invoke-TcpIntervalReadIfDue
         if ($script:GuiAvailable) {
             [System.Windows.Forms.Application]::DoEvents()
@@ -6994,7 +7003,7 @@ function Run-AllChecks {
     # 做的，所以第二次讀取失敗絕不會弄丟第一次已經讀到的結果。
     if (Test-TcpSampleNeedsExtension -Before $tcpBaseline -After $tcpAfter) {
         $tcpExtended = Invoke-CheckStep -Category "TCP 重傳" -Name "樣本太小無法評分時延長 TCP 取樣窗" -Progress 90 -Weightless -Action {
-            Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since (Get-Date) -Extension
+            Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since (Get-Date) -Extension -Boundary $tcpAfter
             Wait-ForMinimumTcpSample -StartTime (Get-Date) -MinimumSeconds $minimumSampleSeconds -ProgressPercent 90
             Stop-TcpIntervalSampling
             return (Merge-TcpEndingSnapshot -Original $tcpAfter -Extended (Get-TcpCounterSnapshot))

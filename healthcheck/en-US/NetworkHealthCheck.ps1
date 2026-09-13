@@ -5619,7 +5619,8 @@ function Start-TcpIntervalSampling {
     param(
         [int]$IntervalSeconds,
         [datetime]$Since,
-        [switch]$Extension
+        [switch]$Extension,
+        [object]$Boundary
     )
 
     # Opens the window for the reads inside it: from the baseline stamp, and again from the start of the extension
@@ -5640,6 +5641,12 @@ function Start-TcpIntervalSampling {
     $state = $script:TcpIntervalSampling
     $state.Extension = [bool]$Extension
     $state.LastRead = $Since
+    # PR #56, round 2: the reading that closed the first window is a point of the table when the window is extended,
+    # so the intervals of the first window and of the extension are told apart; it costs nothing, being the
+    # measurement's own read, and it is kept whether or not the sampling is still open.
+    if ($null -ne $Boundary -and $null -ne $Boundary.Counters) {
+        [void]$state.Reads.Add([pscustomobject][ordered]@{ Timestamp = $Boundary.Timestamp; Counters = $Boundary.Counters; FailedAttempts = @(); Extension = $false; Boundary = $true })
+    }
     if ($state.IntervalSeconds -le 0 -or $null -ne $state.StoppedAt) {
         $state.Active = $false
         return
@@ -6358,6 +6365,9 @@ function Wait-ForMinimumTcpSample {
         $remainingSeconds = [int][math]::Ceiling($remainingMs / 1000.0)
         Set-UiProgress -Percent $ProgressPercent -Text ("Sampling TCP retransmissions, approximately $remainingSeconds second(s) remaining")
         Start-Sleep -Milliseconds ([math]::Min(1000, $remainingMs))
+        # PR #56, round 2: a read due on the last sleep would run after the minimum had passed and add its whole cost
+        # to the run; the deadline is checked again first, and the ending read that follows closes the window.
+        if (((Get-Date) - $StartTime).TotalSeconds -ge $MinimumSeconds) { return }
         Invoke-TcpIntervalReadIfDue
         if ($script:GuiAvailable) {
             [System.Windows.Forms.Application]::DoEvents()
@@ -7254,7 +7264,7 @@ function Run-AllChecks {
     # read that fails can never cost a reading the first one already had.
     if (Test-TcpSampleNeedsExtension -Before $tcpBaseline -After $tcpAfter) {
         $tcpExtended = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Extend the TCP Sample Where It Was Too Small to Rate" -Progress 90 -Weightless -Action {
-            Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since (Get-Date) -Extension
+            Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since (Get-Date) -Extension -Boundary $tcpAfter
             Wait-ForMinimumTcpSample -StartTime (Get-Date) -MinimumSeconds $minimumSampleSeconds -ProgressPercent 90
             Stop-TcpIntervalSampling
             return (Merge-TcpEndingSnapshot -Original $tcpAfter -Extended (Get-TcpCounterSnapshot))

@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Compare-WifiRetryCounters', 'Get-WifiRetrySnapshot', 'Get-WifiInterfaceStateText', 'Get-Win32ErrorText', 'Get-TcpInitialRto', 'New-TcpConnectSample', 'Get-TcpConnectSampleText', 'Invoke-TcpConnectionTest', 'Get-LatencySpreadText', 'Get-WifiAssociationSample', 'Add-WifiAssociationSample', 'Compare-WifiAssociation', 'Get-MacRelation', 'Get-AccessPointGatewayText', 'Get-AccessPointGatewayEvidence', 'Update-AccessPointGatewayHints', 'Get-WlanApiType', 'Get-WlanInterfaceStates', 'Get-WifiInterfaceView', 'Get-WifiNetshReasonText', 'Get-WifiRadioSwitchText', 'Get-WifiApiSummaryText', 'Get-LocationConsentState', 'Test-WifiSampleReadable', 'Get-RadioSwitchState', 'Get-TcpIntervalSeconds', 'Start-TcpIntervalSampling', 'Stop-TcpIntervalSampling', 'Read-TcpIntervalCounters', 'Invoke-TcpIntervalReadIfDue', 'Get-TcpIntervalTable', 'Get-TcpDistributionLines', 'Get-TcpIntervalStopLine'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Compare-WifiRetryCounters', 'Get-WifiRetrySnapshot', 'Get-WifiInterfaceStateText', 'Get-Win32ErrorText', 'Get-TcpInitialRto', 'New-TcpConnectSample', 'Get-TcpConnectSampleText', 'Invoke-TcpConnectionTest', 'Get-LatencySpreadText', 'Get-WifiAssociationSample', 'Add-WifiAssociationSample', 'Compare-WifiAssociation', 'Get-MacRelation', 'Get-AccessPointGatewayText', 'Get-AccessPointGatewayEvidence', 'Update-AccessPointGatewayHints', 'Get-WlanApiType', 'Get-WlanInterfaceStates', 'Get-WifiInterfaceView', 'Get-WifiNetshReasonText', 'Get-WifiRadioSwitchText', 'Get-WifiApiSummaryText', 'Get-LocationConsentState', 'Test-WifiSampleReadable', 'Get-RadioSwitchState', 'Get-TcpIntervalSeconds', 'Start-TcpIntervalSampling', 'Stop-TcpIntervalSampling', 'Read-TcpIntervalCounters', 'Invoke-TcpIntervalReadIfDue', 'Get-TcpIntervalTable', 'Get-TcpDistributionLines', 'Get-TcpIntervalStopLine', 'Wait-ForMinimumTcpSample'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -2560,17 +2560,51 @@ $script:TcpIntervalSampling = $null
 # the state cleared with the results; and no fourth snapshot call - the read inside the window is its own reader.
 Assert-Equal '#65 ast: the step wrapper runs the due-check once, after its try and catch' ((Get-FunctionBody 'Invoke-CheckStep') -match '(?s)catch \{.*\}\s*(#[^\r\n]*\s*)*Invoke-TcpIntervalReadIfDue\s*return \$result') True
 Assert-Equal '#65 ast: and only once' (([regex]::Matches((Get-FunctionBody 'Invoke-CheckStep'), 'Invoke-TcpIntervalReadIfDue')).Count) 1
-Assert-Equal '#65 ast: the wait loop runs it after every sleep' ((Get-FunctionBody 'Wait-ForMinimumTcpSample') -match 'Start-Sleep -Milliseconds[^\r\n]*\s*Invoke-TcpIntervalReadIfDue') True
+Assert-Equal '#65 ast: the wait loop runs it after every sleep - behind the deadline recheck since round 2' ((Get-FunctionBody 'Wait-ForMinimumTcpSample') -match 'Start-Sleep -Milliseconds[^\r\n]*\s*(#[^\r\n]*\s*)*if [^\r\n]*\s*Invoke-TcpIntervalReadIfDue') True
 Assert-Equal '#65 ast: and the wait is clock-based, so a read inside it lengthens nothing' ((Get-FunctionBody 'Wait-ForMinimumTcpSample') -match 'while \(\$true\)') True
 Assert-Equal '#65 ast: the spread probes run it after every slice' ((Get-FunctionBody 'Invoke-PingMeasurement') -match 'Start-Sleep -Milliseconds \$sliceMs \}\s*Invoke-TcpIntervalReadIfDue') True
 $runBody65 = Get-FunctionBody 'Run-AllChecks'
 Assert-Equal '#65 ast: the run clears the state with the results' ($runBody65 -match '\$script:TcpIntervalSampling = \$null') True
 Assert-Equal '#65 ast: opens the reads at the baseline stamp' ($runBody65 -match '\$tcpSampleStart = Get-Date\s*(#[^\r\n]*\s*)*Start-TcpIntervalSampling -IntervalSeconds \(Get-TcpIntervalSeconds\) -Since \$tcpSampleStart') True
 Assert-Equal '#65 ast: closes them before the ending read' ($runBody65 -match 'Stop-TcpIntervalSampling\s*return \(Get-TcpCounterSnapshot\)') True
-Assert-Equal '#65 ast: reopens them for the extension and closes them before its read' ($runBody65 -match '(?s)Start-TcpIntervalSampling -IntervalSeconds \(Get-TcpIntervalSeconds\) -Since \(Get-Date\) -Extension\s*Wait-ForMinimumTcpSample[^\r\n]*\s*Stop-TcpIntervalSampling\s*return \(Merge-TcpEndingSnapshot') True
+Assert-Equal '#65 ast: reopens them for the extension, with the first ending snapshot as the boundary point, and closes them before its read' ($runBody65 -match '(?s)Start-TcpIntervalSampling -IntervalSeconds \(Get-TcpIntervalSeconds\) -Since \(Get-Date\) -Extension -Boundary \$tcpAfter\s*Wait-ForMinimumTcpSample[^\r\n]*\s*Stop-TcpIntervalSampling\s*return \(Merge-TcpEndingSnapshot') True
 Assert-Equal '#65 ast: the configuration check names the key' ((Get-FunctionBody 'Test-ConfigurationSemantics') -match 'RetransmissionIntervalSeconds') True
 Assert-Equal '#65 ast: the run options carry it for the profile' ((Get-FunctionBody 'Set-RunOptions') -match 'IntervalSeconds = Get-TcpIntervalSeconds') True
 Assert-Equal '#65 ast: no snapshot call was added' (@($scriptAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-TcpCounterSnapshot' }, $true)).Count) 3
+
+
+# PR #56, round 2. (a) A read due on the last sleep of the wait would run after the minimum had passed and add its whole
+# cost to the run: the wait is loaded with the progress writer stubbed, and the clock decides, so these take a few seconds.
+function Set-UiProgress { param([int]$Percent, [string]$Text) }
+$script:GuiAvailable = $false
+$script:TcpIntervalSampling = $null
+Reset-CimStub @{}
+Start-TcpIntervalSampling -IntervalSeconds 1 -Since (Get-Date).AddSeconds(-5)
+Wait-ForMinimumTcpSample -StartTime (Get-Date).AddSeconds(-5) -MinimumSeconds 1
+Assert-Equal '#65 wait r2: a wait already past its minimum reads nothing' (@($script:TcpIntervalSampling.Reads).Count) 0
+Wait-ForMinimumTcpSample -StartTime (Get-Date).AddSeconds(-0.8) -MinimumSeconds 1
+Assert-Equal '#65 wait r2: a read due on the last sleep is not taken, because the minimum had passed' (@($script:TcpIntervalSampling.Reads).Count) 0
+$waitStarted65 = Get-Date
+Wait-ForMinimumTcpSample -StartTime (Get-Date) -MinimumSeconds 3
+$waited65 = ((Get-Date) - $waitStarted65).TotalSeconds
+Assert-Equal '#65 wait r2: with time left the reads are taken inside the wait, and the wait still ends at its minimum' ("{0}/{1}" -f (@($script:TcpIntervalSampling.Reads).Count -ge 1), (($waited65 -ge 3) -and ($waited65 -lt 4.5))) 'True/True'
+Assert-Equal '#65 wait r2: the deadline is checked between the sleep and the due-check, off the AST' ((Get-FunctionBody 'Wait-ForMinimumTcpSample') -match 'Start-Sleep -Milliseconds[^\r\n]*\s*(#[^\r\n]*\s*)*if \(\(\(Get-Date\) - \$StartTime\)\.TotalSeconds -ge \$MinimumSeconds\) \{ return \}\s*Invoke-TcpIntervalReadIfDue') True
+# (b) The reading that closed the first window stays a point of the table when the window is extended, so the intervals
+# of the first window and of the extension are told apart; a protocol the extension did not close, whose ending stamp is
+# that very reading, does not count it twice.
+$script:TcpIntervalSampling = $null
+$boundary65 = [pscustomobject]@{ Timestamp = $t65.AddSeconds(8.9); Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65.AddSeconds(8.8) 100300 1004); 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(8.9) 5000 0) }; Errors = @(); FailedAttempts = @(); WarmUpFailures = @() }
+Start-TcpIntervalSampling -IntervalSeconds 2 -Since (Get-Date) -Extension -Boundary $boundary65
+Assert-Equal '#65 boundary r2: reopening for the extension adds the first ending reading as a point, marked as one' ("{0}/{1}/{2}" -f @($script:TcpIntervalSampling.Reads).Count, [bool]@($script:TcpIntervalSampling.Reads)[0].Boundary, @($script:TcpIntervalSampling.Reads)[0].Counters.Count) '1/True/2'
+$script:TcpIntervalSampling = $null
+Start-TcpIntervalSampling -IntervalSeconds 2 -Since (Get-Date)
+Assert-Equal '#65 boundary r2: the first opening adds no point' (@($script:TcpIntervalSampling.Reads).Count) 0
+$extReads65 = @((New-Read65 2.1 100120 1000), [pscustomobject]@{ Timestamp = $t65.AddSeconds(8.9); Counters = $boundary65.Counters; FailedAttempts = @(); Extension = $false; Boundary = $true }, [pscustomobject]@{ Timestamp = $t65.AddSeconds(10.5); Counters = @{}; FailedAttempts = $extFailed; Extension = $true })
+$extV4Table65 = @(Get-TcpIntervalTable -Protocol 'TCPv4' -Start (New-CounterFixture 'TCPv4' $t65 100000 1000) -End (New-CounterFixture 'TCPv4' $t65.AddSeconds(18.8) 100400 1006) -Reads $extReads65)
+Assert-Equal '#65 boundary r2: the extended window is told apart from the first - three intervals, the boundary at 8.8' ("{0}/{1}" -f $extV4Table65.Count, $extV4Table65[1].ToSeconds) '3/8.8'
+Assert-Equal '#65 boundary r2: with the first window''s and the extension''s retransmissions apart' ((@($extV4Table65 | ForEach-Object { $_.Retransmitted })) -join ',') '0,4,2'
+Assert-Equal '#65 boundary r2: a protocol the extension did not close does not count the boundary twice' (@(Get-TcpIntervalTable -Protocol 'TCPv6' -Start (New-CounterFixture 'TCPv6' $t65.AddSeconds(0.1) 5000 0) -End (New-CounterFixture 'TCPv6' $t65.AddSeconds(8.9) 5000 0) -Reads $extReads65).Count) 2
+$script:TcpIntervalSampling = $null
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails
