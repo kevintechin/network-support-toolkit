@@ -897,52 +897,103 @@ function Test-HttpTargetSyntax {
     return (Test-HostNameSyntax $uri.Host)
 }
 
-function Test-HostNameSyntax {
+# Backlog #54: the rule of the host-name predicate, stated once, instead of a list of characters that reviewers found
+# one at a time (PR #41, rounds 5 to 21). A configured value can be tested when the name that would go on the wire IS
+# the name configured:
+#   - an IPv6 literal, with or without a numeric zone id (fe80::1%12 is Windows' form, and a link-local address cannot
+#     be sent without one) - the only place a colon, and so a percent sign, is allowed;
+#   - otherwise labels, separated by '.' or by one of the three separators IDNA reads as a dot (U+3002, U+FF0E, U+FF61),
+#     a trailing empty label being the root. Every label is judged in the form the resolver would send. A label with a
+#     character beyond ASCII is encoded by IDNA (GetAscii, the resolver's own conversion) and decoded again, and what
+#     comes back must be the label configured - up to ASCII case and canonical composition (NFC) - so that a character
+#     IDNA drops (a zero-width space or joiner, a soft hyphen), maps (a full-width letter, an eszett) or refuses (a
+#     bidirectional control, an unassigned code point) is refused here: the name asked would not be the name
+#     configured, and nothing in the report would have said so. The encoded label may hold letters, digits, hyphens
+#     and underscores only - the underscore because Windows hosts carry it, the stated superset of LDH - which is what
+#     refuses a space, a control character, a URI delimiter and every other ASCII symbol; it is 1 to 63 characters
+#     once encoded and does not start or end with a hyphen; the whole encoded name is at most 253.
+# What passes could be asked as configured, and the resolver's answer - 'no such name' included - stays a measurement
+# (backlog #39). What is refused could never have been asked as configured, and the reason names the first character
+# that decided it, so that the operator can fix the value. Test-HostNameSyntax is this function's yes/no; the reason
+# goes into the row's details. A pure-ASCII label is judged without IDNA, which leaves it exactly as it is - an
+# already-encoded xn-- label included.
+function Get-HostNameSyntaxProblem {
     param([string]$Value)
-
-    # Could a resolver be asked this name at all? A delimiter that belongs to a URI, an empty label such as
-    # foo..bar, a label of more than 63 characters, a whole name of more than 253, or a label that starts or
-    # ends with a hyphen cannot be asked: the call throws before a query exists, and the catch around it
-    # would record the throw as an answer (PR #41, rounds 5 and 6 - the ping family first, then DNS, which
-    # is the same rule and now the same code; round 7 brought the delimiters here too).
     $name = ([string]$Value).Trim()
-    if ([string]::IsNullOrWhiteSpace($name)) { return $false }
-    # Everything below judges the form that would go on the wire, which is why the conversion comes first.
-    # Two rounds were spent learning that. A label's limit is counted in encoded characters and not typed
-    # ones - 58 accented letters are 58 here and more than 63 once encoded (round 18). And IDNA maps a
-    # compatibility character to its ASCII equivalent: a full-width solidus becomes '/', a full-width colon
-    # ':', an ideographic space a space - so a check made before the conversion is a check made on a string
-    # this tool will never send, and 'foo<U+FF0F>bar' walked past the delimiter rules straight into the
-    # resolver (round 20). GetAscii is the conversion the resolver itself would do, so what it refuses could
-    # never have been asked; a plain ASCII name needs none of this and is left exactly as it was.
-    if ($name -match '[^\x00-\x7F]') {
-        try { $name = (New-Object System.Globalization.IdnMapping).GetAscii($name) }
-        catch { return $false }
-    }
-    # A delimiter belongs to a URI, not to a name: 'http://example.com' has labels of a legal length and no
-    # hyphen at an edge, so the structural rules below would say yes to it (round 7). A colon is allowed only
-    # when the value is an IP address, which is how fe80::1 stays a target and host:80 does not.
-    # A control character is not a delimiter and not whitespace, so nothing above or below catches it: an
-    # embedded NUL from a JSON \u0000 reached Dns.GetHostAddressesAsync and Ping.Send, and both came back with
-    # a SocketException - the same exception a name that genuinely does not resolve produces, so the run
-    # recorded it as a measurement (PR #41, round 21). No host name has ever contained one.
-    if ($name -match '[\x00-\x1F\x7F]') { return $false }
-    if ($name -match '\s') { return $false }
-    if ($name -match '[/\\?#@]') { return $false }
+    if ([string]::IsNullOrWhiteSpace($name)) { return "the value is blank" }
     if ($name.Contains(":")) {
         $parsedAddress = $null
-        return [System.Net.IPAddress]::TryParse($name, [ref]$parsedAddress)
+        if ([System.Net.IPAddress]::TryParse($name, [ref]$parsedAddress) -and $parsedAddress.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { return "" }
+        return "a colon is allowed only in an IPv6 address, and this is not one (a zone id has to be numeric, as in fe80::1%12)"
     }
-    # The root dot is taken off here rather than before the conversion, because IDNA is what can create it: a
-    # name written with an ideographic full stop carries no ASCII dot on the way in and a trailing one on the
-    # way out, and the label test would then see an empty last label (round 19).
-    if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
-    if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
-    foreach ($label in $name.Split(".")) {
-        if ($label.Length -lt 1 -or $label.Length -gt 63) { return $false }
-        if ($label.StartsWith("-") -or $label.EndsWith("-")) { return $false }
+    $labels = @($name.Split([char[]]@(".", [char]0x3002, [char]0xFF0E, [char]0xFF61)))
+    if ($labels.Count -gt 1 -and $labels[$labels.Count - 1].Length -eq 0) { $labels = @($labels[0..($labels.Count - 2)]) }
+    $idn = New-Object System.Globalization.IdnMapping
+    $position = 1
+    $encodedLength = 0
+    foreach ($label in $labels) {
+        if ($label.Length -eq 0) { return ("an empty label at position {0}: two separators in a row, or a leading one" -f $position) }
+        $encoded = $label
+        # -cmatch, not -match: the case-insensitive one folds U+212A (the Kelvin sign) into K and U+0130 into I, and
+        # had called both ASCII - the boundary test found them on its first run.
+        if ($label -cmatch '[^\x00-\x7F]') {
+            $normalized = $label
+            $decoded = $null
+            try {
+                $normalized = $label.Normalize([System.Text.NormalizationForm]::FormC)
+                $encoded = $idn.GetAscii($normalized)
+                $decoded = $idn.GetUnicode($encoded)
+            }
+            catch {
+                # The label as a whole is refused; the character that decides it is found one at a time, a surrogate
+                # pair as one, so that the reason can name it. None found means the label is too long once encoded.
+                $i = 0
+                while ($i -lt $normalized.Length) {
+                    $unit = [string]$normalized[$i]
+                    if ([char]::IsHighSurrogate($normalized[$i]) -and ($i + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$i + 1])) { $unit = $normalized.Substring($i, 2) }
+                    $refused = $false
+                    try { [void]$idn.GetAscii("a" + $unit + "b") } catch { $refused = $true }
+                    if ($refused) { return ("U+{0:X4} at position {1} cannot be encoded for the wire: IDNA refuses it" -f [char]::ConvertToUtf32($unit, 0), ($position + $i)) }
+                    $i += $unit.Length
+                }
+                return ("the label at position {0} cannot be encoded for the wire: IDNA refuses it, or it is longer than 63 characters once encoded" -f $position)
+            }
+            if (-not [string]::Equals($decoded, $normalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $index = 0
+                $limit = [math]::Min($decoded.Length, $normalized.Length)
+                while ($index -lt $limit -and [char]::ToUpperInvariant($decoded[$index]) -eq [char]::ToUpperInvariant($normalized[$index])) { $index++ }
+                if ($index -ge $normalized.Length) { $index = $normalized.Length - 1 }
+                $code = [int]$normalized[$index]
+                if ([char]::IsHighSurrogate($normalized[$index]) -and ($index + 1) -lt $normalized.Length) { $code = [char]::ConvertToUtf32($normalized, $index) }
+                return ("U+{0:X4} at position {1} would be dropped or changed by IDNA, so the name asked would not be the name configured" -f $code, ($position + $index))
+            }
+        }
+        $outside = [regex]::Match($encoded, '[^A-Za-z0-9_-]')
+        if ($outside.Success) { return ("U+{0:X4} at position {1} is not a letter, a digit, a hyphen or an underscore" -f [int]$encoded[$outside.Index], ($position + $outside.Index)) }
+        if ($encoded.Length -gt 63) { return ("the label at position {0} is longer than 63 characters" -f $position) }
+        if ($encoded.StartsWith("-") -or $encoded.EndsWith("-")) { return ("the label at position {0} starts or ends with a hyphen" -f $position) }
+        $encodedLength += $encoded.Length + 1
+        $position += $label.Length + 1
     }
-    return $true
+    if (($encodedLength - 1) -gt 253) { return "the name is longer than 253 characters once encoded" }
+    return ""
+}
+
+# The suffix a URL's row or configuration error carries when the URL is an absolute http(s) address whose host is what
+# cannot be used (backlog #54): the host's reason, named; nothing for a URL that fails for its scheme or its shape.
+function Get-UrlHostProblemSuffix {
+    param([string]$Url)
+    $uri = $null
+    if (-not [System.Uri]::TryCreate([string]$Url, [System.UriKind]::Absolute, [ref]$uri)) { return "" }
+    if (-not ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")) { return "" }
+    $problem = [string](Get-HostNameSyntaxProblem $uri.Host)
+    if ($problem.Length -eq 0) { return "" }
+    return ("; the host: " + $problem)
+}
+
+function Test-HostNameSyntax {
+    param([string]$Value)
+    return (([string](Get-HostNameSyntaxProblem $Value)).Length -eq 0)
 }
 
 function Test-PingTargetSyntax {
@@ -1005,7 +1056,7 @@ function Set-RunOptions {
             # The notice says what happened; the record is what puts a row where the result belonged (backlog #39).
             # A dropped target that leaves only a notice under Program Environment shows the reader an empty TCP
             # section, which reads as a check nobody configured rather than one that was thrown away.
-            [void]$script:RunOptionMessages.Add("Ignored extra TCP target '$value': expected host:port with a host that can be used.")
+            [void]$script:RunOptionMessages.Add("Ignored extra TCP target '$value': expected host:port with a host that can be used." + $(if ($parts.Count -eq 2 -and -not (Test-HostNameSyntax $parts[0])) { " The host: " + (Get-HostNameSyntaxProblem $parts[0]) + "." } else { "" }))
             [void]$script:DroppedTargets.Add([pscustomobject][ordered]@{ Kind = "Tcp"; Value = [string]$value })
             continue
         }
@@ -1680,7 +1731,7 @@ function Test-ConfigurationSemantics {
         $hostName = (ConvertTo-SafeString (Get-PropertyValue $target "Host" "")).Trim()
         $port = ConvertTo-IntSafe (Get-PropertyValue $target "Port" 0) 0
         if (-not (Test-HostNameSyntax $hostName) -or $port -lt 1 -or $port -gt 65535) {
-            [void]$inputErrors.Add("The host or port for TcpTargets '$name' is invalid: Host=$hostName, Port=$port")
+            [void]$inputErrors.Add("The host or port for TcpTargets '$name' is invalid: Host=$hostName, Port=$port" + $(if (-not (Test-HostNameSyntax $hostName)) { "; the host: " + (Get-HostNameSyntaxProblem $hostName) } else { "" }))
         }
     }
 
@@ -1689,7 +1740,7 @@ function Test-ConfigurationSemantics {
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "HTTP target")
         $url = ConvertTo-SafeString (Get-PropertyValue $target "Url" "")
         if (-not (Test-HttpTargetSyntax $url)) {
-            [void]$inputErrors.Add("The URL for HttpTargets '$name' is invalid: $url")
+            [void]$inputErrors.Add("The URL for HttpTargets '$name' is invalid: $url" + (Get-UrlHostProblemSuffix $url))
         }
     }
 
@@ -1698,7 +1749,7 @@ function Test-ConfigurationSemantics {
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "Ping target")
         $address = (ConvertTo-SafeString (Get-PropertyValue $target "Address" "")).Trim()
         if (-not (Test-PingTargetSyntax $address)) {
-            [void]$inputErrors.Add("The address for PingTargets '$name' cannot be used as a ping target: $address")
+            [void]$inputErrors.Add("The address for PingTargets '$name' cannot be used as a ping target: $address; " + (Get-HostNameSyntaxProblem $address))
         }
     }
 
@@ -1732,7 +1783,7 @@ function Test-ConfigurationSemantics {
             [void]$inputErrors.Add("DnsNames contains a blank Host value.")
         }
         elseif (-not (Test-HostNameSyntax $hostName)) {
-            [void]$inputErrors.Add("DnsNames contains a host name that cannot be used as a DNS target: $hostName")
+            [void]$inputErrors.Add("DnsNames contains a host name that cannot be used as a DNS target: $hostName; " + (Get-HostNameSyntaxProblem $hostName))
         }
     }
 
@@ -3056,7 +3107,7 @@ function Test-PingTargets {
                 Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured near-end target cannot be used: it has to be an IPv4 address in dotted-decimal form." -Details ("Configured value: {0}. A near-end target is an IPv4 address on one of this computer's subnets that is not the gateway, given as four decimal numbers with dots - not as a single number, in hexadecimal or with leading zeros, which different parsers read as different addresses - and as an address rather than a name, because the check has to know it is on the local subnet before anything is sent and a name would put the near-end rung behind the resolver." -f $address) -Tag $pingTag -Weightless | Out-Null
             }
             else {
-                Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured address cannot be used as a ping target." -Details ("Configured value: $address") -Tag $pingTag -Weightless | Out-Null
+                Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "The configured address cannot be used as a ping target." -Details ("Configured value: $address; " + (Get-HostNameSyntaxProblem $address)) -Tag $pingTag -Weightless | Out-Null
             }
             if ($required) {
                 Add-CheckResult -Category "Latency and Packet Loss" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details ("Configured value: $address") -Tag $pingTag | Out-Null
@@ -3225,7 +3276,7 @@ function Test-DnsNames {
         # A name no resolver can be asked is the same fact about this run's input as a blank one, and until
         # this round it was the opposite: the lookup threw, the catch below turned the throw into a weighted
         # FAIL, and a typo became Problem Detected (PR #41, round 6).
-            Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "The configured host name cannot be used as a DNS target." -Details ("Configured value: $hostName") -Tag "dns" -Weightless | Out-Null
+            Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "The configured host name cannot be used as a DNS target." -Details ("Configured value: $hostName; " + (Get-HostNameSyntaxProblem $hostName)) -Tag "dns" -Weightless | Out-Null
             if ($required) {
                 Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details "" -Tag "dns" | Out-Null
             }
@@ -3674,7 +3725,7 @@ function Test-ConnectivityTargets {
             # did not, which has to keep its weight. The notice names the value as it was given, in the section where
             # the result belonged, so an optional target that is never tested is visible instead of absent; the second
             # row is what stops a run reading Overall Healthy with a required check that never ran.
-            Add-CheckResult -Category "TCP Connection" -Check $name -Status "ERROR" -Message "The configured host or port is invalid." -Details ("Host=$hostName, Port=$port") -Tag "tcp" -Weightless | Out-Null
+            Add-CheckResult -Category "TCP Connection" -Check $name -Status "ERROR" -Message "The configured host or port is invalid." -Details ("Host=$hostName, Port=$port" + $(if (-not (Test-HostNameSyntax $hostName)) { "; the host: " + (Get-HostNameSyntaxProblem $hostName) } else { "" })) -Tag "tcp" -Weightless | Out-Null
             if ($required) {
                 Add-CheckResult -Category "TCP Connection" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details ("Host=$hostName, Port=$port") -Tag "tcp" | Out-Null
             }
@@ -3736,7 +3787,7 @@ function Test-ConnectivityTargets {
             # Blank was never the only way a URL cannot be used: 'example.com' has no scheme and 'ftp://host' has one
             # this tool does not speak. Both are decided here, before anything is sent, so that a value no packet
             # left for cannot be recorded as a measured connectivity failure (PR #41, round 1).
-            $urlDetail = "Configured value: $url"
+            $urlDetail = "Configured value: $url" + (Get-UrlHostProblemSuffix $url)
             Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "The configured URL cannot be used: it must be an absolute http:// or https:// address." -Details $urlDetail -Tag "http" -Weightless | Out-Null
             if ($required) {
                 Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "This required check did not run, because the target it was given cannot be tested." -Details $urlDetail -Tag "http" | Out-Null
@@ -7481,7 +7532,7 @@ function Get-RejectedPanelValues {
     if ($null -eq $controls) { return @() }
     foreach ($item in @(([string]$controls["TcpTarget"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
         if (-not (Test-TcpTargetSyntax $item)) {
-            [void]$rejected.Add([pscustomobject][ordered]@{ Key = "TcpTarget"; Value = [string]$item; Problem = "Extra TCP: '" + $item + "' is not host:port with a host that can be used - for example 8.8.8.8:443." })
+            [void]$rejected.Add([pscustomobject][ordered]@{ Key = "TcpTarget"; Value = [string]$item; Problem = "Extra TCP: '" + $item + "' is not host:port with a host that can be used - for example 8.8.8.8:443." + $(if (([string]$item).Split(":").Count -eq 2 -and -not (Test-HostNameSyntax (([string]$item).Split(":")[0]))) { " The host: " + (Get-HostNameSyntaxProblem (([string]$item).Split(":")[0])) + "." } else { "" }) })
         }
     }
     return @($rejected)

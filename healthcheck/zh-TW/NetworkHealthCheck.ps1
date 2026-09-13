@@ -872,47 +872,97 @@ function Test-HttpTargetSyntax {
     return (Test-HostNameSyntax $uri.Host)
 }
 
-function Test-HostNameSyntax {
+# 待辦 #54：主機名稱判定的規則寫在這一處，取代審查者一次一個找出來的字元清單（PR #41 第 5 到 21 輪）。設定的值能被
+# 檢測，條件是「送到線上的名字就是設定的名字」：
+#   - IPv6 字面值，可帶數字的 zone id（fe80::1%12 是 Windows 的形式，link-local 位址沒有它送不出去）——冒號、因而
+#     百分號，只准出現在這裡；
+#   - 否則就是標籤，以「.」或 IDNA 當成點的三個分隔符（U+3002、U+FF0E、U+FF61）分開，結尾的空標籤是根。每個標籤都
+#     以解析器會送出的形式來判定。含有 ASCII 以外字元的標籤先經 IDNA 編碼（GetAscii，解析器自己的轉換）再解碼，
+#     回來的必須就是設定的那個標籤——只容許 ASCII 大小寫與正規組合（NFC）的差異——所以 IDNA 會移除（零寬空白或連
+#     接子、軟連字號）、改寫（全形字母、ß）或拒絕（雙向控制字元、未指派的碼位）的字元在這裡就被拒絕：送出去問的
+#     名字會不是設定的名字，而報告裡沒有任何地方會說。編碼後的標籤只能有字母、數字、連字號和底線——底線是因為
+#     Windows 主機名常帶著它，這是 LDH 明說的超集——空白、控制字元、URI 分隔符和其他所有 ASCII 符號就是被這一條
+#     拒絕的；編碼後 1 到 63 個字元、不以連字號開頭或結尾；整個編碼後的名稱最多 253。
+# 通過的值可以照設定的樣子問出去，解析器的回答——包括「沒有這個名字」——仍是量測（待辦 #39）。被拒絕的值從來
+# 不可能照設定的樣子問出去，而理由會寫出決定它的第一個字元，好讓操作者修正設定。Test-HostNameSyntax 是這個函式的
+# 是／否；理由進到該列的詳細內容。純 ASCII 的標籤不經 IDNA，原樣判定——已經編碼過的 xn-- 標籤也是。
+function Get-HostNameSyntaxProblem {
     param([string]$Value)
-
-    # 這個名稱能不能拿去問解析器？屬於 URI 的分隔符號、foo..bar 這種空標籤、超過 63 個字元的標籤、
-    # 超過 253 個字元的完整名稱，或以連字號開頭或結尾的標籤，都問不出去：呼叫會在查詢成形之前就擲回
-    # 例外，而包在外層的 catch 會把這個例外記成一個答案（PR #41 第 5、6 輪：先是 ping，接著是 DNS，
-    # 同一條規則，現在也是同一段程式碼；第 7 輪把分隔符號也搬了進來）。
     $name = ([string]$Value).Trim()
-    if ([string]::IsNullOrWhiteSpace($name)) { return $false }
-    # 下面每一項檢查判的都是「真正送上線路的那個形式」，所以轉換先做。這件事花了兩輪才學會：標籤長度
-    # 算的是編碼後的字元而不是打出來的字元 —— 58 個帶重音的字母在這裡是 58，編碼後超過 63（第 18 輪）；
-    # 而 IDNA 會把相容字元對應成 ASCII：全形斜線變成 '/'、全形冒號變成 ':'、表意空白變成空白 —— 所以
-    # 在轉換之前做的檢查，檢的是一個這個工具永遠不會送出去的字串，'foo<U+FF0F>bar' 就這樣繞過分隔符號
-    # 規則直接進了解析器（第 20 輪）。GetAscii 做的就是解析器自己會做的轉換，所以它拒絕的名稱本來就
-    # 問不出去；純 ASCII 的名稱不需要這一步，也完全不被動到。
-    if ($name -match '[^\x00-\x7F]') {
-        try { $name = (New-Object System.Globalization.IdnMapping).GetAscii($name) }
-        catch { return $false }
-    }
-    # 分隔符號屬於 URI，不屬於名稱：'http://example.com' 的標籤長度合法、邊緣也沒有連字號，下方的
-    # 結構規則會讓它通過（第 7 輪）。冒號只有在值是 IP 位址時才允許，fe80::1 因此仍是目標，
-    # 而 host:80 不是。
-    # 控制字元不是分隔符號，也不是空白，所以上下都沒有人會攔它：JSON 的 \u0000 寫進來的 NUL
-    # 會一路送到 Dns.GetHostAddressesAsync 與 Ping.Send，兩者都回一個 SocketException —— 跟真的解析不到
-    # 的名稱同一種例外，於是執行把它記成了量測（PR #41，第 21 輪）。主機名稱從來不會含有控制字元。
-    if ($name -match '[\x00-\x1F\x7F]') { return $false }
-    if ($name -match '\s') { return $false }
-    if ($name -match '[/\\?#@]') { return $false }
+    if ([string]::IsNullOrWhiteSpace($name)) { return "值是空白的" }
     if ($name.Contains(":")) {
         $parsedAddress = $null
-        return [System.Net.IPAddress]::TryParse($name, [ref]$parsedAddress)
+        if ([System.Net.IPAddress]::TryParse($name, [ref]$parsedAddress) -and $parsedAddress.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { return "" }
+        return "冒號只能出現在 IPv6 位址裡，而這不是 IPv6 位址（zone id 必須是數字，例如 fe80::1%12）"
     }
-    # 根點在這裡才拿掉，而不是轉換之前，因為那個點可能就是 IDNA 造出來的：用表意句號寫的名稱，
-    # 進來時沒有 ASCII 點、出去時帶著一個尾點，下方的標籤檢查會看到空的最後一段（第 19 輪）。
-    if ($name.EndsWith(".")) { $name = $name.Substring(0, $name.Length - 1) }
-    if ([string]::IsNullOrEmpty($name) -or $name.Length -gt 253) { return $false }
-    foreach ($label in $name.Split(".")) {
-        if ($label.Length -lt 1 -or $label.Length -gt 63) { return $false }
-        if ($label.StartsWith("-") -or $label.EndsWith("-")) { return $false }
+    $labels = @($name.Split([char[]]@(".", [char]0x3002, [char]0xFF0E, [char]0xFF61)))
+    if ($labels.Count -gt 1 -and $labels[$labels.Count - 1].Length -eq 0) { $labels = @($labels[0..($labels.Count - 2)]) }
+    $idn = New-Object System.Globalization.IdnMapping
+    $position = 1
+    $encodedLength = 0
+    foreach ($label in $labels) {
+        if ($label.Length -eq 0) { return ("位置 {0} 有空的標籤：連續兩個分隔符，或開頭就是分隔符" -f $position) }
+        $encoded = $label
+        # 用 -cmatch 而不是 -match：不分大小寫的那個會把 U+212A（Kelvin 符號）折疊成 K、U+0130 折疊成 I，把兩者都當成
+        # ASCII——邊界測試第一次跑就抓到了。
+        if ($label -cmatch '[^\x00-\x7F]') {
+            $normalized = $label
+            $decoded = $null
+            try {
+                $normalized = $label.Normalize([System.Text.NormalizationForm]::FormC)
+                $encoded = $idn.GetAscii($normalized)
+                $decoded = $idn.GetUnicode($encoded)
+            }
+            catch {
+                # 整個標籤被拒絕；決定它的字元一次一個找出來（代理對算一個），好讓理由寫得出它。一個都找不到就表示
+                # 標籤編碼後太長。
+                $i = 0
+                while ($i -lt $normalized.Length) {
+                    $unit = [string]$normalized[$i]
+                    if ([char]::IsHighSurrogate($normalized[$i]) -and ($i + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$i + 1])) { $unit = $normalized.Substring($i, 2) }
+                    $refused = $false
+                    try { [void]$idn.GetAscii("a" + $unit + "b") } catch { $refused = $true }
+                    if ($refused) { return ("位置 {1} 的 U+{0:X4} 無法編碼送上線：IDNA 拒絕它" -f [char]::ConvertToUtf32($unit, 0), ($position + $i)) }
+                    $i += $unit.Length
+                }
+                return ("位置 {0} 的標籤無法編碼送上線：IDNA 拒絕它，或編碼後超過 63 個字元" -f $position)
+            }
+            if (-not [string]::Equals($decoded, $normalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $index = 0
+                $limit = [math]::Min($decoded.Length, $normalized.Length)
+                while ($index -lt $limit -and [char]::ToUpperInvariant($decoded[$index]) -eq [char]::ToUpperInvariant($normalized[$index])) { $index++ }
+                if ($index -ge $normalized.Length) { $index = $normalized.Length - 1 }
+                $code = [int]$normalized[$index]
+                if ([char]::IsHighSurrogate($normalized[$index]) -and ($index + 1) -lt $normalized.Length) { $code = [char]::ConvertToUtf32($normalized, $index) }
+                return ("位置 {1} 的 U+{0:X4} 會被 IDNA 移除或改寫，送出去問的名字就不會是設定的名字" -f $code, ($position + $index))
+            }
+        }
+        $outside = [regex]::Match($encoded, '[^A-Za-z0-9_-]')
+        if ($outside.Success) { return ("位置 {1} 的 U+{0:X4} 不是字母、數字、連字號或底線" -f [int]$encoded[$outside.Index], ($position + $outside.Index)) }
+        if ($encoded.Length -gt 63) { return ("位置 {0} 的標籤超過 63 個字元" -f $position) }
+        if ($encoded.StartsWith("-") -or $encoded.EndsWith("-")) { return ("位置 {0} 的標籤以連字號開頭或結尾" -f $position) }
+        $encodedLength += $encoded.Length + 1
+        $position += $label.Length + 1
     }
-    return $true
+    if (($encodedLength - 1) -gt 253) { return "名稱編碼後超過 253 個字元" }
+    return ""
+}
+
+# URL 的列或設定錯誤要帶的後綴：URL 本身是絕對的 http(s) 位址、問題出在主機名稱時，寫出主機的理由（待辦 #54）；
+# URL 因 scheme 或形狀而失敗時什麼都不加，讓它保有自己的訊息。
+function Get-UrlHostProblemSuffix {
+    param([string]$Url)
+    $uri = $null
+    if (-not [System.Uri]::TryCreate([string]$Url, [System.UriKind]::Absolute, [ref]$uri)) { return "" }
+    if (-not ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")) { return "" }
+    $problem = [string](Get-HostNameSyntaxProblem $uri.Host)
+    if ($problem.Length -eq 0) { return "" }
+    return ("；主機：" + $problem)
+}
+
+function Test-HostNameSyntax {
+    param([string]$Value)
+    return (([string](Get-HostNameSyntaxProblem $Value)).Length -eq 0)
 }
 
 function Test-PingTargetSyntax {
@@ -971,7 +1021,7 @@ function Set-RunOptions {
             # 提示說明發生了什麼事；這筆紀錄則是為了在「結果本該出現的地方」留下一列（backlog #39）。被丟棄的
             # 目標若只留下程式環境區的一則提示，讀者看到的是空的 TCP 區段，那讀起來像沒有人設定過這項檢查，而
             # 不是它被丟掉了。
-            [void]$script:RunOptionMessages.Add("已忽略額外 TCP 目標「$value」：格式應為 host:port，且主機名稱必須可以使用。")
+            [void]$script:RunOptionMessages.Add("已忽略額外 TCP 目標「$value」：格式應為 host:port，且主機名稱必須可以使用。" + $(if ($parts.Count -eq 2 -and -not (Test-HostNameSyntax $parts[0])) { "主機：" + (Get-HostNameSyntaxProblem $parts[0]) + "。" } else { "" }))
             [void]$script:DroppedTargets.Add([pscustomobject][ordered]@{ Kind = "Tcp"; Value = [string]$value })
             continue
         }
@@ -1640,7 +1690,7 @@ function Test-ConfigurationSemantics {
         $hostName = (ConvertTo-SafeString (Get-PropertyValue $target "Host" "")).Trim()
         $port = ConvertTo-IntSafe (Get-PropertyValue $target "Port" 0) 0
         if (-not (Test-HostNameSyntax $hostName) -or $port -lt 1 -or $port -gt 65535) {
-            [void]$inputErrors.Add("TcpTargets 的「$name」主機或連接埠無效：Host=$hostName, Port=$port")
+            [void]$inputErrors.Add("TcpTargets 的「$name」主機或連接埠無效：Host=$hostName, Port=$port" + $(if (-not (Test-HostNameSyntax $hostName)) { "；主機：" + (Get-HostNameSyntaxProblem $hostName) } else { "" }))
         }
     }
 
@@ -1649,7 +1699,7 @@ function Test-ConfigurationSemantics {
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "HTTP target")
         $url = ConvertTo-SafeString (Get-PropertyValue $target "Url" "")
         if (-not (Test-HttpTargetSyntax $url)) {
-            [void]$inputErrors.Add("HttpTargets 的「$name」URL 無效：$url")
+            [void]$inputErrors.Add("HttpTargets 的「$name」URL 無效：$url" + (Get-UrlHostProblemSuffix $url))
         }
     }
 
@@ -1658,7 +1708,7 @@ function Test-ConfigurationSemantics {
         $name = ConvertTo-SafeString (Get-PropertyValue $target "Name" "Ping 目標")
         $address = (ConvertTo-SafeString (Get-PropertyValue $target "Address" "")).Trim()
         if (-not (Test-PingTargetSyntax $address)) {
-            [void]$inputErrors.Add("PingTargets「$name」的位址無法當成 ping 目標：$address")
+            [void]$inputErrors.Add("PingTargets「$name」的位址無法當成 ping 目標：$address；" + (Get-HostNameSyntaxProblem $address))
         }
     }
 
@@ -1691,7 +1741,7 @@ function Test-ConfigurationSemantics {
             [void]$inputErrors.Add("DnsNames 含有空白的 Host。")
         }
         elseif (-not (Test-HostNameSyntax $hostName)) {
-            [void]$inputErrors.Add("DnsNames 含有無法當成 DNS 目標的主機名稱：$hostName")
+            [void]$inputErrors.Add("DnsNames 含有無法當成 DNS 目標的主機名稱：$hostName；" + (Get-HostNameSyntaxProblem $hostName))
         }
     }
 
@@ -2952,7 +3002,7 @@ function Test-PingTargets {
                 Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "設定的近端目標無法使用：它必須是點分十進位形式的 IPv4 位址。" -Details ("設定值：{0}。近端目標是這台電腦所在子網段上、且不是閘道的一個 IPv4 位址，以四個十進位數字加點給定——不是單一個數字、不是十六進位、也不帶前導零，因為不同的解析器會把那些形式讀成不同的位址——而且以位址而不是名稱給定，因為檢查必須在送出任何東西之前就知道它在本地子網段上，而名稱會讓近端這一階落在解析器之後。" -f $address) -Tag $pingTag -Weightless | Out-Null
             }
             else {
-                Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "設定的位址無法當成 ping 目標。" -Details ("Configured value: $address") -Tag $pingTag -Weightless | Out-Null
+                Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "設定的位址無法當成 ping 目標。" -Details ("Configured value: $address; " + (Get-HostNameSyntaxProblem $address)) -Tag $pingTag -Weightless | Out-Null
             }
             if ($required) {
                 Add-CheckResult -Category "延遲與封包遺失" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標無法檢測。" -Details ("Configured value: $address") -Tag $pingTag | Out-Null
@@ -3116,7 +3166,7 @@ function Test-DnsNames {
         # 根本問不出去的名稱，跟空白名稱一樣是關於本次執行輸入的事實；而在這一輪之前它是相反的：
         # 查詢擲回例外，下方的 catch 把例外變成有權重的 FAIL，一個錯字就成了「發現問題」
         # （PR #41，第 6 輪）。
-            Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "設定的主機名稱無法當成 DNS 目標。" -Details ("設定值：$hostName") -Tag "dns" -Weightless | Out-Null
+            Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "設定的主機名稱無法當成 DNS 目標。" -Details ("設定值：$hostName；" + (Get-HostNameSyntaxProblem $hostName)) -Tag "dns" -Weightless | Out-Null
             if ($required) {
                 Add-CheckResult -Category "DNS" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標無法檢測。" -Details "" -Tag "dns" | Out-Null
             }
@@ -3554,7 +3604,7 @@ function Test-ConnectivityTargets {
             # 兩列，因為一列會同時承載兩個主張（backlog #39）：這個值設定錯了——規則說它不能左右判定；以及，當
             # 該目標是必要的，本來該發生的量測沒有發生——那必須保有權重。提示列在結果本該出現的區段寫出輸入的原
             # 值，讓沒被檢測的選用目標看得見、而不是整段消失；第二列則是避免「必要檢查從未執行，卻顯示整體正常」。
-            Add-CheckResult -Category "TCP 連線" -Check $name -Status "ERROR" -Message "設定的主機或連接埠無效。" -Details ("Host=$hostName, Port=$port") -Tag "tcp" -Weightless | Out-Null
+            Add-CheckResult -Category "TCP 連線" -Check $name -Status "ERROR" -Message "設定的主機或連接埠無效。" -Details ("Host=$hostName, Port=$port" + $(if (-not (Test-HostNameSyntax $hostName)) { "；主機：" + (Get-HostNameSyntaxProblem $hostName) } else { "" })) -Tag "tcp" -Weightless | Out-Null
             if ($required) {
                 Add-CheckResult -Category "TCP 連線" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標無法檢測。" -Details ("Host=$hostName, Port=$port") -Tag "tcp" | Out-Null
             }
@@ -3613,7 +3663,7 @@ function Test-ConnectivityTargets {
             # 空白從來不是 URL 唯一不能用的方式：「example.com」沒有 scheme，「ftp://host」的 scheme 這個工具不會
             # 講。兩者都在這裡決定，在送出任何東西之前，這樣「沒讓任何封包離開過的值」就不會被記成一次量到的連線
             # 失敗（PR #41 第 1 輪）。
-            $urlDetail = "設定值：$url"
+            $urlDetail = "設定值：$url" + (Get-UrlHostProblemSuffix $url)
             Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "設定的 URL 無法使用：必須是絕對的 http:// 或 https:// 位址。" -Details $urlDetail -Tag "http" -Weightless | Out-Null
             if ($required) {
                 Add-CheckResult -Category "HTTP/HTTPS" -Check $name -Status "ERROR" -Message "這項必要檢查沒有執行，因為給它的目標無法檢測。" -Details $urlDetail -Tag "http" | Out-Null
@@ -7209,7 +7259,7 @@ function Get-RejectedPanelValues {
     if ($null -eq $controls) { return @() }
     foreach ($item in @(([string]$controls["TcpTarget"].Text) -split '[,;\s]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
         if (-not (Test-TcpTargetSyntax $item)) {
-            [void]$rejected.Add([pscustomobject][ordered]@{ Key = "TcpTarget"; Value = [string]$item; Problem = "額外 TCP：「" + $item + "」不是 host:port 格式，或主機名稱無法使用 —— 例如 8.8.8.8:443。" })
+            [void]$rejected.Add([pscustomobject][ordered]@{ Key = "TcpTarget"; Value = [string]$item; Problem = "額外 TCP：「" + $item + "」不是 host:port 格式，或主機名稱無法使用 —— 例如 8.8.8.8:443。" + $(if (([string]$item).Split(":").Count -eq 2 -and -not (Test-HostNameSyntax (([string]$item).Split(":")[0]))) { "主機：" + (Get-HostNameSyntaxProblem (([string]$item).Split(":")[0])) + "。" } else { "" }) })
         }
     }
     return @($rejected)
