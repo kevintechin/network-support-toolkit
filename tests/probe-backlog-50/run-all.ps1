@@ -312,6 +312,11 @@ foreach ($v in $Variants) {
 
     # 1. The double-click: the file itself handed to the shell, its folder the working directory.
     $handle = [IntPtr]::Zero; $p = $null; $commandLine = ''; $appearedAfter = -1.0
+    $hosted = [IntPtr]::Zero
+    # The foreground window before the start, so that a terminal window that was already there is not mistaken
+    # for the one this run opened. Where another process hosts the console the started process never owns a
+    # window, and waiting the whole timeout for one it cannot have costs the run ten seconds a variant.
+    $foregroundBefore = [ProbeBacklog50Win32]::GetForegroundWindow()
     $started = Get-Date
     try {
         $p = Start-Process -FilePath $file -WorkingDirectory $Folder -PassThru
@@ -322,6 +327,10 @@ foreach ($v in $Variants) {
                 if ($p.HasExited) { break }
                 $p.Refresh()
                 if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $handle = $p.MainWindowHandle; $appearedAfter = ((Get-Date) - $started).TotalSeconds; break }
+                $fg = [ProbeBacklog50Win32]::GetForegroundWindow()
+                if ($fg -ne [IntPtr]::Zero -and $fg -ne $foregroundBefore -and (Get-WindowClass $fg) -eq $TerminalClass) {
+                    $hosted = $fg; $appearedAfter = ((Get-Date) - $started).TotalSeconds; break
+                }
             }
             catch { break }
             Start-Sleep -Milliseconds 200
@@ -349,13 +358,17 @@ foreach ($v in $Variants) {
                 $framed = 'the window''s own rectangle'
             }
             else {
-                # No window of its own after the timeout: another process hosts the console. If that host is the
-                # foreground window, it is what the person would be looking at, so it is framed; else the screen is.
+                # No window of its own: another process hosts the console. If that host is the foreground window,
+                # it is what the person would be looking at, so it is framed; else the screen is. A terminal that
+                # came to the foreground during the wait is named with the seconds it took; one found only after
+                # the timeout is named as that, because it may have been on the screen all along.
                 $foreground = [ProbeBacklog50Win32]::GetForegroundWindow()
                 $class = Get-WindowClass $foreground
                 if ($class -eq $TerminalClass) {
                     $target = $foreground
-                    Note ('host:         the started process owned no window of its own after ' + $WindowTimeoutSeconds + ' s; the foreground window is Windows Terminal (class ' + $class + '), which hosts it')
+                    $when = 'after ' + $WindowTimeoutSeconds + ' s, the whole wait'
+                    if ($hosted -ne [IntPtr]::Zero -and $hosted -eq $foreground) { $when = 'after ' + ('{0:0.0}' -f $appearedAfter) + ' s, having come to the foreground during the wait' }
+                    Note ('host:         the started process owned no window of its own; the foreground window is Windows Terminal (class ' + $class + '), which hosts it, ' + $when)
                     $framed = 'the terminal window''s rectangle (the foreground window)'
                 }
                 else {
