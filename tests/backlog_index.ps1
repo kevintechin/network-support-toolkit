@@ -20,8 +20,9 @@
     a word from one to twenty or in digits. The arithmetic the item asked for - the stated counts sum to the open
     count plus one for each further group an item is listed in - is checked as three statements so that one mistake
     fails one check: every listed item is an open row (R2), every open row is listed (R3), and each group's stated
-    count is the number of items it encloses, with no link standing outside every group and, where the row has a
-    sentence stating what the groups sum to and how many items there are, that sentence saying what they do (R5).
+    count is the number of items it encloses - an item once in each group it stands in, and it may stand in more
+    than one - with no link standing outside every group and, where the row has a sentence stating what the groups
+    sum to and how many items there are, that sentence saying what they do (R5).
 
     What it does not check is the prose: the row restates each item in a clause of its own, and whether that clause
     is still what the item's body says is what a reader with both documents open is for. The page's own rule for it
@@ -197,6 +198,10 @@ foreach ($g in $groups) {
     $sum += [Math]::Max(0, $g.Stated); $appearances += $g.Members.Count
     if ($g.Stated -lt 0) { $groupProblems += ('no count before "{0}"' -f $g.Label) }
     elseif ($g.Stated -ne $g.Members.Count) { $groupProblems += ('"{0}" says {1} and lists {2}: {3}' -f $g.Label, $g.Stated, $g.Members.Count, (Format-Numbers $g.Members)) }
+    # An item stands in a group once: a copied link, with the count raised to cover it, is a second membership of the
+    # same group and not of a further one, and the arithmetic would count it as an item (PR #63, round 2).
+    $twice = Get-Duplicates $g.Members
+    if ($twice.Count) { $groupProblems += ('"{0}" lists {1} twice' -f $g.Label, (Format-Numbers $twice)) }
 }
 # A link outside every group is listed and counted nowhere, and the row's rule is that an item stands inside a group:
 # with the groups blanked out, any item link left is such a link (PR #63, round 1 - a link moved out of its group,
@@ -213,7 +218,8 @@ if ($overlap.Success) {
     $saidSum = ConvertTo-Count $overlap.Groups[1].Value; $saidItems = ConvertTo-Count $overlap.Groups[2].Value
     if (($saidSum -ne $sum) -or ($saidItems -ne $listed.Count)) { $groupProblems += ('the row says the groups sum to {0} where the items are {1}; they sum to {2} and the items are {3}' -f $saidSum, $saidItems, $sum, $listed.Count) }
 }
-$repeated = @($groups | ForEach-Object { $_.Members } | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
+# An item in more than one group is counted once per group it stands in, whatever a group repeats.
+$repeated = @($groups | ForEach-Object { @($_.Members | Sort-Object -Unique) } | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
 $arithmetic = ('{0} = {1}' -f (@($groups | ForEach-Object { [string]$_.Stated }) -join ' + '), $sum)
 if ($repeated.Count) { $arithmetic += (': {0} items, {1} in more than one group' -f $listed.Count, (Format-Numbers $repeated)) } else { $arithmetic += (': {0} items, none in more than one group' -f $listed.Count) }
 Assert-True ('R5 each group''s stated count is the number of items it lists, and no listed item stands outside a group ({0} groups; {1})' -f $groups.Count, $arithmetic) (($groups.Count -gt 0) -and ($groupProblems.Count -eq 0)) $(if ($groups.Count -eq 0) { 'the row has no group: no parenthesis holding an item link' } else { $groupProblems -join '; ' })

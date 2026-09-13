@@ -160,6 +160,12 @@ Assert-Catches 'an open item linked outside every group, its group counted right
 Assert-Catches 'the overlap sentence stating a sum the groups do not make' 'R5' {
     Edit-All $Readme 'sum to fifteen where the items are fourteen' 'sum to sixteen where the items are fourteen'
 }
+Assert-Catches 'an item listed twice in the same group, the count and the sum raised with it' 'R5' {
+    # PR #63, round 2: a copied link is a second membership of the same group, not of a further one; the group's count
+    # and the overlap sentence are raised with it so that the duplicate is the one thing R5 has to say.
+    Edit-All $Readme 'two changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the retransmission' 'three changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) twice, [#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the retransmission'
+    Edit-All $Readme 'sum to fifteen where the items are fourteen' 'sum to sixteen where the items are fourteen'
+}
 Assert-Catches 'a number listed as closed that no closed row carries' 'R6' {
     Edit-All $Readme ' are closed' ', 999 are closed'
 }
