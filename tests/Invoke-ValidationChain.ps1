@@ -1073,7 +1073,12 @@ try {
         # guards the harness.
         Invoke-Case 'parse' 'no stray control bytes in tests\' {
             $bad = @()
-            foreach ($file in @(Get-ChildItem -LiteralPath $PSScriptRoot -File -Recurse -Include *.ps1, *.py, *.md, *.cmd)) {
+            # The extensions are filtered here rather than by -Include, which PowerShell applies to the *path* and
+            # so drops silently when the path is a directory: this case read 111 files where it names 31, and the
+            # 80 it had no business opening were the .log, .png and .txt a run leaves behind - backlog #50's probe
+            # writes screenshots under tests\, and the first chain run after it failed this case on their bytes.
+            $text = @('.ps1', '.py', '.md', '.cmd')
+            foreach ($file in @(Get-ChildItem -LiteralPath $PSScriptRoot -File -Recurse | Where-Object { $text -contains $_.Extension })) {
                 $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
                 # Position matters for one of them: 0x0D is half a line ending, so it is stray unless 0x0A follows
                 # it - the same blind spot the package validator had in round 22.
