@@ -32,15 +32,16 @@
     output), <variant>-stderr.log (kept only when something was printed there), machine.txt, and run-all.txt, the
     manifest binding each file to the run that produced it. Send the whole folder back with the results in it.
 
-    It refuses to run from a network path (cmd prints a warning of its own for a UNC working directory, which would
-    sit on the screen beside the lines being measured) and in a session whose screen cannot be captured (locked, or
-    an RDP session that was disconnected rather than logged off: the picture would be uniformly black).
+    It refuses to run from a network path - a UNC one by its shape, a drive letter mapped to a share by what the
+    root's DriveInfo says it is - because cmd prints a warning of its own for a network working directory, which
+    would sit on the screen beside the lines being measured; and in a session whose screen cannot be captured
+    (locked, or an RDP session that was disconnected rather than logged off: the picture would be uniformly black).
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File .\run-all.ps1
 
     Run it from a PowerShell window on the machine, in the folder, at the desktop, and leave the keyboard and the
-    mouse alone while the five windows open and close (well under a minute).
+    mouse alone while the five windows open and close (18 s on the reference machine, five of those windows).
 #>
 [CmdletBinding()]
 param(

@@ -31,7 +31,8 @@ All five are UTF-8 (4 with a BOM), CRLF, and end with `pause`, so a window stays
    powershell -NoProfile -ExecutionPolicy Bypass -File .\run-all.ps1
    ```
 
-   Leave the keyboard and the mouse alone while the five windows open and close; it takes well under a minute.
+   Leave the keyboard and the mouse alone while the five windows open and close; it took 18 s on the reference
+   machine.
 4. Send the whole folder back, `results_<computer>_<stamp>\` included.
 
 ## What `run-all.ps1` does, and why each run gets a console of its own
