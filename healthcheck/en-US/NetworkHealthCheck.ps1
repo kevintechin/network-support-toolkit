@@ -959,15 +959,20 @@ function Get-HostNameSyntaxProblem {
                 while ($i -lt $normalized.Length) {
                     $unit = [string]$normalized[$i]
                     if ([char]::IsHighSurrogate($normalized[$i]) -and ($i + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$i + 1])) { $unit = $normalized.Substring($i, 2) }
+                    # Alone first: a right-to-left letter between "a" and "b" is a bidirectional violation of the probe's
+                    # own making, which blamed a valid Hebrew or Arabic letter for what came after it (round 8); a unit
+                    # that stands alone is not the cause, and a unit that IDNA maps to nothing fails alone (an empty
+                    # label) but not between letters, so only a unit refused both ways is named.
                     $refused = $false
-                    try { [void]$idn.GetAscii("a" + $unit + "b") } catch { $refused = $true }
+                    try { [void]$idn.GetAscii($unit) } catch { $refused = $true }
+                    if ($refused) { try { [void]$idn.GetAscii("a" + $unit + "b"); $refused = $false } catch { $refused = $true } }
                     $code = $(if ($unit.Length -eq 2) { [char]::ConvertToUtf32($unit, 0) } else { [int]$unit[0] })
                     $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
                     if ($at -lt 0) { $at = $i }
                     if ($refused) { return ("U+{0:X4} at position {1} cannot be encoded for the wire: IDNA refuses it" -f $code, (& $scalarPosition ($position - 1 + $at))) }
                     $i += $unit.Length
                 }
-                return ("the label at position {0} cannot be encoded for the wire: IDNA refuses it, or it is longer than 63 characters once encoded" -f (& $scalarPosition ($position - 1)))
+                return ("the label at position {0} cannot be encoded for the wire: IDNA refuses it as a whole - a mix of right-to-left and left-to-right characters, or more than 63 characters once encoded" -f (& $scalarPosition ($position - 1)))
             }
             # ASCII case alone is folded before the comparison: IDNA lowercases A-Z, and that is the one change the rule
             # allows. A culture-free ignore-case comparison folded more - U+017F (the long s) and 's' both uppercase to

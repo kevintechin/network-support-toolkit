@@ -2774,6 +2774,19 @@ Assert-Equal '#54 reason: a hyphen-edge label after an emoji label is at its sca
 Assert-Equal '#54 reason: an eszett after an emoji is at its scalar position' (([string](Get-HostNameSyntaxProblem ($emoji + [string][char]0xDF + '.de'))) -match '(^|\D)2(\D|$)') True
 Assert-Equal '#54 reason: a bidirectional override after an emoji is at its scalar position' (([string](Get-HostNameSyntaxProblem ($emoji + [string][char]0x202E + 'x.de'))) -match '(^|\D)2(\D|$)') True
 Assert-Equal '#54 reason: an empty label after an emoji label is at its scalar position' (([string](Get-HostNameSyntaxProblem ($emoji + '..x'))) -match '(^|\D)3(\D|$)') True
+# PR #58 round 8: a right-to-left letter is not blamed for what follows it. The probe used to wrap every unit in "a"
+# and "b", which is itself a bidirectional violation around Hebrew or Arabic; the unit is probed alone first.
+$hebrew = [string][char]0x05D0
+Assert-Equal '#54 rtl: a Hebrew label is usable' (Test-HostNameSyntax (($hebrew * 3) + '.example.com')) True
+$hebrewOverride = [string](Get-HostNameSyntaxProblem (($hebrew * 3) + [string][char]0x202E + '.example.com'))
+Assert-Equal '#54 rtl: the override after Hebrew letters is what is named, not the first letter' (($hebrewOverride -match 'U\+202E') -and ($hebrewOverride -notmatch 'U\+05D0')) True
+Assert-Equal '#54 rtl: and it is placed at its own position' ($hebrewOverride -match '(^|\D)4(\D|$)') True
+$hebrewLong = [string](Get-HostNameSyntaxProblem (($hebrew * 64) + '.example.com'))
+Assert-Equal '#54 rtl: an overlong Hebrew label is reported as a whole, not blamed on its first letter' (($hebrewLong -match '63') -and ($hebrewLong -notmatch 'U\+05D0')) True
+# .NET Framework's IdnMapping encodes a label that mixes directions (measured: 'ab' around a Hebrew letter encodes); a
+# runtime that enforces the bidirectional rule refuses it as a whole. Either way no single letter is blamed.
+$hebrewMixed = [string](Get-HostNameSyntaxProblem (($hebrew * 2) + 'b.example.com'))
+Assert-Equal '#54 rtl: a label mixing directions is usable or reported as a whole, never blamed on a letter' (($hebrewMixed.Length -eq 0) -or (($hebrewMixed -notmatch 'U\+05D0') -and ($hebrewMixed -notmatch 'U\+0062'))) True
 Assert-Equal '#54 reason: the bidirectional override is named' (([string](Get-HostNameSyntaxProblem ('foo' + [string][char]0x202E + 'bar.example.com'))) -match 'U\+202E') True
 Assert-Equal '#54 reason: a blank has one' (([string](Get-HostNameSyntaxProblem '   ')).Length -gt 0) True
 # A lone surrogate has no code point; the reason names its UTF-16 value instead of throwing (PR #58, round 1). The calls
