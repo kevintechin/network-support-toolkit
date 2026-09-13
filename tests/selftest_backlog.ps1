@@ -77,6 +77,17 @@ function Assert-Catches([string]$name, [string]$expectedCheck, [scriptblock]$mut
     if ($ok) { $script:passes++; Write-Output ("[PASS] {0} -> {1} caught it, alone: {2}" -f $name, $expectedCheck, ($hit[0] -replace '^\[FAIL\]\s+', '')) }
     else { $script:fails++; Write-Output ("[FAIL] {0} -> expected {1} to fail alone; got: {2}" -f $name, $expectedCheck, $(if ($failed.Count) { $failed -join ' | ' } else { 'nothing failed' })) }
 }
+function Assert-StillClean([string]$name, [scriptblock]$mutation) {
+    # A change the row may legitimately carry: the step has to keep passing, or a well-formed row would be refused.
+    try { & $mutation }
+    catch { Restore-All; $script:fails++; Write-Output ("[FAIL] {0} -> the change could not be applied: {1}" -f $name, $_.Exception.Message); return }
+    $r = Invoke-Index
+    Restore-All
+    $summary = [string]@($r.Output | Where-Object { $_ -match '^Summary:' })[-1]
+    $ok = ($r.ExitCode -eq 0) -and ($summary -match '^Summary:\s+\d+ passed, 0 failed')
+    if ($ok) { $script:passes++; Write-Output "[PASS] $name -> still $summary" }
+    else { $script:fails++; Write-Output ("[FAIL] {0} -> expected nothing to fail; got: {1}" -f $name, (@($r.Output | Where-Object { $_ -like '`[FAIL`]*' }) -join ' | ')) }
+}
 function Get-FirstMatch([string]$rel, [string]$pattern) {
     $m = [regex]::Match((Read-All $rel), $pattern)
     if (-not $m.Success) { throw ("nothing matches {0} in {1}" -f $pattern, $rel) }
@@ -116,6 +127,13 @@ Assert-Catches 'a number in neither table' 'I4' {
     $rowLine = (Get-FirstMatch $Backlog '(?m)^\| 32 \|.*$').Value.TrimEnd("`r")
     Edit-All $Backlog ($rowLine + (Get-Newline $Backlog)) ''
     Edit-All $Readme ', 32,' ','
+}
+Assert-Catches 'a row numbered 0, the README listing it too' 'I4' {
+    # PR #63, round 4: 0 is a number the casts keep and the range 1..highest never sees; the README's closed list
+    # follows the closed table, so that the number itself is the one thing wrong.
+    $nl = Get-Newline $Backlog
+    Edit-All $Backlog ($nl + $nl + '## Adding and closing an item') ($nl + '| 0 | an item before the first | never |' + $nl + $nl + '## Adding and closing an item')
+    Edit-All $Readme 'Numbers 1 to 20' 'Numbers 0, 1 to 20'
 }
 Assert-Catches 'a closed row listed twice' 'I5' {
     $rowLine = (Get-FirstMatch $Backlog '(?m)^\| 32 \|.*$').Value.TrimEnd("`r")
@@ -174,7 +192,13 @@ Assert-Catches 'a closed number listed twice, once in a range and once alone' 'R
     Edit-All $Readme 'Numbers 1 to 20, 23' 'Numbers 1 to 20, 20, 23'
 }
 
-# 4 - and the control again, to prove every mutation was put back.
+# 4 - what the row may say without being misread: a date, a version and a mention between a group's count and its
+# parenthesis are not the count (the self-audit before round 4 - the last number before the parenthesis used to be).
+Assert-StillClean 'a date, a version and a mention between a count and its group are not the count' {
+    Edit-All $Readme 'nine in `tests/` and the build (' 'nine in `tests/` and the build, as of 2026-09-13 and 1.2.14 and #25 ('
+}
+
+# 5 - and the control again, to prove every mutation was put back.
 Assert-Clean 'the copy is clean again after every mutation'
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)

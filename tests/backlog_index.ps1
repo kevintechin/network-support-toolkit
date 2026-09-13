@@ -9,15 +9,16 @@
     main with a body and no row, and how the README's count of open items said twenty-two where the page itself said
     twenty-three. This step reads the page and asserts the four statements the page makes about itself - an open row
     has a body, a body has an open row, no number stands in both tables, no number between 1 and the highest used is
-    in neither - and then reads the README's Backlog row, which restates the page, against the page: its count of
+    in neither and none is below 1 - and then reads the README's Backlog row, which restates the page, against the page: its count of
     open items, every item it lists as open (in both directions), the anchor each listed item links to, the count
     each of its groups states, and its list of closed numbers.
 
     What it reads on the README's row is the enumeration, not the prose. An item the row lists is a link to the
     item's own heading, [#N](docs/backlog.md#anchor); a bare #N on the row is a mention - a cross-reference, the
     sentence about the item that stands in two groups - and is not read. A group is a parenthesis on the row that
-    holds at least one such link, and its stated count is the last number before the parenthesis opens, written as
-    a word from one to twenty or in digits. The closed numbers are one sentence, "Numbers ... are closed", a
+    holds at least one such link, and its stated count is the last number standing alone before the parenthesis
+    opens, written as a word from one to twenty or in digits - a date, a version or a mention like #25 is not a
+    count. The closed numbers are one sentence, "Numbers ... are closed", a
     comma-separated list of numbers and "a to b" ranges, each number once. The sentence about the overlap, where
     the row has one, is read as "sum to N where the items are M", in words or digits; any other wording states no
     total to check. The arithmetic the item asked for - the stated counts sum to the open
@@ -117,7 +118,14 @@ $highest = 0
 if ($used.Count) { $highest = [int](($used | Measure-Object -Maximum).Maximum) }
 $gaps = @()
 if ($highest -gt 0) { $gaps = @(1..$highest | Where-Object { $used -notcontains $_ }) }
-Assert-True ('I4 every number from 1 to {0}, the highest used, is in one of the tables' -f $highest) (($highest -gt 0) -and ($gaps.Count -eq 0)) $(if ($highest -eq 0) { 'no row in either table' } else { 'in neither table: ' + (Format-Numbers $gaps) })
+# The numbers start at 1: a row or a body numbered 0 is a number the casts keep and the range above never sees
+# (PR #63, round 4), and it is not the next unused number that an addition receives.
+$belowOne = @(@($openRows) + @($closedRows) + @($bodyNumbers) | Where-Object { [int]$_ -lt 1 } | Sort-Object -Unique)
+$gapDetail = @()
+if ($highest -eq 0) { $gapDetail += 'no row in either table' }
+if ($gaps.Count) { $gapDetail += ('in neither table: ' + (Format-Numbers $gaps)) }
+if ($belowOne.Count) { $gapDetail += ('below 1: ' + (Format-Numbers $belowOne)) }
+Assert-True ('I4 every number from 1 to {0}, the highest used, is in one of the tables, and none is below 1' -f $highest) ($gapDetail.Count -eq 0) ($gapDetail -join '; ')
 $dupOpen = Get-Duplicates $openRows; $dupClosed = Get-Duplicates $closedRows; $dupBody = Get-Duplicates $bodyNumbers
 $dupDetail = @()
 if ($dupOpen.Count) { $dupDetail += ('twice in the open table: ' + (Format-Numbers $dupOpen)) }
@@ -166,7 +174,9 @@ Assert-True ('R4 every listed item links to its own heading ({0} links)' -f $lin
 # its stated count is the last number in the text since the previous group closed. Nesting is allowed inside a
 # group; a parenthesis with no item link in it is prose.
 $NumberWords = @('one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty')
-$CountPattern = '(?i)\b(\d+|' + ($NumberWords -join '|') + ')\b'
+# A count stands alone: digits joined to a hyphen, a dot, a colon or a hash are a date, a version, a time or a mention
+# (2026-09-09, 1.2.8, #25), and the last of those before a parenthesis is not what the group says it holds.
+$CountPattern = '(?i)(?<![#\d.:-])\b(\d+|' + ($NumberWords -join '|') + ')\b(?![\d.:-])'
 function ConvertTo-Count([string]$token) {
     if ($token -match '^\d+$') { return [int]$token }
     return ([array]::IndexOf($NumberWords, $token.ToLowerInvariant()) + 1)
