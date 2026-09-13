@@ -235,9 +235,20 @@ function Invoke-LauncherRun([string]$Id, [string]$Lang) {
     $envReports = @(Get-ChildItem -LiteralPath $copy -Filter 'NetworkHealthCheck_ENVIRONMENT_*.txt' -ErrorAction SilentlyContinue) + @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'NetworkHealthCheck_ENVIRONMENT_*.txt' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $started })
     foreach ($e in $envReports) { if ($e.DirectoryName -ne $copy) { Copy-Item -LiteralPath $e.FullName -Destination $copy -Force } }
     $reports = @(Get-ChildItem -LiteralPath (Join-Path $copy 'Reports') -Filter '*.json' -ErrorAction SilentlyContinue)
+    # What PowerShell itself said, as the launcher kept it: PowerShellMessages_<stamp>.txt beside the copy, or
+    # NetworkHealthCheck_PowerShellMessages_<stamp>.txt in TEMP where the folder could not be written to. This is not
+    # the console text: the launcher's own suggested action names the signature refusal on every blocked run, in both
+    # languages ("if the file is not digitally signed or is blocked by a policy", and the same in zh-TW), so a
+    # scenario that reads the console output to decide WHICH policy refused the script finds that phrase whatever had
+    # refused it - which is how M8 could still have passed an application-control block (PR #65, round 1).
+    $messageFiles = @(Get-ChildItem -LiteralPath $copy -Filter 'PowerShellMessages_*.txt' -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $started }) + @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'NetworkHealthCheck_PowerShellMessages_*.txt' -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $started })
+    foreach ($m in $messageFiles) { if ($m.DirectoryName -ne $copy) { Copy-Item -LiteralPath $m.FullName -Destination $copy -Force } }
+    $messageFile = @($messageFiles | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
     return @{
         Copy = $copy; ExitCode = $r.ExitCode; Output = $r.Output
         LauncherError = $(if ($launcherError.Count) { Get-Content -LiteralPath $launcherError[0].FullName -Raw } else { '' })
+        PowerShellMessages = @($(if ($messageFile.Count) { Get-Content -LiteralPath $messageFile[0].FullName -ErrorAction SilentlyContinue } else { @() }))
+        PowerShellMessagesFile = $(if ($messageFile.Count) { $messageFile[0].Name } else { '' })
         EnvironmentReports = @($envReports | ForEach-Object { $_.FullName }); Reports = @($reports | ForEach-Object { $_.FullName })
     }
 }
@@ -888,8 +899,11 @@ function Get-Plan {
                # round 15), and not PowerShell's classification of it either: SecurityError and UnauthorizedAccess say
                # that a security policy refused the script, not which one, and what this scenario claims is the one it
                # applied (backlog #25). An environment report would mean the script started - a different policy, not this one.
-               $refusal = Get-SignatureRefusal $r.Output
-               if (-not $refusal.Matched) { $bad += ('the captured output does not carry the signature refusal itself - ' + $refusal.Detail) }
+               # Read from what PowerShell itself printed, which the launcher keeps in a file of its own, and never from
+               # the console text: the launcher's own suggested action names the signature refusal on every blocked run,
+               # so the console would carry the phrase whatever had refused the script (PR #65, round 1).
+               $refusal = Get-SignatureRefusal $r.PowerShellMessages
+               if (-not $refusal.Matched) { $bad += ('what PowerShell printed does not carry the signature refusal itself' + $(if ($r.PowerShellMessagesFile) { ' (' + $r.PowerShellMessagesFile + ')' } else { ' - and the launcher kept no messages file, so there is nothing to read it from' }) + ' - ' + $refusal.Detail) }
                if ($r.EnvironmentReports.Count) { $bad += ('an environment report was written ({0}): the script started, so it was not AllSigned that stopped it' -f $r.EnvironmentReports.Count) }
                # The policy is read again after the run: the precondition saw it before, and what this scenario claims is
                # that the refusal came from the policy in force while the launcher ran (backlog #25). A machine whose
@@ -898,7 +912,7 @@ function Get-Plan {
                $policyAfter = Get-MachinePolicyExecutionPolicy
                if ($policyAfter -ne 'AllSigned') { $bad += ('MachinePolicy is ' + $policyAfter + ' after the run, and AllSigned before it: what refused the script cannot be tied to the policy') }
                $shown = @($r.Output | Where-Object { $_.Trim() -ne '' } | Select-Object -First 4) -join ' / '
-               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; refusal: {2}; MachinePolicy after the run: {3}; what the user sees: {4}' -f $r.ExitCode, $r.EnvironmentReports.Count, $refusal.Detail, $policyAfter, $shown)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\PowerShellMessages_*.txt') }
+               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; refusal read from {2}: {3}; MachinePolicy after the run: {4}; what the user sees: {5}' -f $r.ExitCode, $r.EnvironmentReports.Count, $(if ($r.PowerShellMessagesFile) { $r.PowerShellMessagesFile } else { 'no messages file' }), $refusal.Detail, $policyAfter, $shown)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\PowerShellMessages_*.txt') }
            }
            # The revert restores what Prepare recorded, not a blank: a machine that had a policy before M8 gets it back, and the
            # verification compares with that, not with Undefined (Codex round 1 on PR #14). A scriptblock, evaluated at revert time.

@@ -754,6 +754,26 @@ if ($m8Hash37.Count -eq 1) {
 }
 Assert-True '37. M8 decides on this predicate' ($m8Calls37 -contains 'Get-SignatureRefusal') ('M8 Action calls: ' + ($m8Calls37 -join ', '))
 Assert-True '37. and reads the machine policy again inside the action, so the refusal is tied to the policy in force and not only to the one the precondition saw' ($m8Calls37 -contains 'Get-MachinePolicyExecutionPolicy') ('M8 Action calls: ' + ($m8Calls37 -join ', '))
+# Round 1 of PR #65: the predicate was being fed the launcher's console output, and the launcher's own suggested action
+# names the signature refusal on every blocked run - so the phrase was in the console whatever had refused the script,
+# and a refusal that was not about signing would have passed as M8 again through a door the predicate never saw. What
+# it may read is the file the launcher keeps PowerShell's own messages in. Two assertions: the launchers do carry the
+# phrase (the reason), and the scenario passes the messages rather than the console (the fix). If a launcher's wording
+# ever stops carrying it, the first fails and someone reads this again instead of the hazard quietly leaving the record.
+$carry37 = @()
+foreach ($lang37 in @('en-US', 'zh-TW')) {
+    $path37 = Join-Path $root ('healthcheck\' + $lang37 + '\Start-NetworkCheck-Console.cmd')
+    $lines37 = @()
+    if (Test-Path -LiteralPath $path37) { $lines37 = @(Get-Content -LiteralPath $path37 -Encoding UTF8) }
+    if ((Get-SignatureRefusal $lines37).Matched) { $carry37 += $lang37 }
+}
+Assert-True '37. both shipped console launchers print the signature phrase in their own suggested action, which is why the console is not what the predicate may read' ($carry37.Count -eq 2) ('launchers whose own text carries it: ' + $(if ($carry37.Count) { $carry37 -join ', ' } else { 'none' }))
+$fed37 = ''
+if ($m8Hash37.Count -eq 1 -and $pair37.Count -eq 1) {
+    $calls37 = @($pair37[0].Item2.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-SignatureRefusal' }, $true))
+    if ($calls37.Count -eq 1 -and $calls37[0].CommandElements.Count -ge 2) { $fed37 = [string]$calls37[0].CommandElements[1].Extent.Text }
+}
+Assert-True '37. and M8 feeds it what PowerShell printed, not the console the launcher wrote that suggestion into' ($fed37 -eq '$r.PowerShellMessages') ('fed with: ' + $(if ($fed37) { $fed37 } else { 'nothing this case could read' }))
 
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
