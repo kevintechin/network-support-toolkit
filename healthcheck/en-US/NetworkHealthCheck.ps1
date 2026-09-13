@@ -946,14 +946,17 @@ function Get-HostNameSyntaxProblem {
             }
             catch {
                 # The label as a whole is refused; the character that decides it is found one at a time, a surrogate
-                # pair as one, so that the reason can name it. None found means the label is too long once encoded.
+                # pair as one, so that the reason can name it; a lone surrogate - what a JSON escape of one half produces -
+                # has no code point and is named by its UTF-16 value (PR #58, round 1). None found means the label is too
+                # long once encoded.
                 $i = 0
                 while ($i -lt $normalized.Length) {
                     $unit = [string]$normalized[$i]
                     if ([char]::IsHighSurrogate($normalized[$i]) -and ($i + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$i + 1])) { $unit = $normalized.Substring($i, 2) }
                     $refused = $false
                     try { [void]$idn.GetAscii("a" + $unit + "b") } catch { $refused = $true }
-                    if ($refused) { return ("U+{0:X4} at position {1} cannot be encoded for the wire: IDNA refuses it" -f [char]::ConvertToUtf32($unit, 0), ($position + $i)) }
+                    $code = $(if ($unit.Length -eq 2) { [char]::ConvertToUtf32($unit, 0) } else { [int]$unit[0] })
+                    if ($refused) { return ("U+{0:X4} at position {1} cannot be encoded for the wire: IDNA refuses it" -f $code, ($position + $i)) }
                     $i += $unit.Length
                 }
                 return ("the label at position {0} cannot be encoded for the wire: IDNA refuses it, or it is longer than 63 characters once encoded" -f $position)
@@ -964,7 +967,7 @@ function Get-HostNameSyntaxProblem {
                 while ($index -lt $limit -and [char]::ToUpperInvariant($decoded[$index]) -eq [char]::ToUpperInvariant($normalized[$index])) { $index++ }
                 if ($index -ge $normalized.Length) { $index = $normalized.Length - 1 }
                 $code = [int]$normalized[$index]
-                if ([char]::IsHighSurrogate($normalized[$index]) -and ($index + 1) -lt $normalized.Length) { $code = [char]::ConvertToUtf32($normalized, $index) }
+                if ([char]::IsHighSurrogate($normalized[$index]) -and ($index + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$index + 1])) { $code = [char]::ConvertToUtf32($normalized, $index) }
                 return ("U+{0:X4} at position {1} would be dropped or changed by IDNA, so the name asked would not be the name configured" -f $code, ($position + $index))
             }
         }

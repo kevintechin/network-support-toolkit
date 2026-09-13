@@ -2713,13 +2713,15 @@ function Test-HostNameOracle([string]$x) {
 }
 $disagreements = New-Object System.Collections.Generic.List[string]
 $swept = 0
+# Every UTF-16 code unit, the lone surrogates included - a JSON escape of one half reaches the predicate as one - and
+# a predicate that throws instead of answering counts as a disagreement (PR #58, round 1).
 for ($c = 0; $c -le 0xFFFF; $c++) {
-    if ($c -ge 0xD800 -and $c -le 0xDFFF) { continue }
     $x = 'a' + [string][char]$c + 'b.example.com'
     $swept++
-    if ((Test-HostNameSyntax $x) -ne (Test-HostNameOracle $x)) { $disagreements.Add(('U+{0:X4}' -f $c)) }
+    $answer = $(try { Test-HostNameSyntax $x } catch { 'threw' })
+    if ($answer -ne (Test-HostNameOracle $x)) { $disagreements.Add(('U+{0:X4}' -f $c)) }
 }
-Assert-Equal ('#54 property: the predicate agrees with the rule on every BMP code point inside a label ({0} swept)' -f $swept) (@($disagreements | Select-Object -First 12) -join ' ') ''
+Assert-Equal ('#54 property: the predicate agrees with the rule on every BMP code unit inside a label, lone surrogates included ({0} swept)' -f $swept) (@($disagreements | Select-Object -First 12) -join ' ') ''
 # The three candidates the item named, answered - and the boundary's neighbours.
 Assert-Equal '#54 zero-width space is refused: IDNA would drop it and the name asked would differ' (Test-HostNameSyntax ('foo' + [string][char]0x200B + 'bar.example.com')) False
 Assert-Equal '#54 zero-width joiner is refused' (Test-HostNameSyntax ('foo' + [string][char]0x200D + 'bar.example.com')) False
@@ -2750,6 +2752,16 @@ Assert-Equal '#54 reason: the eszett is named where IDNA changes it' (([string](
 Assert-Equal '#54 reason: a full-width letter in the second label is placed after the first label' (([string](Get-HostNameSyntaxProblem ('ab.' + [string][char]0xFF45 + 'x.com'))) -match '(^|\D)4(\D|$)') True
 Assert-Equal '#54 reason: the bidirectional override is named' (([string](Get-HostNameSyntaxProblem ('foo' + [string][char]0x202E + 'bar.example.com'))) -match 'U\+202E') True
 Assert-Equal '#54 reason: a blank has one' (([string](Get-HostNameSyntaxProblem '   ')).Length -gt 0) True
+# A lone surrogate has no code point; the reason names its UTF-16 value instead of throwing (PR #58, round 1). The calls
+# are wrapped so that a throw is a failed assertion, not a skipped one.
+$loneHigh = $(try { [string](Get-HostNameSyntaxProblem ('foo' + [string][char]0xD800 + 'bar.example.com')) } catch { 'THREW: ' + $_.Exception.Message })
+Assert-Equal '#54 reason: a lone high surrogate is refused and named by its UTF-16 value' (($loneHigh -match 'U\+D800') -and ($loneHigh -match '(^|\D)4(\D|$)')) True
+$loneLow = $(try { [string](Get-HostNameSyntaxProblem ('foo' + [string][char]0xDC00 + 'bar.example.com')) } catch { 'THREW: ' + $_.Exception.Message })
+Assert-Equal '#54 reason: a lone low surrogate too' ($loneLow -match 'U\+DC00') True
+$highThenLetter = $(try { [string](Get-HostNameSyntaxProblem ('foo' + [string][char]0xD83D + 'x.example.com')) } catch { 'THREW: ' + $_.Exception.Message })
+Assert-Equal '#54 reason: a high surrogate followed by a letter is named by its own value' ($highThenLetter -match 'U\+D83D') True
+$pair = $(try { [string](Get-HostNameSyntaxProblem ('foo' + [char]::ConvertFromUtf32(0x1F600) + 'bar.example.com')) } catch { 'THREW: ' + $_.Exception.Message })
+Assert-Equal '#54 reason: a valid pair that IDNA accepts is a usable label' $pair ''
 Assert-Equal '#54 reason: a URL with a usable host adds nothing' ([string](Get-UrlHostProblemSuffix 'https://www.example.com/')) ''
 Assert-Equal '#54 reason: a URL whose host carries a zero-width space names it' (([string](Get-UrlHostProblemSuffix ('https://foo' + [string][char]0x200B + 'bar.example.com/'))) -match 'U\+200B') True
 Assert-Equal '#54 reason: a URL that fails for its scheme adds nothing' ([string](Get-UrlHostProblemSuffix 'ftp://example.com/')) ''

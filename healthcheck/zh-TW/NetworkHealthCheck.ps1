@@ -915,14 +915,15 @@ function Get-HostNameSyntaxProblem {
             }
             catch {
                 # 整個標籤被拒絕；決定它的字元一次一個找出來（代理對算一個），好讓理由寫得出它。一個都找不到就表示
-                # 標籤編碼後太長。
+                # 標籤編碼後太長。落單的代理字元——JSON 只逸出一半時就會產生——沒有碼位，就以它的 UTF-16 值命名（PR #58 第 1 輪）。
                 $i = 0
                 while ($i -lt $normalized.Length) {
                     $unit = [string]$normalized[$i]
                     if ([char]::IsHighSurrogate($normalized[$i]) -and ($i + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$i + 1])) { $unit = $normalized.Substring($i, 2) }
                     $refused = $false
                     try { [void]$idn.GetAscii("a" + $unit + "b") } catch { $refused = $true }
-                    if ($refused) { return ("位置 {1} 的 U+{0:X4} 無法編碼送上線：IDNA 拒絕它" -f [char]::ConvertToUtf32($unit, 0), ($position + $i)) }
+                    $code = $(if ($unit.Length -eq 2) { [char]::ConvertToUtf32($unit, 0) } else { [int]$unit[0] })
+                    if ($refused) { return ("位置 {1} 的 U+{0:X4} 無法編碼送上線：IDNA 拒絕它" -f $code, ($position + $i)) }
                     $i += $unit.Length
                 }
                 return ("位置 {0} 的標籤無法編碼送上線：IDNA 拒絕它，或編碼後超過 63 個字元" -f $position)
@@ -933,7 +934,7 @@ function Get-HostNameSyntaxProblem {
                 while ($index -lt $limit -and [char]::ToUpperInvariant($decoded[$index]) -eq [char]::ToUpperInvariant($normalized[$index])) { $index++ }
                 if ($index -ge $normalized.Length) { $index = $normalized.Length - 1 }
                 $code = [int]$normalized[$index]
-                if ([char]::IsHighSurrogate($normalized[$index]) -and ($index + 1) -lt $normalized.Length) { $code = [char]::ConvertToUtf32($normalized, $index) }
+                if ([char]::IsHighSurrogate($normalized[$index]) -and ($index + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$index + 1])) { $code = [char]::ConvertToUtf32($normalized, $index) }
                 return ("位置 {1} 的 U+{0:X4} 會被 IDNA 移除或改寫，送出去問的名字就不會是設定的名字" -f $code, ($position + $index))
             }
         }
