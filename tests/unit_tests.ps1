@@ -2703,7 +2703,8 @@ function Test-HostNameOracle([string]$x) {
         $a = $l
         if ($l -cmatch '[^\x00-\x7F]') {   # -cmatch: -match folds U+212A into K and U+0130 into I, found by this sweep's first run
             try { $n = $l.Normalize([Text.NormalizationForm]::FormC); $a = $idn.GetAscii($n); $u = $idn.GetUnicode($a) } catch { return $false }
-            if (-not [string]::Equals($u, $n, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+            $nf = [regex]::Replace($n, '[A-Z]', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $m.Value.ToLowerInvariant() })   # ASCII case alone (PR #58, round 2)
+            if ([string]::CompareOrdinal($u, $nf) -ne 0) { return $false }   # ordinal: -cne is a linguistic comparison that ignores a zero-width joiner and equates the eszett with ss
         }
         if ($a -cnotmatch '^[A-Za-z0-9_-]+$') { return $false }
         if ($a.Length -gt 63 -or $a.StartsWith('-') -or $a.EndsWith('-')) { return $false }
@@ -2739,6 +2740,13 @@ Assert-Equal '#54 full-width letters are refused: IDNA maps them to ASCII' (Test
 Assert-Equal '#54 a decomposed umlaut is usable: canonical composition is not a change' (Test-HostNameSyntax ('m' + [string][char]0x75 + [string][char]0x0308 + 'nchen.de')) True
 Assert-Equal '#54 a precomposed umlaut is usable' (Test-HostNameSyntax ('m' + [string][char]0xFC + 'nchen.de')) True
 Assert-Equal '#54 ASCII case is not a change' (Test-HostNameSyntax 'Example.COM') True
+# PR #58 round 2: only ASCII case may differ. A culture-free ignore-case comparison had let the long s pass as 's'.
+Assert-Equal '#54 the long s is refused: IDNA sends it as s' (Test-HostNameSyntax ('a' + [string][char]0x017F + 'b.example.com')) False
+Assert-Equal '#54 reason: the long s is named' (([string](Get-HostNameSyntaxProblem ('a' + [string][char]0x017F + 'b.example.com'))) -match 'U\+017F') True
+Assert-Equal '#54 the final sigma is refused: IDNA sends it as sigma' (Test-HostNameSyntax ('a' + [string][char]0x03C2 + '.example.com')) False
+Assert-Equal '#54 a capital non-ASCII letter is refused: the rule allows ASCII case only, and IDNA lowercases it' (Test-HostNameSyntax ([string][char]0xDC + 'BER.de')) False
+Assert-Equal '#54 the same letter in lowercase is usable' (Test-HostNameSyntax ([string][char]0xFC + 'ber.de')) True
+Assert-Equal '#54 ASCII capitals beside a non-ASCII letter are still not a change' (Test-HostNameSyntax ('Z' + [string][char]0xFC + 'RICH.ch')) True
 Assert-Equal '#54 an already-encoded label is an ASCII label' (Test-HostNameSyntax 'xn--kpry57d.tw') True
 Assert-Equal '#54 a bracketed IPv6 literal is usable' (Test-HostNameSyntax '[fe80::1]') True
 Assert-Equal '#54 a space inside a label is refused by the alphabet' (Test-HostNameSyntax 'foo bar.example.com') False

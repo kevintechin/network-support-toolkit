@@ -928,10 +928,18 @@ function Get-HostNameSyntaxProblem {
                 }
                 return ("位置 {0} 的標籤無法編碼送上線：IDNA 拒絕它，或編碼後超過 63 個字元" -f $position)
             }
-            if (-not [string]::Equals($decoded, $normalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+            # 比較前只折疊 ASCII 的大小寫：IDNA 會把 A-Z 變小寫，這是規則唯一容許的改變。不分文化的忽略大小寫比較折疊得
+            # 更多——U+017F（長 s）和「s」的大寫都是「S」，詞尾 sigma 和 sigma 也算同一個字母——讓 IDNA 會送成「asb」的
+            # 標籤以「a<U+017F>b」的樣子通過了（PR #58 第 2 輪）。IDNA 改動的其他一切，包括大寫的非 ASCII 字母，都算改變。
+            $folded = New-Object System.Text.StringBuilder
+            foreach ($ch in $normalized.ToCharArray()) { if ([int]$ch -ge 65 -and [int]$ch -le 90) { [void]$folded.Append([char]([int]$ch + 32)) } else { [void]$folded.Append($ch) } }
+            $folded = $folded.ToString()
+            # 用序數比較而不是 -cne：PowerShell 的字串運算子是語言學比較，不變文化會忽略零寬連接子和軟連字號、把 ß 和 ss
+            # 視為相等——正是這條規則要拒絕的情形。
+            if (-not [string]::Equals($decoded, $folded, [System.StringComparison]::Ordinal)) {
                 $index = 0
-                $limit = [math]::Min($decoded.Length, $normalized.Length)
-                while ($index -lt $limit -and [char]::ToUpperInvariant($decoded[$index]) -eq [char]::ToUpperInvariant($normalized[$index])) { $index++ }
+                $limit = [math]::Min($decoded.Length, $folded.Length)
+                while ($index -lt $limit -and [int]$decoded[$index] -eq [int]$folded[$index]) { $index++ }
                 if ($index -ge $normalized.Length) { $index = $normalized.Length - 1 }
                 $code = [int]$normalized[$index]
                 if ([char]::IsHighSurrogate($normalized[$index]) -and ($index + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$index + 1])) { $code = [char]::ConvertToUtf32($normalized, $index) }

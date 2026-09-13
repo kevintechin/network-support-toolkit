@@ -961,10 +961,19 @@ function Get-HostNameSyntaxProblem {
                 }
                 return ("the label at position {0} cannot be encoded for the wire: IDNA refuses it, or it is longer than 63 characters once encoded" -f $position)
             }
-            if (-not [string]::Equals($decoded, $normalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+            # ASCII case alone is folded before the comparison: IDNA lowercases A-Z, and that is the one change the rule
+            # allows. A culture-free ignore-case comparison folded more - U+017F (the long s) and 's' both uppercase to
+            # 'S', the final sigma and the sigma to one letter - and let a label IDNA sends as 'asb' pass as 'a<U+017F>b'
+            # (PR #58, round 2). Everything else IDNA changes, a capital non-ASCII letter included, is a change.
+            $folded = New-Object System.Text.StringBuilder
+            foreach ($ch in $normalized.ToCharArray()) { if ([int]$ch -ge 65 -and [int]$ch -le 90) { [void]$folded.Append([char]([int]$ch + 32)) } else { [void]$folded.Append($ch) } }
+            $folded = $folded.ToString()
+            # Ordinal, not -cne: PowerShell's string operators compare linguistically, and the invariant culture ignores a
+            # zero-width joiner or a soft hyphen and equates the eszett with ss - the cases this rule exists to refuse.
+            if (-not [string]::Equals($decoded, $folded, [System.StringComparison]::Ordinal)) {
                 $index = 0
-                $limit = [math]::Min($decoded.Length, $normalized.Length)
-                while ($index -lt $limit -and [char]::ToUpperInvariant($decoded[$index]) -eq [char]::ToUpperInvariant($normalized[$index])) { $index++ }
+                $limit = [math]::Min($decoded.Length, $folded.Length)
+                while ($index -lt $limit -and [int]$decoded[$index] -eq [int]$folded[$index]) { $index++ }
                 if ($index -ge $normalized.Length) { $index = $normalized.Length - 1 }
                 $code = [int]$normalized[$index]
                 if ([char]::IsHighSurrogate($normalized[$index]) -and ($index + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$index + 1])) { $code = [char]::ConvertToUtf32($normalized, $index) }
