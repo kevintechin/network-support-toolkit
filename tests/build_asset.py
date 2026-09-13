@@ -3,8 +3,8 @@
 construction; working-tree bytes, so the CRLF checkout is preserved; one top-level NetworkHealthCheck-<version>/ folder;
 deflate. The version is read from the en-US script. Prints the size and the SHA256 that go into the release notes.
 
-Every entry is stamped with the date of the commit the build is made from, so that the same commit gives the same
-archive byte for byte (backlog #21). Without that stamp zipfile writes the build time into each file entry, which is
+Every entry is stamped with the date of the last commit that touched healthcheck/, so that one package content
+gives one archive byte for byte, on any machine and from any ref that carries it (backlog #21). Without that stamp zipfile writes the build time into each file entry, which is
 why four CI builds of identical content produced four digests; the directory entries were already deterministic,
 because a bare ZipInfo dates from 1980, and they keep that date. The platform a ZipInfo would record - 0 on
 Windows, 3 elsewhere - is pinned as well, so the archive does not depend on the host that built it either. The stamp makes the digest a fact about the commit:
@@ -39,11 +39,20 @@ assert files and not any(f.startswith('Reports/') or '/Reports/' in f for f in f
 missing = [f for f in files if not (PACKAGE / f).is_file()]
 assert not missing, f'tracked but absent from the working tree: {missing}'
 
-# The commit's own date as UTC. A ZIP entry holds six numbers and no zone, so the seconds since the epoch are
-# converted here rather than by git: every git date format that renders a wall clock renders it in some machine's
-# zone - the committer's, or with -local the builder's - and a stamp that moves with the builder's zone is the
-# defect this is fixing, one hour at a time.
-commit = git('rev-parse', 'HEAD')
+# The date of the last commit that touched the packaged files, as UTC.
+#
+# Not of whatever commit is checked out: a pull request is built from an ephemeral merge commit that GitHub makes at
+# the moment the run starts, so the runner and this machine stamped one tree six seconds apart and the digests
+# differed while every byte of content matched (measured on PR #64, run 34776806390). The packaged files' own last
+# change is a fact both refs agree on, and it is the honest thing for the stamp to mean: this is when the package
+# last changed, whatever has happened around it since.
+#
+# A ZIP entry holds six numbers and no zone, so the seconds since the epoch are converted here rather than by git:
+# every git date format that renders a wall clock renders it in some machine's zone - the committer's, or with
+# -local the builder's - and a stamp that moves with the builder's zone is the same defect one hour at a time.
+commit = git('log', '-1', '--format=%H', '--', 'healthcheck')
+if not commit:
+    sys.exit('no commit in this history touches healthcheck/, so there is no date to stamp the asset with')
 stamp = time.gmtime(int(git('log', '-1', '--format=%ct', commit)))[:6]
 assert len(stamp) == 6 and stamp[0] >= 1980, f'unusable commit date: {stamp}'
 # A ZIP entry stores the second halved, so an odd second is written and read back as the even one below it
@@ -56,8 +65,8 @@ stamp = stamp[:5] + (stamp[5] - stamp[5] % 2,)
 # (PR #64, round 6).
 dirty = git('status', '--porcelain', '--untracked-files=no', '--', 'healthcheck')
 print(f'version {version}: {len(files)} tracked files')
-print('commit {}: {:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d} UTC, healthcheck/ {}'.format(
-    commit[:7], *stamp, 'has uncommitted changes - this digest is not reproducible from the commit' if dirty else 'clean'))
+print('healthcheck/ last changed in {}: {:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d} UTC, working tree {}'.format(
+    commit[:7], *stamp, 'has uncommitted changes - this digest is not reproducible from that commit' if dirty else 'clean'))
 
 
 def entry_for(name, date_time):
