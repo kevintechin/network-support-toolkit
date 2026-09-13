@@ -2684,7 +2684,7 @@ Assert-Equal '#34 call site: only after a run that exited 0' (($null -ne $guiIf)
 $consoleOnlyIf = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -match '^\(?\s*\$ConsoleOnly\s*\)?$' }, $true)
 Assert-Equal '#34 call site: not on the -ConsoleOnly path' (($null -ne $consoleOnlyIf) -and ($consoleOnlyIf.Clauses[0].Item2.Extent.Text -notmatch 'Wait-ForConsoleClose')) True
 
-# backlog #54: the host-name rule, tested at its boundary rather than by its members. The oracle below restates the
+# backlog #54, widened by #68: the host-name rule, tested at its boundary rather than by its members. The oracle restates the
 # rule from the item's decision in the plainest form - IPv6 literal with an optional numeric zone; otherwise labels
 # split on the four separators, the root dropped, each label IDNA-encoded and decoded back equal to itself up to
 # case and NFC, the encoded label letters, digits, hyphen and underscore only, 1-63 long, no hyphen at an edge, 253
@@ -2703,7 +2703,10 @@ function Test-HostNameOracle([string]$x) {
         $a = $l
         if ($l -cmatch '[^\x00-\x7F]') {   # -cmatch: -match folds U+212A into K and U+0130 into I, found by this sweep's first run
             try { $n = $l.Normalize([Text.NormalizationForm]::FormC); $a = $idn.GetAscii($n); $u = $idn.GetUnicode($a) } catch { return $false }
-            $nf = [regex]::Replace($n, '[A-Z]', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $m.Value.ToLowerInvariant() })   # ASCII case alone (PR #58, round 2)
+            # The invariant lowercase mapping (backlog #68), reached through TextInfo rather than through the
+            # String method the predicate calls, so that the two agree by the mapping and not by the call. They
+            # were measured to agree on every BMP code point on this runtime; the sweep below is the standing check.
+            $nf = [System.Globalization.CultureInfo]::InvariantCulture.TextInfo.ToLower($n)
             if ([string]::CompareOrdinal($u, $nf) -ne 0) { return $false }   # ordinal: -cne is a linguistic comparison that ignores a zero-width joiner and equates the eszett with ss
         }
         if ($a -cnotmatch '^[A-Za-z0-9_-]+$') { return $false }
@@ -2740,12 +2743,32 @@ Assert-Equal '#54 full-width letters are refused: IDNA maps them to ASCII' (Test
 Assert-Equal '#54 a decomposed umlaut is usable: canonical composition is not a change' (Test-HostNameSyntax ('m' + [string][char]0x75 + [string][char]0x0308 + 'nchen.de')) True
 Assert-Equal '#54 a precomposed umlaut is usable' (Test-HostNameSyntax ('m' + [string][char]0xFC + 'nchen.de')) True
 Assert-Equal '#54 ASCII case is not a change' (Test-HostNameSyntax 'Example.COM') True
-# PR #58 round 2: only ASCII case may differ. A culture-free ignore-case comparison had let the long s pass as 's'.
-Assert-Equal '#54 the long s is refused: IDNA sends it as s' (Test-HostNameSyntax ('a' + [string][char]0x017F + 'b.example.com')) False
-Assert-Equal '#54 reason: the long s is named' (([string](Get-HostNameSyntaxProblem ('a' + [string][char]0x017F + 'b.example.com'))) -match 'U\+017F') True
-Assert-Equal '#54 the final sigma is refused: IDNA sends it as sigma' (Test-HostNameSyntax ('a' + [string][char]0x03C2 + '.example.com')) False
-Assert-Equal '#54 a capital non-ASCII letter is refused: the rule allows ASCII case only, and IDNA lowercases it' (Test-HostNameSyntax ([string][char]0xDC + 'BER.de')) False
+# The fold is the invariant lowercase mapping (backlog #68). It must be exactly wide enough: a capital letter IDNA
+# merely lowercases is usable, and a letter IDNA maps to something else is still refused. Swept over the BMP, of the
+# 55,075 labels IDNA accepts at all, 806 code points became usable and 2,608 stayed refused; the five below are
+# the ones the item's acceptance named, and each is named here so that a runtime whose ToLowerInvariant treats
+# them differently fails here by name rather than by a count in the sweep. Only Windows PowerShell 5.1 on .NET
+# Framework was measured, which is what the tool ships on; whether another runtime folds U+0130 the way IDNA maps it
+# was not measured here, and this case is what would answer that on one.
+Assert-Equal '#68 the long s is refused: the fold leaves it and IDNA sends it as s' (Test-HostNameSyntax ('a' + [string][char]0x017F + 'b.example.com')) False
+Assert-Equal '#68 reason: the long s is named' (([string](Get-HostNameSyntaxProblem ('a' + [string][char]0x017F + 'b.example.com'))) -match 'U\+017F') True
+Assert-Equal '#68 the final sigma is refused: the fold leaves it and IDNA sends a sigma' (Test-HostNameSyntax ('a' + [string][char]0x03C2 + '.example.com')) False
+Assert-Equal '#68 reason: the final sigma is named' (([string](Get-HostNameSyntaxProblem ('a' + [string][char]0x03C2 + '.example.com'))) -match 'U\+03C2') True
+Assert-Equal '#68 the eszett is refused: the fold leaves it and IDNA sends ss' (Test-HostNameSyntax ('a' + [string][char]0x00DF + 'b.example.com')) False
+Assert-Equal '#68 the capital eszett is refused: the fold leaves it too' (Test-HostNameSyntax ('a' + [string][char]0x1E9E + 'b.example.com')) False
+Assert-Equal '#68 reason: the capital eszett is named' (([string](Get-HostNameSyntaxProblem ('a' + [string][char]0x1E9E + 'b.example.com'))) -match 'U\+1E9E') True
+Assert-Equal '#68 the dotted capital I is refused: the fold leaves it and IDNA sends i with a combining dot' (Test-HostNameSyntax ('a' + [string][char]0x0130 + 'b.example.com')) False
+Assert-Equal '#68 reason: the dotted capital I is named' (([string](Get-HostNameSyntaxProblem ('a' + [string][char]0x0130 + 'b.example.com'))) -match 'U\+0130') True
+# The widening itself: what #54's ASCII-only fold refused and this one accepts, because IDNA only lowercases it.
+Assert-Equal '#68 a capital non-ASCII letter is usable: IDNA lowercases it, so the name asked is the name configured' (Test-HostNameSyntax ([string][char]0xDC + 'BER.de')) True
+Assert-Equal '#68 reason: it has none' ([string](Get-HostNameSyntaxProblem ([string][char]0xDC + 'BER.de'))) ''
+Assert-Equal '#68 what it is asked as is the lowercase name' ((New-Object System.Globalization.IdnMapping).GetUnicode((New-Object System.Globalization.IdnMapping).GetAscii(([string][char]0xDC + 'BER.de')))) (([string][char]0xFC) + 'ber.de')
+Assert-Equal '#68 a capital sigma is usable' (Test-HostNameSyntax ('a' + [string][char]0x03A3 + 'b.example.com')) True
+Assert-Equal '#68 a capital A with a ring is usable' (Test-HostNameSyntax ('a' + [string][char]0x00C5 + 'b.example.com')) True
 Assert-Equal '#54 the same letter in lowercase is usable' (Test-HostNameSyntax ([string][char]0xFC + 'ber.de')) True
+# The Kelvin sign stays refused, and not by the fold: NFC turns it into an ASCII K, IDNA returns that K unchanged,
+# and the fold lowercases only the configured side - the asymmetry PR #58 round 1 put there on purpose.
+Assert-Equal '#68 the Kelvin sign is still refused' (Test-HostNameSyntax ('a' + [string][char]0x212A + 'b.example.com')) False
 Assert-Equal '#54 ASCII capitals beside a non-ASCII letter are still not a change' (Test-HostNameSyntax ('Z' + [string][char]0xFC + 'RICH.ch')) True
 Assert-Equal '#54 an already-encoded label is an ASCII label' (Test-HostNameSyntax 'xn--kpry57d.tw') True
 Assert-Equal '#54 a bracketed IPv6 literal is usable' (Test-HostNameSyntax '[fe80::1]') True
@@ -2822,9 +2845,13 @@ Assert-Equal '#54 reason: a URL whose host carries a zero-width space names it' 
 Assert-Equal '#54 reason: a URL that fails for its scheme adds nothing' ([string](Get-UrlHostProblemSuffix 'ftp://example.com/')) ''
 # PR #58 round 3: the URL's host is judged as written. System.Uri lowercases the host and normalises an internationalised
 # one before exposing .Host, which would have passed a spelling the rule refuses in a ping, DNS or TCP target.
-Assert-Equal '#54 url: a capital non-ASCII letter in the host is refused, as it is elsewhere' (Test-HttpTargetSyntax ('https://' + [string][char]0xDC + 'BER.de/')) False
+# Widened with the rule it asks (backlog #68): the URL path judges the host through Get-HostNameSyntaxProblem, so a
+# capital non-ASCII letter is usable here for the same reason it is in a ping target - and the URL's own wire check
+# below, which lowercases both sides, agreed with that already. What the host is judged as is still what was written.
+Assert-Equal '#68 url: a capital non-ASCII letter in the host is usable, as it is elsewhere' (Test-HttpTargetSyntax ('https://' + [string][char]0xDC + 'BER.de/')) True
+Assert-Equal '#68 url: it adds no reason' ([string](Get-UrlHostProblemSuffix ('https://' + [string][char]0xDC + 'BER.de/'))) ''
 Assert-Equal '#54 url: the lowercase form is usable' (Test-HttpTargetSyntax ('https://' + [string][char]0xFC + 'ber.de/')) True
-Assert-Equal '#54 url: reason names the capital letter as written' (([string](Get-UrlHostProblemSuffix ('https://' + [string][char]0xDC + 'BER.de/'))) -match 'U\+00DC') True
+Assert-Equal '#68 url: an eszett in the host is still refused and named' (([string](Get-UrlHostProblemSuffix ('https://stra' + [string][char]0x00DF + 'e.de/'))) -match 'U\+00DF') True
 Assert-Equal '#54 url: a zero-width space in the host is refused' (Test-HttpTargetSyntax ('https://foo' + [string][char]0x200B + 'bar.example.com/')) False
 Assert-Equal '#54 url: userinfo, port, path and query are not the host' (Test-HttpTargetSyntax 'https://user:pw@Example.COM:8443/a/b?c=d#e') True
 Assert-Equal '#54 url: the configured host is what the extractor returns' (Get-UrlConfiguredHost 'https://user:pw@Example.COM:8443/a/b?c=d#e') 'Example.COM'
