@@ -160,8 +160,8 @@ function New-StagedCopy {
     param([string]$Lang, [string]$Name, [switch]$WidenSampling)
     $dst = Join-Path $WorkDir ('stage\' + $Name + '\' + $Lang)
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
-    $stale = Join-Path $dst 'LauncherError.txt'
-    if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
+    # Since 1.2.14 the launcher's files carry a stamp in their names (backlog #47): every one left by an earlier run goes.
+    foreach ($stale in @(Get-ChildItem -LiteralPath $dst -Filter 'LauncherError*.txt' -File -ErrorAction SilentlyContinue) + @(Get-ChildItem -LiteralPath $dst -Filter 'PowerShellMessages_*.txt' -File -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $stale.FullName -Force }
     Get-ChildItem -LiteralPath (Join-Path $PackageDir $Lang) -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $dst -Force }
     if ($WidenSampling) {
         $cfg = Join-Path $dst 'NetworkHealthCheck.config.json'
@@ -976,7 +976,7 @@ function Invoke-WindowRun {
     # One real-window run through gui_check.ps1 - launched the way a person does it, through the shipped
     # Start-NetworkCheck.cmd / Start-NetworkCheck-IT.cmd - and the evidence it must leave: exit 0 (gui_check itself fails
     # on an IT entry that starts by itself, a user entry that does not, a Start click without effect, a nonzero process
-    # exit code or a LauncherError.txt); the launcher's effective command line carrying -Interactive -ExpandDetails for
+    # exit code or a LauncherError_<stamp>.txt); the launcher's effective command line carrying -Interactive -ExpandDetails for
     # the IT entry only; a JSON report whose run options match the launch (entry point, ExpandDetails, ping count and
     # sample seconds from the folder's configuration); the title carrying the IT marker for the IT entry only ("- IT" /
     # "(IT)" right before the closing quote of the window line); the window closed through its own Close button.
@@ -1153,8 +1153,10 @@ try {
         }
     }
     if ($selected -contains 'launcher') {
-        # The six language launchers through every reason they can stop for (backlog #28): the LauncherError.txt they
-        # leave suggests the action that fits the reason, not "extract the ZIP" for everything.
+        # The six language launchers through every reason they can stop for and the runs that must leave nothing behind
+        # (backlog #28, #47, #44, #34): the LauncherError_<stamp>.txt they leave suggests the action that fits the reason,
+        # not "extract the ZIP" for everything; what PowerShell printed is kept, named and printed back; the date names
+        # its pattern; a second attempt is a second file; a fallback run with its input redirected ends by itself.
         Invoke-Case 'launcher' 'both languages' {
             $r = Invoke-TestScript 'launcher_check.ps1' @('-PackageDir', $PackageDir, '-WorkDir', $WorkDir) 'launcher'
             $s = Get-SummaryLine $r.Output
@@ -1223,15 +1225,17 @@ try {
                 $expect = @{}
                 foreach ($k in $a.Expect.Keys) { $expect[$k] = $a.Expect[$k] }
                 if (-not $expect.ContainsKey('PingCount')) { $s = Get-ConfigSampling $stage; $expect['PingCount'] = $s.PingCount; $expect['SampleSeconds'] = $s.SampleSeconds }
-                $launcherError = Join-Path $stage 'LauncherError.txt'
-                if (Test-Path -LiteralPath $launcherError) { Remove-Item -LiteralPath $launcherError -Force }
+                # What the launcher may leave beside itself (stamped names since 1.2.14, backlog #47): none of it after a run that exits 0.
+                $launcherFiles = { @(Get-ChildItem -LiteralPath $stage -Filter 'LauncherError*.txt' -File -ErrorAction SilentlyContinue) + @(Get-ChildItem -LiteralPath $stage -Filter 'PowerShellMessages_*.txt' -File -ErrorAction SilentlyContinue) }
+                foreach ($f in @(& $launcherFiles)) { Remove-Item -LiteralPath $f.FullName -Force }
                 $factsBefore = Get-MachineFacts
                 $started = Get-Date
                 $logName = 'acceptance_' + ($a.Case -replace '[^\w-]', '_')
                 if ($a.Launcher) { $r = Invoke-Native $CmdExe @('/s', '/c', ('"' + (Join-Path $stage $a.Launcher) + '" <nul')) $logName }
                 else { $r = Invoke-Native $PsExe (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $stage 'NetworkHealthCheck.ps1')) + $a.Args) $logName }
                 if ($r.ExitCode -ne 0) { return @{ Passed = $false; Detail = ('exit code ' + $r.ExitCode) } }
-                if (Test-Path -LiteralPath $launcherError) { return @{ Passed = $false; Detail = 'the launcher wrote LauncherError.txt' } }
+                $left = @(& $launcherFiles)
+                if ($left.Count) { return @{ Passed = $false; Detail = ('the launcher left ' + (@($left | ForEach-Object { $_.Name }) -join ', ') + ' beside itself') } }
                 $json = Get-NewestJson (Join-Path $stage 'Reports') $started
                 if ($null -eq $json) { return @{ Passed = $false; Detail = 'exit 0 but no JSON report' } }
                 $factsAfter = Get-MachineFacts

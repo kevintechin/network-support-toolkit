@@ -6,3 +6,4 @@ healthcheck/tools/*.py text eol=lf
 healthcheck/SHA256SUMS.txt text eol=lf
 healthcheck/VALIDATION.md text eol=lf
 healthcheck/validation-matrix.html text eol=lf
+tests/probe-backlog-50/*.cmd text eol=crlf

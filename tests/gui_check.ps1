@@ -21,7 +21,7 @@ param(
 #               disabled or the window changing within 10 s).
 # Then wait for the JSON report, print the run options it recorded, close the window with its Close button, and exit
 # nonzero if anything above failed, if the launched process (or the launcher) did not exit 0, or if the launcher wrote
-# LauncherError.txt. WinForms controls surface as generic panes through UI Automation here, but their names, enabled
+# LauncherError_<stamp>.txt or left a PowerShellMessages_<stamp>.txt. WinForms controls surface as generic panes through UI Automation here, but their names, enabled
 # state and window classes are exact; the spinner values show up as the names of their inner edit controls.
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName UIAutomationClient
@@ -43,8 +43,9 @@ $ps = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 $cmd = Join-Path $env:SystemRoot "System32\cmd.exe"
 $script = Join-Path $PackageDir "NetworkHealthCheck.ps1"
 $reports = Join-Path $PackageDir "Reports"
-$launcherError = Join-Path $PackageDir "LauncherError.txt"
-if (Test-Path -LiteralPath $launcherError) { Remove-Item -LiteralPath $launcherError -Force }
+# The launcher's own files carry a stamp in their names since 1.2.14 (backlog #47); a run must leave none beside it.
+function Get-LauncherFiles { @(Get-ChildItem -LiteralPath $PackageDir -Filter "LauncherError*.txt" -File -ErrorAction SilentlyContinue) + @(Get-ChildItem -LiteralPath $PackageDir -Filter "PowerShellMessages_*.txt" -File -ErrorAction SilentlyContinue) }
+foreach ($stale in @(Get-LauncherFiles)) { Remove-Item -LiteralPath $stale.FullName -Force }
 
 function Get-NewReport([datetime]$Since) {
     Get-ChildItem -LiteralPath $reports -Filter "*.json" -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $Since } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -194,7 +195,8 @@ try {
     Send-Click $close
     if (-not $proc.WaitForExit(15000)) { throw "the window did not close within 15 s of the Close click" }
     "$tag closed via the Close button; process exit code $($proc.ExitCode)"
-    if (Test-Path -LiteralPath $launcherError) { throw "the launcher wrote LauncherError.txt: " + ((Get-Content -LiteralPath $launcherError -Raw) -replace '\s+', ' ') }
+    $left = @(Get-LauncherFiles)
+    if ($left.Count) { throw "the launcher left " + (@($left | ForEach-Object { $_.Name }) -join ', ') + ": " + ((Get-Content -LiteralPath $left[0].FullName -Raw) -replace '\s+', ' ') }
     if ($proc.ExitCode -ne 0) { throw "the launched process exited with code $($proc.ExitCode)" }
     exit 0
 }

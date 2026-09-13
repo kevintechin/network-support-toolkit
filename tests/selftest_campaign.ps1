@@ -33,7 +33,7 @@ $version = 'unknown'
 foreach ($line in [IO.File]::ReadLines((Join-Path $root 'healthcheck\en-US\NetworkHealthCheck.ps1'))) { if ($line -match '^\$script:ToolVersion\s*=\s*"([^"]+)"') { $version = $Matches[1]; break } }
 $top = Join-Path $WorkDir ('NetworkHealthCheck-' + $version)
 if (Test-Path -LiteralPath $top) { Remove-Item -LiteralPath $top -Recurse -Force }
-Get-ChildItem -LiteralPath (Join-Path $root 'healthcheck') -Recurse -File | Where-Object { $_.FullName -notmatch '\\Reports\\' -and $_.Name -ne 'LauncherError.txt' -and $_.Name -notlike 'NetworkHealthCheck_*_*.txt' } | ForEach-Object {
+Get-ChildItem -LiteralPath (Join-Path $root 'healthcheck') -Recurse -File | Where-Object { $_.FullName -notmatch '\\Reports\\' -and $_.Name -notlike 'LauncherError*.txt' -and $_.Name -notlike 'PowerShellMessages_*.txt' -and $_.Name -notlike 'NetworkHealthCheck_*_*.txt' } | ForEach-Object {
     $rel = $_.FullName.Substring((Join-Path $root 'healthcheck').Length).TrimStart('\')
     $target = Join-Path $top $rel
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
@@ -429,14 +429,16 @@ function Set-WrittenLater([string]$Path) {
     (Get-Item -LiteralPath $Path).LastWriteTime = (Get-Date).AddMinutes(5)
 }
 function New-LauncherError([string]$Dir, [string]$Reason) {
-    # The file the shipped launcher writes beside itself when it stops (Start-NetworkCheck.cmd, :launcher_error).
-    $text = "Network Health Check launcher error`r`n===================================`r`nDate/time: 05/09/2026 16:59:00`r`nComputer: DESKTOP-TEST`r`nUser: tester`r`nFolder: $Dir\`r`nScript: $Dir\NetworkHealthCheck.ps1`r`nPowerShell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`r`n`r`nError: $Reason`r`n`r`nSuggested action: extract the complete ZIP file to a local folder, then run Start-NetworkCheck.cmd again.`r`n"
-    $path = Join-Path $Dir 'LauncherError.txt'
+    # The file the shipped launcher writes beside itself when it stops (Start-NetworkCheck.cmd, :launcher_error), in
+    # the 1.2.14 shape: a stamped name, the short-date pattern beside the date, the PowerShell-messages line (backlog
+    # #47, #44).
+    $text = "Network Health Check launcher error`r`n===================================`r`nDate/time: 05/09/2026 16:59:00.00 (this computer's short-date pattern: dd/MM/yyyy)`r`nComputer: DESKTOP-TEST`r`nUser: tester`r`nFolder: $Dir\`r`nScript: $Dir\NetworkHealthCheck.ps1`r`nPowerShell: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`r`nPowerShell messages: none - PowerShell was not started`r`n`r`nError: $Reason`r`n`r`nSuggested action: extract the complete ZIP file to a local folder, then run Start-NetworkCheck.cmd again.`r`n"
+    $path = Join-Path $Dir 'LauncherError_0509202616590000.txt'
     [IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
     Set-WrittenLater $path
 }
 $answers26 = "M1=done`r`nM1/run-finished=done`r`n"
-# 26a - Windows 11: <guid>_<zip>.zip.<hex suffix>\<top>\en-US\ holding the launcher alone and its LauncherError.txt
+# 26a - Windows 11: <guid>_<zip>.zip.<hex suffix>\<top>\en-US\ holding the launcher alone and its LauncherError_<stamp>.txt
 $temp26a = (New-Item -ItemType Directory -Force -Path (Join-Path $WorkDir 'temp-26a')).FullName
 $view26a = New-ViewFolder $temp26a ('5d2b5f20-7a4f-4428-a382-e2e558bb2bc4_NetworkHealthCheck-' + $version + '.zip.bc4') ('NetworkHealthCheck-' + $version + '\en-US')   # the suffix is hex, as seen on the VM (.684, .bc4)
 Copy-Item -LiteralPath (Join-Path $top 'en-US\Start-NetworkCheck.cmd') -Destination $view26a
@@ -447,7 +449,7 @@ $s26a = Read-State $r26a.State
 Assert-True '26a. M1 PASS: the launcher stopped for the missing program file, as stock Windows makes it' ($s26a.Scenarios.M1.Result -eq 'PASS' -and $s26a.Scenarios.M1.Detail -like 'the launcher stopped in the view, as stock Windows makes it*NetworkHealthCheck.ps1 is missing*no report') ($s26a.Scenarios.M1.Result + ' / ' + $s26a.Scenarios.M1.Detail)
 $fromView26a = Join-Path $r26a.State 'M1\from-the-view'
 $listing26a = $(if (Test-Path -LiteralPath (Join-Path $fromView26a 'view-folder-listing.txt')) { Get-Content -LiteralPath (Join-Path $fromView26a 'view-folder-listing.txt') -Raw } else { '' })
-Assert-True '26a. LauncherError.txt was copied out and the listing shows the launcher alone, no program file' ((Test-Path -LiteralPath (Join-Path $fromView26a 'LauncherError.txt')) -and ($listing26a -match 'Start-NetworkCheck\.cmd \(') -and ($listing26a -notmatch 'NetworkHealthCheck\.ps1 \(')) ((@(Get-ChildItem -LiteralPath $fromView26a -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ', ') + ' / ' + $listing26a)
+Assert-True '26a. the LauncherError_<stamp>.txt was copied out and the listing shows the launcher alone, no program file' ((@(Get-ChildItem -LiteralPath $fromView26a -Filter 'LauncherError_*.txt' -File -ErrorAction SilentlyContinue).Count -eq 1) -and ($listing26a -match 'Start-NetworkCheck\.cmd \(') -and ($listing26a -notmatch 'NetworkHealthCheck\.ps1 \(')) ((@(Get-ChildItem -LiteralPath $fromView26a -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ', ') + ' / ' + $listing26a)
 Assert-True '26a. the screenshot is there and the exit code is 0' ((Test-Path -LiteralPath (Join-Path $r26a.State 'M1\M1_from_the_view.png')) -and $r26a.ExitCode -eq 0) ('exit code ' + $r26a.ExitCode)
 # 26b - Windows 10: Temp1_<zip>.zip\<top>\en-US\Reports\ holding a report with the compressed-folder warning row
 $temp26b = (New-Item -ItemType Directory -Force -Path (Join-Path $WorkDir 'temp-26b')).FullName

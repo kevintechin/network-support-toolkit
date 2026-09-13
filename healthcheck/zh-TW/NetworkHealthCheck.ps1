@@ -7139,6 +7139,33 @@ function Start-ConsoleMode {
     }
 }
 
+# 待辦 #34：視窗開不起來而退回文字模式的執行，是在啟動器開的那個黑色視窗裡結束的，而使用者與 IT 啟動器在結束代碼
+# 0 時會關掉那個視窗——視窗模式這樣是對的，人已經自己關掉工具了；退回模式卻不對，三個報告路徑是最後印出的東西。
+# 腳本只在這次執行確實是退回模式時才在這裡等一個按鍵：不是以 -ConsoleOnly 啟動（文字模式啟動器自己會暫停，而驗證
+# 鏈的文字模式執行不能等）、主控台前有人（排程工作或服務沒有）、而且標準輸入沒有被導向（餵 NUL 的測試工具絕不能被
+# 卡住）。每個條件都是參數、預設值就是即時的值，讓這個決定不需要主控台也能測；ReadKey 本身也有防護，因為沒有鍵盤的
+# 主機會擲出例外。回傳值是有沒有等。呼叫端再加第四個條件：只在退回執行以 0 結束之後——其他結束代碼由啟動器自己
+# 在它的錯誤下方暫停，再多一個宣稱有報告路徑可讀的提示會錯兩次。
+function Wait-ForConsoleClose {
+    param(
+        [bool]$ConsoleOnlyRun = [bool]$ConsoleOnly,
+        [bool]$UserInteractive = [Environment]::UserInteractive,
+        [bool]$InputRedirected = [Console]::IsInputRedirected
+    )
+    if ($ConsoleOnlyRun -or (-not $UserInteractive) -or $InputRedirected) {
+        return $false
+    }
+    try {
+        Write-Host ""
+        Write-Host "視窗會留著，好讓上面的報告路徑能被讀到。請按任意鍵關閉。"
+        [void][Console]::ReadKey($true)
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
 # -----------------------------------------------------------------------------
 # 使用者介面：Windows Forms 圖形介面；無法載入時由外層切換至文字模式。
 # -----------------------------------------------------------------------------
@@ -7643,6 +7670,7 @@ try {
         }
         else {
             $exitCode = Start-ConsoleMode
+            if ($exitCode -eq 0) { [void](Wait-ForConsoleClose) }
         }
     }
 }
