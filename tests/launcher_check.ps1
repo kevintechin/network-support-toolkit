@@ -231,9 +231,15 @@ foreach ($lang in @('en-US', 'zh-TW')) {
         if ($tempReports.Count -eq 1 -and $tempMessages.Count -eq 1) {
             $lines = @(Get-Content -LiteralPath $tempReports[0].FullName -Encoding UTF8)
             Assert-True "$case - the report carries the same lines as one beside the launcher, the pattern included" (@(Get-Line $lines $L.Date).Count -eq 1 -and @(Get-Line $lines $L.Messages).Count -eq 1 -and @(Get-Line $lines $L.Suggested).Count -eq 1 -and ($null -eq $shortDate -or [string]@(Get-Line $lines $L.Date)[0] -like ('*' + $shortDate + '*'))) ($lines -join ' | ')
-            Assert-True "$case - the messages line names the file in the temporary folder" ([string]@(Get-Line $lines $L.Messages)[0] -like ('*' + $tempMessages[0].FullName)) ([string]@(Get-Line $lines $L.Messages)[0])
+            # The launcher prints %TEMP% as the shell holds it, which on a GitHub runner is the 8.3 form (C:\Users\RUNNER~1\...),
+            # while Get-ChildItem returns the long form: the printed path is resolved through the file system before the comparison.
+            $namedPath = ([string]@(Get-Line $lines $L.Messages)[0]).Substring($L.Messages.Length)
+            $resolvedMessages = $(try { (Get-Item -LiteralPath $namedPath -ErrorAction Stop).FullName } catch { $namedPath })
+            Assert-True "$case - the messages line names the file in the temporary folder" ($resolvedMessages -eq $tempMessages[0].FullName) $namedPath
             Assert-True "$case - the messages file holds what PowerShell printed" ([IO.File]::ReadAllText($tempMessages[0].FullName, $utf8NoBom).Contains($marker)) 'marker missing'
-            Assert-True "$case - the screen names the report in the temporary folder" (@($r.Output | Where-Object { $_.Contains($tempReports[0].FullName) }).Count -ge 1) ((@($r.Output | Select-Object -Last 6)) -join ' | ')
+            $screenReport = [string]@($r.Output | ForEach-Object { [regex]::Match($_, '"([^"]*NetworkHealthCheck_LauncherError_[^"]+\.txt)"') } | Where-Object { $_.Success } | ForEach-Object { $_.Groups[1].Value })[0]
+            $resolvedReport = $(try { (Get-Item -LiteralPath $screenReport -ErrorAction Stop).FullName } catch { $screenReport })
+            Assert-True "$case - the screen names the report in the temporary folder" ($resolvedReport -eq $tempReports[0].FullName) ((@($r.Output | Select-Object -Last 6)) -join ' | ')
         }
         foreach ($f in @($tempReports) + @($tempMessages)) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue }
     }
