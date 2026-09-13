@@ -63,7 +63,7 @@ function Get-Slug([string]$heading) {
 function Format-Numbers($numbers) { return (@(@($numbers) | Sort-Object { [int]$_ } -Unique | ForEach-Object { '#' + $_ }) -join ', ') }
 function Get-Duplicates($list) { return @(@($list) | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name }) }
 function Find-Line([string[]]$lines, [string]$wanted) {
-    for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i].Trim() -ceq $wanted) { return $i } }
+    for ($i = 0; $i -lt $lines.Count; $i++) { if ([string]::Equals($lines[$i].Trim(), $wanted, [StringComparison]::Ordinal)) { return $i } }
     return -1
 }
 
@@ -153,7 +153,7 @@ $wrongAnchor = @()
 foreach ($link in $links) {
     if (-not $headings.ContainsKey($link.Number)) { continue }
     $expected = 'docs/backlog.md#' + (Get-Slug $headings[$link.Number])
-    if ($link.Target -cne $expected) { $wrongAnchor += ('{0} should be [#{1}]({2})' -f $link.Text, $link.Number, $expected) }
+    if (-not [string]::Equals($link.Target, $expected, [StringComparison]::Ordinal)) { $wrongAnchor += ('{0} should be [#{1}]({2})' -f $link.Text, $link.Number, $expected) }
 }
 Assert-True ('R4 every listed item links to its own heading ({0} links)' -f $links.Count) ($wrongAnchor.Count -eq 0) ($wrongAnchor -join '; ')
 
