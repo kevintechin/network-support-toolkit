@@ -954,7 +954,13 @@ function Get-HostNameSyntaxProblem {
                 if ($culprit -ge 0) {
                     $unit = [string]$units[$culprit].Unit
                     $code = $(if ($unit.Length -eq 2) { [char]::ConvertToUtf32($unit, 0) } else { [int]$unit[0] })
-                    $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
+                    # 是搜尋選中的那一次出現，不是第一次：重複的字元可能在一處合法、在另一處不合法（第 10 輪），所以先數它在
+                    # 正規化標籤裡前面出現了幾次，再到設定的標籤裡找同一次出現。
+                    $before = 0
+                    for ($w = 0; $w -lt $culprit; $w++) { if ([string]::Equals([string]$units[$w].Unit, $unit, [System.StringComparison]::Ordinal)) { $before++ } }
+                    $at = -1
+                    $from = 0
+                    for ($w = 0; $w -le $before; $w++) { $at = $label.IndexOf($unit, $from, [System.StringComparison]::Ordinal); if ($at -lt 0) { break }; $from = $at + $unit.Length }
                     if ($at -lt 0) { $at = [int]$units[$culprit].Offset }
                     return ("位置 {1} 的 U+{0:X4} 無法編碼送上線：IDNA 拒絕它" -f $code, (& $scalarPosition ($position - 1 + $at)))
                 }
@@ -978,7 +984,12 @@ function Get-HostNameSyntaxProblem {
                 if ([char]::IsHighSurrogate($normalized[$index]) -and ($index + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$index + 1])) { $code = [char]::ConvertToUtf32($normalized, $index); $unit = $normalized.Substring($index, 2) }
                 # 位置是設定的標籤裡那個字元的位置：NFC 組合可能讓這個索引之前的標籤變短，所以到操作者打的那個標籤裡找
                 # 它（第 5 輪）。
-                $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
+                $before = 0
+                $from = 0
+                while ($true) { $hit = $normalized.IndexOf($unit, $from, [System.StringComparison]::Ordinal); if ($hit -lt 0 -or $hit -ge $index) { break }; $before++; $from = $hit + $unit.Length }
+                $at = -1
+                $from = 0
+                for ($w = 0; $w -le $before; $w++) { $at = $label.IndexOf($unit, $from, [System.StringComparison]::Ordinal); if ($at -lt 0) { break }; $from = $at + $unit.Length }
                 if ($at -lt 0) { $at = $index }
                 return ("位置 {1} 的 U+{0:X4} 會被 IDNA 移除或改寫，送出去問的名字就不會是設定的名字" -f $code, (& $scalarPosition ($position - 1 + $at)))
             }

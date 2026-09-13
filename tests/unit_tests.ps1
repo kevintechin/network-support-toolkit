@@ -2797,6 +2797,14 @@ $twoOverrides = [string](Get-HostNameSyntaxProblem ('a' + [string][char]0x202E +
 Assert-Equal '#54 context: two prohibited characters name the first, at its position' (($twoOverrides -match 'U\+202E') -and ($twoOverrides -match '(^|\D)2(\D|$)')) True
 $longWithAccent = [string](Get-HostNameSyntaxProblem (('a' * 63) + [string][char]0xE9 + '.example.com'))
 Assert-Equal '#54 context: 64 characters ending in an accent is the length, not the accent' (($longWithAccent -match '63') -and ($longWithAccent -notmatch 'U\+00E9')) True
+# PR #58 round 10: the occurrence reported is the one the search selected. Under IDNA2008's ContextJ the second joiner of
+# 'b<ZWNJ>b<ZWNJ>' (Arabic letters) is the invalid one and is reported at position 4; this runtime (IDNA2003) maps the
+# joiner away and reports the first at position 2 as dropped - either is the same character at the occurrence that decided it.
+$twoJoiners = [string](Get-HostNameSyntaxProblem ($arabic + [string][char]0x200C + $arabic + [string][char]0x200C + '.example.com'))
+Assert-Equal '#54 occurrence: a repeated joiner is named at the occurrence that decided it, on either runtime' (($twoJoiners -match 'U\+200C') -and (($twoJoiners -match '(^|\D)2(\D|$)') -or ($twoJoiners -match '(^|\D)4(\D|$)'))) True
+# The mapping itself, on this runtime: the second of two overrides is reached through the pair search with the first one
+# removed, so the first is the one named - and the position is the first's, not the second's.
+Assert-Equal '#54 occurrence: two overrides name the first at the first''s position' (([string](Get-HostNameSyntaxProblem ('ab' + [string][char]0x202E + 'c' + [string][char]0x202E + '.de'))) -match '(^|\D)3(\D|$)') True
 Assert-Equal '#54 reason: the bidirectional override is named' (([string](Get-HostNameSyntaxProblem ('foo' + [string][char]0x202E + 'bar.example.com'))) -match 'U\+202E') True
 Assert-Equal '#54 reason: a blank has one' (([string](Get-HostNameSyntaxProblem '   ')).Length -gt 0) True
 # A lone surrogate has no code point; the reason names its UTF-16 value instead of throwing (PR #58, round 1). The calls

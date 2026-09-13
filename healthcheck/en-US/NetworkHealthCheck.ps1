@@ -989,7 +989,14 @@ function Get-HostNameSyntaxProblem {
                 if ($culprit -ge 0) {
                     $unit = [string]$units[$culprit].Unit
                     $code = $(if ($unit.Length -eq 2) { [char]::ConvertToUtf32($unit, 0) } else { [int]$unit[0] })
-                    $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
+                    # The occurrence the search selected, not the first: a repeated character can be valid in one place and
+                    # not in another (round 10), so the occurrences before it in the normalised label are counted and the
+                    # same occurrence is found in the label as configured.
+                    $before = 0
+                    for ($w = 0; $w -lt $culprit; $w++) { if ([string]::Equals([string]$units[$w].Unit, $unit, [System.StringComparison]::Ordinal)) { $before++ } }
+                    $at = -1
+                    $from = 0
+                    for ($w = 0; $w -le $before; $w++) { $at = $label.IndexOf($unit, $from, [System.StringComparison]::Ordinal); if ($at -lt 0) { break }; $from = $at + $unit.Length }
                     if ($at -lt 0) { $at = [int]$units[$culprit].Offset }
                     return ("U+{0:X4} at position {1} cannot be encoded for the wire: IDNA refuses it" -f $code, (& $scalarPosition ($position - 1 + $at)))
                 }
@@ -1014,7 +1021,12 @@ function Get-HostNameSyntaxProblem {
                 if ([char]::IsHighSurrogate($normalized[$index]) -and ($index + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$index + 1])) { $code = [char]::ConvertToUtf32($normalized, $index); $unit = $normalized.Substring($index, 2) }
                 # The position is the character's in the label as configured: NFC composition may have shortened the
                 # label before this index, so the character is looked for where the operator typed it (round 5).
-                $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
+                $before = 0
+                $from = 0
+                while ($true) { $hit = $normalized.IndexOf($unit, $from, [System.StringComparison]::Ordinal); if ($hit -lt 0 -or $hit -ge $index) { break }; $before++; $from = $hit + $unit.Length }
+                $at = -1
+                $from = 0
+                for ($w = 0; $w -le $before; $w++) { $at = $label.IndexOf($unit, $from, [System.StringComparison]::Ordinal); if ($at -lt 0) { break }; $from = $at + $unit.Length }
                 if ($at -lt 0) { $at = $index }
                 return ("U+{0:X4} at position {1} would be dropped or changed by IDNA, so the name asked would not be the name configured" -f $code, (& $scalarPosition ($position - 1 + $at)))
             }
