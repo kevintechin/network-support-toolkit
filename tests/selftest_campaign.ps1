@@ -359,6 +359,7 @@ $r21 = Invoke-Campaign 'marked' @('-Zip', $zipMarked, '-Scenarios', 'M2', '-Work
 $s21 = Read-State $r21.State
 Assert-True '21. M2 FAIL for the missing extraction and report, with the marks recorded - the download''s carrying the way it got there (backlog #30: this copy was marked by hand, and the row says so)' ($s21.Scenarios.M2.Result -eq 'FAIL' -and $s21.Scenarios.M2.Detail -like '*no en-US report*' -and $s21.Scenarios.M2.Detail -like '*download mark: ZoneId=3, applied deliberately*') ($s21.Scenarios.M2.Result + ' / ' + $s21.Scenarios.M2.Detail)
 Assert-True '21. the screenshot was taken and the observation recorded' ((Test-Path -LiteralPath (Join-Path $r21.State 'M2\M2_after_double-click.png')) -and (@(Get-Content -LiteralPath (Join-Path $r21.State 'answers.log') | Where-Object { $_ -match ' M2/windows-showed = 3$' }).Count -eq 1)) 'screenshot or answer missing'
+Assert-True '21. the prerequisite that let it run said what the mark is and how far the stream accounts for it - the branch no skip reaches (backlog #30)' (@($r21.Output | Where-Object { $_ -match 'prerequisite met - the download is marked: ZoneId=3, applied deliberately' }).Count -eq 1) (($r21.Output | Where-Object { $_ -match 'prerequisite met' }) -join ' / ')
 Assert-True '21. exit code 1' ($r21.ExitCode -eq 1) ('exit code ' + $r21.ExitCode)
 
 # -------------------- 22. -SkipGui drops every desktop scenario --------------------
@@ -698,6 +699,26 @@ if ($defs37.ContainsKey('Get-SignatureRefusal') -and $defs37['Get-SignatureRefus
     Invoke-Expression $defs37['Get-SignatureRefusal'][0].Extent.Text
 }
 Assert-True '37. it calls no function of the driver that this case has not loaded, so what runs here is what runs there' ($needs37.Count -eq 0) ('also needed: ' + ($needs37 -join ', '))
+function Get-FreeVariables($Function) {
+    # What the body reads without having taken it as a parameter, assigned it, or been given it by the loop it is in.
+    # A function that reads a variable of the driver behaves differently here, where that variable does not exist, and
+    # PowerShell says nothing about it - an unset variable is $null. Automatic variables and the environment are not
+    # the driver's state and are left out; a scope-qualified read ($script:x) is the driver's and is not.
+    $auto = @('_', 'PSItem', 'true', 'false', 'null', 'Matches', 'args', 'PSScriptRoot', 'PSCommandPath')
+    $declared = @()
+    if ($Function.Parameters) { $declared += @($Function.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) }
+    $declared += @($Function.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.Left.VariablePath.UserPath })
+    $declared += @($Function.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.ForEachStatementAst] }, $true) | ForEach-Object { $_.Variable.VariablePath.UserPath })
+    return @($Function.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { [string]$_.VariablePath.UserPath } | Where-Object { $_ -and ($declared -notcontains $_) -and ($auto -notcontains $_) -and ($_ -notlike 'env:*') } | Sort-Object -Unique)
+}
+$free37 = @()
+if ($defs37.ContainsKey('Get-SignatureRefusal') -and $defs37['Get-SignatureRefusal'].Count -eq 1) { $free37 = @(Get-FreeVariables $defs37['Get-SignatureRefusal'][0]) }
+Assert-True '37. and it reads no variable of the driver either, which would be $null here and say nothing about it' ($free37.Count -eq 0) ('free variables: ' + ($free37 -join ', '))
+# A check nobody has seen fire is a check nobody has tested: the same reading, on a function of the driver that does
+# read one of its variables, has to name that variable.
+$control37 = @()
+if ($defs37.ContainsKey('Get-MachinePolicyExecutionPolicy')) { $control37 = @(Get-FreeVariables $defs37['Get-MachinePolicyExecutionPolicy'][0]) }
+Assert-True '37. the reading is not vacuous: on Get-MachinePolicyExecutionPolicy, which reads the driver''s $PsExe, it names it' ($control37 -contains 'PsExe') ('free variables found there: ' + ($control37 -join ', '))
 # The three shapes: a security refusal that is not about signing - PowerShell's documented wording for a Software
 # Restriction Policy, carrying the classification and no signature message - and the signature refusal in each language
 # the driver reads. The zh-TW message is built from its code points because this file is ASCII and carries no
