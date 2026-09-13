@@ -185,6 +185,27 @@ function Get-ScriptFacts([string]$scriptPath) {
         ExitCodes = @($exits | Sort-Object -Unique); ExitShapes = @($exitShapes | Sort-Object -Unique)
     }
 }
+function Remove-IndentedCode([string]$text) {
+    # Markdown's third code form: four spaces or a tab, in a place where a paragraph could have started. Inside a
+    # list those same four spaces are the item's own continuation and the text in them is ordinary - stripping
+    # every indented line would hide emphasis a manual really carries and report a verdict as undocumented, so the
+    # condition is what is written here rather than a pattern (PR #64, round 9).
+    $lines = $text -split '\r?\n'
+    $out = New-Object System.Collections.Generic.List[string]
+    $inList = $false
+    foreach ($line in $lines) {
+        if ($line -match '^\s*$') { $out.Add($line); continue }
+        $indented = $line -match '^(?: {4,}|\t)'
+        if (-not $indented) {
+            $inList = ($line -match '^\s{0,3}(?:[-*+]\s|[0-9]+[.)]\s)')
+            $out.Add($line)
+            continue
+        }
+        if ($inList) { $out.Add($line) } else { $out.Add(' ') }
+    }
+    return ($out -join [Environment]::NewLine)
+}
+
 function Get-EmphasisSpans([string]$path) {
     # Unique, case-sensitively: a manual writes both `**Information**` and `**information**`, and a fold would keep
     # one of them - which is how the strings this reader exists for came to be missing from it (PR #64, round 2).
@@ -213,6 +234,7 @@ function Get-EmphasisSpans([string]$path) {
         # Markdown fences with tildes as well as with backticks, and a ~~~ block is code just the same.
         $text = [regex]::Replace($text, '(?m)^(~{3,})[^\r\n]*\r?\n[\s\S]*?^\1[^\r\n]*$', ' ')
         $text = [regex]::Replace($text, '(?s)(`+)(?:(?!\1).)*\1', ' ')
+        $text = Remove-IndentedCode $text
         foreach ($m in [regex]::Matches($text, '\*\*([^*\r\n]+)\*\*')) { $out.Add($m.Groups[1].Value.Trim()) }
         foreach ($m in [regex]::Matches($text, '(?<![*\w])\*([^*\r\n]+)\*(?![*\w])')) { $out.Add($m.Groups[1].Value.Trim()) }
     }

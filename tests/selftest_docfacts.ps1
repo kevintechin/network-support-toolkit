@@ -83,6 +83,18 @@ function Assert-Catches([string]$name, [string]$expectedCheck, [scriptblock]$mut
     else { $script:fails++; Write-Output ("[FAIL] {0} -> expected {1} to fail; got: {2}" -f $name, $expectedCheck, $(if ($failed.Count) { $failed -join ' | ' } else { 'nothing failed' })) }
 }
 
+function Assert-StillClean([string]$name, [scriptblock]$change) {
+    # A change a document may legitimately carry: the step has to keep passing, or a well-formed manual is refused.
+    try { & $change }
+    catch { Restore-All; $script:fails++; Write-Output ("[FAIL] {0} -> the change could not be applied: {1}" -f $name, $_.Exception.Message); return }
+    $r = Invoke-DocFacts @()
+    Restore-All
+    $summary = [string]@($r.Output | Where-Object { $_ -match '^Summary:' })[-1]
+    $ok = ($r.ExitCode -eq 0) -and ($summary -match '^Summary:\s+\d+ passed, 0 failed')
+    if ($ok) { $script:passes++; Write-Output "[PASS] $name -> still $summary" }
+    else { $script:fails++; Write-Output ("[FAIL] {0} -> expected nothing to fail; got: {1}" -f $name, (@($r.Output | Where-Object { $_ -like '`[FAIL`]*' }) -join ' | ')) }
+}
+
 function New-ReportFixture([string]$name, [string]$verdict, [string[]]$statuses, [string]$code = 'PASS') {
     $results = @($statuses | ForEach-Object { '{ "Status": "' + $_ + '", "Tag": "ping-target" }' })
     $json = '{ "SchemaVersion": "2", "Overall": { "Code": "' + $code + '", "Text": "' + $verdict + '" }, "Results": [' + ($results -join ', ') + '] }'
@@ -375,6 +387,20 @@ Assert-Catches 'a user manual moving a verdict into a tilde-fenced block' 'G1' {
     $fenced = "~~~text" + [Environment]::NewLine + "**Overall Healthy**" + [Environment]::NewLine + "~~~"
     Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', $fenced))
     Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('<span class="verdict pass">Overall Healthy</span>', '<pre><strong>Overall Healthy</strong></pre>'))
+}
+
+Assert-Catches 'a user manual indenting a verdict into markdown code' 'G1' {
+    # Four spaces where a paragraph could have started: markdown renders the line as code (PR #64, round 9).
+    $indented = [Environment]::NewLine + [Environment]::NewLine + '    **Overall Healthy**' + [Environment]::NewLine
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', $indented))
+    Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('<span class="verdict pass">Overall Healthy</span>', '<pre>  <strong>Overall Healthy</strong></pre>'))
+}
+
+# 5n - and the other direction of that rule: inside a list those four spaces are the item's own text, and a reader
+# that took them for code would report a verdict the manual does quote.
+Assert-StillClean 'an indented continuation of a list item is text, not code' {
+    $continued = '- a list item' + [Environment]::NewLine + '    **Overall Healthy** continues it' + [Environment]::NewLine + [Environment]::NewLine + '**Overall Healthy**'
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', $continued))
 }
 
 # 5m - and the control the third finding is about: a file a run leaves behind is not a file the package ships, so
