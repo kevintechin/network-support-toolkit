@@ -81,6 +81,7 @@ $WorkDir = (Resolve-Path -LiteralPath $WorkDir).Path
 $Results = New-Object System.Collections.ArrayList
 $ChainStarted = Get-Date
 $script:UserReportPath = $null   # the en-US user report the acceptance step produced in this invocation, for the resultset step
+$script:UserReports = @{}        # the user report of each language, for the manuals' report strings (backlog #33, tier 2)
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 function Invoke-Native {
@@ -1278,6 +1279,7 @@ try {
                 if ($null -eq $json) { return @{ Passed = $false; Detail = 'exit 0 but no JSON report' } }
                 $factsAfter = Get-MachineFacts
                 $d = Read-Report $json
+                if ($a.Expect['EntryPoint'] -eq 'User') { $script:UserReports[$a.Lang] = $json.FullName }
                 if ($a.Lang -eq 'en-US' -and $a.Expect['EntryPoint'] -eq 'User') { $script:UserReportPath = $json.FullName }
                 $resultSet = Test-ResultSetForRun $d (Read-Config $stage) $expect $factsBefore $factsAfter
                 $bad = @(Test-ReportExpectations $d $expect) + @($resultSet.Mismatches)
@@ -1285,6 +1287,22 @@ try {
                 if ($bad.Count) { $detail = ($bad -join '; ') + ' | ' + $detail }
                 @{ Passed = ($bad.Count -eq 0); Detail = $detail }
             }
+        }
+    }
+    if (($selected -contains 'acceptance') -and $script:UserReports.Count) {
+        # backlog #33, tier 2: what a run puts on the screen, against the manual that explains it. The strings the
+        # scripts define are checked in the docfacts step, which needs no run; this is the half that does - the
+        # verdict this run reached and the badge of every row it wrote - so it lives beside the reports it reads.
+        Invoke-Case 'acceptance' 'the manuals against the reports of this run' {
+            $details = @(); $ok = $true
+            foreach ($lang in @($script:UserReports.Keys | Sort-Object)) {
+                $args = @('-PackageDir', $PackageDir, '-RepoRoot', $Root, '-ReportOnly', '-ReportPath', $script:UserReports[$lang], '-ReportLanguage', $lang)
+                $r = Invoke-TestScript 'doc_facts.ps1' $args ('docfacts_report_' + $lang)
+                $s = Get-SummaryLine $r.Output
+                if (($r.ExitCode -ne 0) -or -not (Test-SummaryClean $s)) { $ok = $false }
+                $details += ('{0} {1}' -f $lang, $(if ($s) { $s -replace '^Summary: ', '' } else { 'no summary' }))
+            }
+            @{ Passed = $ok; Detail = ($details -join '; ') }
         }
     }
     if ($selected -contains 'resultset') {

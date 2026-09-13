@@ -63,15 +63,23 @@ function Assert-Clean([string]$name, [string[]]$extra) {
     if ($ok) { $script:passes++; Write-Output "[PASS] $name -> $summary" }
     else { $script:fails++; Write-Output ("[FAIL] $name -> exit {0}; {1}" -f $r.ExitCode, (@($r.Output | Where-Object { $_ -like '`[FAIL`]*' }) -join ' | ')) }
 }
-function Assert-Catches([string]$name, [string]$expectedCheck, [scriptblock]$mutation) {
+function Assert-Catches([string]$name, [string]$expectedCheck, [scriptblock]$mutation, [string[]]$extra = @()) {
     & $mutation
-    $r = Invoke-DocFacts @()
+    $r = Invoke-DocFacts $extra
     Restore-All
     $failed = @($r.Output | Where-Object { $_ -like '`[FAIL`]*' })
     $hit = @($failed | Where-Object { $_ -match ('^\[FAIL\]\s+' + [regex]::Escape($expectedCheck)) })
     $ok = ($r.ExitCode -gt 0) -and ($hit.Count -gt 0)
     if ($ok) { $script:passes++; Write-Output ("[PASS] {0} -> {1} caught it: {2}" -f $name, $expectedCheck, ($hit[0] -replace '^\[FAIL\]\s+', '')) }
     else { $script:fails++; Write-Output ("[FAIL] {0} -> expected {1} to fail; got: {2}" -f $name, $expectedCheck, $(if ($failed.Count) { $failed -join ' | ' } else { 'nothing failed' })) }
+}
+
+function New-ReportFixture([string]$name, [string]$verdict, [string[]]$statuses) {
+    $results = @($statuses | ForEach-Object { '{ "Status": "' + $_ + '", "Tag": "ping-target" }' })
+    $json = '{ "SchemaVersion": "2", "Overall": { "Code": "PASS", "Text": "' + $verdict + '" }, "Results": [' + ($results -join ', ') + '] }'
+    $path = Join-Path $WorkDir $name
+    [IO.File]::WriteAllText($path, $json, (New-Object System.Text.UTF8Encoding($false)))
+    return $path
 }
 
 $EnScript = 'healthcheck\en-US\NetworkHealthCheck.ps1'
@@ -82,6 +90,7 @@ $EnIt = 'healthcheck\en-US\NetworkHealthCheck_IT_Deployment_Manual_en-US.md'
 $ZhIt = 'healthcheck\zh-TW\NetworkHealthCheck_IT_Deployment_Manual_zh-TW.md'
 $EnItHtml = 'healthcheck\en-US\NetworkHealthCheck_IT_Deployment_Manual_en-US.html'
 $EnUser = 'healthcheck\en-US\NetworkHealthCheck_User_Manual_en-US.md'
+$EnUserHtml = 'healthcheck\en-US\NetworkHealthCheck_User_Manual_en-US.html'
 $Guide = 'healthcheck\docs\NetworkHealthCheck_Technical_Guide_en-US.md'
 $Field = 'sop\support-engineer-field-manual.md'
 $FieldHtml = 'sop\support-engineer-field-manual.html'
@@ -250,6 +259,46 @@ Assert-Catches 'an exit code written as a code span' 'A7' {
 Assert-Catches 'a code attributed to the launcher that only the program produces' 'A7' {
     Write-All $Field ((Read-All $Field) -replace 'launcher exits `1`', 'launcher exits `3`')
 }
+
+# 5i - the file table the other way round (backlog #41): a file that ships and that no row names.
+Assert-Catches 'a shipped file the file table stopped naming' 'E3' {
+    Write-All $EnUser ((Read-All $EnUser).Replace('| `en-US\Start-NetworkCheck-Console.cmd` | Text mode, for a computer where the window cannot open |' + "`r`n", ''))
+}
+Assert-Catches 'a file-table row that names another language''s copy of the file' 'E3' {
+    # A stale name that E1 cannot see: the file it names exists, so only the file it stopped naming is missing.
+    Write-All $EnUser ((Read-All $EnUser).Replace('`en-US\Start-NetworkCheck-Console.cmd` | Text mode', '`zh-TW\Start-NetworkCheck-Console.cmd` | Text mode'))
+}
+
+# 5j - the fingerprint chain's order and titles (backlog #33, tier 3).
+Assert-Catches 'a fingerprint table that puts two rows in the wrong order' 'C2' {
+    $text = Read-All $Field
+    $rows = @([regex]::Matches($text, '(?m)^\| `(dns|quality)` .*$'))
+    if ($rows.Count -ne 2) { throw ('expected the dns and quality rows once each, found ' + $rows.Count) }
+    $swapped = $text.Substring(0, $rows[0].Index) + $rows[1].Value + $text.Substring($rows[0].Index + $rows[0].Length, $rows[1].Index - $rows[0].Index - $rows[0].Length) + $rows[0].Value + $text.Substring($rows[1].Index + $rows[1].Length)
+    Write-All $Field $swapped
+}
+Assert-Catches 'a fingerprint table row with a title the script does not give it' 'C3' {
+    Write-All $Field ((Read-All $Field) -replace 'Warnings to review', 'Warnings worth reviewing')
+}
+
+# 5k - the strings a report puts on the screen (backlog #33, tier 2). The script side first: a verdict the manual
+# stops quoting; then the live half, where the report is a fixture written to be wrong in one way each.
+Assert-Catches 'a verdict the user manual stopped quoting' 'G1' {
+    Write-All $EnUser ((Read-All $EnUser) -replace '\*\*Overall Healthy\*\*', '**Overall Fine**')
+}
+Assert-Catches 'a report whose verdict the script does not define' 'G2' {
+    $script:fixtureUnknown = New-ReportFixture 'report-unknown-verdict.json' 'Everything Is Fine' @('PASS')
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-unknown-verdict.json'), '-ReportLanguage', 'en-US')
+Assert-Catches 'a verdict the report shows and the manual does not quote' 'G3' {
+    [void](New-ReportFixture 'report-healthy.json' 'Overall Healthy' @('PASS'))
+    Write-All $EnUser ((Read-All $EnUser) -replace '\*\*Overall Healthy\*\*', '**Overall Fine**')
+    # Both formats: the page badges the verdict where the markdown puts it in bold, and G3 reads the manual of a
+    # language as the pair - one format losing it alone is G1's finding, which has a case of its own above.
+    Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('>Overall Healthy</span>', '>Overall Fine</span>'))
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-healthy.json'), '-ReportLanguage', 'en-US')
+Assert-Catches 'a report row whose status the script has no badge for' 'G4' {
+    [void](New-ReportFixture 'report-unknown-status.json' 'Overall Healthy' @('PASS', 'SKIPPED'))
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-unknown-status.json'), '-ReportLanguage', 'en-US')
 
 # 6 - and the control again, to prove every mutation was put back
 Assert-Clean 'the copy is clean again after every mutation' @()
