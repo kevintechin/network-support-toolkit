@@ -5586,7 +5586,14 @@ function Get-TcpDistributionLines {
         return $lines
     }
     if ($table.Count -lt 2) {
-        $lines += ("這個窗的兩次取樣之間沒有任何一次計數器讀取落在窗內，所以無法把重傳放到時間軸上：這些讀取安排在各項檢查之間與等待期間，至少每 {0} 秒一次，而窗關閉前沒有一次到期。" -f $State.IntervalSeconds)
+        # PR #56 第 4 輪：窗內沒有讀數的窗要說出原因，而「沒有一次到期」只是原因之一——讀取可能在這個窗還沒有窗內讀數之前，
+        # 就停在一次失敗的讀取上，而那次讀取連同秒數已經在列上點名；旁邊再寫一句「沒有一次到期」就自相矛盾了。
+        if (@(Get-PropertyValue $State "FailedAttempts" @()).Count -gt 0) {
+            $lines += "窗內的讀取在這個窗還沒有任何窗內讀數之前，就停在一次失敗的讀取上——那次讀取和它的秒數在上面點名了——所以無法把重傳放到時間軸上。"
+        }
+        else {
+            $lines += ("這個窗的兩次取樣之間沒有任何一次計數器讀取落在窗內，所以無法把重傳放到時間軸上：這些讀取安排在各項檢查之間與等待期間，至少每 {0} 秒一次，而窗關閉前沒有一次到期。" -f $State.IntervalSeconds)
+        }
         return $lines
     }
     $lines += ("重傳落在窗內的哪一段（計數器在窗內至少每 {0} 秒再讀一次：{1} 次讀數、{2} 段）：" -f $State.IntervalSeconds, ($table.Count + 1), $table.Count)

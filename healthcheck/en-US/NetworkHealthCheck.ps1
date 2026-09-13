@@ -5800,7 +5800,15 @@ function Get-TcpDistributionLines {
         return $lines
     }
     if ($table.Count -lt 2) {
-        $lines += ("No counter read fell inside this window between its two samples, so the retransmissions cannot be placed in time: the reads are taken between the checks and during the wait, at least {0} second(s) apart, and none was due before the window closed." -f $State.IntervalSeconds)
+        # PR #56, round 4: a window with no reading inside it says why, and "none was due" is only one of the reasons -
+        # the reads may have stopped at a read that failed before this window had a reading, and that read is named
+        # on the row with its seconds; a sentence saying none was due beside it would contradict the row.
+        if (@(Get-PropertyValue $State "FailedAttempts" @()).Count -gt 0) {
+            $lines += "The reads inside the window stopped at a read that failed before this window had a reading inside it - that read and its seconds are named above - so the retransmissions cannot be placed in time."
+        }
+        else {
+            $lines += ("No counter read fell inside this window between its two samples, so the retransmissions cannot be placed in time: the reads are taken between the checks and during the wait, at least {0} second(s) apart, and none was due before the window closed." -f $State.IntervalSeconds)
+        }
         return $lines
     }
     $lines += ("Where the retransmissions fell inside the window (the counters were read again at least {0} second(s) apart: {1} readings, {2} intervals):" -f $State.IntervalSeconds, ($table.Count + 1), $table.Count)

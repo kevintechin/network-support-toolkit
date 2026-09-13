@@ -2610,5 +2610,18 @@ $script:TcpIntervalSampling = $null
 # read - so no read is taken after the minimum on that path either.
 Assert-Equal '#65 ast r3: the run closes the reads at the wait''s deadline' ((Get-FunctionBody 'Run-AllChecks') -match 'Wait-ForMinimumTcpSample -StartTime \$tcpSampleStart -MinimumSeconds \$minimumSampleSeconds\s*(#[^\r\n]*\s*)*Stop-TcpIntervalSampling') True
 
+# PR #56, round 4: a window with retransmissions and no reading inside it says why - none was due, or the reads stopped at
+# a read that failed before this window had one - and the two sentences differ, because the second row also names the
+# failed read and its seconds, which "none was due" beside them would contradict.
+$oneInterval65 = @(Get-TcpIntervalTable -Protocol 'TCPv4' -Start $start65 -End $end65 -Reads @())
+$noneDueLine65 = @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $oneInterval65 -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 @()))[0]
+$failedFirstLine65 = @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $oneInterval65 -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 @() 2 $failed65 $t65.AddSeconds(2.5) 'TCPv4'))[0]
+Assert-Equal '#65 lines r4: one sentence either way' ("{0}/{1}" -f @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $oneInterval65 -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 @())).Count, @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $oneInterval65 -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 @() 2 $failed65 $t65.AddSeconds(2.5) 'TCPv4')).Count) '1/1'
+Assert-Equal '#65 lines r4: and not the same sentence - a failed first read is not "none was due"' ($failedFirstLine65 -ne $noneDueLine65) True
+$failedFirstRows65 = Get-Rows65 @([pscustomobject]@{ Timestamp = $t65.AddSeconds(2.5); Counters = @{}; FailedAttempts = $failed65; Extension = $false }) 3000 57 2 $failed65 $t65.AddSeconds(2.5) 'TCPv4'
+$failedFirstV4 = @($failedFirstRows65 | Where-Object { $_.Check -eq 'TCPv4' })[0]
+Assert-Equal '#65 rows r4: the row whose first read inside the window failed carries that sentence, the failed read and the stop line, and not "none was due"' ("{0}/{1}/{2}/{3}" -f ($failedFirstV4.Details -like ('*' + $failedFirstLine65 + '*')), ($failedFirstV4.Details -like ('*' + $noneDueLine65 + '*')), ($failedFirstV4.Details -match 'TCPv4 #1'), ($failedFirstV4.Details -match '07:00:02')) 'True/False/True/True'
+Assert-Equal '#65 rows r4: the row with no read due keeps its own sentence' ($noneInsideV4.Details -like ('*' + $noneDueLine65 + '*')) True
+
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails
