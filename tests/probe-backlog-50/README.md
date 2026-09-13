@@ -73,7 +73,7 @@ Each variant is the same on the screen and in the redirected stream.
 | `1-as-shipped` | **fails** — `'<U+FFFD>代碼：0' is not recognized…`, the message the item was raised on |
 | `2-last-line-ascii` | clean |
 | `3-without-chcp` | **fails**, and the completion sentence comes out as mojibake as well |
-| `4-with-bom` | **fails worse** — `﻿@echo` is handed to cmd as a command, so the file runs with echo on |
+| `4-with-bom` | **fails worse** — the byte-order mark and `@echo` go to cmd as one command name, so the file runs with echo on |
 | `5-halfwidth-colon` | **fails** — `'束代碼:0'`, so the full-width colon is not the carrier |
 
 It is deterministic, not intermittent: 25 runs each, the shipped bytes failed 25 and the ASCII last line failed 0.
