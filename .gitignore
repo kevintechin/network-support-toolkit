@@ -14,3 +14,6 @@ desktop.ini
 
 # Archives (releases go to GitHub Releases, not the tree)
 *.zip
+
+# Backlog #50 probe results: screenshots of a real desktop, and they travel as a folder, not through git
+tests/probe-backlog-50/results_*/
