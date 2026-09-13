@@ -869,7 +869,8 @@ function Test-HttpTargetSyntax {
     # 網址裡面的主機名稱也是一個主機名稱：Uri.TryCreate 會接受 'http://foo..bar/'，而那個空標籤要等到
     # 請求已經送出去才會被發現，到時候看起來就像網站不回應（PR #41，第 9 輪）。這裡檢查的是 URL 裡寫的那個主機，
     # 不是 Uri 的 .Host：Uri 會先把主機轉小寫並正規化再放出來，會讓規則在別處都拒絕的寫法通過（PR #58 第 3 輪）。
-    return (Test-HostNameSyntax (Get-UrlConfiguredHost $Value))
+    # 第 6 輪起這裡是 Get-UrlHostProblemSuffix 的是／否，它也會拒絕「寫的主機不是 Uri 會送去的主機」的 URL。
+    return (([string](Get-UrlHostProblemSuffix $Value)).Length -eq 0)
 }
 
 # 待辦 #54：主機名稱判定的規則寫在這一處，取代審查者一次一個找出來的字元清單（PR #41 第 5 到 21 輪）。設定的值能被
@@ -982,7 +983,7 @@ function Get-UrlConfiguredHost {
     if ($colonAt -lt 0 -or $text.Length -lt $colonAt + 3) { return "" }
     if ([int]$text[$colonAt + 1] -ne 47 -or [int]$text[$colonAt + 2] -ne 47) { return "" }
     $authority = $text.Substring($colonAt + 3)
-    $end = $authority.IndexOfAny([char[]]@("/", "?", "#"))
+    $end = $authority.IndexOfAny([char[]]@("/", "?", "#", "\"))
     if ($end -ge 0) { $authority = $authority.Substring(0, $end) }
     $at = $authority.LastIndexOf([char]"@")
     if ($at -ge 0) { $authority = $authority.Substring($at + 1) }
@@ -1003,9 +1004,29 @@ function Get-UrlHostProblemSuffix {
     $uri = $null
     if (-not [System.Uri]::TryCreate([string]$Url, [System.UriKind]::Absolute, [ref]$uri)) { return "" }
     if (-not ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")) { return "" }
-    $problem = [string](Get-HostNameSyntaxProblem (Get-UrlConfiguredHost $Url))
-    if ($problem.Length -eq 0) { return "" }
-    return ("；主機：" + $problem)
+    $written = [string](Get-UrlConfiguredHost $Url)
+    $problem = [string](Get-HostNameSyntaxProblem $written)
+    if ($problem.Length -gt 0) { return ("；主機：" + $problem) }
+    # 規則判定的主機必須就是請求會送去的主機。抽取器仿照 Uri 的解析，而兩者仍可能不一致的每一處——一邊認得、另一邊不認得
+    # 的分隔符——都會讓規則拒絕的主機頂著一個過關的名字通過；所以把寫的主機的線上形式，和 Uri 會送去的（IdnHost，IPv6 字面
+    # 值則是解析後的位址）比對，不一致就寫出兩者並拒絕這個 URL（PR #58 第 6 輪）。Uri 自己的看法只在這裡用，而且只用來
+    # 確認抽取器的。
+    $sent = ""
+    $wire = ""
+    try {
+        $uriHost = [string]$uri.IdnHost
+        if ($written.Contains(":")) {
+            $wire = [System.Net.IPAddress]::Parse($written).ToString()
+            $sent = [System.Net.IPAddress]::Parse($uriHost).ToString()
+        }
+        else {
+            $wire = (New-Object System.Globalization.IdnMapping).GetAscii($written.Normalize([System.Text.NormalizationForm]::FormC)).ToLowerInvariant()
+            $sent = $uriHost.ToLowerInvariant()
+        }
+    }
+    catch { $sent = "" }
+    if ([string]::Equals($wire, $sent, [System.StringComparison]::Ordinal)) { return "" }
+    return ("；寫的主機 " + $written + " 不是請求會送去的主機 " + $(if ($sent.Length -gt 0) { $sent } else { "（無）" }))
 }
 
 function Test-HostNameSyntax {

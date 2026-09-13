@@ -894,8 +894,9 @@ function Test-HttpTargetSyntax {
     # and the empty label is only found when the request is already on its way, where the failure reads as a
     # site that would not answer (PR #41, round 9). The host tested is the one written in the URL, not Uri's
     # .Host: Uri lowercases and normalises the host before exposing it, and would have passed a spelling the rule
-    # refuses everywhere else (PR #58, round 3).
-    return (Test-HostNameSyntax (Get-UrlConfiguredHost $Value))
+    # refuses everywhere else (PR #58, round 3). Since round 6 this is the yes/no of Get-UrlHostProblemSuffix, which
+    # also refuses a URL whose written host is not the host Uri would send to.
+    return (([string](Get-UrlHostProblemSuffix $Value)).Length -eq 0)
 }
 
 # Backlog #54: the rule of the host-name predicate, stated once, instead of a list of characters that reviewers found
@@ -1019,7 +1020,7 @@ function Get-UrlConfiguredHost {
     if ($colonAt -lt 0 -or $text.Length -lt $colonAt + 3) { return "" }
     if ([int]$text[$colonAt + 1] -ne 47 -or [int]$text[$colonAt + 2] -ne 47) { return "" }
     $authority = $text.Substring($colonAt + 3)
-    $end = $authority.IndexOfAny([char[]]@("/", "?", "#"))
+    $end = $authority.IndexOfAny([char[]]@("/", "?", "#", "\"))
     if ($end -ge 0) { $authority = $authority.Substring(0, $end) }
     $at = $authority.LastIndexOf([char]"@")
     if ($at -ge 0) { $authority = $authority.Substring($at + 1) }
@@ -1040,9 +1041,30 @@ function Get-UrlHostProblemSuffix {
     $uri = $null
     if (-not [System.Uri]::TryCreate([string]$Url, [System.UriKind]::Absolute, [ref]$uri)) { return "" }
     if (-not ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")) { return "" }
-    $problem = [string](Get-HostNameSyntaxProblem (Get-UrlConfiguredHost $Url))
-    if ($problem.Length -eq 0) { return "" }
-    return ("; the host: " + $problem)
+    $written = [string](Get-UrlConfiguredHost $Url)
+    $problem = [string](Get-HostNameSyntaxProblem $written)
+    if ($problem.Length -gt 0) { return ("; the host: " + $problem) }
+    # The host the rule judged has to be the host the request would go to. The extractor mirrors Uri's parsing, and
+    # every place the two could still disagree - a separator one of them knows and the other does not - would let a
+    # host the rule refuses through under a name that passes; so the wire form of the written host is compared with
+    # what Uri would send to (IdnHost, or the parsed address for an IPv6 literal), and a disagreement refuses the URL
+    # by naming both (PR #58, round 6). Uri's own view is used only here, and only to confirm the extractor's.
+    $sent = ""
+    $wire = ""
+    try {
+        $uriHost = [string]$uri.IdnHost
+        if ($written.Contains(":")) {
+            $wire = [System.Net.IPAddress]::Parse($written).ToString()
+            $sent = [System.Net.IPAddress]::Parse($uriHost).ToString()
+        }
+        else {
+            $wire = (New-Object System.Globalization.IdnMapping).GetAscii($written.Normalize([System.Text.NormalizationForm]::FormC)).ToLowerInvariant()
+            $sent = $uriHost.ToLowerInvariant()
+        }
+    }
+    catch { $sent = "" }
+    if ([string]::Equals($wire, $sent, [System.StringComparison]::Ordinal)) { return "" }
+    return ("; the host as written, " + $written + ", is not the host the request would be sent to, " + $(if ($sent.Length -gt 0) { $sent } else { "(none)" }))
 }
 
 function Test-HostNameSyntax {

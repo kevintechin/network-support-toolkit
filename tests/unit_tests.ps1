@@ -2796,6 +2796,18 @@ Assert-Equal '#54 url: no authority, no host' (Get-UrlConfiguredHost 'https:///p
 Assert-Equal '#54 url: an absolute URI without an authority is refused even when its path carries // later' (Test-HttpTargetSyntax 'http:path//example.com') False
 Assert-Equal '#54 url: and the extractor names no host for it' (Get-UrlConfiguredHost 'http:path//example.com') ''
 Assert-Equal '#54 url: an upper-case scheme still opens the authority' (Get-UrlConfiguredHost 'HTTP://Example.COM/x//y') 'Example.COM'
+# PR #58 round 6: a backslash ends the authority as it does for Uri, and the host the rule judged must be the host Uri
+# would send to - the cross-check that closes the class of separators one parser knows and the other does not.
+Assert-Equal '#54 url: a backslash ends the authority before an @ that would otherwise hide the real host' (Get-UrlConfiguredHost 'http://foo..bar\@example.com/') 'foo..bar'
+Assert-Equal '#54 url: and the URL is refused for that host' (Test-HttpTargetSyntax 'http://foo..bar\@example.com/') False
+Assert-Equal '#54 url: an internationalised host agrees with what Uri would send to' (Test-HttpTargetSyntax ('https://' + [string][char]0x53F0 + [string][char]0x7063 + [string][char]0x3002 + 'tw/')) True
+Assert-Equal '#54 url: an already-encoded host agrees too' (Test-HttpTargetSyntax 'https://xn--kpry57d.tw/') True
+Assert-Equal '#54 url: an IPv6 literal agrees through the parsed address' (Test-HttpTargetSyntax 'http://[fe80::1]:8080/') True
+Assert-Equal '#54 url: mixed ASCII case agrees' (Test-HttpTargetSyntax 'https://www.Example.COM/') True
+$suffixFn = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-UrlHostProblemSuffix' }, $true).Extent.Text
+Assert-Equal '#54 url: the cross-check against what Uri would send to lives in the suffix, on IdnHost' (($suffixFn -match '\$uri\.IdnHost') -and ($suffixFn -match 'Get-UrlConfiguredHost')) True
+$httpFn = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-HttpTargetSyntax' }, $true).Extent.Text
+Assert-Equal '#54 url: the predicate is the suffix''s yes/no' ($httpFn -match 'Get-UrlHostProblemSuffix') True
 $urlFns = @('Test-HttpTargetSyntax', 'Get-UrlHostProblemSuffix') | ForEach-Object { $n = $_; $scriptAst.Find({ param($x) $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true).Extent.Text }
 Assert-Equal '#54 url: neither URL function judges Uri''s own .Host' ((($urlFns -join ' ') -match '\$uri\.Host') -eq $false -and (($urlFns -join ' ') -match 'Get-UrlConfiguredHost')) True   # the code, not the comment that says why
 # The rule lives in one place: the predicate is the reason's yes/no, and IDNA is consulted nowhere else.
