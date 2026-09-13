@@ -32,10 +32,13 @@
     output), <variant>-stderr.log (kept only when something was printed there), machine.txt, and run-all.txt, the
     manifest binding each file to the run that produced it. Send the whole folder back with the results in it.
 
-    It refuses to run from a network path - a UNC one by its shape, a drive letter mapped to a share by what the
-    root's DriveInfo says it is - because cmd prints a warning of its own for a network working directory, which
-    would sit on the screen beside the lines being measured; and in a session whose screen cannot be captured
-    (locked, or an RDP session that was disconnected rather than logged off: the picture would be uniformly black).
+    Three refusals. A network path - a UNC one by its shape, a drive letter mapped to a share by what the root's
+    DriveInfo says it is - because cmd prints a warning of its own for a network working directory, which would sit
+    on the screen beside the lines being measured. A session whose screen cannot be captured (locked, or an RDP
+    session that was disconnected rather than logged off: the picture would be uniformly black). And a results
+    folder inside a synced one, which is walk_capture.ps1's refusal for backlog #43's reason - "a local folder"
+    includes a Desktop that Windows backs up to OneDrive, and what this script writes there is a picture of the
+    screen beside the computer's and the user's names. Pass -OutDir somewhere outside it in that case.
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File .\run-all.ps1
@@ -45,6 +48,9 @@
 #>
 [CmdletBinding()]
 param(
+    # Where the results folder goes. Beside this script by default; pass it somewhere outside a synced folder when
+    # the probe itself has been copied into one (see the refusal below).
+    [string]$OutDir,
     # Seconds between the window appearing and the picture. Four lines of batch reach `pause` in well under one.
     [int]$SettleSeconds = 2,
     # Seconds to wait for a started run to show a window of its own before another window, or the screen, is framed.
@@ -240,6 +246,63 @@ function Get-ProcessCommandLine([int]$ProcessId) {
     catch { }
     return '(the command line could not be read)'
 }
+function Get-SyncRoots {
+    # walk_capture.ps1's, copied because this folder travels on its own. The roots a file written under them is
+    # copied to a cloud service from: OneDrive publishes its own, and a company's own client is caught by the same
+    # environment convention where it sets one. Known Folder Move sends the Desktop, Documents and Pictures into
+    # OneDrive without changing %USERPROFILE%, and their resolved paths are what "put it on the desktop" means.
+    $roots = New-Object System.Collections.Generic.List[string]
+    foreach ($name in @('OneDrive', 'OneDriveCommercial', 'OneDriveConsumer')) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if ($value -and (Test-Path -LiteralPath $value)) { $roots.Add((Resolve-Path -LiteralPath $value).Path) }
+    }
+    foreach ($folder in @('Desktop', 'MyDocuments', 'MyPictures')) {
+        try {
+            $p = [Environment]::GetFolderPath($folder)
+            if ($p -and (Test-Path -LiteralPath $p)) {
+                $resolved = (Resolve-Path -LiteralPath $p).Path
+                foreach ($root in @($roots)) { if ($resolved.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { $roots.Add($resolved) } }
+            }
+        }
+        catch { }
+    }
+    return @($roots | Sort-Object -Unique)
+}
+function Test-PathIsSynced([string]$Path) {
+    $full = [IO.Path]::GetFullPath($Path)
+    foreach ($root in (Get-SyncRoots)) {
+        if ($full.StartsWith($root.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -or $full.Equals($root, [StringComparison]::OrdinalIgnoreCase)) { return $root }
+    }
+    return $null
+}
+function Get-StartupCodePage {
+    # What a new console actually starts at, measured rather than read off OEMCP. HKCU\Console\CodePage and a
+    # per-title CodePage can both put a console somewhere else, and the variant that sets no `chcp` prints under
+    # whatever that is - so decoding its bytes as OEMCP could manufacture mojibake and mis-read the one variant
+    # the reading decides. `chcp` names the number in the display language, so the digits are what is taken.
+    $probeOut = Join-Path $Results 'startup-codepage.txt'
+    try {
+        $q = Start-Process -FilePath $CmdExe -ArgumentList '/c chcp' -WorkingDirectory $Results `
+            -RedirectStandardOutput $probeOut -RedirectStandardInput $EmptyStdin -PassThru -Wait
+        if ($q.ExitCode -eq 0) {
+            # The bytes cannot be decoded before the number is known - that is what is being measured - so the
+            # digits are read out of a byte-preserving view first, and the sentence is then decoded with the
+            # number they gave, which is why it comes back in the machine's own language rather than as mojibake.
+            $bytes = [IO.File]::ReadAllBytes($probeOut)
+            $raw = [Text.Encoding]::GetEncoding(28591).GetString($bytes)   # latin-1: one byte, one char, nothing lost
+            $m = [regex]::Match($raw, '(\d{3,5})')
+            if ($m.Success) {
+                $cp = [int]$m.Groups[1].Value
+                $text = $raw
+                try { $text = [Text.Encoding]::GetEncoding($cp).GetString($bytes) } catch { }
+                return [pscustomobject]@{ CodePage = $cp; Text = $text.Trim() }
+            }
+        }
+        return [pscustomobject]@{ CodePage = 0; Text = 'chcp printed nothing with a number in it' }
+    }
+    catch { return [pscustomobject]@{ CodePage = 0; Text = 'chcp could not be run: ' + $_.Exception.Message } }
+    finally { Remove-Item -LiteralPath $probeOut -Force -ErrorAction SilentlyContinue }
+}
 function Get-FileVersionLine([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return ($Path + ': not present') }
     $vi = (Get-Item -LiteralPath $Path).VersionInfo
@@ -253,8 +316,29 @@ if (-not (Test-CaptureWorks)) {
 }
 
 $Stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-$Results = Join-Path $Folder ('results_' + $env:COMPUTERNAME + '_' + $Stamp)
+$ResultsParent = $Folder
+if ($OutDir) {
+    # Made absolute against PowerShell's own location, because [IO.Path]::GetFullPath resolves a relative path
+    # against the process's current directory and New-Item against the provider's - and the two can differ, which
+    # would test one folder for syncing and create the results in another.
+    $ResultsParent = $OutDir
+    if (-not [IO.Path]::IsPathRooted($ResultsParent)) { $ResultsParent = Join-Path (Get-Location).ProviderPath $ResultsParent }
+}
+$Results = Join-Path $ResultsParent ('results_' + $env:COMPUTERNAME + '_' + $Stamp)
+
+# Refusal 3: the results must not be written inside a synced folder. This folder is meant to be copied to the
+# machine and "a local folder" includes a Desktop that Windows backs up to OneDrive, which is what the 1.2.4 walk
+# measured (backlog #43) and what walk_capture.ps1 refuses for the same reason - and what this one writes is worse
+# than reports: a picture of the screen, which falls back to the whole of it, beside the computer's and the user's
+# names. The sentence is walk_capture.ps1's; the two functions below are its `Get-SyncRoots` and
+# `Test-PathIsSynced`, copied rather than imported because this folder has to travel on its own.
+$syncedRoot = Test-PathIsSynced $ResultsParent
+if ($syncedRoot) {
+    Write-Output ("REFUSED: the results would be written inside a synced folder (" + $syncedRoot + "), which copies every picture - the whole screen, where a window cannot be framed - and this machine's and user's names to the cloud before anyone carries the folder away. Pass -OutDir somewhere outside it, for example C:\NHC-50, or move the whole folder there.")
+    exit 3
+}
 New-Item -ItemType Directory -Path $Results -Force | Out-Null
+$Results = (Resolve-Path -LiteralPath $Results).Path
 $EmptyStdin = Join-Path $Results 'stdin.empty'
 [IO.File]::WriteAllText($EmptyStdin, '')
 
@@ -302,6 +386,10 @@ $machine += ('cmd.exe:               ' + (Get-FileVersionLine $CmdExe))
 $machine += ('conhost.exe:           ' + (Get-FileVersionLine (Join-Path $env:SystemRoot 'System32\conhost.exe')))
 $machine += ('ACP:                   ' + $acp)
 $machine += ('OEMCP:                 ' + $oemcp)
+$startup = Get-StartupCodePage
+$startupText = 'could not be measured - ' + $startup.Text
+if ($startup.CodePage -gt 0) { $startupText = [string]$startup.CodePage + ' (measured: `cmd /c chcp` in a console of its own printed "' + $startup.Text + '")' }
+$machine += ('a new console starts at: ' + $startupText)
 $machine += ('HKCU\Console CodePage: ' + $consoleCpText)
 $machine += ('per-title CodePage:    ' + $titleKeysText)
 $machine += ('DelegationConsole:     ' + $delegationConsoleText + ' - ' + (Get-DelegationName $delegationConsole))
@@ -425,8 +513,12 @@ foreach ($v in $Variants) {
         foreach ($line in (Format-Bytes $outBytes)) { Note ('    ' + $line) }
         Note 'stdout read as code page 65001 (UTF-8, what the shipped launcher sets):'
         foreach ($line in (Get-DecodedLines $outBytes 65001)) { Note ('    | ' + $line) }
-        if ($oemcp) {
-            Note ('stdout read as code page ' + $oemcp + ' (this machine''s OEMCP, what a console starts at):')
+        if ($startup.CodePage -gt 0) {
+            Note ('stdout read as code page ' + $startup.CodePage + ' (measured: what a new console on this machine starts at, which is what a variant that sets no `chcp` prints under):')
+            foreach ($line in (Get-DecodedLines $outBytes $startup.CodePage)) { Note ('    | ' + $line) }
+        }
+        if ($oemcp -and [int]$oemcp -ne $startup.CodePage) {
+            Note ('stdout read as code page ' + $oemcp + ' (this machine''s OEMCP, which a new console did not start at):')
             foreach ($line in (Get-DecodedLines $outBytes ([int]$oemcp))) { Note ('    | ' + $line) }
         }
         Note 'stderr bytes:'
@@ -434,8 +526,12 @@ foreach ($v in $Variants) {
         if ($errBytes.Length -gt 0) {
             Note 'stderr read as code page 65001:'
             foreach ($line in (Get-DecodedLines $errBytes 65001)) { Note ('    | ' + $line) }
-            if ($oemcp) {
-                Note ('stderr read as code page ' + $oemcp + ':')
+            if ($startup.CodePage -gt 0) {
+                Note ('stderr read as code page ' + $startup.CodePage + ' (measured, what a new console starts at):')
+                foreach ($line in (Get-DecodedLines $errBytes $startup.CodePage)) { Note ('    | ' + $line) }
+            }
+            if ($oemcp -and [int]$oemcp -ne $startup.CodePage) {
+                Note ('stderr read as code page ' + $oemcp + ' (OEMCP, which a new console did not start at):')
                 foreach ($line in (Get-DecodedLines $errBytes ([int]$oemcp))) { Note ('    | ' + $line) }
             }
         }

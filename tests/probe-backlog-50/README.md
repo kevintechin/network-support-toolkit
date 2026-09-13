@@ -22,7 +22,9 @@ All five are UTF-8 (4 with a BOM), CRLF, and end with `pause`, so a window stays
 ## Running it on that machine
 
 1. Copy this folder to the machine, into a local folder — not a network share, not the compressed-folder view of a
-   ZIP.
+   ZIP, and not a folder a cloud client syncs. If the machine's Desktop is one (Windows 11 backs it up to OneDrive
+   by default) the script refuses rather than uploading the pictures, and `-OutDir C:\NHC-50` puts the results
+   somewhere else without moving the probe.
 2. Log in at the machine's desktop, or connect the RDP session and leave it connected, and leave the screen unlocked.
    The script photographs windows, and refuses a session whose pictures would come out black.
 3. Open a PowerShell window in the folder and run:
@@ -59,8 +61,11 @@ file with `chcp 65001`, a `call`ed file without one reports 65001, a child `cmd 
 console reports the machine's 950.
 
 `machine.txt` records the build (`ver` and the registry), the file versions of `cmd.exe` and `conhost.exe`, `ACP` and
-`OEMCP`, the console's own `CodePage` value if one is set (`HKCU\Console` and any per-title key), the default console
-host on builds that can delegate one (`HKCU\Console\%%Startup`), the locales and the screen. The host that actually
+`OEMCP`, the console's own `CodePage` value if one is set (`HKCU\Console` and any per-title key), **the code page a
+new console actually starts at** — measured by running `cmd /c chcp` in one, because `HKCU\Console\CodePage` or a
+per-title key can put it somewhere other than `OEMCP`, and that number is what the `3-without-chcp` variant prints
+under — the default console host on builds that can delegate one (`HKCU\Console\%%Startup`), the locales and the
+screen. The host that actually
 opened each window is in the manifest, read from the window's class: `ConsoleWindowClass` is the classic console,
 `CASCADIA_HOSTING_WINDOW_CLASS` is Windows Terminal.
 
