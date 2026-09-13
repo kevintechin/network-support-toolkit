@@ -16,7 +16,7 @@
     table as summary.md.
 
 .PARAMETER Steps
-    Steps to run (parse, validator, guards, docfacts, unit, report, envguard, launcher, campaign, gui-headless, gui,
+    Steps to run (parse, validator, guards, docfacts, backlog, unit, report, envguard, launcher, campaign, gui-headless, gui,
     acceptance, resultset, package);
     comma-separated values are accepted, and the steps always execute in the chain's own order. Default: everything
     except package. The resultset step is the negative self-check of the result-set assertion; it uses the en-US user
@@ -47,7 +47,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string[]]$Steps = @('parse', 'validator', 'guards', 'docfacts', 'unit', 'report', 'envguard', 'launcher', 'campaign', 'gui-headless', 'gui', 'acceptance', 'resultset'),
+    [string[]]$Steps = @('parse', 'validator', 'guards', 'docfacts', 'backlog', 'unit', 'report', 'envguard', 'launcher', 'campaign', 'gui-headless', 'gui', 'acceptance', 'resultset'),
     [switch]$Package,
     [switch]$SkipGui,
     [switch]$RequireHealthy,
@@ -58,7 +58,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Order = @('parse', 'validator', 'guards', 'docfacts', 'unit', 'report', 'envguard', 'launcher', 'campaign', 'gui-headless', 'gui', 'acceptance', 'resultset', 'package')
+$Order = @('parse', 'validator', 'guards', 'docfacts', 'backlog', 'unit', 'report', 'envguard', 'launcher', 'campaign', 'gui-headless', 'gui', 'acceptance', 'resultset', 'package')
 $Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 if (-not $PackageDir) { $PackageDir = Join-Path $Root 'healthcheck' }
 $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
@@ -1127,6 +1127,27 @@ try {
         }
         Invoke-Case 'docfacts' 'self-test' {
             $r = Invoke-TestScript 'selftest_docfacts.ps1' @('-WorkDir', (Join-Path $WorkDir 'docfacts')) 'docfacts_selftest'
+            $s = Get-SummaryLine $r.Output
+            @{ Passed = (($r.ExitCode -eq 0) -and ($r.Output -contains 'ALL SELF-TESTS OK')); Detail = $s }
+        }
+    }
+    if ($selected -contains 'backlog') {
+        # backlog #55: the working list's index against the bodies it points at and against its closed table, and the
+        # repository README's Backlog row against the index - its count, its links in both directions, its group counts
+        # and its closed list. Repository documents, so the checkout is read whatever -PackageDir points at.
+        Invoke-Case 'backlog' 'index' {
+            $r = Invoke-TestScript 'backlog_index.ps1' @('-RepoRoot', $Root) 'backlog'
+            $s = Get-SummaryLine $r.Output
+            $ok = (($r.ExitCode -eq 0) -and (Test-SummaryClean $s))
+            $detail = [string]$s
+            # The count README.md advertises for this step, checked the way the resultset step's is: a step about a
+            # documented count drifting from its source had better not let its own.
+            $drift = Test-DocumentedTotal $detail '^\|\s*`backlog`' '(\d+)\s*/\s*(\d+)'
+            if ($ok -and $drift) { $ok = $false; $detail = '{0}; {1}' -f $detail, $drift }
+            @{ Passed = $ok; Detail = $detail }
+        }
+        Invoke-Case 'backlog' 'self-test' {
+            $r = Invoke-TestScript 'selftest_backlog.ps1' @('-WorkDir', (Join-Path $WorkDir 'backlog')) 'backlog_selftest'
             $s = Get-SummaryLine $r.Output
             @{ Passed = (($r.ExitCode -eq 0) -and ($r.Output -contains 'ALL SELF-TESTS OK')); Detail = $s }
         }
