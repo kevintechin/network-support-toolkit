@@ -32,7 +32,13 @@ foreach ($sub in @('healthcheck', 'sop', 'docs')) {
     }
 }
 $Package = Join-Path $Tree 'healthcheck'
-Write-Output ("Copy: {0}" -f $Tree)
+$ErrorActionPreference = 'Continue'
+& git init -q $Tree 2>&1 | Out-Null
+& git -C $Tree add -f -A healthcheck 2>&1 | Out-Null
+$trackedInCopy = @(& git -C $Tree ls-files healthcheck 2>$null).Count
+$ErrorActionPreference = 'Stop'
+if (-not $trackedInCopy) { throw 'the copy could not be made a git repository, and E3 would read the folder instead of what ships' }
+Write-Output ("Copy: {0} ({1} files tracked in it)" -f $Tree, $trackedInCopy)
 
 $fails = 0; $passes = 0
 $saved = @{}
@@ -74,9 +80,9 @@ function Assert-Catches([string]$name, [string]$expectedCheck, [scriptblock]$mut
     else { $script:fails++; Write-Output ("[FAIL] {0} -> expected {1} to fail; got: {2}" -f $name, $expectedCheck, $(if ($failed.Count) { $failed -join ' | ' } else { 'nothing failed' })) }
 }
 
-function New-ReportFixture([string]$name, [string]$verdict, [string[]]$statuses) {
+function New-ReportFixture([string]$name, [string]$verdict, [string[]]$statuses, [string]$code = 'PASS') {
     $results = @($statuses | ForEach-Object { '{ "Status": "' + $_ + '", "Tag": "ping-target" }' })
-    $json = '{ "SchemaVersion": "2", "Overall": { "Code": "PASS", "Text": "' + $verdict + '" }, "Results": [' + ($results -join ', ') + '] }'
+    $json = '{ "SchemaVersion": "2", "Overall": { "Code": "' + $code + '", "Text": "' + $verdict + '" }, "Results": [' + ($results -join ', ') + '] }'
     $path = Join-Path $WorkDir $name
     [IO.File]::WriteAllText($path, $json, (New-Object System.Text.UTF8Encoding($false)))
     return $path
@@ -299,6 +305,29 @@ Assert-Catches 'a verdict the report shows and the manual does not quote' 'G3' {
 Assert-Catches 'a report row whose status the script has no badge for' 'G4' {
     [void](New-ReportFixture 'report-unknown-status.json' 'Overall Healthy' @('PASS', 'SKIPPED'))
 } @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-unknown-status.json'), '-ReportLanguage', 'en-US')
+
+# 5l - the three round-1 findings of PR #64, each with the case it asked for.
+Assert-Catches 'a report pairing a code with another code''s verdict' 'G2' {
+    [void](New-ReportFixture 'report-mismatched-verdict.json' 'Overall Healthy' @('PASS') 'ERROR')
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-mismatched-verdict.json'), '-ReportLanguage', 'en-US')
+Assert-Catches 'a report whose overall code the script does not produce' 'G2' {
+    [void](New-ReportFixture 'report-unknown-code.json' 'Overall Healthy' @('PASS') 'SKIPPED')
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-unknown-code.json'), '-ReportLanguage', 'en-US')
+Assert-Catches 'a fingerprint chain the two scripts try in a different order' 'A10' {
+    # The same keys in both scripts, tried in another order in one of them: A2 compares them as sets and passes.
+    $text = Read-All $ZhScript
+    $rows = @([regex]::Matches($text, '(?m)^\s*elseif \(.*\$key = "(dns|quality)" \}\s*$'))
+    if ($rows.Count -ne 2) { throw ('expected the dns and quality branches once each, found ' + $rows.Count) }
+    $swapped = $text.Substring(0, $rows[0].Index) + $rows[1].Value + $text.Substring($rows[0].Index + $rows[0].Length, $rows[1].Index - $rows[0].Index - $rows[0].Length) + $rows[0].Value + $text.Substring($rows[1].Index + $rows[1].Length)
+    Write-All $ZhScript $swapped
+}
+
+# 5m - and the control the third finding is about: a file a run leaves behind is not a file the package ships, so
+# the step has to keep passing with one in a language folder (PR #64, round 1).
+$artefact = Join-Path $Package 'en-US\LauncherError_20260914_000000.txt'
+[IO.File]::WriteAllText($artefact, 'a launcher error a run left behind')
+Assert-Clean 'an untracked file a run left in a language folder is not a shipped file' @()
+Remove-Item -LiteralPath $artefact -Force
 
 # 6 - and the control again, to prove every mutation was put back
 Assert-Clean 'the copy is clean again after every mutation' @()

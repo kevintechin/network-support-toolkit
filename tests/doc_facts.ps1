@@ -393,9 +393,13 @@ if ($ReportPath) {
     $quoted = @($quoted | Sort-Object -Unique)
     $name = Split-Path -Leaf $reportFile
 
+    # The report carries the code and the text together, and the script is what pairs them: a text that is merely
+    # one of the four would pass while the report showed the wrong one of them (PR #64, round 1).
     $verdictText = [string]$report.Overall.Text
-    $knownVerdicts = @($verdicts[$lang].Values)
-    Assert-True ("G2 [{0}] the verdict it shows is one the {1} script defines" -f $name, $lang) ($knownVerdicts -contains $verdictText) ("the report says '" + $verdictText + "'; the script's are: " + ($knownVerdicts -join ', '))
+    $verdictCode = [string]$report.Overall.Code
+    $expectedText = [string]$verdicts[$lang][$verdictCode]
+    $verdictDetail = $(if (-not $expectedText) { "the report's code " + $verdictCode + " is not one the script produces: " + (@($verdicts[$lang].Keys | Sort-Object) -join ', ') } else { "the report pairs " + $verdictCode + " with '" + $verdictText + "'; the script pairs it with '" + $expectedText + "'" })
+    Assert-True ("G2 [{0}] the verdict it shows is the one the {1} script pairs with its code" -f $name, $lang) ($expectedText -and ($expectedText -ceq $verdictText)) $verdictDetail
     Assert-True ("G3 [{0}] the user manual quotes the verdict it shows" -f $name) ($quoted -contains $verdictText) ("not quoted in the {0} user manual: '{1}'" -f $lang, $verdictText)
 
     $codes = @(@($report.Results) | ForEach-Object { [string]$_.Status } | Where-Object { $_ } | Sort-Object -Unique)
@@ -430,6 +434,9 @@ Assert-SetEqual 'A4 configuration keys are the same in both files' $configKeys['
 # and none in the other would leave a row of the other language's report unexplained.
 Assert-SetEqual 'A8 the verdict codes are the same in both scripts' @($verdicts['zh-TW'].Keys) @($verdicts['en-US'].Keys)
 Assert-SetEqual 'A9 the badge codes are the same in both scripts' @($badges['zh-TW'].Keys) @($badges['en-US'].Keys)
+# A2 compares the keys as sets, so two scripts could try the same rules in a different order and agree on nothing
+# that matters (PR #64, round 1). The order is what C2 then holds one table to, and it must be one order.
+Assert-True 'A10 the fingerprint chain is tried in the same order in both scripts' ((@($fingerprintOrder['zh-TW']) -join ',') -eq (@($fingerprintOrder['en-US']) -join ',')) ('zh-TW tries ' + (@($fingerprintOrder['zh-TW']) -join ', ') + '; en-US tries ' + (@($fingerprintOrder['en-US']) -join ', '))
 foreach ($lang in $Languages) {
     # Every fingerprint the chain can select has a title and its advice lines; "healthy" is the switch's default.
     Assert-SetEqual ("A5 [{0}] every fingerprint key has a case in the switch" -f $lang) $fingerprintTitles[$lang] @($fingerprints[$lang] | Where-Object { $_ -ne 'healthy' })
@@ -662,11 +669,30 @@ foreach ($doc in $AllDocs) {
 $TableWaivers = @(
     @{ Prefix = 'docs/'; Reason = 'the table names the folder beside the wildcard for the guides, which ship in each language folder as well, where they are named' },
     @{ Prefix = 'tools/'; Reason = 'the table names the folder beside SHA256SUMS.txt; what is in it is the validator, and section 8 is written for the person running the tool' })
+# What ships is what the asset carries, and build_asset.py packages the tracked files: a run from the checkout
+# leaves LauncherError_<stamp>.txt or PowerShellMessages_<stamp>.txt in a language folder, and reading the folder
+# would make E3 demand a table row for a file no release has ever contained (PR #64, round 1). An extracted release
+# has no git to ask, so the folder is the fallback there, and the source is named in the assertion either way.
 $shippedRel = New-Object System.Collections.Generic.List[string]
-Get-ChildItem -LiteralPath $PackageDir -File | ForEach-Object { $shippedRel.Add($_.Name) }
-foreach ($folder in @('en-US', 'zh-TW', 'docs', 'tools')) {
-    $path = Join-Path $PackageDir $folder
-    if (Test-Path -LiteralPath $path) { Get-ChildItem -LiteralPath $path -File | ForEach-Object { $shippedRel.Add($folder + '/' + $_.Name) } }
+$inventory = 'the folder'
+$tracked = @()
+if ($PackageDir -eq (Join-Path $RepoRoot 'healthcheck')) {
+    try {
+        $ErrorActionPreference = 'Continue'
+        $lines = @(& git -C $RepoRoot ls-files healthcheck 2>$null)
+        if ($LASTEXITCODE -eq 0) { $tracked = @($lines | ForEach-Object { [string]$_ } | Where-Object { $_ -like 'healthcheck/*' } | ForEach-Object { $_.Substring('healthcheck/'.Length) }) }
+    } catch { $tracked = @() }
+    finally { $ErrorActionPreference = 'Stop' }
+}
+if ($tracked.Count) {
+    $inventory = 'git'
+    foreach ($rel in $tracked) { if (($rel -notlike '*/Reports/*') -and ($rel -notlike 'Reports/*')) { $shippedRel.Add($rel) } }
+} else {
+    Get-ChildItem -LiteralPath $PackageDir -File | ForEach-Object { $shippedRel.Add($_.Name) }
+    foreach ($folder in @('en-US', 'zh-TW', 'docs', 'tools')) {
+        $path = Join-Path $PackageDir $folder
+        if (Test-Path -LiteralPath $path) { Get-ChildItem -LiteralPath $path -File | ForEach-Object { $shippedRel.Add($folder + '/' + $_.Name) } }
+    }
 }
 $staleWaiver = @($TableWaivers | Where-Object { $prefix = $_.Prefix; -not @($shippedRel | Where-Object { $_ -like ($prefix + '*') }).Count } | ForEach-Object { $_.Prefix })
 Assert-True ('E3 the file-table waiver list has no stale entry' ) ($staleWaiver.Count -eq 0) ('nothing ships under: ' + ($staleWaiver -join ', '))
@@ -693,7 +719,7 @@ foreach ($lang in $Languages) {
             $previous = $span
         }
         $unnamed = @($required | Where-Object { $file = $_; -not @($matchers | Where-Object { $file -like $_ }).Count })
-        Assert-True ("E3 [{0}] every file the package ships in the root and in {1}\ is named by the file table ({2} files, {3} names)" -f $name, $lang, $required.Count, $matchers.Count) ($unnamed.Count -eq 0) ('not in the table: ' + ($unnamed -join ', '))
+        Assert-True ("E3 [{0}] every file the package ships in the root and in {1}\ is named by the file table ({2} files by {3}, {4} names)" -f $name, $lang, $required.Count, $inventory, $matchers.Count) ($unnamed.Count -eq 0) ('not in the table: ' + ($unnamed -join ', '))
     }
 }
 
