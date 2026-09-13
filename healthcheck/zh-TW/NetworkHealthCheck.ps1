@@ -6979,6 +6979,9 @@ function Run-AllChecks {
         } | Out-Null
     }
     Wait-ForMinimumTcpSample -StartTime $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
+    # PR #56 第 3 輪：窗內讀取在等待的期限就關閉。等待與結束讀取之間還有兩個步驟——網卡計數器的結束值和它們的分析——
+    # 等待之後才到期的讀取會在那兩步之後、最短時間過後才跑，把整個成本疊到執行上；接著的結束讀取就會關窗。
+    Stop-TcpIntervalSampling
 
     $adapterStatsAfter = Invoke-CheckStep -Category "網卡錯誤計數" -Name "取得網卡錯誤結束值" -Progress 82 -Weightless -Action {
         return (Get-AdapterStatisticsSnapshot)

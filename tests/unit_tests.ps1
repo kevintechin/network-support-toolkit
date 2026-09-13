@@ -2606,5 +2606,9 @@ Assert-Equal '#65 boundary r2: with the first window''s and the extension''s ret
 Assert-Equal '#65 boundary r2: a protocol the extension did not close does not count the boundary twice' (@(Get-TcpIntervalTable -Protocol 'TCPv6' -Start (New-CounterFixture 'TCPv6' $t65.AddSeconds(0.1) 5000 0) -End (New-CounterFixture 'TCPv6' $t65.AddSeconds(8.9) 5000 0) -Reads $extReads65).Count) 2
 $script:TcpIntervalSampling = $null
 
+# PR #56, round 3: the reads close at the wait's deadline, before the two steps that run between the wait and the ending
+# read - so no read is taken after the minimum on that path either.
+Assert-Equal '#65 ast r3: the run closes the reads at the wait''s deadline' ((Get-FunctionBody 'Run-AllChecks') -match 'Wait-ForMinimumTcpSample -StartTime \$tcpSampleStart -MinimumSeconds \$minimumSampleSeconds\s*(#[^\r\n]*\s*)*Stop-TcpIntervalSampling') True
+
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

@@ -7239,6 +7239,10 @@ function Run-AllChecks {
         } | Out-Null
     }
     Wait-ForMinimumTcpSample -StartTime $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
+    # PR #56, round 3: the reads inside the window close at the wait's deadline. Two steps run between the wait and
+    # the ending read - the adapter counters' ending values and their analysis - and a read due after the wait would
+    # have run after them, past the minimum, adding its whole cost to the run; the ending read closes the window.
+    Stop-TcpIntervalSampling
 
     $adapterStatsAfter = Invoke-CheckStep -Category "Network Adapter Error Counters" -Name "Get Ending Network Adapter Error Values" -Progress 82 -Weightless -Action {
         return (Get-AdapterStatisticsSnapshot)
