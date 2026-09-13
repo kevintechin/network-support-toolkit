@@ -1000,9 +1000,13 @@ function Get-HostNameSyntaxProblem {
 function Get-UrlConfiguredHost {
     param([string]$Url)
     $text = ([string]$Url).Trim()
-    $start = $text.IndexOf("//", [System.StringComparison]::Ordinal)
-    if ($start -lt 0) { return "" }
-    $authority = $text.Substring($start + 2)
+    # The "//" that opens an authority follows the scheme's colon and nothing else: an absolute URI without an
+    # authority whose path carries "//" later (http:path//example.com) has no host, and Uri accepts it with an
+    # empty one, so a search for the first "//" anywhere named a host the client could not send to (PR #58, round 4).
+    $colonAt = $text.IndexOf([char]":")
+    if ($colonAt -lt 0 -or $text.Length -lt $colonAt + 3) { return "" }
+    if ([int]$text[$colonAt + 1] -ne 47 -or [int]$text[$colonAt + 2] -ne 47) { return "" }
+    $authority = $text.Substring($colonAt + 3)
     $end = $authority.IndexOfAny([char[]]@("/", "?", "#"))
     if ($end -ge 0) { $authority = $authority.Substring(0, $end) }
     $at = $authority.LastIndexOf([char]"@")

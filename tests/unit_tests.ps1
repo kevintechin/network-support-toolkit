@@ -2783,6 +2783,10 @@ Assert-Equal '#54 url: userinfo, port, path and query are not the host' (Test-Ht
 Assert-Equal '#54 url: the configured host is what the extractor returns' (Get-UrlConfiguredHost 'https://user:pw@Example.COM:8443/a/b?c=d#e') 'Example.COM'
 Assert-Equal '#54 url: an IPv6 literal keeps what is between the brackets' (Get-UrlConfiguredHost 'http://[fe80::1]:8080/x') 'fe80::1'
 Assert-Equal '#54 url: no authority, no host' (Get-UrlConfiguredHost 'https:///path') ''
+# PR #58 round 4: the authority marker is the "//" right after the scheme's colon, not the first "//" anywhere.
+Assert-Equal '#54 url: an absolute URI without an authority is refused even when its path carries // later' (Test-HttpTargetSyntax 'http:path//example.com') False
+Assert-Equal '#54 url: and the extractor names no host for it' (Get-UrlConfiguredHost 'http:path//example.com') ''
+Assert-Equal '#54 url: an upper-case scheme still opens the authority' (Get-UrlConfiguredHost 'HTTP://Example.COM/x//y') 'Example.COM'
 $urlFns = @('Test-HttpTargetSyntax', 'Get-UrlHostProblemSuffix') | ForEach-Object { $n = $_; $scriptAst.Find({ param($x) $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true).Extent.Text }
 Assert-Equal '#54 url: neither URL function judges Uri''s own .Host' ((($urlFns -join ' ') -match '\$uri\.Host') -eq $false -and (($urlFns -join ' ') -match 'Get-UrlConfiguredHost')) True   # the code, not the comment that says why
 # The rule lives in one place: the predicate is the reason's yes/no, and IDNA is consulted nowhere else.

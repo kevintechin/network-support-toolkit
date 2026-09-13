@@ -964,9 +964,13 @@ function Get-HostNameSyntaxProblem {
 function Get-UrlConfiguredHost {
     param([string]$Url)
     $text = ([string]$Url).Trim()
-    $start = $text.IndexOf("//", [System.StringComparison]::Ordinal)
-    if ($start -lt 0) { return "" }
-    $authority = $text.Substring($start + 2)
+    # 開啟 authority 的「//」緊接在 scheme 的冒號之後，別處都不算：沒有 authority 的絕對 URI，路徑裡稍後出現「//」
+    # （http:path//example.com），是沒有主機的，Uri 也接受它、主機為空，所以找「任何地方的第一個 //」會指出一個用戶端
+    # 送不到的主機（PR #58 第 4 輪）。
+    $colonAt = $text.IndexOf([char]":")
+    if ($colonAt -lt 0 -or $text.Length -lt $colonAt + 3) { return "" }
+    if ([int]$text[$colonAt + 1] -ne 47 -or [int]$text[$colonAt + 2] -ne 47) { return "" }
+    $authority = $text.Substring($colonAt + 3)
     $end = $authority.IndexOfAny([char[]]@("/", "?", "#"))
     if ($end -ge 0) { $authority = $authority.Substring(0, $end) }
     $at = $authority.LastIndexOf([char]"@")
