@@ -2767,6 +2767,13 @@ Assert-Equal '#54 reason: a percent sign after a decomposed umlaut keeps its typ
 $decomposedEszett = [string](Get-HostNameSyntaxProblem ('u' + [string][char]0x0308 + [string][char]0xDF + '.de'))
 Assert-Equal '#54 reason: an eszett after a decomposed umlaut is placed where it was typed' (($decomposedEszett -match 'U\+00DF') -and ($decomposedEszett -match '(^|\D)3(\D|$)')) True
 Assert-Equal '#54 reason: a bidirectional override after a decomposed umlaut is placed where it was typed' (([string](Get-HostNameSyntaxProblem ('u' + [string][char]0x0308 + [string][char]0x202E + 'x.de'))) -match '(^|\D)3(\D|$)') True
+# PR #58 round 7: positions count Unicode scalars, a surrogate pair once. An emoji IDNA accepts sits before the character.
+$emoji = [char]::ConvertFromUtf32(0x1F600)
+Assert-Equal '#54 reason: a percent sign after an emoji is at its scalar position' (([string](Get-HostNameSyntaxProblem ('a.' + $emoji + '%.com'))) -match '(^|\D)4(\D|$)') True
+Assert-Equal '#54 reason: a hyphen-edge label after an emoji label is at its scalar position' (([string](Get-HostNameSyntaxProblem ($emoji + '.-x.com'))) -match '(^|\D)3(\D|$)') True
+Assert-Equal '#54 reason: an eszett after an emoji is at its scalar position' (([string](Get-HostNameSyntaxProblem ($emoji + [string][char]0xDF + '.de'))) -match '(^|\D)2(\D|$)') True
+Assert-Equal '#54 reason: a bidirectional override after an emoji is at its scalar position' (([string](Get-HostNameSyntaxProblem ($emoji + [string][char]0x202E + 'x.de'))) -match '(^|\D)2(\D|$)') True
+Assert-Equal '#54 reason: an empty label after an emoji label is at its scalar position' (([string](Get-HostNameSyntaxProblem ($emoji + '..x'))) -match '(^|\D)3(\D|$)') True
 Assert-Equal '#54 reason: the bidirectional override is named' (([string](Get-HostNameSyntaxProblem ('foo' + [string][char]0x202E + 'bar.example.com'))) -match 'U\+202E') True
 Assert-Equal '#54 reason: a blank has one' (([string](Get-HostNameSyntaxProblem '   ')).Length -gt 0) True
 # A lone surrogate has no code point; the reason names its UTF-16 value instead of throwing (PR #58, round 1). The calls
@@ -2814,8 +2821,9 @@ Assert-Equal '#54 url: neither URL function judges Uri''s own .Host' ((($urlFns 
 $hostFn = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-HostNameSyntax' }, $true)
 Assert-Equal '#54 one place: Test-HostNameSyntax only asks Get-HostNameSyntaxProblem' ((@($hostFn.Body.EndBlock.Statements).Count -eq 1) -and ($hostFn.Extent.Text -match 'Get-HostNameSyntaxProblem') -and ($hostFn.Extent.Text -notmatch 'IdnMapping|-match|Split')) True
 $idnUses = @($scriptAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.TypeExpressionAst] -and $n.TypeName.Name -match 'IdnMapping' }, $true) + $scriptAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $n.Value -match 'IdnMapping' }, $true))
-$problemFn = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-HostNameSyntaxProblem' }, $true)
-Assert-Equal '#54 one place: IDNA is consulted inside Get-HostNameSyntaxProblem and nowhere else' ((@($idnUses).Count -ge 1) -and (@($idnUses | Where-Object { $_.Extent.StartOffset -lt $problemFn.Extent.StartOffset -or $_.Extent.EndOffset -gt $problemFn.Extent.EndOffset }).Count -eq 0)) True
+$idnHomes = @('Get-HostNameSyntaxProblem', 'Get-UrlHostProblemSuffix') | ForEach-Object { $n = $_; $scriptAst.Find({ param($x) $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true) }
+# The rule consults IDNA; since PR #58 round 6 the URL cross-check does too, to confirm the rule's host against Uri's.
+Assert-Equal '#54 one place: IDNA is consulted inside the rule and the URL cross-check, and nowhere else' ((@($idnUses).Count -ge 2) -and (@($idnUses | Where-Object { $u = $_; @($idnHomes | Where-Object { $u.Extent.StartOffset -ge $_.Extent.StartOffset -and $u.Extent.EndOffset -le $_.Extent.EndOffset }).Count -eq 0 }).Count -eq 0)) True
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

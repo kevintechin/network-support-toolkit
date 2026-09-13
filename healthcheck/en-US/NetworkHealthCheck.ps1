@@ -933,8 +933,12 @@ function Get-HostNameSyntaxProblem {
     $idn = New-Object System.Globalization.IdnMapping
     $position = 1
     $encodedLength = 0
+    # A position in a reason counts Unicode scalars from the start of the trimmed value, a surrogate pair as one
+    # character, where the offsets below count UTF-16 units: an emoji before the character that decided a refusal
+    # would otherwise have shifted every position after it by one (PR #58, round 7).
+    $scalarPosition = { param([int]$units) $units + 1 - [regex]::Matches($name.Substring(0, [math]::Min($units, $name.Length)), '[\uD800-\uDBFF][\uDC00-\uDFFF]').Count }
     foreach ($label in $labels) {
-        if ($label.Length -eq 0) { return ("an empty label at position {0}: two separators in a row, or a leading one" -f $position) }
+        if ($label.Length -eq 0) { return ("an empty label at position {0}: two separators in a row, or a leading one" -f (& $scalarPosition ($position - 1))) }
         $encoded = $label
         # -cmatch, not -match: the case-insensitive one folds U+212A (the Kelvin sign) into K and U+0130 into I, and
         # had called both ASCII - the boundary test found them on its first run.
@@ -960,10 +964,10 @@ function Get-HostNameSyntaxProblem {
                     $code = $(if ($unit.Length -eq 2) { [char]::ConvertToUtf32($unit, 0) } else { [int]$unit[0] })
                     $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
                     if ($at -lt 0) { $at = $i }
-                    if ($refused) { return ("U+{0:X4} at position {1} cannot be encoded for the wire: IDNA refuses it" -f $code, ($position + $at)) }
+                    if ($refused) { return ("U+{0:X4} at position {1} cannot be encoded for the wire: IDNA refuses it" -f $code, (& $scalarPosition ($position - 1 + $at))) }
                     $i += $unit.Length
                 }
-                return ("the label at position {0} cannot be encoded for the wire: IDNA refuses it, or it is longer than 63 characters once encoded" -f $position)
+                return ("the label at position {0} cannot be encoded for the wire: IDNA refuses it, or it is longer than 63 characters once encoded" -f (& $scalarPosition ($position - 1)))
             }
             # ASCII case alone is folded before the comparison: IDNA lowercases A-Z, and that is the one change the rule
             # allows. A culture-free ignore-case comparison folded more - U+017F (the long s) and 's' both uppercase to
@@ -986,18 +990,18 @@ function Get-HostNameSyntaxProblem {
                 # label before this index, so the character is looked for where the operator typed it (round 5).
                 $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
                 if ($at -lt 0) { $at = $index }
-                return ("U+{0:X4} at position {1} would be dropped or changed by IDNA, so the name asked would not be the name configured" -f $code, ($position + $at))
+                return ("U+{0:X4} at position {1} would be dropped or changed by IDNA, so the name asked would not be the name configured" -f $code, (& $scalarPosition ($position - 1 + $at)))
             }
         }
         # A disallowed ASCII character is looked for in the label as configured, not in the encoded form: for a label
         # beyond ASCII the encoded form is Punycode, where the character sits after 'xn--' (round 5); the encoded form is
         # checked too, in case IDNA ever produced one, and then the position is the encoded form's.
         $outside = [regex]::Match($label, '[\x00-\x7F-[A-Za-z0-9_-]]')
-        if ($outside.Success) { return ("U+{0:X4} at position {1} is not a letter, a digit, a hyphen or an underscore" -f [int]$label[$outside.Index], ($position + $outside.Index)) }
+        if ($outside.Success) { return ("U+{0:X4} at position {1} is not a letter, a digit, a hyphen or an underscore" -f [int]$label[$outside.Index], (& $scalarPosition ($position - 1 + $outside.Index))) }
         $outside = [regex]::Match($encoded, '[^A-Za-z0-9_-]')
         if ($outside.Success) { return ("U+{0:X4} at position {1} of the encoded form is not a letter, a digit, a hyphen or an underscore" -f [int]$encoded[$outside.Index], ($outside.Index + 1)) }
-        if ($encoded.Length -gt 63) { return ("the label at position {0} is longer than 63 characters" -f $position) }
-        if ($encoded.StartsWith("-") -or $encoded.EndsWith("-")) { return ("the label at position {0} starts or ends with a hyphen" -f $position) }
+        if ($encoded.Length -gt 63) { return ("the label at position {0} is longer than 63 characters" -f (& $scalarPosition ($position - 1))) }
+        if ($encoded.StartsWith("-") -or $encoded.EndsWith("-")) { return ("the label at position {0} starts or ends with a hyphen" -f (& $scalarPosition ($position - 1))) }
         $encodedLength += $encoded.Length + 1
         $position += $label.Length + 1
     }

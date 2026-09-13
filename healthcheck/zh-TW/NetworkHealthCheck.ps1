@@ -901,8 +901,11 @@ function Get-HostNameSyntaxProblem {
     $idn = New-Object System.Globalization.IdnMapping
     $position = 1
     $encodedLength = 0
+    # 理由裡的位置從修剪後的值開頭算 Unicode 純量，一對代理字元算一個字元，而下面的位移量算的是 UTF-16 碼元：決定拒絕
+    # 的那個字元前面若有一個表情符號，後面每個位置都會多一（PR #58 第 7 輪）。
+    $scalarPosition = { param([int]$units) $units + 1 - [regex]::Matches($name.Substring(0, [math]::Min($units, $name.Length)), '[\uD800-\uDBFF][\uDC00-\uDFFF]').Count }
     foreach ($label in $labels) {
-        if ($label.Length -eq 0) { return ("位置 {0} 有空的標籤：連續兩個分隔符，或開頭就是分隔符" -f $position) }
+        if ($label.Length -eq 0) { return ("位置 {0} 有空的標籤：連續兩個分隔符，或開頭就是分隔符" -f (& $scalarPosition ($position - 1))) }
         $encoded = $label
         # 用 -cmatch 而不是 -match：不分大小寫的那個會把 U+212A（Kelvin 符號）折疊成 K、U+0130 折疊成 I，把兩者都當成
         # ASCII——邊界測試第一次跑就抓到了。
@@ -926,10 +929,10 @@ function Get-HostNameSyntaxProblem {
                     $code = $(if ($unit.Length -eq 2) { [char]::ConvertToUtf32($unit, 0) } else { [int]$unit[0] })
                     $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
                     if ($at -lt 0) { $at = $i }
-                    if ($refused) { return ("位置 {1} 的 U+{0:X4} 無法編碼送上線：IDNA 拒絕它" -f $code, ($position + $at)) }
+                    if ($refused) { return ("位置 {1} 的 U+{0:X4} 無法編碼送上線：IDNA 拒絕它" -f $code, (& $scalarPosition ($position - 1 + $at))) }
                     $i += $unit.Length
                 }
-                return ("位置 {0} 的標籤無法編碼送上線：IDNA 拒絕它，或編碼後超過 63 個字元" -f $position)
+                return ("位置 {0} 的標籤無法編碼送上線：IDNA 拒絕它，或編碼後超過 63 個字元" -f (& $scalarPosition ($position - 1)))
             }
             # 比較前只折疊 ASCII 的大小寫：IDNA 會把 A-Z 變小寫，這是規則唯一容許的改變。不分文化的忽略大小寫比較折疊得
             # 更多——U+017F（長 s）和「s」的大寫都是「S」，詞尾 sigma 和 sigma 也算同一個字母——讓 IDNA 會送成「asb」的
@@ -951,17 +954,17 @@ function Get-HostNameSyntaxProblem {
                 # 它（第 5 輪）。
                 $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
                 if ($at -lt 0) { $at = $index }
-                return ("位置 {1} 的 U+{0:X4} 會被 IDNA 移除或改寫，送出去問的名字就不會是設定的名字" -f $code, ($position + $at))
+                return ("位置 {1} 的 U+{0:X4} 會被 IDNA 移除或改寫，送出去問的名字就不會是設定的名字" -f $code, (& $scalarPosition ($position - 1 + $at)))
             }
         }
         # 不允許的 ASCII 字元到設定的標籤裡找，不到編碼後的形式裡找：ASCII 以外的標籤編碼後是 Punycode，那個字元會排在
         # 「xn--」之後（第 5 輪）；編碼後的形式也檢查，以防 IDNA 產生了一個，那時位置就是編碼後形式的。
         $outside = [regex]::Match($label, '[\x00-\x7F-[A-Za-z0-9_-]]')
-        if ($outside.Success) { return ("位置 {1} 的 U+{0:X4} 不是字母、數字、連字號或底線" -f [int]$label[$outside.Index], ($position + $outside.Index)) }
+        if ($outside.Success) { return ("位置 {1} 的 U+{0:X4} 不是字母、數字、連字號或底線" -f [int]$label[$outside.Index], (& $scalarPosition ($position - 1 + $outside.Index))) }
         $outside = [regex]::Match($encoded, '[^A-Za-z0-9_-]')
         if ($outside.Success) { return ("編碼後形式位置 {1} 的 U+{0:X4} 不是字母、數字、連字號或底線" -f [int]$encoded[$outside.Index], ($outside.Index + 1)) }
-        if ($encoded.Length -gt 63) { return ("位置 {0} 的標籤超過 63 個字元" -f $position) }
-        if ($encoded.StartsWith("-") -or $encoded.EndsWith("-")) { return ("位置 {0} 的標籤以連字號開頭或結尾" -f $position) }
+        if ($encoded.Length -gt 63) { return ("位置 {0} 的標籤超過 63 個字元" -f (& $scalarPosition ($position - 1))) }
+        if ($encoded.StartsWith("-") -or $encoded.EndsWith("-")) { return ("位置 {0} 的標籤以連字號開頭或結尾" -f (& $scalarPosition ($position - 1))) }
         $encodedLength += $encoded.Length + 1
         $position += $label.Length + 1
     }
