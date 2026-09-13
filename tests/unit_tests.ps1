@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Compare-WifiRetryCounters', 'Get-WifiRetrySnapshot', 'Get-WifiInterfaceStateText', 'Get-Win32ErrorText', 'Get-TcpInitialRto', 'New-TcpConnectSample', 'Get-TcpConnectSampleText', 'Invoke-TcpConnectionTest', 'Get-LatencySpreadText', 'Get-WifiAssociationSample', 'Add-WifiAssociationSample', 'Compare-WifiAssociation', 'Get-MacRelation', 'Get-AccessPointGatewayText', 'Get-AccessPointGatewayEvidence', 'Update-AccessPointGatewayHints', 'Get-WlanApiType', 'Get-WlanInterfaceStates', 'Get-WifiInterfaceView', 'Get-WifiNetshReasonText', 'Get-WifiRadioSwitchText', 'Get-WifiApiSummaryText', 'Get-LocationConsentState', 'Test-WifiSampleReadable', 'Get-RadioSwitchState', 'Get-TcpIntervalSeconds', 'Start-TcpIntervalSampling', 'Stop-TcpIntervalSampling', 'Read-TcpIntervalCounters', 'Invoke-TcpIntervalReadIfDue', 'Get-TcpIntervalTable', 'Get-TcpDistributionLines', 'Get-TcpIntervalStopLine', 'Wait-ForMinimumTcpSample', 'Wait-ForConsoleClose'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Compare-WifiRetryCounters', 'Get-WifiRetrySnapshot', 'Get-WifiInterfaceStateText', 'Get-Win32ErrorText', 'Get-TcpInitialRto', 'New-TcpConnectSample', 'Get-TcpConnectSampleText', 'Invoke-TcpConnectionTest', 'Get-LatencySpreadText', 'Get-WifiAssociationSample', 'Add-WifiAssociationSample', 'Compare-WifiAssociation', 'Get-MacRelation', 'Get-AccessPointGatewayText', 'Get-AccessPointGatewayEvidence', 'Update-AccessPointGatewayHints', 'Get-WlanApiType', 'Get-WlanInterfaceStates', 'Get-WifiInterfaceView', 'Get-WifiNetshReasonText', 'Get-WifiRadioSwitchText', 'Get-WifiApiSummaryText', 'Get-LocationConsentState', 'Test-WifiSampleReadable', 'Get-RadioSwitchState', 'Get-TcpIntervalSeconds', 'Start-TcpIntervalSampling', 'Stop-TcpIntervalSampling', 'Read-TcpIntervalCounters', 'Invoke-TcpIntervalReadIfDue', 'Get-TcpIntervalTable', 'Get-TcpDistributionLines', 'Get-TcpIntervalStopLine', 'Wait-ForMinimumTcpSample', 'Wait-ForConsoleClose', 'Get-HostNameSyntaxProblem', 'Get-UrlHostProblemSuffix', 'Get-UrlConfiguredHost'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -2683,6 +2683,178 @@ Assert-Equal '#34 call site: not on the window path' (($null -ne $guiIf) -and ($
 Assert-Equal '#34 call site: only after a run that exited 0' (($null -ne $guiIf) -and ($guiIf.ElseClause.Extent.Text -match 'if \(\$exitCode -eq 0\)\s*\{\s*\[void\]\(Wait-ForConsoleClose\)\s*\}')) True
 $consoleOnlyIf = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -match '^\(?\s*\$ConsoleOnly\s*\)?$' }, $true)
 Assert-Equal '#34 call site: not on the -ConsoleOnly path' (($null -ne $consoleOnlyIf) -and ($consoleOnlyIf.Clauses[0].Item2.Extent.Text -notmatch 'Wait-ForConsoleClose')) True
+
+# backlog #54: the host-name rule, tested at its boundary rather than by its members. The oracle below restates the
+# rule from the item's decision in the plainest form - IPv6 literal with an optional numeric zone; otherwise labels
+# split on the four separators, the root dropped, each label IDNA-encoded and decoded back equal to itself up to
+# case and NFC, the encoded label letters, digits, hyphen and underscore only, 1-63 long, no hyphen at an edge, 253
+# in all - and the shipped predicate must agree with it on every code point of the Basic Multilingual Plane placed
+# inside a label. A mutant of the predicate that drops the fidelity clause, widens the alphabet, ignores a separator
+# or the root, or skips a length disagrees on hundreds of them; the sweep prints the first disagreements by code point.
+function Test-HostNameOracle([string]$x) {
+    $idn = New-Object System.Globalization.IdnMapping
+    $v = $x.Trim(); if ($v -eq '') { return $false }
+    if ($v.Contains(':')) { $ip = $null; return ([System.Net.IPAddress]::TryParse($v, [ref]$ip) -and $ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) }
+    $labels = @([regex]::Split($v, '[.。．｡]'))
+    if ($labels.Count -gt 1 -and $labels[-1] -eq '') { $labels = @($labels[0..($labels.Count - 2)]) }
+    $total = 0
+    foreach ($l in $labels) {
+        if ($l -eq '') { return $false }
+        $a = $l
+        if ($l -cmatch '[^\x00-\x7F]') {   # -cmatch: -match folds U+212A into K and U+0130 into I, found by this sweep's first run
+            try { $n = $l.Normalize([Text.NormalizationForm]::FormC); $a = $idn.GetAscii($n); $u = $idn.GetUnicode($a) } catch { return $false }
+            $nf = [regex]::Replace($n, '[A-Z]', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $m.Value.ToLowerInvariant() })   # ASCII case alone (PR #58, round 2)
+            if ([string]::CompareOrdinal($u, $nf) -ne 0) { return $false }   # ordinal: -cne is a linguistic comparison that ignores a zero-width joiner and equates the eszett with ss
+        }
+        if ($a -cnotmatch '^[A-Za-z0-9_-]+$') { return $false }
+        if ($a.Length -gt 63 -or $a.StartsWith('-') -or $a.EndsWith('-')) { return $false }
+        $total += $a.Length + 1
+    }
+    return (($total - 1) -le 253)
+}
+$disagreements = New-Object System.Collections.Generic.List[string]
+$swept = 0
+# Every UTF-16 code unit, the lone surrogates included - a JSON escape of one half reaches the predicate as one - and
+# a predicate that throws instead of answering counts as a disagreement (PR #58, round 1).
+for ($c = 0; $c -le 0xFFFF; $c++) {
+    $x = 'a' + [string][char]$c + 'b.example.com'
+    $swept++
+    $answer = $(try { Test-HostNameSyntax $x } catch { 'threw' })
+    if ($answer -ne (Test-HostNameOracle $x)) { $disagreements.Add(('U+{0:X4}' -f $c)) }
+}
+Assert-Equal ('#54 property: the predicate agrees with the rule on every BMP code unit inside a label, lone surrogates included ({0} swept)' -f $swept) (@($disagreements | Select-Object -First 12) -join ' ') ''
+# The three candidates the item named, answered - and the boundary's neighbours.
+Assert-Equal '#54 zero-width space is refused: IDNA would drop it and the name asked would differ' (Test-HostNameSyntax ('foo' + [string][char]0x200B + 'bar.example.com')) False
+Assert-Equal '#54 zero-width joiner is refused' (Test-HostNameSyntax ('foo' + [string][char]0x200D + 'bar.example.com')) False
+Assert-Equal '#54 zero-width non-joiner is refused' (Test-HostNameSyntax ('foo' + [string][char]0x200C + 'bar.example.com')) False
+Assert-Equal '#54 soft hyphen is refused' (Test-HostNameSyntax ('foo' + [string][char]0x00AD + 'bar.example.com')) False
+Assert-Equal '#54 bidirectional override is refused: IDNA refuses it' (Test-HostNameSyntax ('foo' + [string][char]0x202E + 'bar.example.com')) False
+Assert-Equal '#54 IPv6 literal with a numeric zone id is usable' (Test-HostNameSyntax 'fe80::1%12') True
+Assert-Equal '#54 IPv6 literal with a named zone id is not (not Windows'' form)' (Test-HostNameSyntax 'fe80::1%eth0') False
+Assert-Equal '#54 a percent sign in a name is refused' (Test-HostNameSyntax 'foo%bar.example.com') False
+Assert-Equal '#54 an asterisk is refused' (Test-HostNameSyntax '*.example.com') False
+Assert-Equal '#54 a plus sign is refused' (Test-HostNameSyntax 'foo+bar.example.com') False
+Assert-Equal '#54 an underscore is usable: Windows hosts carry it' (Test-HostNameSyntax '_dmarc.example.com') True
+Assert-Equal '#54 an eszett is refused: IDNA maps it to ss' (Test-HostNameSyntax ('stra' + [string][char]0xDF + 'e.de')) False
+Assert-Equal '#54 full-width letters are refused: IDNA maps them to ASCII' (Test-HostNameSyntax ([string]([char]0xFF45 + [char]0xFF58) + '.example.com')) False
+Assert-Equal '#54 a decomposed umlaut is usable: canonical composition is not a change' (Test-HostNameSyntax ('m' + [string][char]0x75 + [string][char]0x0308 + 'nchen.de')) True
+Assert-Equal '#54 a precomposed umlaut is usable' (Test-HostNameSyntax ('m' + [string][char]0xFC + 'nchen.de')) True
+Assert-Equal '#54 ASCII case is not a change' (Test-HostNameSyntax 'Example.COM') True
+# PR #58 round 2: only ASCII case may differ. A culture-free ignore-case comparison had let the long s pass as 's'.
+Assert-Equal '#54 the long s is refused: IDNA sends it as s' (Test-HostNameSyntax ('a' + [string][char]0x017F + 'b.example.com')) False
+Assert-Equal '#54 reason: the long s is named' (([string](Get-HostNameSyntaxProblem ('a' + [string][char]0x017F + 'b.example.com'))) -match 'U\+017F') True
+Assert-Equal '#54 the final sigma is refused: IDNA sends it as sigma' (Test-HostNameSyntax ('a' + [string][char]0x03C2 + '.example.com')) False
+Assert-Equal '#54 a capital non-ASCII letter is refused: the rule allows ASCII case only, and IDNA lowercases it' (Test-HostNameSyntax ([string][char]0xDC + 'BER.de')) False
+Assert-Equal '#54 the same letter in lowercase is usable' (Test-HostNameSyntax ([string][char]0xFC + 'ber.de')) True
+Assert-Equal '#54 ASCII capitals beside a non-ASCII letter are still not a change' (Test-HostNameSyntax ('Z' + [string][char]0xFC + 'RICH.ch')) True
+Assert-Equal '#54 an already-encoded label is an ASCII label' (Test-HostNameSyntax 'xn--kpry57d.tw') True
+Assert-Equal '#54 a bracketed IPv6 literal is usable' (Test-HostNameSyntax '[fe80::1]') True
+Assert-Equal '#54 a space inside a label is refused by the alphabet' (Test-HostNameSyntax 'foo bar.example.com') False
+Assert-Equal '#54 253 encoded characters fit' (Test-HostNameSyntax ((('a' * 63) + '.') * 3 + ('b' * 61))) True
+Assert-Equal '#54 254 encoded characters do not' (Test-HostNameSyntax ((('a' * 63) + '.') * 3 + ('b' * 62))) False
+# The reasons: language-neutral parts only - the code point and the position, and emptiness for a usable name.
+Assert-Equal '#54 reason: a usable name has none' ([string](Get-HostNameSyntaxProblem 'www.example.com')) ''
+Assert-Equal '#54 reason: the zero-width space is named by code point and position' (([string](Get-HostNameSyntaxProblem ('foo' + [string][char]0x200B + 'bar.example.com'))) -match 'U\+200B' -and ([string](Get-HostNameSyntaxProblem ('foo' + [string][char]0x200B + 'bar.example.com'))) -match '(^|\D)4(\D|$)') True
+Assert-Equal '#54 reason: the percent sign is named by code point and position' (([string](Get-HostNameSyntaxProblem 'ab%cd.example.com')) -match 'U\+0025' -and ([string](Get-HostNameSyntaxProblem 'ab%cd.example.com')) -match '(^|\D)3(\D|$)') True
+Assert-Equal '#54 reason: the eszett is named where IDNA changes it' (([string](Get-HostNameSyntaxProblem ('stra' + [string][char]0xDF + 'e.de'))) -match 'U\+00DF') True
+Assert-Equal '#54 reason: a full-width letter in the second label is placed after the first label' (([string](Get-HostNameSyntaxProblem ('ab.' + [string][char]0xFF45 + 'x.com'))) -match '(^|\D)4(\D|$)') True
+# PR #58 round 5: a position belongs to the label as configured. The alphabet check on a non-ASCII label used to read the
+# Punycode form ('xn--%-dha' for an umlaut and a percent sign), and NFC composition can shorten a label before the index.
+$umlautPercent = [string](Get-HostNameSyntaxProblem ('a.' + [string][char]0xFC + '%.com'))
+Assert-Equal '#54 reason: a percent sign after an umlaut is placed in the configured label, not in the Punycode' (($umlautPercent -match 'U\+0025') -and ($umlautPercent -match '(^|\D)4(\D|$)')) True
+$decomposedPercent = [string](Get-HostNameSyntaxProblem ('a.u' + [string][char]0x0308 + '%.com'))
+Assert-Equal '#54 reason: a percent sign after a decomposed umlaut keeps its typed position, which NFC would have shifted' (($decomposedPercent -match 'U\+0025') -and ($decomposedPercent -match '(^|\D)5(\D|$)')) True
+$decomposedEszett = [string](Get-HostNameSyntaxProblem ('u' + [string][char]0x0308 + [string][char]0xDF + '.de'))
+Assert-Equal '#54 reason: an eszett after a decomposed umlaut is placed where it was typed' (($decomposedEszett -match 'U\+00DF') -and ($decomposedEszett -match '(^|\D)3(\D|$)')) True
+Assert-Equal '#54 reason: a bidirectional override after a decomposed umlaut is placed where it was typed' (([string](Get-HostNameSyntaxProblem ('u' + [string][char]0x0308 + [string][char]0x202E + 'x.de'))) -match '(^|\D)3(\D|$)') True
+# PR #58 round 7: positions count Unicode scalars, a surrogate pair once. An emoji IDNA accepts sits before the character.
+$emoji = [char]::ConvertFromUtf32(0x1F600)
+Assert-Equal '#54 reason: a percent sign after an emoji is at its scalar position' (([string](Get-HostNameSyntaxProblem ('a.' + $emoji + '%.com'))) -match '(^|\D)4(\D|$)') True
+Assert-Equal '#54 reason: a hyphen-edge label after an emoji label is at its scalar position' (([string](Get-HostNameSyntaxProblem ($emoji + '.-x.com'))) -match '(^|\D)3(\D|$)') True
+Assert-Equal '#54 reason: an eszett after an emoji is at its scalar position' (([string](Get-HostNameSyntaxProblem ($emoji + [string][char]0xDF + '.de'))) -match '(^|\D)2(\D|$)') True
+Assert-Equal '#54 reason: a bidirectional override after an emoji is at its scalar position' (([string](Get-HostNameSyntaxProblem ($emoji + [string][char]0x202E + 'x.de'))) -match '(^|\D)2(\D|$)') True
+Assert-Equal '#54 reason: an empty label after an emoji label is at its scalar position' (([string](Get-HostNameSyntaxProblem ($emoji + '..x'))) -match '(^|\D)3(\D|$)') True
+# PR #58 round 8: a right-to-left letter is not blamed for what follows it. The probe used to wrap every unit in "a"
+# and "b", which is itself a bidirectional violation around Hebrew or Arabic; the unit is probed alone first.
+$hebrew = [string][char]0x05D0
+Assert-Equal '#54 rtl: a Hebrew label is usable' (Test-HostNameSyntax (($hebrew * 3) + '.example.com')) True
+$hebrewOverride = [string](Get-HostNameSyntaxProblem (($hebrew * 3) + [string][char]0x202E + '.example.com'))
+Assert-Equal '#54 rtl: the override after Hebrew letters is what is named, not the first letter' (($hebrewOverride -match 'U\+202E') -and ($hebrewOverride -notmatch 'U\+05D0')) True
+Assert-Equal '#54 rtl: and it is placed at its own position' ($hebrewOverride -match '(^|\D)4(\D|$)') True
+$hebrewLong = [string](Get-HostNameSyntaxProblem (($hebrew * 64) + '.example.com'))
+Assert-Equal '#54 rtl: an overlong Hebrew label is reported as a whole, not blamed on its first letter' (($hebrewLong -match '63') -and ($hebrewLong -notmatch 'U\+05D0')) True
+# .NET Framework's IdnMapping encodes a label that mixes directions (measured: 'ab' around a Hebrew letter encodes); a
+# runtime that enforces the bidirectional rule refuses it as a whole. Either way no single letter is blamed.
+$hebrewMixed = [string](Get-HostNameSyntaxProblem (($hebrew * 2) + 'b.example.com'))
+Assert-Equal '#54 rtl: a label mixing directions is usable or reported as a whole, never blamed on a letter' (($hebrewMixed.Length -eq 0) -or (($hebrewMixed -notmatch 'U\+05D0') -and ($hebrewMixed -notmatch 'U\+0062'))) True
+# PR #58 round 9: the character named is the one whose removal makes the label encodable, in the label's own context - a
+# joiner valid only between the letters it joins (IDNA2008's ContextJ; this runtime maps it away) is never blamed for a
+# prohibited character after it, two prohibited characters name the first, and a length is a length.
+$arabic = [string][char]0x0628
+$joinerThenOverride = [string](Get-HostNameSyntaxProblem ($arabic + [string][char]0x200C + $arabic + [string][char]0x202E + '.example.com'))
+Assert-Equal '#54 context: the override after a joiner between Arabic letters is named, not the joiner' (($joinerThenOverride -match 'U\+202E') -and ($joinerThenOverride -notmatch 'U\+200C')) True
+$twoOverrides = [string](Get-HostNameSyntaxProblem ('a' + [string][char]0x202E + 'b' + [string][char]0x202E + 'c.example.com'))
+Assert-Equal '#54 context: two prohibited characters name the first, at its position' (($twoOverrides -match 'U\+202E') -and ($twoOverrides -match '(^|\D)2(\D|$)')) True
+$longWithAccent = [string](Get-HostNameSyntaxProblem (('a' * 63) + [string][char]0xE9 + '.example.com'))
+Assert-Equal '#54 context: 64 characters ending in an accent is the length, not the accent' (($longWithAccent -match '63') -and ($longWithAccent -notmatch 'U\+00E9')) True
+# PR #58 round 10: the occurrence reported is the one the search selected. Under IDNA2008's ContextJ the second joiner of
+# 'b<ZWNJ>b<ZWNJ>' (Arabic letters) is the invalid one and is reported at position 4; this runtime (IDNA2003) maps the
+# joiner away and reports the first at position 2 as dropped - either is the same character at the occurrence that decided it.
+$twoJoiners = [string](Get-HostNameSyntaxProblem ($arabic + [string][char]0x200C + $arabic + [string][char]0x200C + '.example.com'))
+Assert-Equal '#54 occurrence: a repeated joiner is named at the occurrence that decided it, on either runtime' (($twoJoiners -match 'U\+200C') -and (($twoJoiners -match '(^|\D)2(\D|$)') -or ($twoJoiners -match '(^|\D)4(\D|$)'))) True
+# The mapping itself, on this runtime: the second of two overrides is reached through the pair search with the first one
+# removed, so the first is the one named - and the position is the first's, not the second's.
+Assert-Equal '#54 occurrence: two overrides name the first at the first''s position' (([string](Get-HostNameSyntaxProblem ('ab' + [string][char]0x202E + 'c' + [string][char]0x202E + '.de'))) -match '(^|\D)3(\D|$)') True
+Assert-Equal '#54 reason: the bidirectional override is named' (([string](Get-HostNameSyntaxProblem ('foo' + [string][char]0x202E + 'bar.example.com'))) -match 'U\+202E') True
+Assert-Equal '#54 reason: a blank has one' (([string](Get-HostNameSyntaxProblem '   ')).Length -gt 0) True
+# A lone surrogate has no code point; the reason names its UTF-16 value instead of throwing (PR #58, round 1). The calls
+# are wrapped so that a throw is a failed assertion, not a skipped one.
+$loneHigh = $(try { [string](Get-HostNameSyntaxProblem ('foo' + [string][char]0xD800 + 'bar.example.com')) } catch { 'THREW: ' + $_.Exception.Message })
+Assert-Equal '#54 reason: a lone high surrogate is refused and named by its UTF-16 value' (($loneHigh -match 'U\+D800') -and ($loneHigh -match '(^|\D)4(\D|$)')) True
+$loneLow = $(try { [string](Get-HostNameSyntaxProblem ('foo' + [string][char]0xDC00 + 'bar.example.com')) } catch { 'THREW: ' + $_.Exception.Message })
+Assert-Equal '#54 reason: a lone low surrogate too' ($loneLow -match 'U\+DC00') True
+$highThenLetter = $(try { [string](Get-HostNameSyntaxProblem ('foo' + [string][char]0xD83D + 'x.example.com')) } catch { 'THREW: ' + $_.Exception.Message })
+Assert-Equal '#54 reason: a high surrogate followed by a letter is named by its own value' ($highThenLetter -match 'U\+D83D') True
+$pair = $(try { [string](Get-HostNameSyntaxProblem ('foo' + [char]::ConvertFromUtf32(0x1F600) + 'bar.example.com')) } catch { 'THREW: ' + $_.Exception.Message })
+Assert-Equal '#54 reason: a valid pair that IDNA accepts is a usable label' $pair ''
+Assert-Equal '#54 reason: a URL with a usable host adds nothing' ([string](Get-UrlHostProblemSuffix 'https://www.example.com/')) ''
+Assert-Equal '#54 reason: a URL whose host carries a zero-width space names it' (([string](Get-UrlHostProblemSuffix ('https://foo' + [string][char]0x200B + 'bar.example.com/'))) -match 'U\+200B') True
+Assert-Equal '#54 reason: a URL that fails for its scheme adds nothing' ([string](Get-UrlHostProblemSuffix 'ftp://example.com/')) ''
+# PR #58 round 3: the URL's host is judged as written. System.Uri lowercases the host and normalises an internationalised
+# one before exposing .Host, which would have passed a spelling the rule refuses in a ping, DNS or TCP target.
+Assert-Equal '#54 url: a capital non-ASCII letter in the host is refused, as it is elsewhere' (Test-HttpTargetSyntax ('https://' + [string][char]0xDC + 'BER.de/')) False
+Assert-Equal '#54 url: the lowercase form is usable' (Test-HttpTargetSyntax ('https://' + [string][char]0xFC + 'ber.de/')) True
+Assert-Equal '#54 url: reason names the capital letter as written' (([string](Get-UrlHostProblemSuffix ('https://' + [string][char]0xDC + 'BER.de/'))) -match 'U\+00DC') True
+Assert-Equal '#54 url: a zero-width space in the host is refused' (Test-HttpTargetSyntax ('https://foo' + [string][char]0x200B + 'bar.example.com/')) False
+Assert-Equal '#54 url: userinfo, port, path and query are not the host' (Test-HttpTargetSyntax 'https://user:pw@Example.COM:8443/a/b?c=d#e') True
+Assert-Equal '#54 url: the configured host is what the extractor returns' (Get-UrlConfiguredHost 'https://user:pw@Example.COM:8443/a/b?c=d#e') 'Example.COM'
+Assert-Equal '#54 url: an IPv6 literal keeps what is between the brackets' (Get-UrlConfiguredHost 'http://[fe80::1]:8080/x') 'fe80::1'
+Assert-Equal '#54 url: no authority, no host' (Get-UrlConfiguredHost 'https:///path') ''
+# PR #58 round 4: the authority marker is the "//" right after the scheme's colon, not the first "//" anywhere.
+Assert-Equal '#54 url: an absolute URI without an authority is refused even when its path carries // later' (Test-HttpTargetSyntax 'http:path//example.com') False
+Assert-Equal '#54 url: and the extractor names no host for it' (Get-UrlConfiguredHost 'http:path//example.com') ''
+Assert-Equal '#54 url: an upper-case scheme still opens the authority' (Get-UrlConfiguredHost 'HTTP://Example.COM/x//y') 'Example.COM'
+# PR #58 round 6: a backslash ends the authority as it does for Uri, and the host the rule judged must be the host Uri
+# would send to - the cross-check that closes the class of separators one parser knows and the other does not.
+Assert-Equal '#54 url: a backslash ends the authority before an @ that would otherwise hide the real host' (Get-UrlConfiguredHost 'http://foo..bar\@example.com/') 'foo..bar'
+Assert-Equal '#54 url: and the URL is refused for that host' (Test-HttpTargetSyntax 'http://foo..bar\@example.com/') False
+Assert-Equal '#54 url: an internationalised host agrees with what Uri would send to' (Test-HttpTargetSyntax ('https://' + [string][char]0x53F0 + [string][char]0x7063 + [string][char]0x3002 + 'tw/')) True
+Assert-Equal '#54 url: an already-encoded host agrees too' (Test-HttpTargetSyntax 'https://xn--kpry57d.tw/') True
+Assert-Equal '#54 url: an IPv6 literal agrees through the parsed address' (Test-HttpTargetSyntax 'http://[fe80::1]:8080/') True
+Assert-Equal '#54 url: mixed ASCII case agrees' (Test-HttpTargetSyntax 'https://www.Example.COM/') True
+$suffixFn = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-UrlHostProblemSuffix' }, $true).Extent.Text
+Assert-Equal '#54 url: the cross-check against what Uri would send to lives in the suffix, on IdnHost' (($suffixFn -match '\$uri\.IdnHost') -and ($suffixFn -match 'Get-UrlConfiguredHost')) True
+$httpFn = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-HttpTargetSyntax' }, $true).Extent.Text
+Assert-Equal '#54 url: the predicate is the suffix''s yes/no' ($httpFn -match 'Get-UrlHostProblemSuffix') True
+$urlFns = @('Test-HttpTargetSyntax', 'Get-UrlHostProblemSuffix') | ForEach-Object { $n = $_; $scriptAst.Find({ param($x) $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true).Extent.Text }
+Assert-Equal '#54 url: neither URL function judges Uri''s own .Host' ((($urlFns -join ' ') -match '\$uri\.Host') -eq $false -and (($urlFns -join ' ') -match 'Get-UrlConfiguredHost')) True   # the code, not the comment that says why
+# The rule lives in one place: the predicate is the reason's yes/no, and IDNA is consulted nowhere else.
+$hostFn = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-HostNameSyntax' }, $true)
+Assert-Equal '#54 one place: Test-HostNameSyntax only asks Get-HostNameSyntaxProblem' ((@($hostFn.Body.EndBlock.Statements).Count -eq 1) -and ($hostFn.Extent.Text -match 'Get-HostNameSyntaxProblem') -and ($hostFn.Extent.Text -notmatch 'IdnMapping|-match|Split')) True
+$idnUses = @($scriptAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.TypeExpressionAst] -and $n.TypeName.Name -match 'IdnMapping' }, $true) + $scriptAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $n.Value -match 'IdnMapping' }, $true))
+$idnHomes = @('Get-HostNameSyntaxProblem', 'Get-UrlHostProblemSuffix') | ForEach-Object { $n = $_; $scriptAst.Find({ param($x) $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true) }
+# The rule consults IDNA; since PR #58 round 6 the URL cross-check does too, to confirm the rule's host against Uri's.
+Assert-Equal '#54 one place: IDNA is consulted inside the rule and the URL cross-check, and nowhere else' ((@($idnUses).Count -ge 2) -and (@($idnUses | Where-Object { $u = $_; @($idnHomes | Where-Object { $u.Extent.StartOffset -ge $_.Extent.StartOffset -and $u.Extent.EndOffset -le $_.Extent.EndOffset }).Count -eq 0 }).Count -eq 0)) True
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

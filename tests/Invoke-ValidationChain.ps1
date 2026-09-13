@@ -285,11 +285,23 @@ function Get-ConfigConverterSource([string]$ScriptPath) {
     # languages.
     $tokens = $null; $errors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path -LiteralPath $ScriptPath).Path, [ref]$tokens, [ref]$errors)
-    $wanted = 'ConvertTo-DoubleSafe', 'ConvertTo-IntSafe', 'Test-IsNumericValue', 'Test-IsWholeNumber', 'Test-IsValidIPv4Address', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-IPv4InCidr', 'Resolve-PingTargets', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Test-NearEndTargetPlacement', 'ConvertTo-SafeString', 'Get-RouteSelection'
+    $wanted = 'ConvertTo-DoubleSafe', 'ConvertTo-IntSafe', 'Test-IsNumericValue', 'Test-IsWholeNumber', 'Test-IsValidIPv4Address', 'Get-HostNameSyntaxProblem', 'Get-UrlConfiguredHost', 'Get-UrlHostProblemSuffix', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-IPv4InCidr', 'Resolve-PingTargets', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Test-NearEndTargetPlacement', 'ConvertTo-SafeString', 'Get-RouteSelection'
     $found = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true))
     $loaded = @($found | ForEach-Object { $_.Name })
     $missing = @($wanted | Where-Object { $loaded -notcontains $_ })
     if ($missing.Count -gt 0) { throw ("The package at {0} is missing: {1}" -f $ScriptPath, ($missing -join ', ')) }
+    # A loaded function that calls a function of the script this loader does not load fails here, by name, instead of
+    # deep inside a case under ErrorActionPreference Stop - which is how Get-HostNameSyntaxProblem (the first chain run
+    # of PR #58) and Get-UrlConfiguredHost (its round 5) were found: the predicates gained callees and the list did not.
+    $defined = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name })
+    $unloaded = @()
+    foreach ($f in $found) {
+        foreach ($call in @($f.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))) {
+            $callee = [string]$call.GetCommandName()
+            if ($callee -and ($defined -contains $callee) -and ($wanted -notcontains $callee)) { $unloaded += ('{0} calls {1}' -f $f.Name, $callee) }
+        }
+    }
+    if ($unloaded.Count -gt 0) { throw ("The loader would leave a call unresolved - add the callee to the wanted list: {0}" -f (@($unloaded | Sort-Object -Unique) -join '; ')) }
     return @($found | ForEach-Object { $_.Extent.Text })
 }
 function Test-UsableIPAddress([string]$Value) {

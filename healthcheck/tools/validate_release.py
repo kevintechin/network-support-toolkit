@@ -4,7 +4,7 @@ import sys, json, hashlib, re
 
 ROOT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
 TOOL_VERSION = '1.2.14'
-FUNCTION_COUNT = 146
+FUNCTION_COUNT = 149
 failures=[]; passes=[]
 
 def ok(name, cond, detail=''):
