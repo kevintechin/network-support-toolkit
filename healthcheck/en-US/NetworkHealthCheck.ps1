@@ -5684,6 +5684,10 @@ function Read-TcpIntervalCounters {
                 Error    = $item.Error
             })
         }
+        # PR #56, round 1: the pass stops at the first class that failed. Reading the next class after a timeout would
+        # spend a second eight seconds on a provider that has just refused - the bound is one timeout per run, not one
+        # per class - and for the class not read the interval this read would have closed merges with its neighbour.
+        if (@($readAttempts).Count -gt 0) { break }
     }
     return [pscustomobject][ordered]@{
         Timestamp      = Get-Date

@@ -5476,6 +5476,9 @@ function Read-TcpIntervalCounters {
                 Error    = $item.Error
             })
         }
+        # PR #56 第 1 輪：這一輪讀取在第一個失敗的類別就停下。逾時之後再讀下一個類別，等於在剛拒絕過的提供者身上再花八秒——
+        # 上限是每次執行一次逾時，不是每個類別一次——沒讀到的那個類別，這次讀取本來會關閉的那一段就併入相鄰的一段。
+        if (@($readAttempts).Count -gt 0) { break }
     }
     return [pscustomobject][ordered]@{
         Timestamp      = Get-Date

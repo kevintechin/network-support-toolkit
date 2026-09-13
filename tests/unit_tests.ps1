@@ -2404,7 +2404,7 @@ Set-Interval65 2
 Reset-CimStub @{ $v4Class = @('fail') }
 $intervalRead = Read-TcpIntervalCounters
 Assert-Equal '#65 read: the class that failed was attempted once' (Get-CimCallCount $v4Class) 1
-Assert-Equal '#65 read: the other class is still read' ($intervalRead.Counters.ContainsKey('TCPv6')) True
+Assert-Equal '#65 read: the class after the one that failed is not attempted in that pass (PR #56, round 1)' ("{0}/{1}" -f (Get-CimCallCount $v6Class), $intervalRead.Counters.ContainsKey('TCPv6')) '0/False'
 Assert-Equal '#65 read: no counter is invented for the one that failed' ($intervalRead.Counters.ContainsKey('TCPv4')) False
 Assert-Equal '#65 read: the failed attempt is kept with its phase and its number' ("{0}/{1}/{2}" -f @($intervalRead.FailedAttempts).Count, @($intervalRead.FailedAttempts)[0].Phase, @($intervalRead.FailedAttempts)[0].Attempt) '1/interval/1'
 Assert-Equal '#65 read: and is named apart from a measured read of the same number' ((Format-TcpAttemptList @($intervalRead.FailedAttempts)) -ne (Format-TcpAttemptList @([pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 1 }))) True
@@ -2444,7 +2444,7 @@ $stopped65 = $script:TcpIntervalSampling
 Assert-Equal '#65 stop: the failed read is kept, with its attempt' ("{0}/{1}" -f @($stopped65.Reads).Count, @($stopped65.FailedAttempts).Count) '1/1'
 Assert-Equal '#65 stop: the sampling is over, named by the class that failed' ("{0}/{1}/{2}" -f $stopped65.Active, ($null -ne $stopped65.StoppedAt), $stopped65.StopReason) 'False/True/TCPv4'
 Assert-Equal '#65 stop: the class that failed was attempted once, not twice' (Get-CimCallCount $v4Class) 1
-Assert-Equal '#65 stop: the other class was read in the same pass' ($stopped65.Reads[0].Counters.ContainsKey('TCPv6')) True
+Assert-Equal '#65 stop: the pass stopped at the class that failed - the other was not attempted' ("{0}/{1}" -f (Get-CimCallCount $v6Class), $stopped65.Reads[0].Counters.ContainsKey('TCPv6')) '0/False'
 Start-TcpIntervalSampling -IntervalSeconds 2 -Since (Get-Date).AddSeconds(-3) -Extension
 Invoke-TcpIntervalReadIfDue
 Assert-Equal '#65 stop: the extension does not reopen a stopped sampling' ("{0}/{1}" -f $stopped65.Active, @($stopped65.Reads).Count) 'False/1'
@@ -2466,7 +2466,9 @@ Assert-Equal '#65 table: and its own seconds, from the stamps' ((@($burstTable |
 Assert-Equal '#65 table: the offsets run from the baseline stamp' ("{0}-{1}" -f $burstTable[1].FromSeconds, $burstTable[1].ToSeconds) '2.1-4.3'
 Assert-Equal '#65 table: a reading that went backwards empties the table' (@(Get-TcpIntervalTable -Protocol 'TCPv4' -Start $start65 -End $end65 -Reads @((New-Read65 3.0 99000 1000))).Count) 0
 Assert-Equal '#65 table: no reading inside the window is one interval' (@(Get-TcpIntervalTable -Protocol 'TCPv4' -Start $start65 -End $end65 -Reads @()).Count) 1
-Assert-Equal '#65 table: a read where this protocol failed is skipped, the other protocol is not' (@(Get-TcpIntervalTable -Protocol 'TCPv6' -Start (New-CounterFixture 'TCPv6' $t65 5000 0) -End (New-CounterFixture 'TCPv6' $t65.AddSeconds(8.9) 5000 0) -Reads @([pscustomobject]@{ Timestamp = $t65.AddSeconds(2); Counters = @{ 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(2) 5000 0) }; FailedAttempts = @() })).Count) 2
+# A pass that stopped at TCPv6 (PR #56, round 1) carries TCPv4's reading alone: TCPv4's table takes it, TCPv6's skips it.
+$partialRead65 = [pscustomobject]@{ Timestamp = $t65.AddSeconds(2); Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65.AddSeconds(2) 100100 1000) }; FailedAttempts = @() }
+Assert-Equal '#65 table: a read where the second class failed keeps the first class''s reading, and the other table skips it' ("{0}/{1}" -f (@(Get-TcpIntervalTable -Protocol 'TCPv4' -Start $start65 -End $end65 -Reads @($partialRead65))).Count, (@(Get-TcpIntervalTable -Protocol 'TCPv6' -Start (New-CounterFixture 'TCPv6' $t65 5000 0) -End (New-CounterFixture 'TCPv6' $t65.AddSeconds(8.9) 5000 0) -Reads @($partialRead65))).Count) '2/1'
 function New-State65($reads, $interval = 2, $failed = @(), $stoppedAt = $null, $reason = '') {
     return [pscustomobject]@{ Active = $false; IntervalSeconds = $interval; LastRead = $t65; Extension = $false; Reads = @($reads); FailedAttempts = @($failed); StoppedAt = $stoppedAt; StopReason = $reason }
 }
@@ -2515,7 +2517,7 @@ Assert-Equal '#65 rows: no read inside the window is one sentence more than the 
 # A read inside the window that failed: named on both protocols' rows - it lies inside both windows - with its seconds
 # in the note and the stop line on every row; no row of its own, no status moved, the intervals before it standing.
 $failed65 = @([pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'interval'; Attempt = 1; Seconds = 8.3; Error = 'Timed out'; Extension = $false })
-$stopReads = @((New-Read65 2.1 100120 1000), [pscustomobject]@{ Timestamp = $t65.AddSeconds(4.5); Counters = @{ 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(4.5) 5000 0) }; FailedAttempts = $failed65; Extension = $false })
+$stopReads = @((New-Read65 2.1 100120 1000), [pscustomobject]@{ Timestamp = $t65.AddSeconds(4.5); Counters = @{}; FailedAttempts = $failed65; Extension = $false })
 $stopRows = Get-Rows65 $stopReads 3000 57 2 $failed65 $t65.AddSeconds(4.5) 'TCPv4'
 Assert-Equal '#65 failure: still one row per protocol, no row for the failed read' (@($stopRows).Count) 2
 $stopV4 = @($stopRows | Where-Object { $_.Check -eq 'TCPv4' })[0]
@@ -2541,7 +2543,7 @@ Assert-Equal '#65 failure: and the protocol that was read still names the failed
 # Through an extension: a failed read taken while the window was being extended is inside only the windows the
 # extension closed - TCPv4 here - and outside TCPv6's, whose reading kept the first stamp; the stop line is on both.
 $extFailed = @([pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'interval'; Attempt = 1; Seconds = 8.0; Error = 'Timed out'; Extension = $true })
-$script:TcpIntervalSampling = New-State65 @((New-Read65 2.1 100120 1000), [pscustomobject]@{ Timestamp = $t65.AddSeconds(10.5); Counters = @{ 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(10.5) 5000 0) }; FailedAttempts = $extFailed; Extension = $true }) 2 $extFailed $t65.AddSeconds(10.5) 'TCPv4'
+$script:TcpIntervalSampling = New-State65 @((New-Read65 2.1 100120 1000), [pscustomobject]@{ Timestamp = $t65.AddSeconds(10.5); Counters = @{}; FailedAttempts = $extFailed; Extension = $true }) 2 $extFailed $t65.AddSeconds(10.5) 'TCPv4'
 $extBefore = [pscustomobject]@{ Timestamp = $t65; Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65 100000 1000); 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(0.1) 5000 0) }; Errors = @(); FailedAttempts = @(); WarmUpFailures = @() }
 $extAfter = [pscustomobject]@{ Timestamp = $t65.AddSeconds(18.9); Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65.AddSeconds(18.8) 100400 1006); 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(8.9) 5000 0) }; Errors = @(); FailedAttempts = @(); WarmUpFailures = @(); Extended = $true; ExtendedProtocols = @('TCPv4') }
 $script:TcpRows = New-Object System.Collections.ArrayList
