@@ -1,4 +1,4 @@
-﻿# 網路健檢工具 1.2.13 — IT 部署手冊
+﻿# 網路健檢工具 1.2.14 — IT 部署手冊
 
 **寫給把工具發出去的 IT 部門。** 套件需要什麼、怎麼依你的環境設定、怎麼部署、安全政策會對它做什麼、怎麼驗證收到的東西沒被動過，以及回來的報告該怎麼處理。
 
@@ -159,19 +159,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 | `TcpTimeoutMs` | 4000 | 500 | 每個連線——有回應的目標會被連線 `PingCount` 次，一次接一次，在第一次失敗處停止（backlog #52），所以有回應的目標多花的是 `PingCount` − 1 次交握的時間——在參考機上是幾毫秒——途中停止回應的目標最多多花一次逾時；從未回應的目標仍只花一次 |
 | `HttpTimeoutMs` | 6000 | 500 | 每個請求，連線與讀取皆同 |
 | `RetransmissionSampleSeconds` | 8 | 1 | TCP 計數器在開始時取樣一次，過了這麼多秒再取樣一次，所以這是執行時間的下限；各項測試在這段時間內進行，目標不回應時，它們的逾時會再疊上去；無線重傳計數器（第 3.4 節）在同一個視窗內取樣 |
+| `RetransmissionIntervalSeconds` | 2 | 0 | 計數器在取樣窗內至少每隔這麼多秒再讀一次——由執行自己的執行緒在各步驟之間與等待期間進行——讓數到重傳的那一列能說出重傳落在窗內的哪一段：各段，以及重傳最多的一段和它佔次數與佔時間的比例（1.2.14、backlog #65）；0 代表關閉這些讀取。參考機器上每次讀取約 0.1 秒，大多落在執行本來就要睡掉的等待裡；窗內某次讀取用完八秒時限，這次執行就不再讀，所以最壞情況是每次執行一次逾時，列上會點名。這些數字只把重傳放到時間軸上，不做任何判定。不在 IT 面板、也沒有開關：站點屬性，在這個檔案設一次就好 |
 
 **不允許連外的環境。** 移除公網的 Ping、TCP、HTTP 目標，把 `www.microsoft.com` 的名稱查詢換成你的解析器查得到的內部名稱（出廠的 `DnsNames` 項目是必要的，解析不出來就會讓這次執行失敗），把 `Internet` 群組換成你的內部服務，或者把 `Internet` 從 `RequiredConnectivityGroups` 移除（否則群組列會因為沒有成員而變成「無法檢查」），並把 `Checks.Traceroute` 設為 `false`：traceroute 會探測往第一個不是佔位符的 Ping 目標，一個都沒有時，仍然會探測往 `1.1.1.1`。
 
 ### 3.4 · 可選檢查（`Checks`）
 
-IT 診斷資料（報告最下方收合區裡 IT 範圍的列，永遠不計入整體結果）每一項都可以關掉，在這裡關，或在 IT 面板裡只關一次。那裡的「資訊」列記的是收集到的內容，或者說明沒有東西可收集、來源在這台電腦上不存在（沒有已連線的無線介面或沒有 `netsh.exe`、沒有 `Get-NetRoute`、沒有預設路由或閘道、沒有已連線的實體網卡）；「無法檢查」列表示讀取來源時發生錯誤（無線資料、路由表、鄰居表或 traceroute）。自 1.2.13 起，`WifiRf` 也管三次存取點取樣和它們產生的「Wi-Fi 存取點」列，`GatewayNeighbor` 那一列則把閘道的位址和存取點的比較（見這兩列）。下面的 `WifiRetryCounters` 是例外：它切換的是主報告裡的一項量測，不是 IT 診斷資料——見它那一列。
+IT 診斷資料（報告最下方收合區裡 IT 範圍的列，永遠不計入整體結果）每一項都可以關掉，在這裡關，或在 IT 面板裡只關一次。那裡的「資訊」列記的是收集到的內容，或者說明沒有東西可收集、來源在這台電腦上不存在（沒有已連線的無線介面或沒有 `netsh.exe`、沒有 `Get-NetRoute`、沒有預設路由或閘道、沒有已連線的實體網卡）；「無法檢查」列表示讀取來源時發生錯誤（無線資料、路由表、鄰居表或 traceroute）。自 1.2.14 起，`WifiRf` 也管三次存取點取樣和它們產生的「Wi-Fi 存取點」列，`GatewayNeighbor` 那一列則把閘道的位址和存取點的比較（見這兩列）。下面的 `WifiRetryCounters` 是例外：它切換的是主報告裡的一項量測，不是 IT 診斷資料——見它那一列。
 
 | 鍵 | 預設 | 收集什麼 |
 |---|---|---|
-| `WifiRf` | `true` | 無線介面的 SSID、BSSID、頻段、頻道、速率與訊號，從 `netsh wlan show interfaces` 解析；自 1.2.13 起同一個命令也在第一項量測之前和最後一項之後各讀一次，讓「Wi-Fi 存取點」列——IT 範圍，netsh 列出的每張無線介面各一列「資訊」列——能說每張介面在執行期間是否一直連著同一個存取點：同一個 SSID 下漫遊、換到另一個網路、或沒有回報 BSSID，絕不寫成已斷線。沒有列出任何介面的機器得到一列說明，每次讀取都失敗得到一列「無法檢查」；兩個樣本之間換出去又回來的漫遊看不見，那一列會這麼說。介面清單與連線狀態來自 WLAN 服務（backlog #62），走和 `WifiRetryCounters` 相同的記憶體內 P/Invoke 讀取器——每個程序只編譯一次、約 0.7 秒，由兩者中先執行的那個支付——而 `netsh wlan show interfaces` 因桌面應用程式不被允許存取位置而一個介面都不印時（Windows 11 24H2 及之後；設定 > 隱私權與安全性 > 位置），這一列仍回報已連線的介面，網路名稱、存取點、訊號與速率標為未回報，並在權限存放區顯示拒絕時指出那個設定（沒有這個見證的存取被拒只寫成存取被拒、原因未能確認）；在這些欄位重要的機器上，請允許桌面應用程式存取位置。在這裡關掉或用 `-NoWifi`：沒有無線訊號列、不取樣、也沒有存取點列 |
+| `WifiRf` | `true` | 無線介面的 SSID、BSSID、頻段、頻道、速率與訊號，從 `netsh wlan show interfaces` 解析；自 1.2.14 起同一個命令也在第一項量測之前和最後一項之後各讀一次，讓「Wi-Fi 存取點」列——IT 範圍，netsh 列出的每張無線介面各一列「資訊」列——能說每張介面在執行期間是否一直連著同一個存取點：同一個 SSID 下漫遊、換到另一個網路、或沒有回報 BSSID，絕不寫成已斷線。沒有列出任何介面的機器得到一列說明，每次讀取都失敗得到一列「無法檢查」；兩個樣本之間換出去又回來的漫遊看不見，那一列會這麼說。介面清單與連線狀態來自 WLAN 服務（backlog #62），走和 `WifiRetryCounters` 相同的記憶體內 P/Invoke 讀取器——每個程序只編譯一次、約 0.7 秒，由兩者中先執行的那個支付——而 `netsh wlan show interfaces` 因桌面應用程式不被允許存取位置而一個介面都不印時（Windows 11 24H2 及之後；設定 > 隱私權與安全性 > 位置），這一列仍回報已連線的介面，網路名稱、存取點、訊號與速率標為未回報，並在權限存放區顯示拒絕時指出那個設定（沒有這個見證的存取被拒只寫成存取被拒、原因未能確認）；在這些欄位重要的機器上，請允許桌面應用程式存取位置。在這裡關掉或用 `-NoWifi`：沒有無線訊號列、不取樣、也沒有存取點列 |
 | `WifiRetryCounters` | `true` | 不是 IT 診斷資料：無線網卡在這次執行期間的 802.11 重傳計數器，由執行時在記憶體內編譯的幾行 P/Invoke（每個程序一次約 0.7 秒，不寫任何東西到磁碟）透過 Native Wifi API 讀取，以一列不決定任何結果的「資訊」列寫進主報告——重送的框除以嘗試送出的框，並列出到達重傳上限後放棄的框，這台機器的每個無線介面各一列。讀取器無法編譯或載入、WLAN 服務沒有回應或沒有無線介面時，一列不計權重的列會說明，執行期間出現或消失的介面則各自得到一列不計權重的「無法檢查」列。沒有面板核取方塊、沒有參數：只能在這裡切換 |
 | `RouteTable` | `true` | IPv4 預設路由，依 Windows 使用的順序 |
-| `GatewayNeighbor` | `true` | 鄰居（ARP）表裡閘道的硬體位址；自 1.2.13 起和提供這個閘道的那張網卡所對應無線介面的 BSSID 比較，結果寫成這一列的一行——同一台設備、大概是同一台、同一家廠商、或兩台——是提示，絕不是拓樸結論；閘道的網卡是有線的或 `WifiRf` 關掉時不寫這一行 |
+| `GatewayNeighbor` | `true` | 鄰居（ARP）表裡閘道的硬體位址；自 1.2.14 起和提供這個閘道的那張網卡所對應無線介面的 BSSID 比較，結果寫成這一列的一行——同一台設備、大概是同一台、同一家廠商、或兩台——是提示，絕不是拓樸結論；閘道的網卡是有線的或 `WifiRf` 關掉時不寫這一行 |
 | `ProxySettings` | `true` | 使用者的 Proxy 設定、WinHTTP Proxy，以及 Windows 對第一個 HTTP 目標（沒有時是 `https://www.microsoft.com/`）會用哪個 Proxy：只問解析器，不發請求 |
 | `Traceroute` | `true` | 往第一個不是佔位符的 Ping 目標的前幾跳，每跳一秒 |
 | `TracerouteHops` | 3 | 1 到 10；其他值退回 3 並附警告。三跳看得出封包停在哪裡，通常到不了公網目標 |
@@ -181,7 +182,7 @@ IT 診斷資料（報告最下方收合區裡 IT 範圍的列，永遠不計入�
 
 ### 3.5 · 門檻值（`Thresholds`）
 
-預設值是通用的起始點，而且每一個都是**沒有外部依據的營運預設值**：這張表裡沒有任何一個值背後有標準、量測或記錄下來的決定——這件事在 2026-09-10 查清楚並寫下（backlog #56），免得讀者去推測一個 repo 裡根本沒有的出處。其中兩個值是政策而不是量值——`AdapterErrorWarningDelta` 與 `AdapterDiscardWarningDelta` 是 1，因為*有就值得顯示*——其餘是某人挑的量值。現有的標準定義的是怎麼量測，或是對某一類服務、在某個範圍內設定目標值，從來不是通用的故障門檻；檢視了哪些文件、各自的來源與查證日期，在 repo 裡對應本手冊版本的門檻頁面：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.13/docs/thresholds.md>（英文）。請對照你自己的基準（第 2 節）校準，不要把它們當成工程值。各列拿它們怎麼判定，照程式碼寫出來：
+預設值是通用的起始點，而且每一個都是**沒有外部依據的營運預設值**：這張表裡沒有任何一個值背後有標準、量測或記錄下來的決定——這件事在 2026-09-10 查清楚並寫下（backlog #56），免得讀者去推測一個 repo 裡根本沒有的出處。其中兩個值是政策而不是量值——`AdapterErrorWarningDelta` 與 `AdapterDiscardWarningDelta` 是 1，因為*有就值得顯示*——其餘是某人挑的量值。現有的標準定義的是怎麼量測，或是對某一類服務、在某個範圍內設定目標值，從來不是通用的故障門檻；檢視了哪些文件、各自的來源與查證日期，在 repo 裡對應本手冊版本的門檻頁面：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.14/docs/thresholds.md>（英文）。請對照你自己的基準（第 2 節）校準，不要把它們當成工程值。各列拿它們怎麼判定，照程式碼寫出來：
 
 | 鍵 | 預設 | 依據 | 規則 |
 |---|---|---|---|
@@ -244,7 +245,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 
 **額外目標算什麼。** 額外目標都是選用的，也不屬於任何群組：沒有回應的額外 Ping，以及連不上的額外 TCP 或 HTTP 目標，是「資訊」列，不影響整體結果；品質不佳的 Ping 和解析不出來的額外 DNS 名稱是「需注意」列。格式不是 `host:port` 的額外 TCP 目標會被丟掉，並留下一列「啟動提示」警告（「已忽略額外 TCP 目標「…」：格式應為 host:port。」）。這些列的標題是「額外 Ping」、「額外 DNS」、「額外 TCP」、「額外 URL」，都帶著它拿到的值 —— Ping 那幾列接在冒號後面，另外三種寫在標題裡 —— 所以同一種的兩個額外目標在表格裡和結語裡都分得出來。近端主機不是額外目標：它是這個站點的屬性，只挑一次，沒有參數也沒有面板欄位——寫在設定檔裡（第 3.3 節），主控台執行可以用 `-ConfigPath` 指向候選的設定檔。
 
-**這次執行的選項記在哪裡。** 報告標頭的「執行設定」一行：`IT 入口 | 額外目標：ping 10.0.0.1, tcp fileserver:445 | Ping 次數 4 | 取樣 20 秒 | traceroute 3 跳`，關掉的檢查以「已停用：…」列出；以及 JSON 的 `RunOptions`：`EntryPoint`、`ExpandDetails`、`ExtraTargets`（接受的值）、`RawTargets`（輸入的原文）、`PingCount`、`PingCountMaximum`、`SampleSeconds`、`TracerouteHops`、`ChecksEnabled`。「執行設定」裡的 `Ping 次數` 是起始次數，旁邊的 `Ping 上限` 是延續取樣停在哪裡；每一列實際送出多少次，寫在那一列自己裡面。
+**這次執行的選項記在哪裡。** 報告標頭的「執行設定」一行：`IT 入口 | 額外目標：ping 10.0.0.1, tcp fileserver:445 | Ping 次數 4 | 取樣 20 秒 | 窗內每 2 秒再讀一次 | traceroute 3 跳`，關掉的檢查以「已停用：…」列出；以及 JSON 的 `RunOptions`：`EntryPoint`、`ExpandDetails`、`ExtraTargets`（接受的值）、`RawTargets`（輸入的原文）、`PingCount`、`PingCountMaximum`、`SampleSeconds`、`IntervalSeconds`（1.2.14：取樣窗內讀取的間隔，關閉時為 0）、`TracerouteHops`、`ChecksEnabled`。「執行設定」裡的 `Ping 次數` 是起始次數，旁邊的 `Ping 上限` 是延續取樣停在哪裡；每一列實際送出多少次，寫在那一列自己裡面。
 
 ---
 
@@ -274,10 +275,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File NetworkHealthCheck.ps1 -Cons
 **下載檔。** 專案 Releases 頁面的發行說明給出 `NetworkHealthCheck-<版本>.zip` 的 SHA-256。解壓縮前先比對：
 
 ```text
-certutil -hashfile NetworkHealthCheck-1.2.13.zip SHA256
+certutil -hashfile NetworkHealthCheck-1.2.14.zip SHA256
 ```
 
-或在 PowerShell 用 `Get-FileHash NetworkHealthCheck-1.2.13.zip`。發行檔只由 repo 裡受版本控制的檔案打包，所以裡面沒有任何報告或執行輸出。
+或在 PowerShell 用 `Get-FileHash NetworkHealthCheck-1.2.14.zip`。發行檔只由 repo 裡受版本控制的檔案打包，所以裡面沒有任何報告或執行輸出。
 
 **清單檔。** 套件最上層的 `SHA256SUMS.txt` 列出每個出廠檔案的摘要，除了它自己、`VALIDATION.md` 和 `validation-matrix.html`：每個檔案一行，`<sha256>  <相對路徑>`，中間兩個空格。單一檔案可以用 `Get-FileHash <檔案>` 手動比對，全部則交給驗證程式。
 
@@ -321,7 +322,7 @@ python tools\validate_release.py .
 
 **要向使用者要什麼**，使用手冊第 6 節逐列寫了；環境報告和 `LauncherError.txt` 就是為這個交接而寫的。`LauncherError.txt` 在啟動器旁邊，那個資料夾無法寫入時改寫在 `%TEMP%` 的 `NetworkHealthCheck_LauncherError.txt`，欄位較少。
 
-**放行工具。** 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：`SHA256SUMS.txt` 給出每支 `NetworkHealthCheck.ps1` 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.13/docs/application-control.md>（英文），最新版本在 `main` 分支。
+**放行工具。** 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：`SHA256SUMS.txt` 給出每支 `NetworkHealthCheck.ps1` 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.14/docs/application-control.md>（英文），最新版本在 `main` 分支。
 
 **簽章。** 用你自己的憑證授權單位做 Authenticode 簽章，要在簽署憑證也受這台電腦信任時（憑證鏈受信任，且憑證在「受信任的發行者」存放區）才滿足 *AllSigned* 原則：發行者尚未被歸為信任時，PowerShell 會先詢問使用者才執行腳本（問題會出現在啟動器的視窗裡），無法詢問的工作階段就不執行。簽章也讓應用程式控制規則能依發行者放行。簽章會在腳本後面附加一段簽章區塊，所以簽過的檔案不再符合 `SHA256SUMS.txt`；請自己記下簽過檔案的摘要。
 
@@ -352,10 +353,10 @@ python tools\validate_release.py .
 - **使用手冊**：`NetworkHealthCheck_User_Manual_zh-TW.html`（或 `.md`）：使用者看到什麼、整體結果與標籤、報告裡有什麼、跑不起來時怎麼辦。
 - **技術文件**：`NetworkHealthCheck_Technical_Guide_zh-TW.md`：設計、每一條判定規則、驗證方式、已知限制、版本歷程。
 - **驗證記錄**：`VALIDATION.md`：每一版的證據，以及在其他機器上的驗收執行。
-- **待辦清單**：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.13/docs/backlog.md>（英文）：已知還沒做的事，以及每一項要怎樣才算結案。它和第 8 節的應用程式控制那一頁一樣放在 repo 而不在套件裡，因為它在兩次發行之間就會變動。
-- **門檻依據**：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.13/docs/thresholds.md>（英文）：出貨的門檻值從哪裡來——依一個記錄下來的決定，不是任何外部來源——以及現有的公開標準給了什麼、沒給什麼，每一筆都對照來源查證並註明日期。放在 repo 的理由相同。
+- **待辦清單**：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.14/docs/backlog.md>（英文）：已知還沒做的事，以及每一項要怎樣才算結案。它和第 8 節的應用程式控制那一頁一樣放在 repo 而不在套件裡，因為它在兩次發行之間就會變動。
+- **門檻依據**：<https://github.com/kevintechin/network-support-toolkit/blob/v1.2.14/docs/thresholds.md>（英文）：出貨的門檻值從哪裡來——依一個記錄下來的決定，不是任何外部來源——以及現有的公開標準給了什麼、沒給什麼，每一筆都對照來源查證並註明日期。放在 repo 的理由相同。
 - **Repo**：<https://github.com/kevintechin/network-support-toolkit>：發行版本、驗證鏈（`tests`）、支援工程師現場手冊與報告範本（`sop`），以及第 8 節提到的應用程式控制頁面。
 
 ---
 
-*NetworkHealthCheck 1.2.13。本手冊描述的是出廠狀態的工具與本版本量測到的行為；這裡引用的規則都是程式碼的規則，技術文件有完整的陳述。*
+*NetworkHealthCheck 1.2.14。本手冊描述的是出廠狀態的工具與本版本量測到的行為；這裡引用的規則都是程式碼的規則，技術文件有完整的陳述。*
