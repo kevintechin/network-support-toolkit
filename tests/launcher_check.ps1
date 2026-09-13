@@ -382,5 +382,84 @@ foreach ($lang in @('en-US', 'zh-TW')) {
     Assert-Equal "$case - nothing went to the temporary folder" (@(Get-TempFiles 'NetworkHealthCheck_LauncherError_*.txt' $started) + @(Get-TempFiles 'NetworkHealthCheck_PowerShellMessages_*.txt' $started)).Count 0
 }
 
+# ------------------------------------------------------------------------------- the success path (backlog #50)
+# A successful run must print nothing on standard error. It is the only assertion here that reads the streams apart,
+# and it exists because a defect that leaves the exit code, the report and every line of standard output correct is
+# invisible to every other case in this file: under `chcp 65001` cmd mis-reads the line after one carrying non-ASCII
+# characters, drops its first bytes and runs the remainder as a command, so six "is not recognized as an internal or
+# external command" pairs reached the screen of a successful zh-TW run - five of them from comment lines, one from
+# the line under the sentence that says the check finished (measured on the reference machine, 2026-09-13). The
+# stub exits 0 and prints nothing, so what is measured is the launcher and not the tool.
+function Invoke-LauncherStreamsApart([string]$Stage, [string]$Launcher) {
+    # Not Invoke-Launcher: that one merges the two streams with 2>&1, which is exactly what hid this.
+    $stdin = Join-Path $Stage 'stdin.empty'
+    [IO.File]::WriteAllText($stdin, '')
+    $out = Join-Path $Stage 'success.out'
+    $err = Join-Path $Stage 'success.err'
+    $p = Start-Process -FilePath $cmdExe -ArgumentList ('/c ""' + (Join-Path $Stage $Launcher) + '" "') -WorkingDirectory $Stage `
+        -RedirectStandardOutput $out -RedirectStandardError $err -RedirectStandardInput $stdin -PassThru -Wait
+    # Kept as bytes and read as UTF-8: the launchers set the console to UTF-8 before they print, and a decoding
+    # guess would turn a real message into mojibake or mojibake into an apparent message.
+    $errBytes = [IO.File]::ReadAllBytes($err)
+    $outText = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($out))
+    return @{ ExitCode = $p.ExitCode; ErrorBytes = $errBytes; ErrorText = [Text.Encoding]::UTF8.GetString($errBytes); Output = @($outText -split "`r?`n") }
+}
+
+foreach ($lang in @('en-US', 'zh-TW')) {
+    foreach ($launcher in @('Start-NetworkCheck.cmd', 'Start-NetworkCheck-IT.cmd', 'Start-NetworkCheck-Console.cmd')) {
+        $case = "$lang $launcher, a successful run"
+        $stage = New-Stage ($lang + '_' + ($launcher -replace '\.cmd$', '') + '_success') $lang $launcher 'exit 0'
+        $r = Invoke-LauncherStreamsApart $stage $launcher
+        Assert-Equal "$case - the launcher exits 0" $r.ExitCode 0
+        Assert-Equal "$case - nothing on standard error" $r.ErrorBytes.Length 0
+        if ($r.ErrorBytes.Length -gt 0) { Write-Output ('       what it said: ' + (@($r.ErrorText -split "`r?`n" | Where-Object { $_ }) -join ' | ')) }
+        Assert-Equal "$case - nothing beside the launcher: no error report, no messages file" ((Get-Reports $stage).Count + (Get-Messages $stage).Count) 0
+        if ($launcher -eq 'Start-NetworkCheck-Console.cmd') {
+            # The console entry is the one that prints on success, and every line of its closing message must arrive
+            # whole - the last of them is the line backlog #50 was raised on. The lines are read out of the file's
+            # own success block (from the branch that decides the run succeeded to its `pause`) rather than counted,
+            # because the `pause` prompt is the shell's and comes in the machine's display language.
+            $src = @([IO.File]::ReadAllText((Join-Path $PackageDir ($lang + '\' + $launcher)), $utf8NoBom) -split "`r`n")
+            $from = [array]::FindIndex($src, [Predicate[string]] { param($l) $l.Trim() -eq 'if not "!RC!"=="0" goto :blocked' })
+            Assert-True "$case - the success block was found in the launcher" ($from -ge 0) 'the branch that decides a run succeeded is not where this test expects it'
+            if ($from -ge 0) {
+                $closing = @()
+                for ($i = $from + 1; $i -lt $src.Count -and $src[$i].Trim() -ne 'pause'; $i++) {
+                    $t = $src[$i].Trim()
+                    if ($t.StartsWith('echo ')) { $closing += $t.Substring(5).Trim() }
+                }
+                Assert-True "$case - the success block has closing lines to check" ($closing.Count -gt 0) 'no echo line between the success branch and its pause'
+                foreach ($line in $closing) {
+                    Assert-True ("$case - its closing line reached the screen whole: " + $line) (@($r.Output | Where-Object { $_.Trim() -eq $line }).Count -eq 1) ((@($r.Output | Where-Object { $_.Trim() })) -join ' | ')
+                }
+            }
+        }
+    }
+}
+
+# The two package-root dispatchers, on the only path they own: the language folder missing. The zh-TW one printed
+# the problem and lost the line that says what to do about it, which is the same defect on a path a broken download
+# is exactly what reaches.
+foreach ($name in @('Start-Traditional-Chinese.cmd', 'Start-English.cmd')) {
+    $case = $name + ', the language folder missing'
+    $stage = Join-Path $stageRoot ($name -replace '\.cmd$', '')
+    if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    Copy-Item -LiteralPath (Join-Path $PackageDir $name) -Destination $stage
+    $r = Invoke-LauncherStreamsApart $stage $name
+    Assert-Equal "$case - the dispatcher exits 1" $r.ExitCode 1
+    Assert-Equal "$case - nothing on standard error" $r.ErrorBytes.Length 0
+    if ($r.ErrorBytes.Length -gt 0) { Write-Output ('       what it said: ' + (@($r.ErrorText -split "`r?`n" | Where-Object { $_ }) -join ' | ')) }
+    # Every line the file echoes must arrive whole. The lines are read out of the file rather than counted, because
+    # the `pause` prompt is the shell's own and comes in the machine's display language - Start-English.cmd sets no
+    # code page, so on this machine its prompt is Chinese, and a count or an English filter would be measuring that.
+    $expected = @(([IO.File]::ReadAllText((Join-Path $PackageDir $name), $utf8NoBom) -split "`r`n") |
+        Where-Object { $_.Trim().StartsWith('echo ') } | ForEach-Object { $_.Trim().Substring(5).Trim() })
+    Assert-True "$case - the file has message lines to check" ($expected.Count -gt 0) 'no echo line found in the dispatcher'
+    foreach ($line in $expected) {
+        Assert-True ("$case - its message line reached the screen whole: " + $line) (@($r.Output | Where-Object { $_.Trim() -eq $line }).Count -eq 1) ((@($r.Output | Where-Object { $_.Trim() })) -join ' | ')
+    }
+}
+
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

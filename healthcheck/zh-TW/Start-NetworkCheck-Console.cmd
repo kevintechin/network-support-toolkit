@@ -1,13 +1,14 @@
 @echo off
-rem 文字模式備用啟動器：所有檔案留在本機，並記錄啟動階段錯誤。
+rem Console fallback. It keeps all files local and records startup failures.
 chcp 65001 >nul 2>&1
 setlocal EnableExtensions
 cd /d "%~dp0"
 title 網路健康檢查 - 文字模式
 
-rem 資料夾路徑只在切換到延遲展開之前取一次，之後每個值都用 !VALUE! 展開：路徑可能含有括號——瀏覽器第二次下載的 ZIP
-rem 會解到名稱後面多了 (1) 的資料夾——& 符號或驚嘆號，任何一個都會弄壞在解析前就展開值的那一行。延遲展開是解析完才
-rem 把值放進去，路徑就弄不壞它。
+rem The folder's path is taken once, before delayed expansion is switched on, and every value is expanded as !VALUE!
+rem from here on: a path may carry a parenthesis - a browser's second download of the ZIP is extracted to a folder
+rem named like the ZIP plus (1) - an ampersand or an exclamation mark, and any of them breaks a line that expands the
+rem value before the line is parsed. Delayed expansion inserts the value after parsing, so the path cannot.
 set "HERE=%~dp0"
 setlocal EnableDelayedExpansion
 set "SCRIPT=!HERE!NetworkHealthCheck.ps1"
@@ -21,10 +22,11 @@ set "DATEFMT="
 set "CREATED="
 set "SEQ=0"
 
-rem 這次執行的檔案戳記（待辦 #47）：取 shell 自己的日期與時間裡的數字，順序照這台電腦印出的樣子，讓每次執行
-rem 各寫各的檔案、不互相覆寫，而且在同一台電腦上能依時間排序。這裡不能請 PowerShell 幫忙——缺的可能就是它——
-rem 而 %DATE% 帶著分隔符號、在某些電腦上還有星期，所以用迴圈只留下數字；早上個位數小時前面的空白改成 0。
-rem 同一個百分之一秒內啟動的兩個啟動器會得到相同的數字；下面的名稱保留會把它們分開。
+rem A stamp for this attempt's files (backlog #47): the digits of the shell's own date and time, in the order this
+rem computer prints them, so that separate attempts never overwrite each other and sort by time on the same machine.
+rem PowerShell cannot be asked - it may be what is missing - and %DATE% carries separators and, on some machines, a
+rem weekday name, so the loop keeps the digits alone; the leading space of an early hour becomes a zero. Two launchers
+rem started in the same hundredth of a second get the same digits; the reservation below tells them apart.
 set "RAW=!DATE!!TIME: =0!"
 set "STAMP="
 :stamp_next
@@ -37,8 +39,9 @@ goto :stamp_next
 if not defined STAMP set "STAMP=%RANDOM%"
 set "BASESTAMP=!STAMP!"
 
-rem 這台電腦印 %DATE% 用的短日期格式（待辦 #44），在寫任何東西之前先讀：錯誤報告會註明它的日期是哪一種格式。
-rem 讀不到就省略，而且這一步絕不能擋住錯誤報告的寫入。
+rem The short-date pattern this computer printed %DATE% in (backlog #44), read before anything is written: the error
+rem report states which pattern its date is in. When the value cannot be read the report omits it, and nothing here
+rem may stop the report from being written.
 for /f "tokens=1,2,*" %%A in ('reg query "HKCU\Control Panel\International" /v sShortDate 2^>nul') do if /i "%%A"=="sShortDate" set "DATEFMT=%%C"
 
 if not exist "!SCRIPT!" (
@@ -58,11 +61,13 @@ if not exist "!PS_EXE!" (
     )
 )
 
-rem PowerShell 的錯誤資料流導到一個檔案（待辦 #47）——啟動器旁邊，不行就 Windows 暫存資料夾——這樣說明程式為何
-rem 沒有執行的那句話會留下來，不必請人從螢幕抄。執行過程印出的東西仍然照常出現在這個視窗。檔案在執行前先建立：
-rem 導向若在執行時才失敗，PowerShell 根本不會啟動，所以建不出檔案時程式就不帶擷取地執行，報告也會寫明。名稱是
-rem 保留的，不只是寫入：名稱已被占用表示另一個啟動器在同一個百分之一秒內啟動了，這一個就改用下一個後綴。
-rem 事後空檔案會被刪掉，沒印任何東西的執行不會留下東西。
+rem PowerShell's error stream goes to a file (backlog #47) - beside the launcher, else in the Windows temporary
+rem folder - so that the sentence explaining why the program did not run is kept instead of being copied off the
+rem screen. Everything the run prints as it goes still reaches this window. The file is created before the run: a
+rem redirection that fails at run time would stop PowerShell from starting at all, so where no file can be created
+rem the program runs without the capture and the report says so. The name is reserved, not merely written: a name
+rem already taken means another launcher started in the same hundredth of a second, and this one moves to the next
+rem suffix. An empty file is deleted afterwards, so a run that printed nothing there leaves nothing behind.
 :reserve_messages
 set "LOGFILE=!HERE!PowerShellMessages_!STAMP!.txt"
 call :create_file LOGFILE 2>nul
@@ -100,6 +105,10 @@ if "!RC!"=="3" (
 if not "!RC!"=="0" goto :blocked
 echo.
 echo 網路健康檢查已完成。
+rem These ASCII lines separate the two echoes around them on purpose (backlog #50): under `chcp 65001` cmd
+rem mis-reads the line following one that carries non-ASCII characters, drops its first bytes and runs the
+rem remainder as a command, so a successful run ended in "is not recognized as an internal or external
+rem command" under the sentence saying the check had finished. Measured 2026-09-13; do not remove them.
 echo 結束代碼：0
 pause
 exit /b 0
@@ -118,8 +127,8 @@ set "SUGGESTED=PowerShell 自己的說明已印在下方，並保存在 !LOGFILE
 goto :launcher_error
 
 :launcher_error
-rem 錯誤報告的名稱以同樣的方式保留，先在啟動器旁邊，不行則在 Windows 暫存資料夾——第二次寫入不檢查，所以印出的
-rem 路徑可能是資料夾拒絕過的那一個，手冊裡有寫。
+rem The error report's name is reserved the same way, beside the launcher, else in the Windows temporary folder - the
+rem second write is not checked, so the path shown may be one the folder refused, as the manuals say.
 :reserve_report
 set "ERRFILE=!HERE!LauncherError_!STAMP!.txt"
 call :create_file ERRFILE 2>nul
@@ -149,8 +158,9 @@ pause
 exit /b 1
 
 :write_error_report
-rem 一行寫一次、檔名帶戳記：再試一次就是另一個檔案，路徑裡的括號也不會像在括號區塊裡那樣讓寫入中途斷掉。
-rem 啟動器旁邊和 Windows 暫存資料夾寫的是同樣的內容；呼叫端的 2>nul 讓被拒絕的寫入不出現在畫面上。
+rem One line per write, and a stamped name, so that a second attempt is a second file and a parenthesis in a path
+rem cannot end the write halfway, as it would inside a parenthesised block. The same lines beside the launcher and
+rem in the Windows temporary folder; the caller's 2>nul keeps a refused write off the screen.
 set "DATELINE=日期時間：!DATE! !TIME!"
 if defined DATEFMT set "DATELINE=日期時間：!DATE! !TIME! （這台電腦的短日期格式：!DATEFMT!）"
 set "LOGLINE=PowerShell 訊息：無，PowerShell 沒有啟動"
@@ -173,9 +183,10 @@ if defined LOGKEPT set "LOGLINE=PowerShell 訊息：!LOGFILE!"
 exit /b 0
 
 :create_file
-rem 建立變數 %1 所指名稱的空檔案並回報結果：1（已建立）、taken（同名檔案已經存在）、空（資料夾拒絕）。fsutil 的建立
-rem 是原子的，名稱被占用會拒絕，這是 %RANDOM% 做不到的——同一秒內啟動的兩個 cmd.exe 會抽到相同的數列；fsutil 因其他
-rem 原因失敗而名稱又沒被占用時，改用普通的建立。呼叫端的 2>nul 讓拒絕訊息不出現在畫面上。
+rem Creates the empty file named by the variable %1 and says how it went: 1 (created), taken (a file of that name was
+rem already there), or nothing (the folder refused). fsutil creates atomically and refuses a taken name, which %RANDOM%
+rem could not replace - two cmd.exe started in the same second draw the same numbers; where fsutil itself fails for
+rem another reason and the name is free, a plain create stands in. The caller's 2>nul keeps a refusal off the screen.
 set "CREATED="
 fsutil file createnew "!%1!" 0 >nul 2>nul
 if not errorlevel 1 set "CREATED=1"
