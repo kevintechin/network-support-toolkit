@@ -46,6 +46,11 @@ assert not missing, f'tracked but absent from the working tree: {missing}'
 commit = git('rev-parse', 'HEAD')
 stamp = time.gmtime(int(git('log', '-1', '--format=%ct', commit)))[:6]
 assert len(stamp) == 6 and stamp[0] >= 1980, f'unusable commit date: {stamp}'
+# A ZIP entry stores the second halved, so an odd second is written and read back as the even one below it
+# (measured: 0, 1, 2, 3 come back as 0, 0, 2, 2). The stamp is rounded down here so that what the archive holds is
+# what this script asked for - roughly half of all commits have an odd second, and the check below would refuse
+# every one of them (PR #64, round 4).
+stamp = stamp[:5] + (stamp[5] - stamp[5] % 2,)
 dirty = git('status', '--porcelain', '--', 'healthcheck')
 print(f'version {version}: {len(files)} tracked files')
 print('commit {}: {:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d} UTC, healthcheck/ {}'.format(
