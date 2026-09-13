@@ -16,7 +16,7 @@
 |---|---|
 | Windows 10 或 Windows 11（或相容的 Windows Server） | 其他平台，或低於 5 的 PowerShell，會在設定檔那幾列之後得到一列「異常」，執行就停在那裡 |
 | Windows PowerShell 5.1 | Windows 內建。啟動器執行 `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`；該檔案不存在時改找 PATH 上的 `pwsh.exe`（PowerShell 7），兩者都沒有就停下並顯示「此電腦找不到 PowerShell」 |
-| 含 Windows Forms 的 .NET Framework | Windows 內建；只有視窗需要。視窗建不起來時，工具會自己改用文字模式跑同樣的檢測，並在一列警告裡說明 |
+| 含 Windows Forms 的 .NET Framework | Windows 內建；只有視窗需要。視窗建不起來時，工具會自己改用文字模式跑同樣的檢測，在一列警告裡說明，而且從視窗啟動器啟動時會讓那個視窗留著、等一個按鍵，好讓報告路徑能被讀到（1.2.14） |
 | 一般使用者帳號 | 不需要系統管理員權限。一般使用者讀不到的東西會變成「無法檢查」列，檢測繼續 |
 | 使用者可寫入的資料夾 | 報告預設寫在程式旁邊（第 3.1 節）。那個資料夾不可寫時，工具改寫到使用者的暫存資料夾 |
 
@@ -315,12 +315,12 @@ python tools\validate_release.py .
 | 機制 | 發生什麼 | IT 會拿到什麼 |
 |---|---|---|
 | 下載的 ZIP 帶有**網路標記** | 啟動器出現「開啟檔案 - 安全性警告」；按「執行」後工具照常運作 | 沒有東西，除非使用者取消 |
-| **群組原則設定的執行原則**（`MachinePolicy`／`UserPolicy`，例如 *AllSigned*） | 蓋過啟動器的程序範圍 Bypass：腳本不會啟動。PowerShell 印出自己的訊息（英文 Windows 上是「…NetworkHealthCheck.ps1 is not digitally signed. You cannot run this script on the current system…」，中文 Windows 則是它的中文版本），啟動器回報非零的結束代碼並暫停，`LauncherError.txt` 建議閱讀上方的訊息並請 IT 允許程式 | `LauncherError.txt` 和主控台的文字。沒有環境報告：腳本根本沒跑 |
-| **PowerShell 被限制在受限語言模式**：強制執行的應用程式控制政策（WDAC）對不允許的腳本做的事，以及 `__PSLockdownPolicy` 對每支腳本做的事 | 腳本最前面幾行偵測到不是 *FullLanguage* 的模式，在任何檢測之前停下：結束代碼 3、原因印在主控台，並在程式旁邊（該資料夾不可寫或是壓縮檔檢視時，改在 `%TEMP%`）寫出 `NetworkHealthCheck_ENVIRONMENT_<時間>.txt`，載明原因、語言模式、工具版本、電腦名稱、使用者、腳本資料夾、PowerShell 版本、地區設定與作業系統，以及「IT 可以怎麼做」下的兩行：在應用程式控制政策（WDAC / AppLocker）中放行 `NetworkHealthCheck.ps1`，或改在沒有這項限制的電腦上執行檢測。啟動器會解釋結束代碼 3 並指向這個檔案。在兩台機器上以 `__PSLockdownPolicy` 量測過；沒有量測過強制執行 WDAC 的機器 | 環境報告和 `LauncherError.txt` |
+| **群組原則設定的執行原則**（`MachinePolicy`／`UserPolicy`，例如 *AllSigned*） | 蓋過啟動器的程序範圍 Bypass：腳本不會啟動。PowerShell 在錯誤資料流印出自己的訊息（英文 Windows 上是「…NetworkHealthCheck.ps1 is not digitally signed. You cannot run this script on the current system…」，中文 Windows 則是它的中文版本）；啟動器把它保存在 `PowerShellMessages_<時間>.txt`、印回自己的錯誤下方，回報非零的結束代碼並暫停，`LauncherError_<時間>.txt` 建議把兩個檔案一起送出並請 IT 允許程式（1.2.14 之前是請使用者從畫面上讀那段訊息） | `LauncherError_<時間>.txt` 和 `PowerShellMessages_<時間>.txt`，都在啟動器旁邊。沒有環境報告：腳本根本沒跑 |
+| **PowerShell 被限制在受限語言模式**：強制執行的應用程式控制政策（WDAC）對不允許的腳本做的事，以及 `__PSLockdownPolicy` 對每支腳本做的事 | 腳本最前面幾行偵測到不是 *FullLanguage* 的模式，在任何檢測之前停下：結束代碼 3、原因印在主控台，並在程式旁邊（該資料夾不可寫或是壓縮檔檢視時，改在 `%TEMP%`）寫出 `NetworkHealthCheck_ENVIRONMENT_<時間>.txt`，載明原因、語言模式、工具版本、電腦名稱、使用者、腳本資料夾、PowerShell 版本、地區設定與作業系統，以及「IT 可以怎麼做」下的兩行：在應用程式控制政策（WDAC / AppLocker）中放行 `NetworkHealthCheck.ps1`，或改在沒有這項限制的電腦上執行檢測。啟動器會解釋結束代碼 3 並指向這個檔案。在兩台機器上以 `__PSLockdownPolicy` 量測過；沒有量測過強制執行 WDAC 的機器 | 環境報告和 `LauncherError_<時間>.txt` |
 | **AppLocker 指令碼規則** | 沒有量測到它生效：唯一一台回報政策在強制執行、且判定拒絕這支腳本的機器，還是不受限制地跑完了它（待辦 #31，在 repo 的待辦頁，見第 10 節）。強制執行的規則會拒絕腳本，還是讓它在上面那種受限模式裡跑，都還沒有觀察到。強制執行的 DLL 或 EXE 規則還可能做一件不至於擋下腳本的事：拒絕無線重傳讀取器賴以建置的 C# 編譯器或記憶體內組件——那一列就會是「無法檢查」，其他都不變 | 看結果產生上面兩個檔案中的哪一個 |
-| **EDR 或防毒**擋住 `powershell.exe` 或腳本 | 沒有量測：驗收執行沒有包含裝了這類產品的機器。啟動器回報它拿到的結束代碼並寫出 `LauncherError.txt` | `LauncherError.txt` 和該產品自己的記錄 |
+| **EDR 或防毒**擋住 `powershell.exe` 或腳本 | 沒有量測：驗收執行沒有包含裝了這類產品的機器。啟動器回報它拿到的結束代碼、寫出 `LauncherError_<時間>.txt`，PowerShell 在錯誤資料流印的東西則保存在 `PowerShellMessages_<時間>.txt` | `LauncherError_<時間>.txt`、PowerShell 有說話時的 `PowerShellMessages_<時間>.txt`，以及該產品自己的記錄 |
 
-**要向使用者要什麼**，使用手冊第 6 節逐列寫了；環境報告和 `LauncherError.txt` 就是為這個交接而寫的。`LauncherError.txt` 在啟動器旁邊，那個資料夾無法寫入時改寫在 `%TEMP%` 的 `NetworkHealthCheck_LauncherError.txt`，欄位較少。
+**要向使用者要什麼**，使用手冊第 6 節逐列寫了；環境報告、`LauncherError_<時間>.txt` 和 `PowerShellMessages_<時間>.txt` 就是為這個交接而寫的。1.2.14 起每次執行各寫各的檔案，第三次不會再蓋掉第一次：檔名裡的數字是那台電腦印日期時間的數字，在那台電腦上能依時間排序，跨電腦則不行。錯誤報告的「日期時間：」那一行照抄 shell 自己的日期，旁邊註明它是哪一種短日期格式——`08/09/2026` 少了格式就無法判讀，而顯示語言英文、地區格式英國的電腦印出來的正是這種——格式讀自 `HKCU\Control Panel\International\sShortDate`，讀不到就省略；不做任何轉換。可靠的時間戳是檔案本身的修改時間，你的檔案總管會用你的格式顯示，這個版本之前寫出的檔案也一樣。檔案在啟動器旁邊，那個資料夾無法寫入時改寫在 `%TEMP%` 的 `NetworkHealthCheck_LauncherError_<時間>.txt` 和 `NetworkHealthCheck_PowerShellMessages_<時間>.txt`，內容相同。
 
 **放行工具。** 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：`SHA256SUMS.txt` 給出每支 `NetworkHealthCheck.ps1` 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.14/docs/application-control.md>（英文），最新版本在 `main` 分支。
 

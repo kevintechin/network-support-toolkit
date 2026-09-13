@@ -14,7 +14,7 @@
 
 | 檔案 | 用途 |
 |---|---|
-| `Start-NetworkCheck.cmd` | 圖形介面啟動器；檔案缺少、PowerShell 不存在或回傳非零代碼時顯示錯誤並嘗試寫入 `LauncherError.txt`，1.2.3 起其中的建議依原因而定。 |
+| `Start-NetworkCheck.cmd` | 圖形介面啟動器；檔案缺少、PowerShell 不存在或回傳非零代碼時顯示錯誤並嘗試寫入 `LauncherError_<戳記>.txt`，1.2.3 起其中的建議依原因而定；1.2.14 起每次執行一個檔案、日期旁註明這台電腦的短日期格式，PowerShell 的錯誤資料流保存在旁邊的 `PowerShellMessages_<戳記>.txt`（待辦 #47、#44）。 |
 | `Start-NetworkCheck-Console.cmd` | GUI 無法使用時的文字模式啟動器。 |
 | `Start-NetworkCheck-IT.cmd` | IT 入口（1.2）：執行選項面板、不自動開始、HTML 預設展開 IT 診斷資料；同樣的參數可用於文字模式。 |
 | `NetworkHealthCheck.ps1` | 主要檢測、判定、錯誤處理與報告程式碼。 |
@@ -225,10 +225,10 @@ IT 範圍的項目不影響整體結果與摘要計數：`Get-OverallStatus` 與
 - 每個主要步驟經 `Invoke-CheckStep` 包裝；例外轉成 `ERROR` 結果並繼續後續檢測。
 - `Get-ExceptionDetails` 記錄例外型別、訊息與最多五層內部例外。自 1.1.4 起，腳本位置與呼叫堆疊改由 `Get-ExceptionDiagnostics` 另外收集，只寫入 JSON 報告的 `Diagnostics` 欄位；HTML 與文字報告改為顯示一行提示，因此本機檔案路徑不會出現在給人看的報告中。緊急（`FATAL`）檔案仍保留完整內容。
 - 網路類錯誤會在報告語言中附上一行 `原因：`，依據的是錯誤碼而不是作業系統的用字：`SocketException.SocketErrorCode` 與 `WebException.Status` 都是列舉，而訊息文字跟著機器的系統地區設定，因此可能以另一種語言出現在本報告中（待辦 #14）。該行同時附上代碼（`[SocketError HostNotFound]`），表中未收錄的代碼則只顯示代碼本身；作業系統的原始訊息一律保留，且一律排在原因之後——多行處在下一行，Ping 與 traceroute 的單行紀錄則接在同一行。此行會出現在例外細節、Ping 的逐次紀錄、TCP 與 HTTP 的失敗說明，以及 traceroute 的單一躍點狀態。cmdlet、CIM/WMI 或檔案系統產生的錯誤沒有這種代碼，維持作業系統的原始用字。本工具自己的 DNS 與 TCP 時限自 1.2.3 起也以同樣方式分類，代碼為 `[ToolTimeout]`：在設定的時限內沒有任何回覆、也沒有被拒絕，這正是防火牆默默丟棄封包或主機無法到達時的樣子（待辦 #27）。
-- GUI 初始化失敗時改用 Console 模式。
+- GUI 初始化失敗時改用 Console 模式。1.2.14 起，從視窗啟動器啟動的退回執行會在啟動器的視窗關閉前等一個按鍵（`Wait-ForConsoleClose`），而且只在這時：帶 `-ConsoleOnly` 不等、沒有互動工作階段不等、標準輸入被導向不等（待辦 #34）。
 - 報告資料夾不可寫時改到 `%TEMP%\NetworkHealthCheck\Reports`。
 - HTML、TXT、JSON 分別嘗試寫入。自 1.1.5 起，單一格式失敗只會記錄並在 GUI 顯示警告，成功的格式仍可使用：「開啟報告」會開啟 HTML、TXT、JSON 中第一個可用的檔案，文字模式對缺少的格式顯示「（未寫入）」。三種格式全部失敗時才寫一份緊急 `FATAL` 文字報告（含三個寫入錯誤與呼叫堆疊）並顯示一次錯誤對話框，文字模式結束碼為 1。報告階段在 `Run-AllChecks` 內只處理一次、不再重新拋出，外層處理器不會再產生第二份 FATAL 檔或第二個對話框。
-- 啟動器本身找不到檔案/PowerShell或收到非零結束碼時，顯示提示並寫 `LauncherError.txt`。1.2.3 起檔案中的建議依原因而定：找不到程式檔→完整解壓縮 ZIP；結束代碼 3（語言模式守門）→閱讀環境報告；其他非零代碼→閱讀錯誤上方 PowerShell 自己的訊息，若提到簽章或原則就請 IT 允許腳本（待辦 #28）。
+- 啟動器本身找不到檔案/PowerShell或收到非零結束碼時，顯示提示並寫 `LauncherError_<戳記>.txt`——在自己旁邊，不行則寫到 `%TEMP%` 的 `NetworkHealthCheck_LauncherError_<戳記>.txt`，內容相同。1.2.3 起檔案中的建議依原因而定：找不到程式檔→完整解壓縮 ZIP；結束代碼 3（語言模式守門）→閱讀環境報告；其他非零代碼→把錯誤報告和 PowerShell 自己的訊息一起送出，若提到簽章或原則就請 IT 允許腳本（待辦 #28）。1.2.14 起 PowerShell 的錯誤資料流導到 `PowerShellMessages_<戳記>.txt`（執行前先建立，導向失敗才不會讓 PowerShell 啟動不了；空檔案會刪掉；內容印回啟動器錯誤的下方，報告和建議都會寫出檔名），戳記是 shell 自己的 `%DATE%` 與 `%TIME%` 裡的數字、順序照這台電腦的印法，報告的「日期時間：」那一行註明讀自 `HKCU\Control Panel\International\sShortDate` 的格式，而且報告在延遲展開下一行一行寫，資料夾路徑裡的括號或 & 符號才弄不壞寫入（待辦 #47、#44）。
 
 ## 6. 原始碼設計與註解
 
@@ -274,7 +274,7 @@ IT 範圍的項目不影響整體結果與摘要計數：`Get-OverallStatus` 與
 | DHCP 失敗取得 169.254.x.x | APIPA 項目顯示 FAIL。 |
 | 無效 JSON | 畫面與報告記錄設定檔錯誤，改用預設值繼續。 |
 | 報告目錄唯讀 | 改存 `%TEMP%` 並顯示提示。 |
-| 公司政策封鎖 PowerShell | 啟動視窗顯示原因並嘗試寫 `LauncherError.txt`，建議依原因而定。 |
+| 公司政策封鎖 PowerShell | 啟動視窗顯示原因，把 PowerShell 的訊息保存在 `PowerShellMessages_<戳記>.txt`，並嘗試寫 `LauncherError_<戳記>.txt`，建議依原因而定。 |
 | GUI 元件不可用 | 自動切換文字模式，或手動執行 Console 啟動器。 |
 | DNS 被阻擋 | DNS 必要目標 FAIL，但 IP/TCP 測試仍執行。 |
 | TCP Port 關閉 | 必要 TCP 目標 FAIL；非必要目標 INFO；群組依其他成員判定。 |

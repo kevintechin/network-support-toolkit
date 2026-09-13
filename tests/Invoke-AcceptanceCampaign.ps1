@@ -226,17 +226,18 @@ function Invoke-LauncherRun([string]$Id, [string]$Lang) {
     # so that its pause returns), from a fresh copy under the scenario's folder. The console launcher rather than the
     # window launcher, so that a policy which turns out not to apply ends in a console run and a report instead of a
     # window waiting for a click. What it leaves behind is the evidence: the exit code, the console text,
-    # LauncherError.txt, an environment report (next to the copy, or in TEMP) and any report.
+    # LauncherError_<stamp>.txt (a stamped name since 1.2.14, backlog #47), an environment report (next to the copy, or
+    # in TEMP) and any report.
     $copy = Copy-LanguageFolder $Lang (Join-Path (Join-Path $StateDir $Id) $Lang)
     $started = Get-Date
     $r = Invoke-Native $CmdExe @('/s', '/c', ('"' + (Join-Path $copy 'Start-NetworkCheck-Console.cmd') + '" <nul')) (Join-Path $copy 'launcher-output.log')
-    $launcherError = Join-Path $copy 'LauncherError.txt'
+    $launcherError = @(Get-ChildItem -LiteralPath $copy -Filter 'LauncherError_*.txt' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
     $envReports = @(Get-ChildItem -LiteralPath $copy -Filter 'NetworkHealthCheck_ENVIRONMENT_*.txt' -ErrorAction SilentlyContinue) + @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'NetworkHealthCheck_ENVIRONMENT_*.txt' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $started })
     foreach ($e in $envReports) { if ($e.DirectoryName -ne $copy) { Copy-Item -LiteralPath $e.FullName -Destination $copy -Force } }
     $reports = @(Get-ChildItem -LiteralPath (Join-Path $copy 'Reports') -Filter '*.json' -ErrorAction SilentlyContinue)
     return @{
         Copy = $copy; ExitCode = $r.ExitCode; Output = $r.Output
-        LauncherError = $(if (Test-Path -LiteralPath $launcherError) { Get-Content -LiteralPath $launcherError -Raw } else { '' })
+        LauncherError = $(if ($launcherError.Count) { Get-Content -LiteralPath $launcherError[0].FullName -Raw } else { '' })
         EnvironmentReports = @($envReports | ForEach-Object { $_.FullName }); Reports = @($reports | ForEach-Object { $_.FullName })
     }
 }
@@ -290,9 +291,9 @@ function Get-ArchiveViewFolders {
 }
 function Get-ArchiveViewFiles([datetime]$After) {
     # What a run from inside a view left there since $After - reports under a Reports\ folder, the launcher's
-    # LauncherError.txt - before the view deletes them.
+    # LauncherError_<stamp>.txt - before the view deletes them.
     @(Get-ArchiveViewFolders | ForEach-Object {
-        Get-ChildItem -LiteralPath $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $After -and (($_.DirectoryName -match '\\Reports$') -or ($_.Name -eq 'LauncherError.txt')) }
+        Get-ChildItem -LiteralPath $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $After -and (($_.DirectoryName -match '\\Reports$') -or ($_.Name -like 'LauncherError*.txt')) }
     })
 }
 function Get-TempFoldersSince([datetime]$After) {
@@ -303,7 +304,7 @@ function Get-TempFoldersSince([datetime]$After) {
 function Save-ArchiveViewEvidence([datetime]$After, [string]$Dest, [hashtable]$Files) {
     # Copies what a run from inside a view has left since $After into $Dest and adds it to $Files (by full path, the newest
     # write wins), and returns the view folder's listing if the folder is still there. Called twice by M1: as soon as
-    # something is on screen - the launcher has written LauncherError.txt before it shows its message - and again when a
+    # something is on screen - the launcher has written its error report before it shows its message - and again when a
     # tool window has finished its run, because Windows 11 may delete the folder the moment the program exits.
     $found = @(Get-ArchiveViewFiles $After | Sort-Object LastWriteTime)
     if ($found.Count -eq 0) { return @() }
@@ -650,12 +651,12 @@ function Get-Plan {
            Action = { param($Ctx)
                # Two outcomes are the package behaving as designed (the first campaign, 2026-09-05). Stock Windows extracts
                # only the file double-clicked into the view folder, so the launcher finds no NetworkHealthCheck.ps1 beside
-               # itself and stops with its own message and LauncherError.txt, no report - what the checklist's M1 row
+               # itself and stops with its own message and LauncherError_<stamp>.txt, no report - what the checklist's M1 row
                # expects. Where the whole folder was extracted (another archiver, a .ps1 double-clicked earlier in the same
                # view) the tool runs, and its report must carry the compressed-folder warning itself, in either language
                # (PR #11 rounds 4 and 11). The launcher stopped for another reason, or nothing in any view folder, fails.
                # The evidence is collected the moment the person answers - Windows 11 may delete the view folder as soon as
-               # the program started from it exits (the first campaign lost LauncherError.txt that way) - and again after
+               # the program started from it exits (the first campaign lost the error report that way) - and again after
                # a tool run has finished, while its window is still open.
                $shot = Join-Path $Ctx.Dir 'M1_from_the_view.png'
                Save-Screenshot $shot
@@ -667,7 +668,7 @@ function Get-Plan {
                if ($listing2.Count) { $listing = $listing2 }
                $found = @($files.Values | Sort-Object LastWriteTime)
                $jsons = @($found | Where-Object { $_.Extension -eq '.json' -and $_.DirectoryName -match '\\Reports$' } | Sort-Object LastWriteTime -Descending)
-               $errors = @($found | Where-Object { $_.Name -eq 'LauncherError.txt' } | Sort-Object LastWriteTime -Descending)
+               $errors = @($found | Where-Object { $_.Name -like 'LauncherError*.txt' } | Sort-Object LastWriteTime -Descending)
                if ($jsons.Count -eq 0 -and $errors.Count -eq 0) {
                    $since = @(Get-TempFoldersSince $Ctx.Started)
                    return @{ Passed = $false; Detail = ('nothing from a compressed-folder view under {0} (Temp*_*.zip or <guid>_*.zip.<suffix>) since {1}: was the ZIP opened in the view and Start-NetworkCheck.cmd double-clicked inside it? Folders under %TEMP% written since then: {2}' -f $env:TEMP, $Ctx.Started.ToString('HH:mm:ss'), $(if ($since.Count) { $since -join ', ' } else { '(none)' })); Evidence = @('M1_from_the_view.png') }
@@ -680,8 +681,8 @@ function Get-Plan {
                    $archiveRows = @($startup | Where-Object { ([string]$_.Message) -match 'compressed folder|壓縮檔' })
                    return @{ Passed = ($archiveRows.Count -gt 0); Detail = ('the tool ran from the view: {0} file(s) copied out of {1}; startup rows: {2}, of which the compressed-folder warning: {3}{4}' -f $found.Count, (Split-Path -Parent $jsons[0].DirectoryName), $startup.Count, $archiveRows.Count, $(if ($archiveRows.Count) { ' - "' + [string]$archiveRows[0].Message + '"' } elseif ($startup.Count) { ' - only other startup notices: "' + [string]$startup[0].Message + '"' } else { ' - missing' })); Evidence = @('M1_from_the_view.png', 'from-the-view') }
                }
-               $reason = @(Get-Content -LiteralPath (Join-Path $dest 'LauncherError.txt') -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^(Error|錯誤)[:：]' } | Select-Object -First 1)
-               $reasonText = $(if ($reason.Count) { ([string]$reason[0]).Trim() } else { '(no Error line in LauncherError.txt)' })
+               $reason = @(Get-Content -LiteralPath (Join-Path $dest $errors[0].Name) -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^(Error|錯誤)[:：]' } | Select-Object -First 1)
+               $reasonText = $(if ($reason.Count) { ([string]$reason[0]).Trim() } else { '(no Error line in the launcher''s error report)' })
                $missing = ($reasonText -match 'NetworkHealthCheck\.ps1 is missing|找不到程式檔 NetworkHealthCheck\.ps1')
                $held = $(if ($listing.Count -gt 1) { ($listing.Count - 1).ToString() } else { 'unknown (folder gone)' })
                @{ Passed = $missing; Detail = ('the launcher stopped in the view{0}: "{1}"; the view held {2} file(s); no report' -f $(if ($missing) { ', as stock Windows makes it - only the file clicked was extracted' } else { ' for another reason' }), $reasonText, $held); Evidence = @('M1_from_the_view.png', 'from-the-view') }
@@ -788,11 +789,11 @@ function Get-Plan {
                try { $r = Invoke-LauncherRun $Ctx.Id 'en-US' } finally { Remove-Item -LiteralPath Env:\__PSLockdownPolicy -ErrorAction SilentlyContinue }
                $bad = @()
                if ($r.ExitCode -ne 1) { $bad += ('launcher exit code {0}, expected 1' -f $r.ExitCode) }
-               if ($r.LauncherError -notmatch 'exit code 3') { $bad += 'LauncherError.txt does not report exit code 3' }
+               if ($r.LauncherError -notmatch 'exit code 3') { $bad += 'the launcher''s error report does not name exit code 3' }
                if ($r.EnvironmentReports.Count -ne 1) { $bad += ('{0} environment report(s), expected exactly 1' -f $r.EnvironmentReports.Count) }
                elseif ((Get-Content -LiteralPath $r.EnvironmentReports[0] -Raw) -notmatch 'ConstrainedLanguage') { $bad += 'the environment report does not name ConstrainedLanguage' }
                if ($r.Reports.Count) { $bad += 'a report was written although the guard should have stopped the run' }
-               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; reports: {2}' -f $r.ExitCode, $r.EnvironmentReports.Count, $r.Reports.Count)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError.txt', 'en-US\NetworkHealthCheck_ENVIRONMENT_*.txt') }
+               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; reports: {2}' -f $r.ExitCode, $r.EnvironmentReports.Count, $r.Reports.Count)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\NetworkHealthCheck_ENVIRONMENT_*.txt') }
            }
            Cleanup = @{ Instruction = @('Remove it - in an ELEVATED command prompt:   reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f   - then answer done.', '移除它——在「以系統管理員身分執行」的命令提示字元執行：reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f，然後輸入 done。')
                         Verify = { $v = Get-MachineEnv '__PSLockdownPolicy'; if ($null -eq $v -or $v -eq '') { @{ Ok = $true; Detail = 'removed' } } else { @{ Ok = $false; Detail = ('__PSLockdownPolicy is still ' + $v) } } } } },
@@ -833,7 +834,7 @@ function Get-Plan {
                $bad = @()
                if ($r.ExitCode -eq 0) { $bad += 'the launcher exited 0: the unsigned script ran under AllSigned' }
                if ($r.Reports.Count) { $bad += 'a report was written: the unsigned script ran' }
-               if (-not $r.LauncherError) { $bad += 'no LauncherError.txt' }
+               if (-not $r.LauncherError) { $bad += 'no launcher error report' }
                # The refusal must be the signature refusal itself, not any failure the launcher maps to exit 1 (PR #11
                # round 15): PowerShell's error carries UnauthorizedAccess / SecurityError whatever the language, and an
                # environment report would mean the script started - a different policy, not this one.
@@ -841,7 +842,7 @@ function Get-Plan {
                if (-not $signatureRefusal) { $bad += 'the captured output does not carry the signature refusal (UnauthorizedAccess / SecurityError / not digitally signed): the launcher failed for another reason' }
                if ($r.EnvironmentReports.Count) { $bad += ('an environment report was written ({0}): the script started, so it was not AllSigned that stopped it' -f $r.EnvironmentReports.Count) }
                $shown = @($r.Output | Where-Object { $_.Trim() -ne '' } | Select-Object -First 4) -join ' / '
-               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; what the user sees: {2}' -f $r.ExitCode, $r.EnvironmentReports.Count, $shown)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError.txt') }
+               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; what the user sees: {2}' -f $r.ExitCode, $r.EnvironmentReports.Count, $shown)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\PowerShellMessages_*.txt') }
            }
            # The revert restores what Prepare recorded, not a blank: a machine that had a policy before M8 gets it back, and the
            # verification compares with that, not with Undefined (Codex round 1 on PR #14). A scriptblock, evaluated at revert time.
@@ -921,7 +922,7 @@ function Get-Plan {
                elseif ($r.Reports.Count -gt 0) { $what = 'the script ran unrestricted although the Script rules are enforced and AppLocker itself answers DeniedByDefault for this account - the policy is on record but nothing acted on it. Since Windows 10 2004 with KB 5024351 every edition enforces, so this is the machine to investigate (build, update level, whether the policy reaches this account), not an edition rule' }
                else { $what = 'no report, no launcher error, exit code 0 - unexplained' }
                $shown = @($r.Output | Where-Object { $_.Trim() -ne '' } | Select-Object -First 4) -join ' / '
-               @{ Passed = $passed; Detail = ('{0}; launcher exit {1}; environment report(s): {2}; reports: {3}; what the user sees: {4}' -f $what, $r.ExitCode, $r.EnvironmentReports.Count, $r.Reports.Count, $shown); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError.txt', 'en-US\NetworkHealthCheck_ENVIRONMENT_*.txt') }
+               @{ Passed = $passed; Detail = ('{0}; launcher exit {1}; environment report(s): {2}; reports: {3}; what the user sees: {4}' -f $what, $r.ExitCode, $r.EnvironmentReports.Count, $r.Reports.Count, $shown); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\NetworkHealthCheck_ENVIRONMENT_*.txt') }
            }
            # The commands are not spelled with a placeholder here: RECOVER.txt holds them with this machine's recorded
            # values filled in, and a person typing the placeholder itself is what happened on the Windows 10 Pro VM

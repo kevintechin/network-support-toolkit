@@ -7405,6 +7405,34 @@ function Start-ConsoleMode {
     }
 }
 
+# Backlog #34: a run that fell back to console mode because the window could not open ends inside the black window
+# the launcher opened, and the user and IT launchers close that window on exit code 0 - right for a window run, where
+# the person has already closed the tool, and wrong for the fallback, where the three report paths are the last thing
+# printed. The script waits here for a key when, and only when, the run was a fallback: not started with -ConsoleOnly
+# (the console launcher pauses by itself, and the chain's console runs must not wait), with a person at the console
+# (a scheduled task or a service has none), and with the standard input not redirected (a harness feeding NUL must
+# never block). Each gate is a parameter whose default is the live value, so that the decision can be tested without
+# a console; ReadKey itself is guarded, because a host without a keyboard throws. Returns whether it waited.
+function Wait-ForConsoleClose {
+    param(
+        [bool]$ConsoleOnlyRun = [bool]$ConsoleOnly,
+        [bool]$UserInteractive = [Environment]::UserInteractive,
+        [bool]$InputRedirected = [Console]::IsInputRedirected
+    )
+    if ($ConsoleOnlyRun -or (-not $UserInteractive) -or $InputRedirected) {
+        return $false
+    }
+    try {
+        Write-Host ""
+        Write-Host "The window stays open so that the report paths above can be read. Press any key to close it."
+        [void][Console]::ReadKey($true)
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
 # -----------------------------------------------------------------------------
 # User interface: Windows Forms GUI; the outer entry point falls back to console mode if unavailable.
 # -----------------------------------------------------------------------------
@@ -7918,6 +7946,7 @@ try {
         }
         else {
             $exitCode = Start-ConsoleMode
+            [void](Wait-ForConsoleClose)
         }
     }
 }

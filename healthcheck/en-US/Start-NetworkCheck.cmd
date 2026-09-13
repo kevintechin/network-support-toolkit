@@ -5,10 +5,34 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 title Network Health Check
 
-set "SCRIPT=%~dp0NetworkHealthCheck.ps1"
+set "HERE=%~dp0"
+set "SCRIPT=%HERE%NetworkHealthCheck.ps1"
 set "PS_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 set "FAIL_REASON="
 set "SUGGESTED="
+set "LOGFILE="
+set "LOGKEPT="
+set "DATEFMT="
+
+rem A stamp for this attempt's files (backlog #47): the digits of the shell's own date and time, in the order this
+rem computer prints them, so that separate attempts never overwrite each other and sort by time on the same machine.
+rem PowerShell cannot be asked - it may be what is missing - and %DATE% carries separators and, on some machines, a
+rem weekday name, so the loop keeps the digits alone; the leading space of an early hour becomes a zero.
+set "RAW=%DATE%%TIME: =0%"
+set "STAMP="
+:stamp_next
+if not defined RAW goto :stamp_done
+set "CH=%RAW:~0,1%"
+set "RAW=%RAW:~1%"
+for %%D in (0 1 2 3 4 5 6 7 8 9) do if "%CH%"=="%%D" set "STAMP=%STAMP%%CH%"
+goto :stamp_next
+:stamp_done
+if not defined STAMP set "STAMP=%RANDOM%"
+
+rem The short-date pattern this computer printed %DATE% in (backlog #44), read before anything is written: the error
+rem report states which pattern its date is in. When the value cannot be read the report omits it, and nothing here
+rem may stop the report from being written.
+for /f "tokens=1,2,*" %%A in ('reg query "HKCU\Control Panel\International" /v sShortDate 2^>nul') do if /i "%%A"=="sShortDate" set "DATEFMT=%%C"
 
 if not exist "%SCRIPT%" (
     set "FAIL_REASON=The program file NetworkHealthCheck.ps1 is missing. Keep all files in the same folder."
@@ -27,56 +51,88 @@ if not exist "%PS_EXE%" (
     )
 )
 
+rem PowerShell's error stream goes to a file (backlog #47) - beside the launcher, else in the Windows temporary
+rem folder - so that the sentence explaining why the program did not run is kept instead of being copied off the
+rem screen. Everything the run prints as it goes still reaches this window. The file is created before the run: a
+rem redirection that fails at run time would stop PowerShell from starting at all, so where no file can be created
+rem the program runs without the capture. An empty file is deleted afterwards, so a run that printed nothing there
+rem leaves nothing behind.
+set "LOGFILE=%HERE%PowerShellMessages_%STAMP%.txt"
+2>nul >"%LOGFILE%" type nul
+if exist "%LOGFILE%" goto :run_captured
+set "LOGFILE=%TEMP%\NetworkHealthCheck_PowerShellMessages_%STAMP%.txt"
+2>nul >"%LOGFILE%" type nul
+if exist "%LOGFILE%" goto :run_captured
+set "LOGFILE="
 "%PS_EXE%" -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%SCRIPT%"
+goto :ran
+:run_captured
+"%PS_EXE%" -NoLogo -NoProfile -ExecutionPolicy Bypass -STA -File "%SCRIPT%" 2>>"%LOGFILE%"
+:ran
 set "RC=%ERRORLEVEL%"
+if defined LOGFILE if exist "%LOGFILE%" for %%F in ("%LOGFILE%") do if "%%~zF"=="0" del "%LOGFILE%" 2>nul
+if defined LOGFILE if exist "%LOGFILE%" set "LOGKEPT=1"
 
 if "%RC%"=="3" (
     set "FAIL_REASON=The diagnostic program ended with exit code 3, the code it uses when PowerShell is restricted to a limited language mode by an application-control policy: no check ran."
     set "SUGGESTED=read NetworkHealthCheck_ENVIRONMENT_*.txt in this folder or in the Windows temporary folder - it names what IT can do - and send it with the support request."
     goto :launcher_error
 )
-if not "%RC%"=="0" (
-    set "FAIL_REASON=The diagnostic program ended with exit code %RC%. PowerShell or company security policy may have blocked execution."
-    set "SUGGESTED=read the message printed above the error in this window - PowerShell says there why it did not run the program - and send it together with this file. If it says the file is not digitally signed or is blocked by a policy, ask IT to allow NetworkHealthCheck.ps1."
-    goto :launcher_error
-)
-
+if not "%RC%"=="0" goto :blocked
 exit /b 0
 
+:blocked
+set "FAIL_REASON=The diagnostic program ended with exit code %RC%. PowerShell or company security policy may have blocked execution."
+if defined LOGKEPT goto :blocked_with_messages
+set "SUGGESTED=PowerShell printed no explanation. Send this error report with the support request and describe what the window showed; if the file is not digitally signed or is blocked by a policy, IT has to allow NetworkHealthCheck.ps1."
+goto :launcher_error
+:blocked_with_messages
+set "SUGGESTED=PowerShell's own explanation is printed below and kept in %LOGFILE% - send that file together with this error report. If it says the file is not digitally signed or is blocked by a policy, ask IT to allow NetworkHealthCheck.ps1."
+goto :launcher_error
+
 :launcher_error
-set "ERRFILE=%~dp0LauncherError.txt"
->"%ERRFILE%" (
-    echo Network Health Check launcher error
-    echo ===================================
-    echo Date/time: %DATE% %TIME%
-    echo Computer: %COMPUTERNAME%
-    echo User: %USERNAME%
-    echo Folder: %~dp0
-    echo Script: %SCRIPT%
-    echo PowerShell: %PS_EXE%
-    echo.
-    echo Error: %FAIL_REASON%
-    echo.
-    echo Suggested action: %SUGGESTED%
-) 2>nul
-
-if exist "%ERRFILE%" goto :show_launcher_error
-
-set "ERRFILE=%TEMP%\NetworkHealthCheck_LauncherError.txt"
->"%TEMP%\NetworkHealthCheck_LauncherError.txt" (
-    echo Network Health Check launcher error
-    echo Date/time: %DATE% %TIME%
-    echo Computer: %COMPUTERNAME%
-    echo User: %USERNAME%
-    echo Error: %FAIL_REASON%
-    echo Suggested action: %SUGGESTED%
-)
+rem Delayed expansion from here on: the values printed below carry paths, and a path may hold a parenthesis - a
+rem browser's second download is extracted to a folder named like the ZIP plus (1) - or an ampersand, either of
+rem which breaks a line that expands the value before it is parsed. Nothing before this label prints a value.
+setlocal EnableDelayedExpansion
+set "ERRFILE=!HERE!LauncherError_!STAMP!.txt"
+call :write_error_report 2>nul
+if exist "!ERRFILE!" goto :show_launcher_error
+set "ERRFILE=!TEMP!\NetworkHealthCheck_LauncherError_!STAMP!.txt"
+call :write_error_report 2>nul
 
 :show_launcher_error
 echo.
-echo ERROR: %FAIL_REASON%
-echo Suggested action: %SUGGESTED%
-echo Error report: "%ERRFILE%"
+echo ERROR: !FAIL_REASON!
+if defined LOGKEPT echo What PowerShell said, kept in "!LOGFILE!":
+if defined LOGKEPT type "!LOGFILE!"
+if defined LOGKEPT echo.
+echo Suggested action: !SUGGESTED!
+echo Error report: "!ERRFILE!"
 echo.
 pause
 exit /b 1
+
+:write_error_report
+rem One line per write, and a stamped name, so that a second attempt is a second file and a parenthesis in a path
+rem cannot end the write halfway, as it would inside a parenthesised block. The same lines beside the launcher and
+rem in the Windows temporary folder; the caller's 2>nul keeps a refused write off the screen.
+set "DATELINE=Date/time: !DATE! !TIME!"
+if defined DATEFMT set "DATELINE=Date/time: !DATE! !TIME! (this computer's short-date pattern: !DATEFMT!)"
+set "LOGLINE=PowerShell messages: none - PowerShell was not started"
+if defined LOGFILE set "LOGLINE=PowerShell messages: none - PowerShell printed nothing on its error stream"
+if defined LOGKEPT set "LOGLINE=PowerShell messages: !LOGFILE!"
+>"!ERRFILE!" echo Network Health Check launcher error
+>>"!ERRFILE!" echo ===================================
+>>"!ERRFILE!" echo !DATELINE!
+>>"!ERRFILE!" echo Computer: !COMPUTERNAME!
+>>"!ERRFILE!" echo User: !USERNAME!
+>>"!ERRFILE!" echo Folder: !HERE!
+>>"!ERRFILE!" echo Script: !SCRIPT!
+>>"!ERRFILE!" echo PowerShell: !PS_EXE!
+>>"!ERRFILE!" echo !LOGLINE!
+>>"!ERRFILE!" echo.
+>>"!ERRFILE!" echo Error: !FAIL_REASON!
+>>"!ERRFILE!" echo.
+>>"!ERRFILE!" echo Suggested action: !SUGGESTED!
+exit /b 0

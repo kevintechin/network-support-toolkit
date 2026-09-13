@@ -934,8 +934,10 @@ if ((Owns 'W28') -or (Owns 'W29')) {
     Write-Output "-- the launcher with its program file missing, section 6"
     $programFile = Join-Path $PackageDir 'NetworkHealthCheck.ps1'
     $stashed = $programFile + '.walkcapture'
-    $errFile = Join-Path $PackageDir 'LauncherError.txt'
-    if (Test-Path -LiteralPath $errFile) { Remove-Item -LiteralPath $errFile -Force }
+    # Since 1.2.14 the report's name carries a stamp (backlog #47): whatever an earlier run left goes first, and the
+    # newest report beside the launcher after the run is this run's.
+    $errFile = $null
+    foreach ($stale in @(Get-ChildItem -LiteralPath $PackageDir -Filter 'LauncherError*.txt' -File -ErrorAction SilentlyContinue) + @(Get-ChildItem -LiteralPath $PackageDir -Filter 'PowerShellMessages_*.txt' -File -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $stale.FullName -Force }
     Rename-Item -LiteralPath $programFile -NewName (Split-Path -Leaf $stashed)
     try {
         $out = Join-Path $script:Bundle 'W28-launcher-window.txt'
@@ -949,19 +951,21 @@ if ((Owns 'W28') -or (Owns 'W29')) {
         # The file is the evidence of both rows - W28 names it appearing, W29 reads its fields - and the finally below
         # deletes the original, so it is copied whenever either row is owned.
         $errCopied = $false
-        if (Test-Path -LiteralPath $errFile) { [void](Copy-Into $errFile 'W29-LauncherError.txt'); $errCopied = $true }
+        $errBundleName = ''
+        $errFiles = @(Get-ChildItem -LiteralPath $PackageDir -Filter 'LauncherError_*.txt' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+        if ($errFiles.Count) { $errFile = $errFiles[0].FullName; $errBundleName = 'W29-' + $errFiles[0].Name; [void](Copy-Into $errFile $errBundleName); $errCopied = $true }
         if (Owns 'W28') {
-            if ($errCopied) { Add-Answer 'W28' 'captured' ('W28-launcher-window.txt' + $errArtefact28 + ', W29-LauncherError.txt') ('what the black window said (exit code ' + $p.ExitCode + ')' + $(if ($keptErr28) { ', what it printed on standard error' } else { '' }) + ', and the error report it named') }
-            else { Add-Answer 'W28' 'not produced' ('W28-launcher-window.txt' + $errArtefact28) ('the window''s text is here (exit code ' + $p.ExitCode + ')' + $(if ($keptErr28) { ', with what it printed on standard error beside it' } else { '' }) + ', but no LauncherError.txt appeared beside the launcher, which is half of what the row asks for') }
+            if ($errCopied) { Add-Answer 'W28' 'captured' ('W28-launcher-window.txt' + $errArtefact28 + ', ' + $errBundleName) ('what the black window said (exit code ' + $p.ExitCode + ')' + $(if ($keptErr28) { ', what it printed on standard error' } else { '' }) + ', and the error report it named') }
+            else { Add-Answer 'W28' 'not produced' ('W28-launcher-window.txt' + $errArtefact28) ('the window''s text is here (exit code ' + $p.ExitCode + ')' + $(if ($keptErr28) { ', with what it printed on standard error beside it' } else { '' }) + ', but no LauncherError_<stamp>.txt appeared beside the launcher, which is half of what the row asks for') }
         }
         if (Owns 'W29') {
-            if ($errCopied) { Add-Answer 'W29' 'captured' 'W29-LauncherError.txt' 'the file as the launcher wrote it, fields and all, for reading against section 6''s description' }
-            else { Add-NotProduced 'W29' 'the launcher wrote no LauncherError.txt beside itself on this machine' }
+            if ($errCopied) { Add-Answer 'W29' 'captured' $errBundleName 'the file as the launcher wrote it, fields and all, for reading against section 6''s description' }
+            else { Add-NotProduced 'W29' 'the launcher wrote no LauncherError_<stamp>.txt beside itself on this machine' }
         }
     }
     finally {
         if (Test-Path -LiteralPath $stashed) { Rename-Item -LiteralPath $stashed -NewName (Split-Path -Leaf $programFile) }
-        if (Test-Path -LiteralPath $errFile) { Remove-Item -LiteralPath $errFile -Force }
+        if ($null -ne $errFile -and (Test-Path -LiteralPath $errFile)) { Remove-Item -LiteralPath $errFile -Force }
     }
 }
 
