@@ -191,6 +191,10 @@ Assert-Catches 'a closed number listed twice, once in a range and once alone' 'R
     # PR #63, round 3: the list still names every closed number and no other, so only the repeat is wrong.
     Edit-All $Readme 'Numbers 1 to 20, 23' 'Numbers 1 to 20, 20, 23'
 }
+Assert-Catches 'a second closed-numbers sentence after the first' 'R6' {
+    # PR #63, round 5: the first sentence is the one read, and the second used to be ignored with everything after it.
+    Edit-All $Readme ' are closed |' ' are closed. Numbers 1 to 5 are closed |'
+}
 
 # 4 - what the row may say without being misread: a date, a version and a mention between a group's count and its
 # parenthesis are not the count (the self-audit before round 4 - the last number before the parenthesis used to be).

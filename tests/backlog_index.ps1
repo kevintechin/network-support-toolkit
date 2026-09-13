@@ -19,7 +19,8 @@
     holds at least one such link, and its stated count is the last number standing alone before the parenthesis
     opens, written as a word from one to twenty or in digits - a date, a version or a mention like #25 is not a
     count. The closed numbers are one sentence, "Numbers ... are closed", a
-    comma-separated list of numbers and "a to b" ranges, each number once. The sentence about the overlap, where
+    comma-separated list of numbers and "a to b" ranges, each number once - one sentence and not two, because the
+    first is the one read and a second would be ignored with everything after it. The sentence about the overlap, where
     the row has one, is read as "sum to N where the items are M", in words or digits; any other wording states no
     total to check. The arithmetic the item asked for - the stated counts sum to the open
     count plus one for each further group an item is listed in - is checked as three statements so that one mistake
@@ -144,9 +145,12 @@ $countMatch = [regex]::Match($row, '^\|\s*Backlog\s*\|\s*(\d+) items? open\b')
 $stated = $(if ($countMatch.Success) { [int]$countMatch.Groups[1].Value } else { -1 })
 Assert-True ('R1 the README''s open count is the index''s row count ({0})' -f $open.Count) ($stated -eq $open.Count) $(if ($countMatch.Success) { ('the README says {0} items open' -f $stated) } else { 'the row does not begin with "N items open"' })
 
-# The closed list is the sentence 'Numbers ... are closed'; everything before it is the open part of the row.
-$closedSentence = [regex]::Match($row, 'Numbers\s+(.+?)\s+are closed')
-$openPart = $(if ($closedSentence.Success) { $row.Substring(0, $closedSentence.Index) } else { $row })
+# The closed list is the sentence 'Numbers ... are closed'; everything before it is the open part of the row. The
+# first such sentence is the one read, so a second - stale, or contradicting the first - would be ignored with
+# everything after it: R6 requires exactly one (PR #63, round 5).
+$closedSentences = @([regex]::Matches($row, 'Numbers\s+(.+?)\s+are closed'))
+$closedSentence = $(if ($closedSentences.Count) { $closedSentences[0] } else { $null })
+$openPart = $(if ($closedSentences.Count) { $row.Substring(0, $closedSentences[0].Index) } else { $row })
 
 # The links the open part carries, each with its number and its target; then a copy of the open part with every
 # markdown link reduced to its text - [#N] for an item link - so that the parentheses left are the row's own.
@@ -239,7 +243,7 @@ Assert-True ('R5 each group''s stated count is the number of items it lists, and
 
 # R6: the closed list, 'Numbers 1 to 20, 23, 24, ... are closed', expanded and set against the closed table.
 $listedClosed = @(); $unreadable = @()
-if ($closedSentence.Success) {
+if ($null -ne $closedSentence) {
     foreach ($token in ($closedSentence.Groups[1].Value -split ',')) {
         $t = $token.Trim()
         if ($t -match '^(\d+)\s+to\s+(\d+)$') { $a = [int]$Matches[1]; $b = [int]$Matches[2]; if ($b -ge $a) { $listedClosed += @($a..$b | ForEach-Object { [string]$_ }) } else { $unreadable += $t } }
@@ -254,12 +258,12 @@ $listedClosed = @($listedClosed | Sort-Object { [int]$_ } -Unique)
 $closedMissing = @($closed | Where-Object { $listedClosed -notcontains $_ })
 $closedExtra = @($listedClosed | Where-Object { $closed -notcontains $_ })
 $closedDetail = @()
-if (-not $closedSentence.Success) { $closedDetail += 'the row has no "Numbers ... are closed" sentence' }
+if ($closedSentences.Count -ne 1) { $closedDetail += ('the row has {0} "Numbers ... are closed" sentences, and one is what it may have' -f $closedSentences.Count) }
 if ($unreadable.Count) { $closedDetail += ('unreadable: ' + ($unreadable -join ', ')) }
 if ($twiceClosed.Count) { $closedDetail += ('listed as closed twice: ' + (Format-Numbers $twiceClosed)) }
 if ($closedMissing.Count) { $closedDetail += ('closed and not listed: ' + (Format-Numbers $closedMissing)) }
 if ($closedExtra.Count) { $closedDetail += ('listed as closed and not in the closed table: ' + (Format-Numbers $closedExtra)) }
-Assert-True ('R6 the README''s closed list is the closed table, each number once ({0} numbers)' -f $closed.Count) ($closedDetail.Count -eq 0) ($closedDetail -join '; ')
+Assert-True ('R6 the README''s closed list, one sentence, is the closed table, each number once ({0} numbers)' -f $closed.Count) ($closedDetail.Count -eq 0) ($closedDetail -join '; ')
 
 Write-Summary
 exit $fails
