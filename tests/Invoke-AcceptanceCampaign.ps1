@@ -359,9 +359,11 @@ function Get-MachinePolicyExecutionPolicy {
 }
 function Get-SignatureRefusal([string[]]$Lines) {
     # Whether captured console output carries PowerShell's refusal to run an UNSIGNED script - the one thing M8 is for.
-    # The classification printed beside that message is not evidence of it: SecurityError and UnauthorizedAccess are
-    # what an AppLocker rule and a Software Restriction Policy are refused with as well (M9 produces them), so output
-    # recognized by those two words alone would let another block pass for this one (backlog #25). The message itself
+    # The classification printed beside that message is not evidence of it: SecurityError and UnauthorizedAccess name a
+    # category - a security policy refused this script - and not which policy, so output recognized by those two words
+    # alone claims more than it read (backlog #25, whose example is an application-control rule; PowerShell documents
+    # the same classification for a Software Restriction Policy, and no machine this project has measured has yet seen
+    # AppLocker refuse the script at all - see docs/application-control.md and backlog #31). The message itself
     # is localized, and $known is the display languages this campaign has met; on a machine in another one the answer
     # is a miss that names the language, which is one line to add here and not a reason to accept the classification.
     # Ordinal comparison, so that a message is found by its characters and a future entry needs no regex escaping.
@@ -375,7 +377,7 @@ function Get-SignatureRefusal([string[]]$Lines) {
         }
     }
     $read = (@($known | ForEach-Object { $_.Culture + ' "' + $_.Text + '"' }) -join ', ')
-    $what = $(if ($generic) { 'the security classification (SecurityError / UnauthorizedAccess) without the signature message itself - an AppLocker or Software Restriction Policy block reads the same' } else { 'neither the signature message nor any security classification' })
+    $what = $(if ($generic) { 'the security classification (SecurityError / UnauthorizedAccess) without the signature message itself - which says a security policy refused the script, not which policy' } else { 'neither the signature message nor any security classification' })
     return @{ Matched = $false; Culture = ''; Generic = $generic
               Detail = ($what + '; this driver reads ' + $read + ', and its own display language is ' + ([System.Globalization.CultureInfo]::CurrentUICulture.Name)) }
 }
@@ -727,14 +729,15 @@ function Get-Plan {
            # Checked before the instruction is shown: without the Mark of the Web on the download there is no warning to
            # measure (PR #11 round 11) - an unblocked or stripped ZIP, or M3 run first through a subset. A ZIP copied from
            # another machine (drag-and-drop, a shared folder) never had the mark - the first campaign's was such a copy (PR #14).
-           # Both ways to a marked download are named (backlog #30). A ZIP taken from a CI artifact has no mark and
-           # cannot get one from being unpacked on this machine, so a campaign run from one would skip M2 for good;
-           # writing the mark deliberately is the other way to the same file state, and the record says which way this
-           # run took rather than leaving a reader of the summary to assume a browser.
+           # Both ways to a marked download are named (backlog #30). An asset taken out of a CI artifact carries the
+           # mark only where the artifact itself was downloaded here with a browser and unpacked with Explorer, which
+           # propagates it; fetched any other way - a command-line download, a copy from the host - it has none, and a
+           # campaign run from one would skip M2 for good. Writing the mark deliberately is the other way to the same
+           # file state, and the record says which way this run took rather than leaving a reader to assume a browser.
            Prerequisite = { $m = Get-ZoneId $State.OriginalZip
                             if (-not (Test-InternetMark $m)) {
                                 $apply = 'Set-Content -LiteralPath "' + $State.OriginalZip + '" -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"'
-                                @{ Ok = $false; Detail = ('the download carries no Internet-zone Mark of the Web (' + $m + ': ' + $State.OriginalZip + ') - M2 cannot measure the warning; a ZIP copied from another machine, or taken from a CI artifact, never had one. Two ways to one that has: download it with the browser of this machine to the same path, or write the mark deliberately in PowerShell -   ' + $apply + '   - which the summary then reports as applied rather than downloaded. (Or run M2 before M3.)') }
+                                @{ Ok = $false; Detail = ('the download carries no Internet-zone Mark of the Web (' + $m + ': ' + $State.OriginalZip + ') - M2 cannot measure the warning; a ZIP copied from another machine never had one, and one taken out of a CI artifact has one only where that artifact was downloaded here with a browser and unpacked with Explorer. Two ways to a file that has: download it with the browser of this machine to the same path, or write the mark deliberately in PowerShell -   ' + $apply + '   - which the summary then reports as applied rather than downloaded. (Or run M2 before M3.)') }
                             }
                             else { @{ Ok = $true; Detail = ('the download is marked: ' + (Get-MarkOrigin $State.OriginalZip).Text) } } }
            Instruction = @(('Right-click the downloaded ZIP > Extract All... into ' + $M2Dir + ' (do NOT Unblock it). The Extract All dialog proposes another folder - replace the destination with ' + $M2Dir + '. When the extraction has finished, answer done; the double-click comes next.'),
@@ -882,9 +885,9 @@ function Get-Plan {
                if ($r.Reports.Count) { $bad += 'a report was written: the unsigned script ran' }
                if (-not $r.LauncherError) { $bad += 'no launcher error report' }
                # The refusal must be the signature refusal itself, not any failure the launcher maps to exit 1 (PR #11
-               # round 15), and not PowerShell's classification of it either: SecurityError and UnauthorizedAccess are
-               # what an application-control block is refused with too, so M9's rules would pass for M8's policy
-               # (backlog #25). An environment report would mean the script started - a different policy, not this one.
+               # round 15), and not PowerShell's classification of it either: SecurityError and UnauthorizedAccess say
+               # that a security policy refused the script, not which one, and what this scenario claims is the one it
+               # applied (backlog #25). An environment report would mean the script started - a different policy, not this one.
                $refusal = Get-SignatureRefusal $r.Output
                if (-not $refusal.Matched) { $bad += ('the captured output does not carry the signature refusal itself - ' + $refusal.Detail) }
                if ($r.EnvironmentReports.Count) { $bad += ('an environment report was written ({0}): the script started, so it was not AllSigned that stopped it' -f $r.EnvironmentReports.Count) }

@@ -680,7 +680,7 @@ Assert-True '34. the data comes back as recorded, whatever it says, and a REG_MU
 
 # -------------------- 37. M8 is measured by the signature refusal itself, not by PowerShell's classification of it --------------------
 Write-Output ''
-Write-Output '37. what M8 may accept as the refusal: the signature message itself, in a display language the driver reads. PowerShell classifies an AppLocker rule and a Software Restriction Policy under the same two words - SecurityError, UnauthorizedAccess - so output recognized by those alone would let M9''s block pass for M8''s policy (backlog #25). M8 cannot run in this self-test, since AllSigned is a machine policy and needs elevation, so the predicate is loaded out of the driver and run on captured output of each shape, and M8''s own use of it is asserted on the driver''s AST'
+Write-Output '37. what M8 may accept as the refusal: the signature message itself, in a display language the driver reads. The classification PowerShell prints beside that message - SecurityError, UnauthorizedAccess - says that a security policy refused the script and not which one, so output recognized by those two words alone claims more than it read (backlog #25). M8 cannot run in this self-test, since AllSigned is a machine policy and needs elevation, so the predicate is loaded out of the driver and run on captured output of each shape, and M8''s own use of it is asserted on the driver''s AST'
 $tokens37 = $null; $errors37 = $null
 $ast37 = [System.Management.Automation.Language.Parser]::ParseFile($driver, [ref]$tokens37, [ref]$errors37)
 $defs37 = @{}
@@ -698,7 +698,8 @@ if ($defs37.ContainsKey('Get-SignatureRefusal') -and $defs37['Get-SignatureRefus
     Invoke-Expression $defs37['Get-SignatureRefusal'][0].Extent.Text
 }
 Assert-True '37. it calls no function of the driver that this case has not loaded, so what runs here is what runs there' ($needs37.Count -eq 0) ('also needed: ' + ($needs37 -join ', '))
-# The three shapes, as PowerShell writes them: an application-control refusal, the signature refusal in each language
+# The three shapes: a security refusal that is not about signing - PowerShell's documented wording for a Software
+# Restriction Policy, carrying the classification and no signature message - and the signature refusal in each language
 # the driver reads. The zh-TW message is built from its code points because this file is ASCII and carries no
 # byte-order mark - Windows PowerShell reads a script without one in the machine's ANSI code page, and the characters
 # would not survive being written here.
@@ -711,7 +712,7 @@ $unsignedEn37 = @('File C:\NHC\en-US\NetworkHealthCheck.ps1 cannot be loaded. Th
 $zh37 = -join @(0x672A, 0x7D93, 0x6578, 0x4F4D, 0x7C3D, 0x7F72 | ForEach-Object { [char]$_ })
 $unsignedZh37 = @(('C:\NHC\zh-TW\NetworkHealthCheck.ps1 ' + $zh37), '    + FullyQualifiedErrorId : UnauthorizedAccess')
 $r37a = Get-SignatureRefusal $blocked37
-Assert-True '37. an application-control block, which carries the same classification, is not the signature refusal' ((-not $r37a.Matched) -and $r37a.Generic -and ($r37a.Detail -like '*SecurityError / UnauthorizedAccess*')) ('Matched: ' + $r37a.Matched + '; ' + $r37a.Detail)
+Assert-True '37. a refusal that is not about signing, carrying the same classification, is not the signature refusal' ((-not $r37a.Matched) -and $r37a.Generic -and ($r37a.Detail -like '*SecurityError / UnauthorizedAccess*')) ('Matched: ' + $r37a.Matched + '; ' + $r37a.Detail)
 Assert-True '37. and the miss names every message the driver does read, so the answer is one line here and not a looser test' (($r37a.Detail -like '*en-US*') -and ($r37a.Detail.Contains($zh37))) $r37a.Detail
 $r37b = Get-SignatureRefusal $unsignedEn37
 Assert-True '37. the en-US signature message is the refusal, and the language it was read in is named' ($r37b.Matched -and $r37b.Culture -eq 'en-US') ('Matched: ' + $r37b.Matched + '; culture: ' + $r37b.Culture)
