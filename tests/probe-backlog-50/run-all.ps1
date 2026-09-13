@@ -60,8 +60,22 @@ $Utf8Bom = New-Object System.Text.UTF8Encoding($true)
 $TerminalClass = 'CASCADIA_HOSTING_WINDOW_CLASS'
 
 # ------------------------------------------------------------------------------------------------------ refusals
-if ($Folder -like '\\*') {
-    Write-Output ("REFUSED: this folder is on a network path (" + $Folder + "). cmd.exe prints a warning of its own for a UNC working directory, which would sit on the screen beside the lines being measured. Copy the folder to a local disk and run it from there.")
+# A UNC path by its shape, and a drive letter mapped to a share by what the drive says it is - a copy put on `Z:\`
+# would pass a test on the shape alone, and cmd treats it as a network path just the same.
+$networkReason = ''
+if ($Folder -like '\\*') { $networkReason = 'a UNC path' }
+else {
+    try {
+        $root = [IO.Path]::GetPathRoot($Folder)
+        if ($root) {
+            $drive = New-Object System.IO.DriveInfo($root)
+            if ($drive.DriveType -eq [IO.DriveType]::Network) { $networkReason = 'a drive letter mapped to a share (' + $root.TrimEnd('\') + ')' }
+        }
+    }
+    catch { }
+}
+if ($networkReason) {
+    Write-Output ("REFUSED: this folder is on a network path - " + $networkReason + " - at " + $Folder + ". cmd.exe prints a warning of its own for a network working directory, which would sit on the screen beside the lines being measured. Copy the folder to a local disk and run it from there.")
     exit 2
 }
 $missing = @($Variants | Where-Object { -not (Test-Path -LiteralPath (Join-Path $Folder ($_ + '.cmd'))) })
