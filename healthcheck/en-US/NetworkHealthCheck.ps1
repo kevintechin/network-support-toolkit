@@ -907,7 +907,7 @@ function Test-HttpTargetSyntax {
 #   - otherwise labels, separated by '.' or by one of the three separators IDNA reads as a dot (U+3002, U+FF0E, U+FF61),
 #     a trailing empty label being the root. Every label is judged in the form the resolver would send. A label with a
 #     character beyond ASCII is encoded by IDNA (GetAscii, the resolver's own conversion) and decoded again, and what
-#     comes back must be the label configured - up to ASCII case and canonical composition (NFC) - so that a character
+#     comes back must be the label configured - up to case and canonical composition (NFC) - so that a character
 #     IDNA drops (a zero-width space or joiner, a soft hyphen), maps (a full-width letter, an eszett) or refuses (a
 #     bidirectional control, an unassigned code point) is refused here: the name asked would not be the name
 #     configured, and nothing in the report would have said so. The encoded label may hold letters, digits, hyphens
@@ -1002,13 +1002,16 @@ function Get-HostNameSyntaxProblem {
                 }
                 return ("the label at position {0} cannot be encoded for the wire: IDNA refuses it as a whole - more than 63 characters once encoded, or a combination no single character explains" -f (& $scalarPosition ($position - 1)))
             }
-            # ASCII case alone is folded before the comparison: IDNA lowercases A-Z, and that is the one change the rule
-            # allows. A culture-free ignore-case comparison folded more - U+017F (the long s) and 's' both uppercase to
-            # 'S', the final sigma and the sigma to one letter - and let a label IDNA sends as 'asb' pass as 'a<U+017F>b'
-            # (PR #58, round 2). Everything else IDNA changes, a capital non-ASCII letter included, is a change.
-            $folded = New-Object System.Text.StringBuilder
-            foreach ($ch in $normalized.ToCharArray()) { if ([int]$ch -ge 65 -and [int]$ch -le 90) { [void]$folded.Append([char]([int]$ch + 32)) } else { [void]$folded.Append($ch) } }
-            $folded = $folded.ToString()
+            # Case is folded before the comparison by the invariant lowercase mapping (backlog #68): IDNA lowercases
+            # every letter it can, so a capital letter is not a change to the name on the wire - 'UBER.de' with a
+            # capital U-diaeresis is asked as 'uber.de' with a small one, and refusing it served nobody. The simple
+            # lowercase mapping is the right width because it changes only what IDNA also changes: measured on this
+            # runtime (.NET Framework 4), it leaves U+00DF, U+1E9E, U+017F, U+03C2 and U+0130 exactly as they are,
+            # while IDNA sends them as 'ss', 'ss', 's', a sigma and 'i'+U+0307 - so each of those still differs from
+            # what came back and is still refused. What this replaced folded ASCII A-Z alone, which refused a capital
+            # letter IDNA merely lowercases; what came before that was a culture-free ignore-case comparison, which
+            # folded too much and let a label IDNA sends as 'asb' pass as 'a<U+017F>b' (PR #58, round 2).
+            $folded = $normalized.ToLowerInvariant()
             # Ordinal, not -cne: PowerShell's string operators compare linguistically, and the invariant culture ignores a
             # zero-width joiner or a soft hyphen and equates the eszett with ss - the cases this rule exists to refuse.
             if (-not [string]::Equals($decoded, $folded, [System.StringComparison]::Ordinal)) {

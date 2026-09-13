@@ -879,7 +879,7 @@ function Test-HttpTargetSyntax {
 #     百分號，只准出現在這裡；
 #   - 否則就是標籤，以「.」或 IDNA 當成點的三個分隔符（U+3002、U+FF0E、U+FF61）分開，結尾的空標籤是根。每個標籤都
 #     以解析器會送出的形式來判定。含有 ASCII 以外字元的標籤先經 IDNA 編碼（GetAscii，解析器自己的轉換）再解碼，
-#     回來的必須就是設定的那個標籤——只容許 ASCII 大小寫與正規組合（NFC）的差異——所以 IDNA 會移除（零寬空白或連
+#     回來的必須就是設定的那個標籤——只容許大小寫與正規組合（NFC）的差異——所以 IDNA 會移除（零寬空白或連
 #     接子、軟連字號）、改寫（全形字母、ß）或拒絕（雙向控制字元、未指派的碼位）的字元在這裡就被拒絕：送出去問的
 #     名字會不是設定的名字，而報告裡沒有任何地方會說。編碼後的標籤只能有字母、數字、連字號和底線——底線是因為
 #     Windows 主機名常帶著它，這是 LDH 明說的超集——空白、控制字元、URI 分隔符和其他所有 ASCII 符號就是被這一條
@@ -966,12 +966,14 @@ function Get-HostNameSyntaxProblem {
                 }
                 return ("位置 {0} 的標籤無法編碼送上線：IDNA 整個拒絕它——編碼後超過 63 個字元，或是沒有單一字元能解釋的組合" -f (& $scalarPosition ($position - 1)))
             }
-            # 比較前只折疊 ASCII 的大小寫：IDNA 會把 A-Z 變小寫，這是規則唯一容許的改變。不分文化的忽略大小寫比較折疊得
-            # 更多——U+017F（長 s）和「s」的大寫都是「S」，詞尾 sigma 和 sigma 也算同一個字母——讓 IDNA 會送成「asb」的
-            # 標籤以「a<U+017F>b」的樣子通過了（PR #58 第 2 輪）。IDNA 改動的其他一切，包括大寫的非 ASCII 字母，都算改變。
-            $folded = New-Object System.Text.StringBuilder
-            foreach ($ch in $normalized.ToCharArray()) { if ([int]$ch -ge 65 -and [int]$ch -le 90) { [void]$folded.Append([char]([int]$ch + 32)) } else { [void]$folded.Append($ch) } }
-            $folded = $folded.ToString()
+            # 比較前用不分文化的小寫對應折疊大小寫（待辦 #68）：IDNA 會把能小寫的字母都小寫，所以大寫並不改變送到線
+            # 上的名字——「UBER.de」的大寫 U 變音字母會以小寫的「uber.de」問出去，拒絕它對誰都沒有好處。簡單小寫對
+            # 應的寬度剛好，因為它只改 IDNA 也會改的東西：在這個執行環境（.NET Framework 4）實測，它讓 U+00DF、U+1E9E、
+            # U+017F、U+03C2 和 U+0130 原封不動，而 IDNA 會把它們送成「ss」、「ss」、「s」、sigma 和「i」+U+0307——所以這幾
+            # 個仍然和回來的不一樣，仍然被拒絕。被它取代的寫法只折疊 ASCII 的 A-Z，會拒絕 IDNA 只是轉小寫的大寫字母；
+            # 更早之前是不分文化的忽略大小寫比較，折疊得太多，讓 IDNA 會送成「asb」的標籤以「a<U+017F>b」通過（PR #58
+            # 第 2 輪）。
+            $folded = $normalized.ToLowerInvariant()
             # 用序數比較而不是 -cne：PowerShell 的字串運算子是語言學比較，不變文化會忽略零寬連接子和軟連字號、把 ß 和 ss
             # 視為相等——正是這條規則要拒絕的情形。
             if (-not [string]::Equals($decoded, $folded, [System.StringComparison]::Ordinal)) {

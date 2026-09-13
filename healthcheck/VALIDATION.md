@@ -1,5 +1,34 @@
 ﻿# Validation Record — NetworkHealthCheck
 
+## v1.2.14 — the host-name rule's case fold is the invariant lowercase mapping · 2026-09-13 — backlog #68 — not yet released; the date follows the release page once it ships
+
+**Version.** 1.2.14 in both scripts and in the packaged validator, unchanged, since the batch is unreleased; `FUNCTION_COUNT` stays **149** — no function was added or removed, one expression inside `Get-HostNameSyntaxProblem` changed. `SHA256SUMS.txt` regenerated in the existing line order over the same 28 files (12 digests changed: the two scripts, the six guide copies and the user manual in both languages and both formats).
+
+**What was wrong.** #54 decided *the name on the wire is the name configured, up to ASCII case and canonical composition*, and PR #58's round 2 implemented exactly that: a fold of ASCII `A`–`Z` and nothing else, replacing an `OrdinalIgnoreCase` comparison that folded by the runtime's whole table and had let a label IDNA sends as `asb` pass as `a`+U+017F+`b`. The narrow fold was right about the long s and wrong about a capital letter: IDNA lowercases every letter it can, so `ÜBER.de` is asked as `über.de` — one name on the wire — and the rule refused it with *U+00DC at position 1 would be dropped or changed by IDNA*. The record of that round named the consequence for the owner, who decided on 2026-09-13 to widen the fold.
+
+**What changed, and why this width.** `$folded` is `$normalized.ToLowerInvariant()`. The simple lowercase mapping is as wide as IDNA's own lowercasing and no wider, and the boundary was measured on the shipped runtime rather than assumed — Windows PowerShell 5.1 on .NET Framework 4.0.30319:
+
+| Character | `ToLowerInvariant` | IDNA returns | verdict |
+|---|---|---|---|
+| U+00DC capital U with diaeresis | U+00FC | U+00FC | **usable** (this is the change) |
+| U+03A3 capital sigma | U+03C3 | U+03C3 | **usable** |
+| U+00C5 capital A with ring | U+00E5 | U+00E5 | **usable** |
+| U+00DF eszett | U+00DF, unchanged | `ss` | refused |
+| U+1E9E capital eszett | U+1E9E, unchanged | `ss` | refused |
+| U+017F long s | U+017F, unchanged | `s` | refused |
+| U+03C2 final sigma | U+03C2, unchanged | U+03C3 | refused |
+| U+0130 capital I with dot | U+0130, unchanged | `i`+U+0307 | refused |
+
+The last five are the cases the item's acceptance named, not the whole of what moved: swept over the Basic Multilingual Plane, of the 55 075 labels IDNA accepts at all, **806 code points are usable now that the ASCII-only fold refused** - every uppercase letter IDNA merely lowercases - while **2 608 stay refused** because the fold leaves what IDNA changes. Each of the five is **a named unit case now rather than a count inside the sweep**, because the verdict rests on a runtime fact rather than on the rule: a runtime whose `ToLowerInvariant` folded U+0130 the way IDNA maps it would accept a name this one refuses. Only Windows PowerShell 5.1 on .NET Framework was measured, which is what the tool ships on and what the chain runs; no other runtime was tried here. A named case fails by name where a sweep would report a number.
+
+**What did not change.** The Kelvin sign stays refused, and not by the fold: NFC has already turned U+212A into an ASCII `K`, IDNA returns that `K` unchanged, and only the configured side is folded — the asymmetry PR #58's round 1 put there on purpose when a case-insensitive match had let the Kelvin sign through as `K`. Full-width letters stay refused, the four separators, the alphabet, the lengths and the IPv6 zone rule are untouched, and a pure-ASCII label is still judged without IDNA by a case-sensitive test.
+
+**The oracle folds the same way through a different API.** `Test-HostNameOracle` calls `[System.Globalization.CultureInfo]::InvariantCulture.TextInfo.ToLower`, where the predicate calls the `String` method, so the two agree by the mapping and not by the call — the two were measured to agree on every code point of the Basic Multilingual Plane (0 differences; `Char.ToLowerInvariant` agrees on all of them too), and the sweep is the standing check. The sweep passes with 65 536 code units swept and no disagreement.
+
+**The URL host followed the rule without being told to.** Two cases flipped: a capital non-ASCII letter in an `HttpTargets` host is usable now and adds no reason, because that path judges the written host through `Get-HostNameSyntaxProblem`. The URL's own wire comparison (`:1106`) already lowercased both sides with `ToLowerInvariant`, so it had agreed with the wider rule all along; an eszett in a URL host is still refused and still named.
+
+**What the tests hold.** Unit 1127 × 2 → **1139 × 2**: five refusals named with their reasons, four acceptances including `ÜBER.de` and what it is asked as, the Kelvin sign pinned, and the two URL cases. The six guide copies say *case* where they said *ASCII case* and now name the mapping, what it accepts and the five it leaves alone. The acceptance had assumed the IT deployment manual and the user manual say *ASCII case* too; neither does. The IT manual states the rule as *the name that would go on the wire is the name configured* and needed nothing. The user manual said the window refuses a character that would not reach the resolver *as you typed it*, which a lowercased capital now contradicts, so it says *its case aside* — in both languages and in both formats, the HTML copy included.
+
 ## v1.2.14 — the zh-TW launchers say what they mean, because cmd can read them · 2026-09-13 — backlog #50 — not yet released; the date follows the release page once it ships
 
 **Version.** 1.2.14 in both scripts and in the packaged validator, unchanged, since the batch is unreleased; `FUNCTION_COUNT` stays **149** — no PowerShell function changed, and neither script was touched. `SHA256SUMS.txt` regenerated in the existing line order over the same 28 files (4 digests changed: the three zh-TW launchers and the package-root zh-TW dispatcher).
