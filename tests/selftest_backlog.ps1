@@ -133,7 +133,7 @@ Assert-Catches 'a row numbered 0, the README listing it too' 'I4' {
     # follows the closed table, so that the number itself is the one thing wrong.
     $nl = Get-Newline $Backlog
     Edit-All $Backlog ($nl + $nl + '## Adding and closing an item') ($nl + '| 0 | an item before the first | never |' + $nl + $nl + '## Adding and closing an item')
-    Edit-All $Readme 'Numbers 1 to 20' 'Numbers 0, 1 to 20'
+    Edit-All $Readme 'Numbers 1 to 21' 'Numbers 0, 1 to 21'
 }
 Assert-Catches 'a row and a body numbered -1, which no pattern reads' 'I6' {
     # PR #63, round 6: the row and the heading both fell outside what the two patterns read, so the number reached no
@@ -165,44 +165,44 @@ Assert-Catches 'a closed item still listed as open, its group counted right' 'R2
     # The number is closed, the group's count is raised with it, and the link has no body to point at: R4 leaves
     # a link without a body to I1, so only R2 sees the closed number.
     Edit-All $Readme 'two changes to the tool ([#38]' 'three changes to the tool ([#40](docs/backlog.md#40--the-report-explained-the-badge) the badge explanation, [#38]'
-    Edit-All $Readme 'sum to thirteen where the items are twelve' 'sum to fourteen where the items are thirteen'
+    Edit-All $Readme 'sum to twelve where the items are eleven' 'sum to thirteen where the items are twelve'
 }
 Assert-Catches 'an open item dropped from the row, its group counted right' 'R3' {
-    Edit-All $Readme '[#21](docs/backlog.md#21--the-asset-build-is-not-reproducible-byte-for-byte) a reproducible asset, ' ''
-    Edit-All $Readme 'seven in `tests/` and the build' 'six in `tests/` and the build'
-    Edit-All $Readme 'sum to thirteen where the items are twelve' 'sum to twelve where the items are eleven'
+    Edit-All $Readme '[#25](docs/backlog.md#25--two-campaign-refinements-m8s-refusal-message-and-the-bundle-names-resolution) the campaign''s `M8` message and bundle name, ' ''
+    Edit-All $Readme 'six in `tests/` and the build' 'five in `tests/` and the build'
+    Edit-All $Readme 'sum to twelve where the items are eleven' 'sum to eleven where the items are ten'
 }
 Assert-Catches 'a link to a heading the page does not have' 'R4' {
-    Edit-All $Readme 'docs/backlog.md#21--the-asset-build-is-not-reproducible-byte-for-byte' 'docs/backlog.md#21--the-asset-build-is-reproducible-byte-for-byte'
+    Edit-All $Readme 'docs/backlog.md#25--two-campaign-refinements-m8s-refusal-message-and-the-bundle-names-resolution' 'docs/backlog.md#25--two-campaign-refinements-m8s-refusals-message-and-the-bundle-names-resolution'
 }
 Assert-Catches 'a group whose stated count is not what it lists' 'R5' {
     Edit-All $Readme 'two changes to the tool (' 'three changes to the tool ('
-    Edit-All $Readme 'sum to thirteen where the items are twelve' 'sum to fourteen where the items are twelve'
+    Edit-All $Readme 'sum to twelve where the items are eleven' 'sum to thirteen where the items are eleven'
 }
 Assert-Catches 'an open item linked outside every group, its group counted right' 'R5' {
     # PR #63, round 1: the link leaves its group, the group's count follows it, and the link stands in the row's prose
     # between the last group and the closed list, where it is listed (R2, R3) and points at its heading (R4) and is
     # in no group; the overlap sentence is moved with the count so that this is the one thing R5 has to say.
-    Edit-All $Readme '[#21](docs/backlog.md#21--the-asset-build-is-not-reproducible-byte-for-byte) a reproducible asset, ' ''
-    Edit-All $Readme 'seven in `tests/` and the build' 'six in `tests/` and the build'
-    Edit-All $Readme 'sum to thirteen where the items are twelve' 'sum to twelve where the items are twelve'
-    Edit-All $Readme ' Numbers 1 to 20' ' [#21](docs/backlog.md#21--the-asset-build-is-not-reproducible-byte-for-byte) stands outside every group. Numbers 1 to 20'
+    Edit-All $Readme '[#25](docs/backlog.md#25--two-campaign-refinements-m8s-refusal-message-and-the-bundle-names-resolution) the campaign''s `M8` message and bundle name, ' ''
+    Edit-All $Readme 'six in `tests/` and the build' 'five in `tests/` and the build'
+    Edit-All $Readme 'sum to twelve where the items are eleven' 'sum to eleven where the items are eleven'
+    Edit-All $Readme ' Numbers 1 to 21' ' [#25](docs/backlog.md#25--two-campaign-refinements-m8s-refusal-message-and-the-bundle-names-resolution) stands outside every group. Numbers 1 to 21'
 }
 Assert-Catches 'the overlap sentence stating a sum the groups do not make' 'R5' {
-    Edit-All $Readme 'sum to thirteen where the items are twelve' 'sum to fourteen where the items are twelve'
+    Edit-All $Readme 'sum to twelve where the items are eleven' 'sum to thirteen where the items are eleven'
 }
 Assert-Catches 'an item listed twice in the same group, the count and the sum raised with it' 'R5' {
     # PR #63, round 2: a copied link is a second membership of the same group, not of a further one; the group's count
     # and the overlap sentence are raised with it so that the duplicate is the one thing R5 has to say.
     Edit-All $Readme 'two changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the retransmission' 'three changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) twice, [#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the retransmission'
-    Edit-All $Readme 'sum to thirteen where the items are twelve' 'sum to fourteen where the items are twelve'
+    Edit-All $Readme 'sum to twelve where the items are eleven' 'sum to thirteen where the items are eleven'
 }
 Assert-Catches 'a number listed as closed that no closed row carries' 'R6' {
     Edit-All $Readme ' are closed' ', 999 are closed'
 }
 Assert-Catches 'a closed number listed twice, once in a range and once alone' 'R6' {
     # PR #63, round 3: the list still names every closed number and no other, so only the repeat is wrong.
-    Edit-All $Readme 'Numbers 1 to 20, 23' 'Numbers 1 to 20, 20, 23'
+    Edit-All $Readme 'Numbers 1 to 21, 23' 'Numbers 1 to 21, 21, 23'
 }
 Assert-Catches 'a second closed-numbers sentence after the first' 'R6' {
     # PR #63, round 5: the first sentence is the one read, and the second used to be ignored with everything after it.
@@ -212,7 +212,7 @@ Assert-Catches 'a second closed-numbers sentence after the first' 'R6' {
 # 4 - what the row may say without being misread: a date, a version and a mention between a group's count and its
 # parenthesis are not the count (the self-audit before round 4 - the last number before the parenthesis used to be).
 Assert-StillClean 'a date, a version and a mention between a count and its group are not the count' {
-    Edit-All $Readme 'seven in `tests/` and the build (' 'seven in `tests/` and the build, as of 2026-09-13 and 1.2.14 and #25 ('
+    Edit-All $Readme 'six in `tests/` and the build (' 'six in `tests/` and the build, as of 2026-09-13 and 1.2.14 and #25 ('
 }
 
 # 5 - and the control again, to prove every mutation was put back.
