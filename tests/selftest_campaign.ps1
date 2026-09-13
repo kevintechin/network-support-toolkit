@@ -838,6 +838,33 @@ $r39c = Invoke-Campaign 'markdownloaded' @('-Zip', $zipDownloaded39, '-Scenarios
 $summary39c = Get-Content -LiteralPath (Join-Path $r39c.State 'campaign_summary.md') -Raw -Encoding UTF8
 Assert-True '39. a mark whose stream records where the file came from is reported as downloaded, and the origin is quoted' (($summary39c -match '- Download mark: ZoneId=3, downloaded on this machine') -and ($summary39c -match 'HostUrl=https://example\.invalid/NetworkHealthCheck\.zip') -and ($summary39c -match 'ReferrerUrl=https://example\.invalid/releases')) (($summary39c -split "`n" | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
 Assert-True '39. none of the three invocations failed for the mark it was given' (($r39a.ExitCode -eq 0) -and ($r39b.ExitCode -eq 0) -and ($r39c.ExitCode -eq 0)) ('exit codes: ' + $r39a.ExitCode + ' / ' + $r39b.ExitCode + ' / ' + $r39c.ExitCode)
+# Round 3 of PR #65: M3 asks for this very download to be Unblocked, and the summary is written after that - so a
+# summary that only re-reads the file reports "no mark" for every campaign that got as far as M3, losing the one thing
+# this item asked it to record. The reading that saw the mark is kept in the state instead. The Unblock is made here by
+# removing the stream, which is what the tick in Explorer's Properties dialog does.
+Remove-Item -LiteralPath $zipApplied39 -Stream Zone.Identifier
+$r39d = Invoke-Campaign 'markapplied' @('-Resume', '-Scenarios', 'A3', '-SkipGui') "A3=done`r`n"
+$summary39d = Get-Content -LiteralPath (Join-Path $r39d.State 'campaign_summary.md') -Raw -Encoding UTF8
+Assert-True '39. the mark this campaign ran against survives that Unblock: the summary still names it, says who read it, and says what the file carries now' (($summary39d -match '- Download mark: ZoneId=3, applied deliberately') -and ($summary39d -match 'read by the summary at ') -and ($summary39d -match 'the file carries no Internet-zone mark \(no mark\) now')) ((($summary39d -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+$s39d = Read-State $r39d.State
+Assert-True '39. and the state keeps the reading that saw a mark, not the one that found none' (([string]$s39d.DownloadMark.Zone -eq 'ZoneId=3') -and ([string]$s39d.DownloadMark.Way -eq 'applied') -and ([string]$s39d.DownloadMark.By -eq 'the summary')) ('DownloadMark: ' + ($s39d.DownloadMark | ConvertTo-Json -Compress))
+# And the other half of that rule: a scenario's reading is the moment the warning was measured, so it replaces one the
+# summary made first. M2 is not selected in the first invocation, so it has a run of its own to make in the second.
+$zipTakeover39 = Join-Path $WorkDir ('NetworkHealthCheck-' + $version + '-takeover.zip')
+Copy-Item -LiteralPath $zip -Destination $zipTakeover39 -Force
+Set-Content -LiteralPath $zipTakeover39 -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
+$desk39 = Join-Path $WorkDir 'desk39'
+New-Item -ItemType Directory -Force -Path (Join-Path $desk39 'NHC-M2') | Out-Null
+Copy-Item -LiteralPath $top -Destination (Join-Path $desk39 'NHC-M2') -Recurse -Force
+Set-ExtractedLater (Join-Path $desk39 'NHC-M2')
+# Without -SkipGui, because the flag is kept in the state and every resume of this campaign would then drop M2 before
+# it could read anything - which is what the first attempt at this case measured instead of what it meant to.
+$r39e = Invoke-Campaign 'marktakeover' @('-Zip', $zipTakeover39, '-Scenarios', 'A3', '-WorkRoot', $desk39) "A3=done`r`n"
+$s39e = Read-State $r39e.State
+Assert-True '39. a campaign whose summary saw the mark first records it as the summary''s reading' ([string]$s39e.DownloadMark.By -eq 'the summary') ('DownloadMark: ' + ($s39e.DownloadMark | ConvertTo-Json -Compress))
+$r39f = Invoke-Campaign 'marktakeover' @('-Resume', '-Scenarios', 'M2') "M2=done`r`nM2/windows-showed=3`r`nM2/run-finished=done`r`n"
+$s39f = Read-State $r39e.State
+Assert-True '39. and M2, which measures the warning that mark produces, takes the record over when it runs' (([string]$s39f.DownloadMark.By -eq 'M2') -and ([string]$s39f.DownloadMark.Zone -eq 'ZoneId=3')) ('DownloadMark: ' + ($s39f.DownloadMark | ConvertTo-Json -Compress) + '; M2: ' + $s39f.Scenarios.M2.Result)
 
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {

@@ -310,6 +310,24 @@ function Get-MarkOrigin([string]$Path) {
     if ($origin.Count) { return @{ Zone = $zone; Origin = ($origin -join '; '); Way = 'downloaded'; Text = ($zone + ', downloaded on this machine - the stream records where from: ' + ($origin -join '; ')) } }
     return @{ Zone = $zone; Origin = ''; Way = 'applied'; Text = ($zone + ', applied deliberately - or downloaded by a browser that records no origin: the stream carries no HostUrl and no ReferrerUrl') }
 }
+function Update-DownloadMark([string]$By) {
+    # The mark as it is now, and the state's memory of the reading that saw one. M3 asks for this very download to be
+    # Unblocked, which removes the stream, and the summary is written after that - so a summary that only re-reads the
+    # file reports "no mark" for every campaign that got as far as M3, losing the one thing backlog #30 asked it to
+    # record (PR #65, round 3). The first reading that finds a mark is kept, with who read it and when; a later reading
+    # that finds none never overwrites it, and the summary shows both. A reading by a scenario replaces one the summary
+    # made, because the scenario's is the moment the warning was measured; nothing else replaces anything, so a mark
+    # seen once is the mark this campaign is on record as having run against.
+    $reading = Get-MarkOrigin $State.OriginalZip
+    if ($reading.Way -ne 'none') {
+        $kept = $State.DownloadMark
+        if ((-not $kept) -or (($By -ne 'the summary') -and ([string]$kept.By -eq 'the summary'))) {
+            $State.DownloadMark = [ordered]@{ Zone = $reading.Zone; Origin = $reading.Origin; Way = $reading.Way; Text = $reading.Text; By = $By; At = (& $Now) }
+            Save-State
+        }
+    }
+    return $reading
+}
 function Read-Json([string]$Path) { Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json }
 function Get-NewestJson([string]$Dir, [datetime]$After) {
     @(Get-ChildItem -LiteralPath $Dir -Filter '*.json' -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $After } | Sort-Object LastWriteTime -Descending | Select-Object -First 1)[0]
@@ -767,7 +785,7 @@ function Get-Plan {
            Precondition = { param($Ctx) Test-ExtractedPackage $M2Dir @('Start-English.cmd') $Ctx.Started }
            Action = { param($Ctx)
                $null = Read-Answer $Ctx.Id 'launched' @('Open the extracted folder and double-click Start-English.cmd. As soon as a Windows prompt appears - or the tool window, if nothing appeared - answer done: a screenshot is taken at that moment.', '打開解壓出來的資料夾，雙擊 Start-English.cmd。Windows 一跳出提示（或沒有提示、工具視窗出現時）就輸入 done：那一刻會截圖。') @('done') 'done'
-               $markOrigin = Get-MarkOrigin $State.OriginalZip   # the mark and, as far as the stream says, which way it got there (backlog #30)
+               $markOrigin = Update-DownloadMark $Ctx.Id   # the mark, which way the stream says it got there, and the state's memory of it (backlog #30)
                $mark = $markOrigin.Zone
                $shot = Join-Path $Ctx.Dir 'M2_after_double-click.png'
                Save-Screenshot $shot
@@ -1287,11 +1305,16 @@ function Write-CampaignSummary {
     $md += ''
     $md += ('- Machine: {0}; started {1} by {2}; this invocation {3} by {4}{5}' -f $State.Computer, $State.Created, $State.StartedBy, (& $Now), $env:USERNAME, $(if ($IsStandardUser) { ' (standard user)' } else { '' }))
     $md += ('- Asset: {0} (SHA256 {1}{2})' -f (Split-Path -Leaf $State.ZipCopy), $State.Digest, $(if ($State.ExpectedSha256) { ', matches the release notes' } else { ', not compared' }))
-    # What the download's Mark of the Web is, and how far its own stream accounts for it, read as this summary is
-    # written (backlog #30). M2 measures the warning that mark produces and skips without it, and an asset taken from a
-    # CI artifact arrives with none - so the record says which way the file on disk got there, instead of leaving a
-    # reader of a passing M2 to assume a browser put it there.
-    $md += ('- Download mark: {0} - {1}' -f (Get-MarkOrigin $State.OriginalZip).Text, $State.OriginalZip)
+    # What the download's Mark of the Web was, and how far its own stream accounted for it (backlog #30). M2 measures
+    # the warning that mark produces and skips without it, and an asset taken from a CI artifact arrives with none - so
+    # the record says which way the file on disk got there, instead of leaving a reader of a passing M2 to assume a
+    # browser put it there. The reading kept in the state is the one shown, because M3 asks for this download to be
+    # Unblocked and the summary is written after that; where the file no longer carries what was recorded, both are
+    # said and neither is explained away (PR #65, round 3).
+    $markKept = $State.DownloadMark
+    $markLine = $(if ($markKept) { '{0} (read by {1} at {2})' -f $markKept.Text, $markKept.By, $markKept.At } else { $script:MarkNow.Text })
+    if ($markKept -and ([string]$markKept.Text -ne [string]$script:MarkNow.Text)) { $markLine += ('; the file carries {0} now, which is what M3''s Unblock leaves behind' -f $script:MarkNow.Text) }
+    $md += ('- Download mark: {0} - {1}' -f $markLine, $State.OriginalZip)
     $md += ('- Real windows: {0}; state: {1}' -f $(if ($State.SkipGui) { 'none (-SkipGui)' } else { 'yes' }), $StateDir)
     $ed = $State.Edition
     if ($null -ne $ed) { $md += ('- Edition: {0} (EditionID {1}, {2}, build {3}); gpedit.msc: {4}; secpol.msc: {5}' -f $ed.Caption, $ed.EditionId, $ed.DisplayVersion, $ed.Build, $(if ($ed.HasGpedit) { 'yes' } else { 'no' }), $(if ($ed.HasSecpol) { 'yes' } else { 'no' })) }
@@ -1311,6 +1334,9 @@ function Write-CampaignSummary {
     return $md
 }
 $summaryPath = Join-Path $StateDir 'campaign_summary.md'
+# Read once for this invocation - the summary is written here and again if the bundle fails - and kept in the state if
+# it finds a mark, so that the Unblock M3 asks for cannot take the record of it away (backlog #30, PR #65 round 3).
+$script:MarkNow = Update-DownloadMark 'the summary'
 # The name carries the time to the millisecond and the process id, so that two invocations of the same campaign cannot
 # choose one path (backlog #25): a name good to the second collided whenever the second invocation started inside the
 # same second as the first - Compress-Archive refuses a destination that exists, which the record then keeps as a
