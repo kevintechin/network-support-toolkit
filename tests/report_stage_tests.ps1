@@ -231,6 +231,19 @@ Set-RunOptions -Overrides @{ PingTarget = @("10.0.0.1 10.0.0.2"); DnsName = @("a
 Assert-Equal 'E: whitespace-separated CLI values are split like the panel (round 6)' (@($script:RunOptions.ExtraTargets.Ping) -join ',') "10.0.0.1,10.0.0.2"
 Assert-Equal 'E: mixed separators for DNS' (@($script:RunOptions.ExtraTargets.Dns) -join ',') "a.corp,b.corp"
 Assert-Equal 'E: whitespace-separated TCP targets both accepted' (@($script:RunOptions.ExtraTargets.Tcp) -join ',') "h1:445,h2:445"
+# backlog #65: the interval of the reads inside the TCP window rides the file alone - no switch, no panel box - and the
+# run profile names it only where it is on, because 0 is a value and the profile lists what ran.
+Assert-Equal 'E: #65 the interval is projected, 2 as shipped' $o.IntervalSeconds 2
+$script:BaseConfig.Tests.RetransmissionIntervalSeconds = 7
+$oSeven = Set-RunOptions -Overrides @{ EntryPoint = "IT"; PingTarget = @("10.0.0.1") }
+Assert-Equal 'E: #65 and follows the file' $oSeven.IntervalSeconds 7
+$profileOn65 = Get-RunProfileText
+Assert-Equal 'E: #65 the run profile names it' ($profileOn65 -match '(?<![\d.])7(?![\d.])') True
+$script:BaseConfig.Tests.RetransmissionIntervalSeconds = 0
+$oOff65 = Set-RunOptions -Overrides @{ EntryPoint = "IT"; PingTarget = @("10.0.0.1") }
+Assert-Equal 'E: #65 zero is off' $oOff65.IntervalSeconds 0
+Assert-Equal 'E: #65 and the profile then says nothing about it - one part fewer' (@($profileOn65 -split ' \| ').Count - @((Get-RunProfileText) -split ' \| ').Count) 1
+$script:BaseConfig.Tests.RetransmissionIntervalSeconds = 2
 
 # --- Scenario F: IT-scoped failures never change the verdict or the counts (review round 1) ---
 Set-RunOptions -Overrides @{} | Out-Null
@@ -540,6 +553,19 @@ Assert-Equal 'L: blank and optional is the shipped, disabled state - no row' (@(
 $script:Results = New-Object System.Collections.ArrayList
 Test-ConfigurationSemantics
 Assert-Equal 'L: and no configuration finding' (@(@($script:Results) | Where-Object { $_.Tag -eq "config" -and $_.Status -ne "PASS" }).Count) 0
+# backlog #65: the interval of the reads inside the window is checked beside the other Tests numbers, except that 0 is a
+# value - off - and not a mistake; a negative value and a fraction fall back to the shipped 2 and are named.
+foreach ($bad65 in @(-1, 2.5)) {
+    $script:Results = New-Object System.Collections.ArrayList
+    $script:Config.Tests.RetransmissionIntervalSeconds = $bad65
+    Test-ConfigurationSemantics
+    Assert-Equal ("L: #65 an interval of {0} is a configuration finding naming the key" -f $bad65) (@(@($script:Results) | Where-Object { $_.Tag -eq "config" -and $_.Status -ne "PASS" -and (([string]$_.Details + [string]$_.Message) -match 'RetransmissionIntervalSeconds') }).Count) 1
+}
+$script:Results = New-Object System.Collections.ArrayList
+$script:Config.Tests.RetransmissionIntervalSeconds = 0
+Test-ConfigurationSemantics
+Assert-Equal 'L: #65 and 0 is off, not a finding' (@(@($script:Results) | Where-Object { $_.Tag -eq "config" -and $_.Status -ne "PASS" }).Count) 0
+$script:Config.Tests.RetransmissionIntervalSeconds = 2
 Set-RunOptions -Overrides @{} | Out-Null
 
 # --- Scenario M: backlog #52 - a TCP target that answers is connected to PingCount times, and the sample decides nothing ---

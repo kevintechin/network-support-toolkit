@@ -17,6 +17,7 @@
     "TcpTimeoutMs": 4000,
     "HttpTimeoutMs": 6000,
     "RetransmissionSampleSeconds": 8,
+    "RetransmissionIntervalSeconds": 2,
     "PingTargets": [
       {
         "Name": "預設閘道",

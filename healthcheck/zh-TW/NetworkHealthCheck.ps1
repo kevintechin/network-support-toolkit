@@ -43,7 +43,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：報告保存例外類型、訊息與內部例外；腳本位置與呼叫堆疊只寫入 JSON 報告（Diagnostics）。
 
-$script:ToolVersion = "1.2.13"
+$script:ToolVersion = "1.2.14"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -158,6 +158,7 @@ $script:DroppedTargets = New-Object System.Collections.ArrayList
 $script:RetransmissionRateComputed = $false
 $script:TcpConnectSampleCount = 0
 $script:PendingPingSamples = New-Object System.Collections.ArrayList
+$script:TcpIntervalSampling = $null
 $script:PanelWarned = $false
 $script:PanelHints = $null
 # 腳本層級變數與已繫結的參數同屬頂層作用域：這裡絕不能把參數同名變數重設為常值（v1.2.0 寫成 $false，IT 入口因此開成使用者版面；v1.2.1 修正）。
@@ -659,15 +660,20 @@ function Invoke-CheckStep {
     Set-UiProgress -Percent $Progress -Text $Name
     Write-UiLog -Status "INFO" -Text ("開始：$Name")
 
+    $result = $null
     try {
-        return (& $Action)
+        $result = (& $Action)
     }
     catch {
         $details = Get-ExceptionDetails $_
         $diagnostics = Get-ExceptionDiagnostics $_
         Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "此項目無法執行，已記錄錯誤。" -Details $details -Diagnostics $diagnostics -Tag "step-error" -Scope $Scope -Weightless:$Weightless | Out-Null
-        return $null
+        $result = $null
     }
+    # backlog #65：TCP 取樣窗內讀取的到期檢查在每個步驟之後都跑一次，不論步驟做了什麼，這樣讀取最多只晚一個步驟；
+    # 它絕不擲出例外，沒有開窗時什麼都不讀。
+    Invoke-TcpIntervalReadIfDue
+    return $result
 }
 
 # -----------------------------------------------------------------------------
@@ -693,6 +699,7 @@ function Get-DefaultConfig {
             TcpTimeoutMs                 = 4000
             HttpTimeoutMs                = 6000
             RetransmissionSampleSeconds  = 8
+            RetransmissionIntervalSeconds = 2
             PingTargets = @(
                 [pscustomobject][ordered]@{
                     Name     = "預設閘道"
@@ -1009,6 +1016,7 @@ function Set-RunOptions {
         # 設定檢查會提出警告，而這裡取兩者的較大值，所以使用者要求送出的次數一定會送出。
         PingCountMaximum = [math]::Max([math]::Max(1, (ConvertTo-IntSafe $config.Tests.PingCount 4)), (ConvertTo-IntSafe $config.Tests.PingCountMaximum 21))
         SampleSeconds  = [math]::Max(1, (ConvertTo-IntSafe $config.Tests.RetransmissionSampleSeconds 8))
+        IntervalSeconds = Get-TcpIntervalSeconds
         TracerouteHops = $hops
         ChecksEnabled  = [pscustomobject][ordered]@{
             WifiRf          = Test-IsTrueFlag $config.Checks.WifiRf
@@ -1040,6 +1048,9 @@ function Get-RunProfileText {
     $parts += ("Ping 次數 {0}" -f $options.PingCount)
     $parts += ("Ping 上限 {0}" -f $options.PingCountMaximum)
     $parts += ("取樣 {0} 秒" -f $options.SampleSeconds)
+    # backlog #65：只在窗內讀取開著時才寫，因為 0 是一個值，而執行設定檔寫的是有跑的東西。
+    $intervalSeconds = ConvertTo-IntSafe (Get-PropertyValue $options "IntervalSeconds" 0) 0
+    if ($intervalSeconds -gt 0) { $parts += ("窗內每 {0} 秒再讀一次" -f $intervalSeconds) }
     if ($options.ChecksEnabled.Traceroute) { $parts += ("traceroute {0} 跳" -f $options.TracerouteHops) }
     $disabled = @()
     foreach ($property in $options.ChecksEnabled.PSObject.Properties) {
@@ -1699,6 +1710,15 @@ function Test-ConfigurationSemantics {
         elseif ((ConvertTo-IntSafe $setting.Value 0) -le 0) {
             [void]$warnings.Add("$($setting.Name) 應大於 0；程式將套用內建最低值。")
         }
+    }
+
+    # backlog #65：取樣窗內讀取的間隔，0 是一個值（關閉），不是錯誤。
+    $intervalValue = Get-PropertyValue $tests "RetransmissionIntervalSeconds" $null
+    if ($null -ne $intervalValue -and -not (Test-IsWholeNumber $intervalValue)) {
+        [void]$warnings.Add(("RetransmissionIntervalSeconds 必須是整數秒數——0 代表關閉取樣窗內的讀取（目前值：{0}），將改用內建預設值。" -f $intervalValue))
+    }
+    elseif ($null -ne $intervalValue -and (ConvertTo-IntSafe $intervalValue 0) -lt 0) {
+        [void]$warnings.Add(("RetransmissionIntervalSeconds 必須是 0 以上（目前值：{0}），將改用內建預設值。" -f $intervalValue))
     }
 
     $checks = $script:Config.Checks
@@ -2399,6 +2419,7 @@ function Invoke-PingMeasurement {
                         Set-UiProgress -Percent $ProgressPercent -Text ("正在分散送出 {0} 剩下的 ping 取樣，還有 {1} 次" -f $Target, ($Count - $i))
                     }
                     if ($sliceMs -gt 0) { Start-Sleep -Milliseconds $sliceMs }
+                    Invoke-TcpIntervalReadIfDue
                     if ($script:GuiAvailable) {
                         [System.Windows.Forms.Application]::DoEvents()
                     }
@@ -5028,6 +5049,7 @@ function Format-TcpAttemptList {
     return ((@($Attempts) | ForEach-Object {
         if ([string]$_.Phase -eq "warm-up") { "{0} #{1}（窗前捨棄的讀取）" -f $_.Protocol, $_.Attempt }
         elseif ([string]$_.Phase -eq "extension") { "{0} #{1}（延長取樣窗時的那次讀取）" -f $_.Protocol, $_.Attempt }
+        elseif ([string]$_.Phase -eq "interval") { "{0} #{1}（取樣之間的讀取）" -f $_.Protocol, $_.Attempt }
         else { "{0} #{1}" -f $_.Protocol, $_.Attempt }
     }) -join ", ")
 }
@@ -5082,6 +5104,10 @@ function Compare-TcpCounters {
     # 任何事。逐份快照讀取，讓每個錯誤都配上它自己那份快照的嘗試紀錄；另一份快照若沒有為同一個通訊協定寫出自己的
     # 列，它的嘗試紀錄也一併附在這裡（PR #40 第 4 輪）。那正是它們原本會完全消失的情況：某個通訊協定的計數器在其中
     # 一份快照讀不到，就沒有讀數、也就沒有品質列，而品質列是唯一另一個會提到那些嘗試的地方。
+    # backlog #65：窗內的讀取，每次執行一個狀態物件（關閉或從未開窗時則沒有）；說明讀取在哪裡停止的那一行，這個分析
+    # 寫出的每一列都帶。
+    $intervalState = $script:TcpIntervalSampling
+    $intervalStopLines = @(Get-TcpIntervalStopLine -State $intervalState)
     foreach ($isEnding in @($false, $true)) {
         $snapshot = $Before
         $other = $After
@@ -5095,6 +5121,7 @@ function Compare-TcpCounters {
             if (@(@($other.Errors) | Where-Object { [string]$_.Protocol -eq $errorProtocol }).Count -eq 0) {
                 $errorDetails += @(Get-TcpReadFailureLines -Snapshot $other -Protocol $errorProtocol -Ending:(-not $isEnding))
             }
+            $errorDetails += $intervalStopLines
             Add-CheckResult -Category "TCP 重傳" -Check ("{0} 計數器" -f $errorItem.Protocol) -Status "ERROR" -Message "無法讀取 TCP 重傳計數器。" -Details ((@($errorDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Diagnostics $errorItem.Diagnostics -Tag "tcp-retransmissions" -Weightless | Out-Null
         }
     }
@@ -5142,6 +5169,12 @@ function Compare-TcpCounters {
         $windowAttempts += @(@(Get-PropertyValue $Before "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -gt $selfIndex })
         $closedByExtension = ($extendedProtocols -contains $protocol)
         $windowAttempts += @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $selfIndex -and (([string]$_.Phase -ne "extension") -or $closedByExtension) })
+        # backlog #65：窗內失敗的讀取落在兩個通訊協定的窗裡——它在兩個基準時間戳之後、兩個結束時間戳之前——只有延長
+        # 取樣窗期間的那些例外，它們只落在延長真的關閉的那些窗裡。
+        # PR #56 第 7 輪：下面定位區塊的「沒有讀數」那一句也由同一份清單決定——延長期間失敗的讀取，對延長沒有關閉的
+        # 通訊協定來說落在它的窗之外，它的區塊不能說讀取停在一個它們根本沒到過的窗裡。
+        $intervalInsideAttempts = @(@(Get-PropertyValue $intervalState "FailedAttempts" @()) | Where-Object { (-not [bool]$_.Extension) -or $closedByExtension })
+        $windowAttempts += $intervalInsideAttempts
         $windowNote = ""
         if (@($windowAttempts).Count -gt 0) {
             $windowNote = ("補充：這 {0} 秒當中有 {1} 秒花在取樣窗內失敗的計數器讀取（{2}）；設定的最短時間是 {3} 秒。" -f $sampleSeconds, (Get-TcpAttemptSeconds $windowAttempts), (Format-TcpAttemptList $windowAttempts), $configuredSeconds)
@@ -5151,9 +5184,13 @@ function Compare-TcpCounters {
         # 時，保留的是第一次的讀數，它的窗早就關了，所以那些秒數在窗外。backlog #38 的承諾是「每一次失敗的嘗試都
         # 連同它花掉的秒數保留下來」，所以改用一行寫清楚它們落在哪裡。
         $outsideAttempts = @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { [string]$_.Protocol -eq $protocol -and [string]$_.Phase -eq "extension" -and -not $closedByExtension })
+        # backlog #65：還有這個通訊協定自己在延長期間失敗的窗內讀取，理由相同。
+        $outsideAttempts += @(@(Get-PropertyValue $intervalState "FailedAttempts" @()) | Where-Object { [string]$_.Protocol -eq $protocol -and [bool]$_.Extension -and -not $closedByExtension })
         if (@($outsideAttempts).Count -gt 0) {
             $evidenceLines += ("本通訊協定在延長取樣窗時失敗的計數器讀取：{0}（合計 {1} 秒）。這個通訊協定的窗當時已經關閉，所以那些秒數不屬於上面的 {2} 秒。" -f (Format-TcpAttemptList $outsideAttempts), (Get-TcpAttemptSeconds $outsideAttempts), $sampleSeconds)
         }
+
+        $evidenceLines += $intervalStopLines
 
         if ($sentDeltaDouble -lt 0 -or $retransDeltaDouble -lt 0) {
             # 即使增量算不出來，窗仍然是事實，所以這一列會印出它跨越的時間長度與相應證據。不該印的是關於「上面的
@@ -5215,6 +5252,14 @@ function Compare-TcpCounters {
         }
         if ($windowNote -ne "") {
             $details += [Environment]::NewLine + "上面的增量仍然是這個通訊協定在所示窗內自己的計數。"
+        }
+
+        # backlog #65：窗內數到重傳時，說它們落在哪裡。這張表是這個通訊協定自己的、由它自己的時間戳算出，這幾行不做任何判定。
+        if ($null -ne $intervalState -and $intervalState.IntervalSeconds -gt 0 -and $retransDelta -gt 0) {
+            $intervalTable = @(Get-TcpIntervalTable -Protocol $protocol -Start $start -End $end -Reads @(Get-PropertyValue $intervalState "Reads" @()))
+            foreach ($line in @(Get-TcpDistributionLines -Protocol $protocol -Intervals $intervalTable -RetransDelta $retransDelta -SampleSeconds (New-TimeSpan -Start $start.Timestamp -End $end.Timestamp).TotalSeconds -State $intervalState -FailedInside $intervalInsideAttempts)) {
+                $details += [Environment]::NewLine + $line
+            }
         }
 
         if ($sentDelta -eq 0 -and $retransDelta -eq 0) {
@@ -5346,6 +5391,246 @@ function Merge-TcpEndingSnapshot {
         Extended       = $true
         ExtendedProtocols = @(@($Extended.Counters.Keys) | ForEach-Object { [string]$_ })
     }
+}
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 取樣窗內的讀取（backlog #65；v1.2.14）。窗頭窗尾各讀一次計數器，每個通訊協定只得到一對數字，而整個窗的總量分不出
+# 「窗裡某十秒內重傳了 50 次」與「50 次平均散布在整個窗」——那正是 1.2.10 移除獨立次數觸發條件（已結案的 #63）之前
+# 它會反應的突發。所以計數器在窗內再讀幾次，至少相隔 Tests.RetransmissionIntervalSeconds 秒（出廠 2 秒，0 代表關閉），
+# 有量測結果的列在整個窗的數字旁邊，把重傳放到時間軸上。讓它站得住的規則：讀取只在主執行緒進行——每個步驟之後
+# 檢查一次到期、等待期間每秒檢查一次——所以各段都有時間戳、長短不一，間隔是最小值而不是週期；窗內的讀取不是量測
+# 本身，每個類別只嘗試一次、絕不第二次；第一次失敗的讀取就結束這次執行的窗內取樣，所以讀取會逾時的機器只付一次
+# 逾時、不是每段付一次；失敗的讀取連同秒數保留並在列上點名，但不自成一列；一段的樣本太小撐不起比例，所以不算比例、
+# 沒有門檻讀它、這裡沒有任何東西會改變狀態。建置前先量過（參考機器，2026-09-13）：兩個類別讀一次，中位數 102 ms、
+# 第 95 百分位 140 ms，所以八秒窗內讀三次約三分之一秒，而且大多落在執行本來就要睡掉的等待裡。
+# ---------------------------------------------------------------------------------------------------------------------
+function Get-TcpIntervalSeconds {
+    # Tests.RetransmissionIntervalSeconds 的唯一規則：整數秒，出廠 2，0 代表窗內不讀；其他值——小數、負數、文字——
+    # 都退回出廠的 2，Test-ConfigurationSemantics 會這樣報告它。
+    $value = Get-PropertyValue $script:Config.Tests "RetransmissionIntervalSeconds" 2
+    if ($null -eq $value -or -not (Test-IsWholeNumber $value)) { return 2 }
+    $seconds = ConvertTo-IntSafe $value 2
+    if ($seconds -lt 0) { return 2 }
+    return $seconds
+}
+
+function Start-TcpIntervalSampling {
+    param(
+        [int]$IntervalSeconds,
+        [datetime]$Since,
+        [switch]$Extension,
+        [object]$Boundary,
+        [object]$Deadline
+    )
+
+    # 打開窗內讀取：從基準時間戳開始，延長取樣窗（backlog #51）時再從延長的起點開始。被失敗讀取停掉的取樣在延長期間
+    # 也維持停止——規則是每次執行只付一次逾時——間隔為 0 則什麼都不開。狀態是每次執行一個物件，隨結果一起清除。
+    if ($null -eq $script:TcpIntervalSampling) {
+        $script:TcpIntervalSampling = [pscustomobject][ordered]@{
+            Active          = $false
+            IntervalSeconds = [math]::Max(0, $IntervalSeconds)
+            LastRead        = $Since
+            Extension       = $false
+            Reads           = New-Object System.Collections.ArrayList
+            FailedAttempts  = New-Object System.Collections.ArrayList
+            StoppedAt       = $null
+            StopReason      = ""
+            Deadline        = $null
+        }
+    }
+    $state = $script:TcpIntervalSampling
+    $state.Extension = [bool]$Extension
+    $state.LastRead = $Since
+    # PR #56 第 5 輪：窗的期限——開窗的時間戳加上設定的最短時間——隨狀態一起帶著，期限一過，不論哪條路來問，到期檢查
+    # 都不再讀。第 2、3 輪各關掉一條路（等待的最後一次睡眠、等待之後的步驟）；分散 ping 探測的停頓和超過最短時間的
+    # 步驟是第三條，把規則放在一個地方才不會有第四條。
+    if ($Deadline -is [datetime]) { $state.Deadline = $Deadline }
+    # PR #56 第 2 輪：延長取樣窗時，關閉第一個窗的那次讀數是表裡的一個點，這樣第一個窗與延長段的各段才分得開；它不花任何
+    # 成本——那是量測自己的讀取——而且不論取樣是否還開著都保留。
+    if ($null -ne $Boundary -and $null -ne $Boundary.Counters) {
+        [void]$state.Reads.Add([pscustomobject][ordered]@{ Timestamp = $Boundary.Timestamp; Counters = $Boundary.Counters; FailedAttempts = @(); Extension = $false; Boundary = $true })
+    }
+    if ($state.IntervalSeconds -le 0 -or $null -ne $state.StoppedAt) {
+        $state.Active = $false
+        return
+    }
+    $state.Active = $true
+}
+
+function Stop-TcpIntervalSampling {
+    # 在讀取結束值之前關閉，這樣就不會有任何這類讀取落在關窗的時間戳之後；狀態本身留著，因為各列要靠它寫出來。
+    if ($null -ne $script:TcpIntervalSampling) { $script:TcpIntervalSampling.Active = $false }
+}
+
+function Read-TcpIntervalCounters {
+    # 兩個類別各讀一次、各只嘗試「一次」：第二次嘗試是為了保住量測（backlog #38），而這次讀取不是量測。回傳的形狀
+    # 和快照的讀數相同，所以各段可以用同樣的欄位算出來；失敗的部分連同秒數記下，就像每一次失敗的讀取一樣。
+    $counters = @{}
+    $failed = New-Object System.Collections.ArrayList
+    foreach ($protocol in @("TCPv4", "TCPv6")) {
+        $className = "Win32_PerfRawData_Tcpip_$protocol"
+        $readAttempts = New-Object System.Collections.ArrayList
+        try {
+            $counter = Get-CimOrWmiInstance -ClassName $className -FailedAttempts $readAttempts -RequireProperty @("SegmentsSentPersec", "SegmentsRetransmittedPersec")
+            $counters[$protocol] = [pscustomobject][ordered]@{
+                Protocol      = $protocol
+                Timestamp     = Get-Date
+                SegmentsSent  = ConvertTo-UInt64Safe $counter.SegmentsSentPersec
+                Retransmitted = ConvertTo-UInt64Safe $counter.SegmentsRetransmittedPersec
+            }
+        }
+        catch {
+            # 該次嘗試已經在 $readAttempts 裡：窗內讀取失敗是列上的一個事實，不是這次執行的錯誤。
+        }
+        foreach ($item in $readAttempts) {
+            [void]$failed.Add([pscustomobject][ordered]@{
+                Protocol = $protocol
+                Phase    = "interval"
+                Attempt  = $item.Attempt
+                Seconds  = $item.Seconds
+                Error    = $item.Error
+            })
+        }
+        # PR #56 第 1 輪：這一輪讀取在第一個失敗的類別就停下。逾時之後再讀下一個類別，等於在剛拒絕過的提供者身上再花八秒——
+        # 上限是每次執行一次逾時，不是每個類別一次——沒讀到的那個類別，這次讀取本來會關閉的那一段就併入相鄰的一段。
+        if (@($readAttempts).Count -gt 0) { break }
+    }
+    return [pscustomobject][ordered]@{
+        Timestamp      = Get-Date
+        Counters       = $counters
+        FailedAttempts = @($failed)
+    }
+}
+
+function Invoke-TcpIntervalReadIfDue {
+    # 到期檢查，每個步驟之後與等待期間每秒各呼叫一次。只有上一次讀取距今至少一個設定間隔時才讀，所以較長的步驟
+    # 只是產生較長的一段——各段都有時間戳，列上會印出每段的長度。它絕不擲出例外：任何失敗都當成一次失敗的讀取，
+    # 記錄下來並結束取樣，因為每個步驟之後都會跑的檢查絕不能讓步驟失敗。
+    $state = $script:TcpIntervalSampling
+    if ($null -eq $state -or -not $state.Active) { return }
+    # PR #56 第 5 輪：窗的期限一過，不論從哪條路來都不再讀——那次讀取會落在最短時間之後，把整個成本疊到執行上——取樣也就在
+    # 這裡徹底關閉。
+    if ($null -ne $state.Deadline -and (Get-Date) -ge $state.Deadline) { $state.Active = $false; return }
+    if (((Get-Date) - $state.LastRead).TotalSeconds -lt $state.IntervalSeconds) { return }
+    $reading = $null
+    try {
+        $reading = Read-TcpIntervalCounters
+    }
+    catch {
+        $reading = [pscustomobject][ordered]@{
+            Timestamp      = Get-Date
+            Counters       = @{}
+            FailedAttempts = @([pscustomobject][ordered]@{ Protocol = "TCP"; Phase = "interval"; Attempt = 1; Seconds = 0; Error = (Get-ExceptionDetails $_) })
+        }
+    }
+    $reading | Add-Member -NotePropertyName "Extension" -NotePropertyValue ([bool]$state.Extension) -Force
+    [void]$state.Reads.Add($reading)
+    foreach ($item in @($reading.FailedAttempts)) {
+        [void]$state.FailedAttempts.Add([pscustomobject][ordered]@{
+            Protocol  = $item.Protocol
+            Phase     = $item.Phase
+            Attempt   = $item.Attempt
+            Seconds   = $item.Seconds
+            Error     = $item.Error
+            Extension = [bool]$state.Extension
+        })
+    }
+    $state.LastRead = $reading.Timestamp
+    if (@($reading.FailedAttempts).Count -gt 0) {
+        $state.Active = $false
+        $state.StoppedAt = $reading.Timestamp
+        $state.StopReason = ((@($reading.FailedAttempts) | ForEach-Object { [string]$_.Protocol }) -join ", ")
+    }
+}
+
+function Get-TcpIntervalTable {
+    param(
+        [string]$Protocol,
+        [object]$Start,
+        [object]$End,
+        [object[]]$Reads
+    )
+
+    # 一個通訊協定的窗切成的各段：它的基準讀數、窗內每一次它的讀數、它的結束讀數——依時間戳排序，所以落在這個通訊
+    # 協定結束時間戳之後的讀數（只延長了另一個通訊協定的窗時）光靠時間戳就被排除。每段帶自己的秒數與增量；空表代表
+    # 窗內有讀數倒退，列上會這麼說。
+    if ($null -eq $Start -or $null -eq $End) { return @() }
+    $points = @($Start)
+    $points += @(@($Reads) | Where-Object { $null -ne $_ -and $null -ne $_.Counters -and $_.Counters.ContainsKey($Protocol) } | ForEach-Object { $_.Counters[$Protocol] } | Where-Object { $_.Timestamp -gt $Start.Timestamp -and $_.Timestamp -lt $End.Timestamp } | Sort-Object -Property Timestamp)
+    $points += $End
+    $table = @()
+    for ($i = 1; $i -lt $points.Count; $i++) {
+        $from = $points[$i - 1]
+        $to = $points[$i]
+        $sent = [double]$to.SegmentsSent - [double]$from.SegmentsSent
+        $retrans = [double]$to.Retransmitted - [double]$from.Retransmitted
+        if ($sent -lt 0 -or $retrans -lt 0) { return @() }
+        $table += [pscustomobject][ordered]@{
+            Index         = $i
+            FromSeconds   = [math]::Round(($from.Timestamp - $Start.Timestamp).TotalSeconds, 1)
+            ToSeconds     = [math]::Round(($to.Timestamp - $Start.Timestamp).TotalSeconds, 1)
+            Seconds       = ($to.Timestamp - $from.Timestamp).TotalSeconds
+            Sent          = [uint64]$sent
+            Retransmitted = [uint64]$retrans
+        }
+    }
+    return @($table)
+}
+
+function Get-TcpDistributionLines {
+    param(
+        [string]$Protocol,
+        [object[]]$Intervals,
+        [uint64]$RetransDelta,
+        [double]$SampleSeconds,
+        [object]$State,
+        [object[]]$FailedInside
+    )
+
+    # 有量測結果的列對「重傳落在哪裡」要說的話——只在有重傳時才說：沒有重傳的窗沒有東西可放，一列只解釋發生過的事
+    # （backlog #40）。重傳最多的一段會並列寫出它佔全部重傳的比例與佔整個窗秒數的比例，讓讀者自己看出突發——大部分
+    # 的重傳集中在一小段時間裡——而工具不替它下這個字：沒有形容詞、沒有門檻、也不替任何一段算比例，因為安靜的機器
+    # 上兩秒的一段正是已結案的 #51 所說的小樣本。
+    $lines = @()
+    if ($null -eq $State -or $State.IntervalSeconds -le 0 -or $RetransDelta -eq 0) { return $lines }
+    $table = @($Intervals)
+    if ($table.Count -eq 0) {
+        $lines += "窗內有一次計數器讀數倒退了，所以無法把重傳放到時間軸上。"
+        return $lines
+    }
+    if ($table.Count -lt 2) {
+        # PR #56 第 4 輪：窗內沒有讀數的窗要說出原因，而「沒有一次到期」只是原因之一——讀取可能在這個窗還沒有窗內讀數之前，
+        # 就停在一次失敗的讀取上，而那次讀取連同秒數已經在列上點名；旁邊再寫一句「沒有一次到期」就自相矛盾了。
+        # 第 7 輪：落在「這個」通訊協定的窗內的失敗讀取——呼叫端知道，狀態物件不知道。
+        if (@($FailedInside).Count -gt 0) {
+            $lines += "窗內的讀取在這個窗還沒有任何窗內讀數之前，就停在一次失敗的讀取上——那次讀取和它的秒數在上面點名了——所以無法把重傳放到時間軸上。"
+        }
+        else {
+            $lines += ("這個窗的兩次取樣之間沒有任何一次計數器讀取落在窗內，所以無法把重傳放到時間軸上：這些讀取安排在各項檢查之間與等待期間，至少每 {0} 秒一次，而窗關閉前沒有一次到期。" -f $State.IntervalSeconds)
+        }
+        return $lines
+    }
+    $lines += ("重傳落在窗內的哪一段（計數器在窗內至少每 {0} 秒再讀一次：{1} 次讀數、{2} 段）：" -f $State.IntervalSeconds, ($table.Count + 1), $table.Count)
+    foreach ($interval in $table) {
+        $lines += ("  {0}-{1} 秒：傳送 {2}，重傳 {3}" -f $interval.FromSeconds, $interval.ToSeconds, $interval.Sent, $interval.Retransmitted)
+    }
+    # 重傳最多者優先；相同時取較短的一段，再相同取較早的一段。
+    $worst = @($table | Sort-Object -Property @{ Expression = "Retransmitted"; Descending = $true }, @{ Expression = "Seconds"; Descending = $false }, @{ Expression = "Index"; Descending = $false })[0]
+    $share = [math]::Round(100.0 * [double]$worst.Retransmitted / [double]$RetransDelta)
+    $timeShare = 0
+    if ($SampleSeconds -gt 0) { $timeShare = [math]::Round(100.0 * $worst.Seconds / $SampleSeconds) }
+    $lines += ("重傳最多的一段：{1} 次當中的 {0} 次（{2}%）落在 {3} 秒內，佔整個窗的 {4}%。" -f $worst.Retransmitted, $RetransDelta, $share, [math]::Round($worst.Seconds, 1), $timeShare)
+    $lines += "這幾行只把重傳放到時間軸上，別無他意：一段的樣本太小，撐不起一個比例，所以不算；重送的 segment 不等於遺失的 segment；這裡沒有任何數字會改變這一列的狀態。"
+    return $lines
+}
+
+function Get-TcpIntervalStopLine {
+    param([object]$State)
+
+    # 取樣停止時，這個分析寫出的每一列都帶這一行，因為失敗的讀取不論落在哪裡都要保留並點名（backlog #38），而失敗
+    # 之前的讀取仍然成立。
+    if ($null -eq $State -or $null -eq $State.StoppedAt) { return @() }
+    return @(("窗內的讀取在 {0} 停止：{1} 的一次讀取失敗（{2} 秒）；之前的各段照樣成立，最後一段一直算到結束取樣。" -f $State.StoppedAt.ToString("HH:mm:ss"), $State.StopReason, (Get-TcpAttemptSeconds @($State.FailedAttempts))))
 }
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -5856,15 +6141,21 @@ function Wait-ForMinimumTcpSample {
         [int]$ProgressPercent = 87
     )
 
-    $elapsed = ((Get-Date) - $StartTime).TotalSeconds
-    $remaining = [math]::Ceiling($MinimumSeconds - $elapsed)
-    if ($remaining -le 0) {
-        return
-    }
-
-    for ($i = $remaining; $i -gt 0; $i--) {
-        Set-UiProgress -Percent $ProgressPercent -Text ("TCP 重傳取樣中，尚餘約 $i 秒")
-        Start-Sleep -Seconds 1
+    # 自 1.2.14 起以時鐘為準（backlog #65）：不論等待期間跑了什麼，等待都在最短時間結束，所以等待期間讀一次計數器用掉
+    # 的是本來就要睡掉的時間，什麼都不會拉長。在此之前秒數在等待開始時就定死了，等待期間做的任何事都會把窗推過最短時間。
+    while ($true) {
+        $elapsed = ((Get-Date) - $StartTime).TotalSeconds
+        $remainingMs = [int][math]::Ceiling(($MinimumSeconds - $elapsed) * 1000.0)
+        if ($remainingMs -le 0) {
+            return
+        }
+        $remainingSeconds = [int][math]::Ceiling($remainingMs / 1000.0)
+        Set-UiProgress -Percent $ProgressPercent -Text ("TCP 重傳取樣中，尚餘約 $remainingSeconds 秒")
+        Start-Sleep -Milliseconds ([math]::Min(1000, $remainingMs))
+        # PR #56 第 2 輪：在最後一次睡眠時到期的讀取會在最短時間過後才跑，把整個成本疊到執行上；所以先再檢查一次
+        # 期限，接著的結束讀取就會關窗。
+        if (((Get-Date) - $StartTime).TotalSeconds -ge $MinimumSeconds) { return }
+        Invoke-TcpIntervalReadIfDue
         if ($script:GuiAvailable) {
             [System.Windows.Forms.Application]::DoEvents()
         }
@@ -6550,6 +6841,8 @@ function Run-AllChecks {
     # And the access-point samples (backlog #61's other half): a run compares the samples it took itself.
     $script:WifiAssociationSamples = New-Object System.Collections.ArrayList
     $script:GatewayNeighborRows = New-Object System.Collections.ArrayList
+    # 還有 TCP 取樣窗內的讀取（backlog #65）：狀態是這一次執行的，絕不是之後某次執行的。
+    $script:TcpIntervalSampling = $null
     $script:LastHtmlReport = $null
     $script:LastTextReport = $null
     $script:LastJsonReport = $null
@@ -6647,7 +6940,10 @@ function Run-AllChecks {
         # 讀取寫出一列，說的是同一件事，但證據都在。
         return (Get-TcpCounterSnapshot -WarmUp)
     }
+    $minimumSampleSeconds = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.RetransmissionSampleSeconds 8))
     $tcpSampleStart = Get-Date
+    # 窗內讀取從基準時間戳打開，在讀取結束值之前關閉（backlog #65）。
+    Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since $tcpSampleStart -Deadline $tcpSampleStart.AddSeconds($minimumSampleSeconds)
 
     $adapterStatsBefore = Invoke-CheckStep -Category "網卡錯誤計數" -Name "取得網卡錯誤基準值" -Progress 13 -Weightless -Action {
         return (Get-AdapterStatisticsSnapshot)
@@ -6694,7 +6990,6 @@ function Run-AllChecks {
         Add-DriverInfoResult -Adapters $networkSnapshot
     } | Out-Null
 
-    $minimumSampleSeconds = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.RetransmissionSampleSeconds 8))
     # 位置就是重點（backlog #51）：擱下的 ping 取樣在這裡送完，也就是在重傳視窗把剩餘秒數睡掉之前，因此那些
     # 探測分散用掉的是本來就要花的等待時間。放在別處都會讓一次執行變長。
     # 有東西擱著才走這一步：Invoke-CheckStep 每次都會寫一行「開始：…」並推進進度列，而大多數的執行根本
@@ -6705,6 +7000,9 @@ function Run-AllChecks {
         } | Out-Null
     }
     Wait-ForMinimumTcpSample -StartTime $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
+    # PR #56 第 3 輪：窗內讀取在等待的期限就關閉。等待與結束讀取之間還有兩個步驟——網卡計數器的結束值和它們的分析——
+    # 等待之後才到期的讀取會在那兩步之後、最短時間過後才跑，把整個成本疊到執行上；接著的結束讀取就會關窗。
+    Stop-TcpIntervalSampling
 
     $adapterStatsAfter = Invoke-CheckStep -Category "網卡錯誤計數" -Name "取得網卡錯誤結束值" -Progress 82 -Weightless -Action {
         return (Get-AdapterStatisticsSnapshot)
@@ -6720,6 +7018,7 @@ function Run-AllChecks {
     } | Out-Null
 
     $tcpAfter = Invoke-CheckStep -Category "TCP 重傳" -Name "取得 TCP 重傳結束值" -Progress 89 -Weightless -Action {
+        Stop-TcpIntervalSampling
         return (Get-TcpCounterSnapshot)
     }
 
@@ -6728,7 +7027,9 @@ function Run-AllChecks {
     # 做的，所以第二次讀取失敗絕不會弄丟第一次已經讀到的結果。
     if (Test-TcpSampleNeedsExtension -Before $tcpBaseline -After $tcpAfter) {
         $tcpExtended = Invoke-CheckStep -Category "TCP 重傳" -Name "樣本太小無法評分時延長 TCP 取樣窗" -Progress 90 -Weightless -Action {
+            Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since (Get-Date) -Extension -Boundary $tcpAfter -Deadline (Get-Date).AddSeconds($minimumSampleSeconds)
             Wait-ForMinimumTcpSample -StartTime (Get-Date) -MinimumSeconds $minimumSampleSeconds -ProgressPercent 90
+            Stop-TcpIntervalSampling
             return (Merge-TcpEndingSnapshot -Original $tcpAfter -Extended (Get-TcpCounterSnapshot))
         }
         if ($null -ne $tcpExtended) { $tcpAfter = $tcpExtended }

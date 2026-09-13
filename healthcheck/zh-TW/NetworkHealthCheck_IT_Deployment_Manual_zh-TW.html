@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>網路健檢工具 1.2.13 — IT 部署手冊</title>
+<title>網路健檢工具 1.2.14 — IT 部署手冊</title>
 <style>
   :root{
     --ink:#16233b; --muted:#5b6b85; --line:#d8e0ec; --bg:#f4f7fb; --card:#ffffff;
@@ -96,7 +96,7 @@
 <div class="page">
 
 <header>
-  <h1>網路健檢工具 <span class="ver">1.2.13</span></h1>
+  <h1>網路健檢工具 <span class="ver">1.2.14</span></h1>
   <div class="tag">IT 部署手冊 — 寫給把工具發出去的 IT 部門</div>
   <div class="meta">繁體中文套件（<code>zh-TW</code> 資料夾）· <code>en-US</code> 資料夾是英文套件，附英文版手冊與它自己的設定檔 · 執行檢測的人看旁邊的使用手冊；設計與判定規則在技術文件</div>
   <div class="principle">
@@ -248,17 +248,18 @@
       <tr><td><code>TcpTimeoutMs</code></td><td>4000</td><td>500</td><td>每個連線——有回應的目標會被連線 <code>PingCount</code> 次，一次接一次，在第一次失敗處停止（backlog #52），所以有回應的目標多花的是 <code>PingCount</code> − 1 次交握的時間——在參考機上是幾毫秒——途中停止回應的目標最多多花一次逾時；從未回應的目標仍只花一次</td></tr>
       <tr><td><code>HttpTimeoutMs</code></td><td>6000</td><td>500</td><td>每個請求，連線與讀取皆同</td></tr>
       <tr><td><code>RetransmissionSampleSeconds</code></td><td>8</td><td>1</td><td>TCP 計數器在開始時取樣一次，過了這麼多秒再取樣一次，所以這是執行時間的下限；各項測試在這段時間內進行，目標不回應時，它們的逾時會再疊上去；無線重傳計數器（第 3.4 節）在同一個視窗內取樣</td></tr>
+      <tr><td><code>RetransmissionIntervalSeconds</code></td><td>2</td><td>0</td><td>計數器在取樣窗內至少每隔這麼多秒再讀一次——由執行自己的執行緒在各步驟之間與等待期間進行——讓數到重傳的那一列能說出重傳落在窗內的哪一段：各段，以及重傳最多的一段和它佔次數與佔時間的比例（1.2.14、backlog #65）；0 代表關閉這些讀取。參考機器上每次讀取約 0.1 秒，大多落在執行本來就要睡掉的等待裡；窗內某次讀取用完八秒時限，這次執行就不再讀，所以最壞情況是每次執行一次逾時，列上會點名。這些數字只把重傳放到時間軸上，不做任何判定。不在 IT 面板、也沒有開關：站點屬性，在這個檔案設一次就好</td></tr>
     </table>
     <div class="flag"><b>不允許連外的環境。</b> 移除公網的 Ping、TCP、HTTP 目標，把 <code>www.microsoft.com</code> 的名稱查詢換成你的解析器查得到的內部名稱（出廠的 <code>DnsNames</code> 項目是必要的，解析不出來就會讓這次執行失敗），把 <code>Internet</code> 群組換成你的內部服務，或者把 <code>Internet</code> 從 <code>RequiredConnectivityGroups</code> 移除（否則群組列會因為沒有成員而變成「無法檢查」），並把 <code>Checks.Traceroute</code> 設為 <code>false</code>：traceroute 會探測往第一個不是佔位符的 Ping 目標，一個都沒有時，仍然會探測往 <code>1.1.1.1</code>。</div>
 
     <h3>3.4 · 可選檢查（<code>Checks</code>）</h3>
-    <p>IT 診斷資料（報告最下方收合區裡 IT 範圍的列，永遠不計入整體結果）每一項都可以關掉，在這裡關，或在 IT 面板裡只關一次。那裡的「資訊」列記的是收集到的內容，或者說明沒有東西可收集、來源在這台電腦上不存在（沒有已連線的無線介面或沒有 <code>netsh.exe</code>、沒有 <code>Get-NetRoute</code>、沒有預設路由或閘道、沒有已連線的實體網卡）；「無法檢查」列表示讀取來源時發生錯誤（無線資料、路由表、鄰居表或 traceroute）。自 1.2.13 起，<code>WifiRf</code> 也管三次存取點取樣和它們產生的「Wi-Fi 存取點」列，<code>GatewayNeighbor</code> 那一列則把閘道的位址和存取點的比較（見這兩列）。下面的 <code>WifiRetryCounters</code> 是例外：它切換的是主報告裡的一項量測，不是 IT 診斷資料——見它那一列。</p>
+    <p>IT 診斷資料（報告最下方收合區裡 IT 範圍的列，永遠不計入整體結果）每一項都可以關掉，在這裡關，或在 IT 面板裡只關一次。那裡的「資訊」列記的是收集到的內容，或者說明沒有東西可收集、來源在這台電腦上不存在（沒有已連線的無線介面或沒有 <code>netsh.exe</code>、沒有 <code>Get-NetRoute</code>、沒有預設路由或閘道、沒有已連線的實體網卡）；「無法檢查」列表示讀取來源時發生錯誤（無線資料、路由表、鄰居表或 traceroute）。自 1.2.14 起，<code>WifiRf</code> 也管三次存取點取樣和它們產生的「Wi-Fi 存取點」列，<code>GatewayNeighbor</code> 那一列則把閘道的位址和存取點的比較（見這兩列）。下面的 <code>WifiRetryCounters</code> 是例外：它切換的是主報告裡的一項量測，不是 IT 診斷資料——見它那一列。</p>
     <table>
       <tr><th>鍵</th><th>預設</th><th>收集什麼</th></tr>
-      <tr><td><code>WifiRf</code></td><td><code>true</code></td><td>無線介面的 SSID、BSSID、頻段、頻道、速率與訊號，從 <code>netsh wlan show interfaces</code> 解析；自 1.2.13 起同一個命令也在第一項量測之前和最後一項之後各讀一次，讓「Wi-Fi 存取點」列——IT 範圍，netsh 列出的每張無線介面各一列「資訊」列——能說每張介面在執行期間是否一直連著同一個存取點：同一個 SSID 下漫遊、換到另一個網路、或沒有回報 BSSID，絕不寫成已斷線。沒有列出任何介面的機器得到一列說明，每次讀取都失敗得到一列「無法檢查」；兩個樣本之間換出去又回來的漫遊看不見，那一列會這麼說。介面清單與連線狀態來自 WLAN 服務（backlog #62），走和 <code>WifiRetryCounters</code> 相同的記憶體內 P/Invoke 讀取器——每個程序只編譯一次、約 0.7 秒，由兩者中先執行的那個支付——而 <code>netsh wlan show interfaces</code> 因桌面應用程式不被允許存取位置而一個介面都不印時（Windows 11 24H2 及之後；設定 > 隱私權與安全性 > 位置），這一列仍回報已連線的介面，網路名稱、存取點、訊號與速率標為未回報，並在權限存放區顯示拒絕時指出那個設定（沒有這個見證的存取被拒只寫成存取被拒、原因未能確認）；在這些欄位重要的機器上，請允許桌面應用程式存取位置。在這裡關掉或用 <code>-NoWifi</code>：沒有無線訊號列、不取樣、也沒有存取點列</td></tr>
+      <tr><td><code>WifiRf</code></td><td><code>true</code></td><td>無線介面的 SSID、BSSID、頻段、頻道、速率與訊號，從 <code>netsh wlan show interfaces</code> 解析；自 1.2.14 起同一個命令也在第一項量測之前和最後一項之後各讀一次，讓「Wi-Fi 存取點」列——IT 範圍，netsh 列出的每張無線介面各一列「資訊」列——能說每張介面在執行期間是否一直連著同一個存取點：同一個 SSID 下漫遊、換到另一個網路、或沒有回報 BSSID，絕不寫成已斷線。沒有列出任何介面的機器得到一列說明，每次讀取都失敗得到一列「無法檢查」；兩個樣本之間換出去又回來的漫遊看不見，那一列會這麼說。介面清單與連線狀態來自 WLAN 服務（backlog #62），走和 <code>WifiRetryCounters</code> 相同的記憶體內 P/Invoke 讀取器——每個程序只編譯一次、約 0.7 秒，由兩者中先執行的那個支付——而 <code>netsh wlan show interfaces</code> 因桌面應用程式不被允許存取位置而一個介面都不印時（Windows 11 24H2 及之後；設定 > 隱私權與安全性 > 位置），這一列仍回報已連線的介面，網路名稱、存取點、訊號與速率標為未回報，並在權限存放區顯示拒絕時指出那個設定（沒有這個見證的存取被拒只寫成存取被拒、原因未能確認）；在這些欄位重要的機器上，請允許桌面應用程式存取位置。在這裡關掉或用 <code>-NoWifi</code>：沒有無線訊號列、不取樣、也沒有存取點列</td></tr>
       <tr><td><code>WifiRetryCounters</code></td><td><code>true</code></td><td>不是 IT 診斷資料：無線網卡在這次執行期間的 802.11 重傳計數器，由執行時在記憶體內編譯的幾行 P/Invoke（每個程序一次約 0.7 秒，不寫任何東西到磁碟）透過 Native Wifi API 讀取，以一列不決定任何結果的「資訊」列寫進主報告——重送的框除以嘗試送出的框，並列出到達重傳上限後放棄的框，這台機器的每個無線介面各一列。讀取器無法編譯或載入、WLAN 服務沒有回應或沒有無線介面時，一列不計權重的列會說明，執行期間出現或消失的介面則各自得到一列不計權重的「無法檢查」列。沒有面板核取方塊、沒有參數：只能在這裡切換</td></tr>
       <tr><td><code>RouteTable</code></td><td><code>true</code></td><td>IPv4 預設路由，依 Windows 使用的順序</td></tr>
-      <tr><td><code>GatewayNeighbor</code></td><td><code>true</code></td><td>鄰居（ARP）表裡閘道的硬體位址；自 1.2.13 起和提供這個閘道的那張網卡所對應無線介面的 BSSID 比較，結果寫成這一列的一行——同一台設備、大概是同一台、同一家廠商、或兩台——是提示，絕不是拓樸結論；閘道的網卡是有線的或 <code>WifiRf</code> 關掉時不寫這一行</td></tr>
+      <tr><td><code>GatewayNeighbor</code></td><td><code>true</code></td><td>鄰居（ARP）表裡閘道的硬體位址；自 1.2.14 起和提供這個閘道的那張網卡所對應無線介面的 BSSID 比較，結果寫成這一列的一行——同一台設備、大概是同一台、同一家廠商、或兩台——是提示，絕不是拓樸結論；閘道的網卡是有線的或 <code>WifiRf</code> 關掉時不寫這一行</td></tr>
       <tr><td><code>ProxySettings</code></td><td><code>true</code></td><td>使用者的 Proxy 設定、WinHTTP Proxy，以及 Windows 對第一個 HTTP 目標（沒有時是 <code>https://www.microsoft.com/</code>）會用哪個 Proxy：只問解析器，不發請求</td></tr>
       <tr><td><code>Traceroute</code></td><td><code>true</code></td><td>往第一個不是佔位符的 Ping 目標的前幾跳，每跳一秒</td></tr>
       <tr><td><code>TracerouteHops</code></td><td>3</td><td>1 到 10；其他值退回 3 並附警告。三跳看得出封包停在哪裡，通常到不了公網目標</td></tr>
@@ -267,7 +268,7 @@
     <p>不是 <code>true</code> 或 <code>false</code> 的旗標會停用該檢查；其他型別的值會在設定值門檻列被指出，<code>null</code> 則不會，檢查只是關掉了。</p>
 
     <h3>3.5 · 門檻值（<code>Thresholds</code>）</h3>
-    <p>預設值是通用的起始點，而且每一個都是<b>沒有外部依據的營運預設值</b>：這張表裡沒有任何一個值背後有標準、量測或記錄下來的決定——這件事在 2026-09-10 查清楚並寫下（backlog #56），免得讀者去推測一個 repo 裡根本沒有的出處。其中兩個值是政策而不是量值——<code>AdapterErrorWarningDelta</code> 與 <code>AdapterDiscardWarningDelta</code> 是 1，因為<i>有就值得顯示</i>——其餘是某人挑的量值。現有的標準定義的是怎麼量測，或是對某一類服務、在某個範圍內設定目標值，從來不是通用的故障門檻；檢視了哪些文件、各自的來源與查證日期，在 repo 裡對應本手冊版本的門檻頁面：<a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.13/docs/thresholds.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.13/docs/thresholds.md</a>（英文）。請對照你自己的基準（第 2 節）校準，不要把它們當成工程值。各列拿它們怎麼判定，照程式碼寫出來：</p>
+    <p>預設值是通用的起始點，而且每一個都是<b>沒有外部依據的營運預設值</b>：這張表裡沒有任何一個值背後有標準、量測或記錄下來的決定——這件事在 2026-09-10 查清楚並寫下（backlog #56），免得讀者去推測一個 repo 裡根本沒有的出處。其中兩個值是政策而不是量值——<code>AdapterErrorWarningDelta</code> 與 <code>AdapterDiscardWarningDelta</code> 是 1，因為<i>有就值得顯示</i>——其餘是某人挑的量值。現有的標準定義的是怎麼量測，或是對某一類服務、在某個範圍內設定目標值，從來不是通用的故障門檻；檢視了哪些文件、各自的來源與查證日期，在 repo 裡對應本手冊版本的門檻頁面：<a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.14/docs/thresholds.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.14/docs/thresholds.md</a>（英文）。請對照你自己的基準（第 2 節）校準，不要把它們當成工程值。各列拿它們怎麼判定，照程式碼寫出來：</p>
     <table>
       <tr><th>鍵</th><th>預設</th><th>依據</th><th>規則</th></tr>
       <tr><td><code>PacketLossWarningPercent</code>、<code>PacketLossCriticalPercent</code></td><td>5、20</td><td>兩個人為選定的量值；沒有外部依據</td><td>每個 Ping 目標，依這個順序：完全沒有回應 → 必要為異常、選用為資訊；遺失 ≥ 嚴重 → 必要為異常、選用為需注意；遺失 ≥ 警告 → 需注意；接著才是延遲規則。警告百分比同時決定延續取樣要加到哪裡（<code>PingCountMaximum</code>，第 3.3 節），以及什麼時候要收回一個靠單一封包撐著的遺失判定</td></tr>
@@ -320,7 +321,7 @@
     </table>
     <div class="flag"><b>兩種要避免的寫法。</b> 用空格再接第二個值（<code>-PingTarget a b</code>、<code>-HttpUrl u1 u2</code>）不是第二個目標：PowerShell 會直接拒絕繫結 &mdash;「A positional parameter cannot be found that accepts argument 'b'」&mdash; 腳本根本不會開始。早期版本裡它會被繫結到腳本的第一個位置參數 <code>-ConfigPath</code>，於是那次執行載入不到設定檔（「找不到設定檔：b」、一列「無法檢查」、內建預設值、整體結果為檢測未完整），而且只測第一個值，第二個目標就這樣無聲無息地不見了。另外在 PowerShell 提示字元下，沒加引號的分號會結束陳述式：<code>-PingTarget a;b</code> 只測 <code>a</code>，然後把 <code>b</code> 當成命令執行；cmd.exe 則會原樣傳入。上面的逗號寫法和加引號的寫法可以避開這兩者。</div>
     <p style="margin-top:.8rem"><b>額外目標算什麼。</b> 額外目標都是選用的，也不屬於任何群組：沒有回應的額外 Ping，以及連不上的額外 TCP 或 HTTP 目標，是「資訊」列，不影響整體結果；品質不佳的 Ping 和解析不出來的額外 DNS 名稱是「需注意」列。格式不是 <code>host:port</code> 的額外 TCP 目標會被丟掉，並留下一列「啟動提示」警告（「已忽略額外 TCP 目標「…」：格式應為 host:port。」）。這些列的標題是「額外 Ping」、「額外 DNS」、「額外 TCP」、「額外 URL」，都帶著它拿到的值 &mdash; Ping 那幾列接在冒號後面，另外三種寫在標題裡 &mdash; 所以同一種的兩個額外目標在表格裡和結語裡都分得出來。近端主機不是額外目標：它是這個站點的屬性，只挑一次，沒有參數也沒有面板欄位——寫在設定檔裡（第 3.3 節），主控台執行可以用 <code>-ConfigPath</code> 指向候選的設定檔。</p>
-    <p><b>這次執行的選項記在哪裡。</b> 報告標頭的「執行設定」一行：<code>IT 入口 | 額外目標：ping 10.0.0.1, tcp fileserver:445 | Ping 次數 4 | 取樣 20 秒 | traceroute 3 跳</code>，關掉的檢查以「已停用：…」列出；以及 JSON 的 <code>RunOptions</code>：<code>EntryPoint</code>、<code>ExpandDetails</code>、<code>ExtraTargets</code>（接受的值）、<code>RawTargets</code>（輸入的原文）、<code>PingCount</code>、<code>PingCountMaximum</code>、<code>SampleSeconds</code>、<code>TracerouteHops</code>、<code>ChecksEnabled</code>。「執行設定」裡的 <code>Ping 次數</code> 是起始次數，旁邊的 <code>Ping 上限</code> 是延續取樣停在哪裡；每一列實際送出多少次，寫在那一列自己裡面。</p>
+    <p><b>這次執行的選項記在哪裡。</b> 報告標頭的「執行設定」一行：<code>IT 入口 | 額外目標：ping 10.0.0.1, tcp fileserver:445 | Ping 次數 4 | 取樣 20 秒 | 窗內每 2 秒再讀一次 | traceroute 3 跳</code>，關掉的檢查以「已停用：…」列出；以及 JSON 的 <code>RunOptions</code>：<code>EntryPoint</code>、<code>ExpandDetails</code>、<code>ExtraTargets</code>（接受的值）、<code>RawTargets</code>（輸入的原文）、<code>PingCount</code>、<code>PingCountMaximum</code>、<code>SampleSeconds</code>、<code>IntervalSeconds</code>（1.2.14：取樣窗內讀取的間隔，關閉時為 0）、<code>TracerouteHops</code>、<code>ChecksEnabled</code>。「執行設定」裡的 <code>Ping 次數</code> 是起始次數，旁邊的 <code>Ping 上限</code> 是延續取樣停在哪裡；每一列實際送出多少次，寫在那一列自己裡面。</p>
   </div>
 </section>
 
@@ -345,8 +346,8 @@
   <h2><span class="num">6</span> 驗證套件</h2>
   <div class="card">
     <p><b>下載檔。</b> 專案 Releases 頁面的發行說明給出 <code>NetworkHealthCheck-&lt;版本&gt;.zip</code> 的 SHA-256。解壓縮前先比對：</p>
-<pre>certutil -hashfile NetworkHealthCheck-1.2.13.zip SHA256</pre>
-    <p>或在 PowerShell 用 <code>Get-FileHash NetworkHealthCheck-1.2.13.zip</code>。發行檔只由 repo 裡受版本控制的檔案打包，所以裡面沒有任何報告或執行輸出。</p>
+<pre>certutil -hashfile NetworkHealthCheck-1.2.14.zip SHA256</pre>
+    <p>或在 PowerShell 用 <code>Get-FileHash NetworkHealthCheck-1.2.14.zip</code>。發行檔只由 repo 裡受版本控制的檔案打包，所以裡面沒有任何報告或執行輸出。</p>
     <p><b>清單檔。</b> 套件最上層的 <code>SHA256SUMS.txt</code> 列出每個出廠檔案的摘要，除了它自己、<code>VALIDATION.md</code> 和 <code>validation-matrix.html</code>：每個檔案一行，<code>&lt;sha256&gt;  &lt;相對路徑&gt;</code>，中間兩個空格。單一檔案可以用 <code>Get-FileHash &lt;檔案&gt;</code> 手動比對，全部則交給驗證程式。</p>
     <p><b>驗證程式。</b> <code>tools\validate_release.py</code> 只需要 Python 3。對套件最上層執行：</p>
 <pre>python tools\validate_release.py .</pre>
@@ -379,7 +380,7 @@
       <tr><td><b>EDR 或防毒</b>擋住 <code>powershell.exe</code> 或腳本</td><td>沒有量測：驗收執行沒有包含裝了這類產品的機器。啟動器回報它拿到的結束代碼並寫出 <code>LauncherError.txt</code></td><td><code>LauncherError.txt</code> 和該產品自己的記錄</td></tr>
     </table>
     <p><b>要向使用者要什麼</b>，使用手冊第 6 節逐列寫了；環境報告和 <code>LauncherError.txt</code> 就是為這個交接而寫的。<code>LauncherError.txt</code> 在啟動器旁邊，那個資料夾無法寫入時改寫在 <code>%TEMP%</code> 的 <code>NetworkHealthCheck_LauncherError.txt</code>，欄位較少。</p>
-    <p><b>放行工具。</b> 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：<code>SHA256SUMS.txt</code> 給出每支 <code>NetworkHealthCheck.ps1</code> 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.13/docs/application-control.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.13/docs/application-control.md</a>（英文），最新版本在 <code>main</code> 分支。</p>
+    <p><b>放行工具。</b> 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：<code>SHA256SUMS.txt</code> 給出每支 <code>NetworkHealthCheck.ps1</code> 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.14/docs/application-control.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.14/docs/application-control.md</a>（英文），最新版本在 <code>main</code> 分支。</p>
     <p><b>簽章。</b> 用你自己的憑證授權單位做 Authenticode 簽章，要在簽署憑證也受這台電腦信任時（憑證鏈受信任，且憑證在「受信任的發行者」存放區）才滿足 <i>AllSigned</i> 原則：發行者尚未被歸為信任時，PowerShell 會先詢問使用者才執行腳本（問題會出現在啟動器的視窗裡），無法詢問的工作階段就不執行。簽章也讓應用程式控制規則能依發行者放行。簽章會在腳本後面附加一段簽章區塊，所以簽過的檔案不再符合 <code>SHA256SUMS.txt</code>；請自己記下簽過檔案的摘要。</p>
   </div>
 </section>
@@ -413,14 +414,14 @@
       <li><b>使用手冊</b>：<code>NetworkHealthCheck_User_Manual_zh-TW.html</code>（或 <code>.md</code>）：使用者看到什麼、整體結果與標籤、報告裡有什麼、跑不起來時怎麼辦。</li>
       <li><b>技術文件</b>：<code>NetworkHealthCheck_Technical_Guide_zh-TW.md</code>：設計、每一條判定規則、驗證方式、已知限制、版本歷程。</li>
       <li><b>驗證記錄</b>：<code>VALIDATION.md</code>：每一版的證據，以及在其他機器上的驗收執行。</li>
-      <li><b>待辦清單</b>：<a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.13/docs/backlog.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.13/docs/backlog.md</a>（英文）：已知還沒做的事，以及每一項要怎樣才算結案。它和第 8 節的應用程式控制那一頁一樣放在 repo 而不在套件裡，因為它在兩次發行之間就會變動。</li>
-      <li><b>門檻依據</b>：<a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.13/docs/thresholds.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.13/docs/thresholds.md</a>（英文）：出貨的門檻值從哪裡來——依一個記錄下來的決定，不是任何外部來源——以及現有的公開標準給了什麼、沒給什麼，每一筆都對照來源查證並註明日期。放在 repo 的理由相同。</li>
+      <li><b>待辦清單</b>：<a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.14/docs/backlog.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.14/docs/backlog.md</a>（英文）：已知還沒做的事，以及每一項要怎樣才算結案。它和第 8 節的應用程式控制那一頁一樣放在 repo 而不在套件裡，因為它在兩次發行之間就會變動。</li>
+      <li><b>門檻依據</b>：<a href="https://github.com/kevintechin/network-support-toolkit/blob/v1.2.14/docs/thresholds.md">github.com/kevintechin/network-support-toolkit/blob/v1.2.14/docs/thresholds.md</a>（英文）：出貨的門檻值從哪裡來——依一個記錄下來的決定，不是任何外部來源——以及現有的公開標準給了什麼、沒給什麼，每一筆都對照來源查證並註明日期。放在 repo 的理由相同。</li>
       <li><b>Repo</b>：<a href="https://github.com/kevintechin/network-support-toolkit">github.com/kevintechin/network-support-toolkit</a>：發行版本、驗證鏈（<code>tests</code>）、支援工程師現場手冊與報告範本（<code>sop</code>），以及第 8 節提到的應用程式控制頁面。</li>
     </ul>
   </div>
 </section>
 
-<footer>NetworkHealthCheck 1.2.13。本手冊描述的是出廠狀態的工具與本版本量測到的行為；這裡引用的規則都是程式碼的規則，技術文件有完整的陳述。</footer>
+<footer>NetworkHealthCheck 1.2.14。本手冊描述的是出廠狀態的工具與本版本量測到的行為；這裡引用的規則都是程式碼的規則，技術文件有完整的陳述。</footer>
 
 </div>
 </body>

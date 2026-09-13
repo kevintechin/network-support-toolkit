@@ -50,7 +50,7 @@ param(
 # - Traceability: exception type, message, and inner exceptions are stored in every
 #   report; script location and call stack go to the JSON report only (Diagnostics).
 
-$script:ToolVersion = "1.2.13"
+$script:ToolVersion = "1.2.14"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -169,6 +169,7 @@ $script:DroppedTargets = New-Object System.Collections.ArrayList
 $script:RetransmissionRateComputed = $false
 $script:TcpConnectSampleCount = 0
 $script:PendingPingSamples = New-Object System.Collections.ArrayList
+$script:TcpIntervalSampling = $null
 $script:PanelWarned = $false
 $script:PanelHints = $null
 # Script-scope variables share the script's top-level scope with the bound parameters: never reset a parameter's
@@ -679,15 +680,20 @@ function Invoke-CheckStep {
     Set-UiProgress -Percent $Progress -Text $Name
     Write-UiLog -Status "INFO" -Text ("Starting: $Name")
 
+    $result = $null
     try {
-        return (& $Action)
+        $result = (& $Action)
     }
     catch {
         $details = Get-ExceptionDetails $_
         $diagnostics = Get-ExceptionDiagnostics $_
         Add-CheckResult -Category $Category -Check $Name -Status "ERROR" -Message "This item could not be executed. The error has been recorded." -Details $details -Diagnostics $diagnostics -Tag "step-error" -Scope $Scope -Weightless:$Weightless | Out-Null
-        return $null
+        $result = $null
     }
+    # backlog #65: the due-check for the reads inside the TCP window runs after every step, whatever the step did, so
+    # that a read is never more than one step late; it never throws, and it reads nothing while no window is open.
+    Invoke-TcpIntervalReadIfDue
+    return $result
 }
 
 # -----------------------------------------------------------------------------
@@ -713,6 +719,7 @@ function Get-DefaultConfig {
             TcpTimeoutMs                 = 4000
             HttpTimeoutMs                = 6000
             RetransmissionSampleSeconds  = 8
+            RetransmissionIntervalSeconds = 2
             PingTargets = @(
                 [pscustomobject][ordered]@{
                     Name     = "Default Gateway"
@@ -1044,6 +1051,7 @@ function Set-RunOptions {
         # larger of the two, so what the person asked to be sent is sent.
         PingCountMaximum = [math]::Max([math]::Max(1, (ConvertTo-IntSafe $config.Tests.PingCount 4)), (ConvertTo-IntSafe $config.Tests.PingCountMaximum 21))
         SampleSeconds  = [math]::Max(1, (ConvertTo-IntSafe $config.Tests.RetransmissionSampleSeconds 8))
+        IntervalSeconds = Get-TcpIntervalSeconds
         TracerouteHops = $hops
         ChecksEnabled  = [pscustomobject][ordered]@{
             WifiRf          = Test-IsTrueFlag $config.Checks.WifiRf
@@ -1075,6 +1083,9 @@ function Get-RunProfileText {
     $parts += ("ping count {0}" -f $options.PingCount)
     $parts += ("ping ceiling {0}" -f $options.PingCountMaximum)
     $parts += ("sample {0} s" -f $options.SampleSeconds)
+    # backlog #65: named only where the reads inside the window are on, because 0 is a value and the profile lists what ran.
+    $intervalSeconds = ConvertTo-IntSafe (Get-PropertyValue $options "IntervalSeconds" 0) 0
+    if ($intervalSeconds -gt 0) { $parts += ("reads inside it every {0} s" -f $intervalSeconds) }
     if ($options.ChecksEnabled.Traceroute) { $parts += ("traceroute {0} hops" -f $options.TracerouteHops) }
     $disabled = @()
     foreach ($property in $options.ChecksEnabled.PSObject.Properties) {
@@ -1740,6 +1751,15 @@ function Test-ConfigurationSemantics {
         elseif ((ConvertTo-IntSafe $setting.Value 0) -le 0) {
             [void]$warnings.Add("$($setting.Name) should be greater than 0; the built-in minimum will be applied.")
         }
+    }
+
+    # backlog #65: the interval of the reads inside the sample window, where 0 is a value (off) and not a mistake.
+    $intervalValue = Get-PropertyValue $tests "RetransmissionIntervalSeconds" $null
+    if ($null -ne $intervalValue -and -not (Test-IsWholeNumber $intervalValue)) {
+        [void]$warnings.Add(("RetransmissionIntervalSeconds must be a whole number of seconds - 0 switches the reads inside the sample window off (current value: {0}); the built-in default will be used." -f $intervalValue))
+    }
+    elseif ($null -ne $intervalValue -and (ConvertTo-IntSafe $intervalValue 0) -lt 0) {
+        [void]$warnings.Add(("RetransmissionIntervalSeconds must be 0 or more (current value: {0}); the built-in default will be used." -f $intervalValue))
     }
 
     $checks = $script:Config.Checks
@@ -2463,6 +2483,7 @@ function Invoke-PingMeasurement {
                         Set-UiProgress -Percent $ProgressPercent -Text ("Spreading the rest of the ping sample for {0}: {1} to go" -f $Target, ($Count - $i))
                     }
                     if ($sliceMs -gt 0) { Start-Sleep -Milliseconds $sliceMs }
+                    Invoke-TcpIntervalReadIfDue
                     if ($script:GuiAvailable) {
                         [System.Windows.Forms.Application]::DoEvents()
                     }
@@ -5196,6 +5217,7 @@ function Format-TcpAttemptList {
     return ((@($Attempts) | ForEach-Object {
         if ([string]$_.Phase -eq "warm-up") { "{0} #{1} (the discarded read before the window)" -f $_.Protocol, $_.Attempt }
         elseif ([string]$_.Phase -eq "extension") { "{0} #{1} (the read that extended the window)" -f $_.Protocol, $_.Attempt }
+        elseif ([string]$_.Phase -eq "interval") { "{0} #{1} (a read between the samples)" -f $_.Protocol, $_.Attempt }
         else { "{0} #{1}" -f $_.Protocol, $_.Attempt }
     }) -join ", ")
 }
@@ -5255,6 +5277,10 @@ function Compare-TcpCounters {
     # snapshot wrote no row of its own for it (PR #40, round 4). That case is the one where they would otherwise be
     # lost entirely: a protocol whose counter could not be read in one snapshot has no reading and therefore no
     # quality row, and the quality row is the only other place those attempts are named.
+    # backlog #65: the reads inside the window, one state object for the run (or none, where the reads are off or
+    # the run never opened them); the line that says where they stopped goes on every row this analysis writes.
+    $intervalState = $script:TcpIntervalSampling
+    $intervalStopLines = @(Get-TcpIntervalStopLine -State $intervalState)
     foreach ($isEnding in @($false, $true)) {
         $snapshot = $Before
         $other = $After
@@ -5268,6 +5294,7 @@ function Compare-TcpCounters {
             if (@(@($other.Errors) | Where-Object { [string]$_.Protocol -eq $errorProtocol }).Count -eq 0) {
                 $errorDetails += @(Get-TcpReadFailureLines -Snapshot $other -Protocol $errorProtocol -Ending:(-not $isEnding))
             }
+            $errorDetails += $intervalStopLines
             Add-CheckResult -Category "TCP Retransmissions" -Check ("{0} counters" -f $errorItem.Protocol) -Status "ERROR" -Message "The TCP retransmission counter could not be read." -Details ((@($errorDetails) | Where-Object { $_ }) -join [Environment]::NewLine) -Diagnostics $errorItem.Diagnostics -Tag "tcp-retransmissions" -Weightless | Out-Null
         }
     }
@@ -5319,6 +5346,14 @@ function Compare-TcpCounters {
         $windowAttempts += @(@(Get-PropertyValue $Before "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -gt $selfIndex })
         $closedByExtension = ($extendedProtocols -contains $protocol)
         $windowAttempts += @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $selfIndex -and (([string]$_.Phase -ne "extension") -or $closedByExtension) })
+        # backlog #65: a read inside the window that failed lies inside both protocols' windows - it was taken after
+        # both baseline stamps and before both ending stamps - except one taken while the window was being extended,
+        # which is inside only the windows the extension closed.
+        # PR #56, round 7: the same list decides the no-reading sentence of the placement block below - a read that failed
+        # during the extension is outside the window of a protocol the extension did not close, and its block must
+        # not claim the reads stopped inside a window they never reached.
+        $intervalInsideAttempts = @(@(Get-PropertyValue $intervalState "FailedAttempts" @()) | Where-Object { (-not [bool]$_.Extension) -or $closedByExtension })
+        $windowAttempts += $intervalInsideAttempts
         $windowNote = ""
         if (@($windowAttempts).Count -gt 0) {
             $windowNote = ("Note: {1} of these {0} seconds went on counter reads that failed inside the window ({2}); the configured minimum is {3} seconds." -f $sampleSeconds, (Get-TcpAttemptSeconds $windowAttempts), (Format-TcpAttemptList $windowAttempts), $configuredSeconds)
@@ -5329,9 +5364,13 @@ function Compare-TcpCounters {
         # had already closed, so those seconds are outside it. Backlog #38's promise is that every attempt which
         # failed is kept with the seconds it spent, so they get a line that says where they fall instead.
         $outsideAttempts = @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { [string]$_.Protocol -eq $protocol -and [string]$_.Phase -eq "extension" -and -not $closedByExtension })
+        # backlog #65: and this protocol's own reads inside the window that failed during the extension, for the same reason.
+        $outsideAttempts += @(@(Get-PropertyValue $intervalState "FailedAttempts" @()) | Where-Object { [string]$_.Protocol -eq $protocol -and [bool]$_.Extension -and -not $closedByExtension })
         if (@($outsideAttempts).Count -gt 0) {
             $evidenceLines += ("Counter reads of this protocol that failed while the window was being extended: {0} ({1} seconds in total). This protocol's window had already closed, so those seconds are not part of the {2} above." -f (Format-TcpAttemptList $outsideAttempts), (Get-TcpAttemptSeconds $outsideAttempts), $sampleSeconds)
         }
+
+        $evidenceLines += $intervalStopLines
 
         if ($sentDeltaDouble -lt 0 -or $retransDeltaDouble -lt 0) {
             # The window is a fact even where the delta is not, so this row prints the duration it spans and the
@@ -5399,6 +5438,15 @@ function Compare-TcpCounters {
         }
         if ($windowNote -ne "") {
             $details += [Environment]::NewLine + "The deltas above are still this protocol's own counts over the window shown."
+        }
+
+        # backlog #65: where the window counted a retransmission, where it fell. The table is this protocol's own, from
+        # its own stamps, and the lines decide nothing.
+        if ($null -ne $intervalState -and $intervalState.IntervalSeconds -gt 0 -and $retransDelta -gt 0) {
+            $intervalTable = @(Get-TcpIntervalTable -Protocol $protocol -Start $start -End $end -Reads @(Get-PropertyValue $intervalState "Reads" @()))
+            foreach ($line in @(Get-TcpDistributionLines -Protocol $protocol -Intervals $intervalTable -RetransDelta $retransDelta -SampleSeconds (New-TimeSpan -Start $start.Timestamp -End $end.Timestamp).TotalSeconds -State $intervalState -FailedInside $intervalInsideAttempts)) {
+                $details += [Environment]::NewLine + $line
+            }
         }
 
         if ($sentDelta -eq 0 -and $retransDelta -eq 0) {
@@ -5542,6 +5590,264 @@ function Merge-TcpEndingSnapshot {
         Extended       = $true
         ExtendedProtocols = @(@($Extended.Counters.Keys) | ForEach-Object { [string]$_ })
     }
+}
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Reads inside the sample window (backlog #65; v1.2.14). The two counter reads at the ends of the window give one pair
+# of numbers per protocol, and a total over a window cannot tell fifty retransmissions inside ten seconds of it from
+# fifty spread evenly across the whole of it - the burst the standalone count trigger fired on until 1.2.10 removed it
+# (closed item #63). So the counters are read again inside the window, at least Tests.RetransmissionIntervalSeconds
+# apart (2 as shipped, 0 switches it off), and a measured row places its retransmissions in time beside the
+# whole-window figure. The rules that keep it honest: the reads come from the main thread only - a due-check after
+# every step and once a second inside the waits - so the intervals are stamped and uneven, and the spacing is a
+# minimum, not a period; a read inside the window is not the measurement and gets one attempt per class, never a
+# second; the first read that fails ends the sampling for the run, so a machine whose reads run out of time pays one
+# timeout and not one per interval; a failed read is kept with its seconds and named on the row, and writes no row of
+# its own; and an interval is too small a sample to carry a rate, so none is computed from it, no threshold reads it
+# and nothing here moves a status. Measured before it was built (reference machine, 2026-09-13): one read of both
+# classes costs 102 ms at the median and 140 ms at the 95th percentile, so three reads inside an eight-second window
+# cost about a third of a second, most of it inside the wait the run was going to sleep through anyway.
+# ---------------------------------------------------------------------------------------------------------------------
+function Get-TcpIntervalSeconds {
+    # The one rule for Tests.RetransmissionIntervalSeconds: a whole number of seconds, 2 as shipped, 0 for no read
+    # inside the window; anything else - a fraction, a negative value, text - falls back to the shipped 2, which is
+    # what Test-ConfigurationSemantics reports for it.
+    $value = Get-PropertyValue $script:Config.Tests "RetransmissionIntervalSeconds" 2
+    if ($null -eq $value -or -not (Test-IsWholeNumber $value)) { return 2 }
+    $seconds = ConvertTo-IntSafe $value 2
+    if ($seconds -lt 0) { return 2 }
+    return $seconds
+}
+
+function Start-TcpIntervalSampling {
+    param(
+        [int]$IntervalSeconds,
+        [datetime]$Since,
+        [switch]$Extension,
+        [object]$Boundary,
+        [object]$Deadline
+    )
+
+    # Opens the window for the reads inside it: from the baseline stamp, and again from the start of the extension
+    # (backlog #51). A run whose sampling a failed read stopped stays stopped through the extension - the rule is one
+    # timeout per run - and an interval of 0 opens nothing. The state is one object per run, cleared with the results.
+    if ($null -eq $script:TcpIntervalSampling) {
+        $script:TcpIntervalSampling = [pscustomobject][ordered]@{
+            Active          = $false
+            IntervalSeconds = [math]::Max(0, $IntervalSeconds)
+            LastRead        = $Since
+            Extension       = $false
+            Reads           = New-Object System.Collections.ArrayList
+            FailedAttempts  = New-Object System.Collections.ArrayList
+            StoppedAt       = $null
+            StopReason      = ""
+            Deadline        = $null
+        }
+    }
+    $state = $script:TcpIntervalSampling
+    $state.Extension = [bool]$Extension
+    $state.LastRead = $Since
+    # PR #56, round 5: the window's deadline - the stamp the window opened at plus the configured minimum - travels with
+    # the state, and the due-check takes nothing once it has passed, whichever path asks. Rounds 2 and 3 closed two
+    # paths one at a time (the wait's last sleep, the steps after the wait); the spread probes' pauses and a step
+    # that overran the minimum were the third, and one rule in one place is what stops there being a fourth.
+    if ($Deadline -is [datetime]) { $state.Deadline = $Deadline }
+    # PR #56, round 2: the reading that closed the first window is a point of the table when the window is extended,
+    # so the intervals of the first window and of the extension are told apart; it costs nothing, being the
+    # measurement's own read, and it is kept whether or not the sampling is still open.
+    if ($null -ne $Boundary -and $null -ne $Boundary.Counters) {
+        [void]$state.Reads.Add([pscustomobject][ordered]@{ Timestamp = $Boundary.Timestamp; Counters = $Boundary.Counters; FailedAttempts = @(); Extension = $false; Boundary = $true })
+    }
+    if ($state.IntervalSeconds -le 0 -or $null -ne $state.StoppedAt) {
+        $state.Active = $false
+        return
+    }
+    $state.Active = $true
+}
+
+function Stop-TcpIntervalSampling {
+    # Closed before the ending read is taken, so that no read of this kind can fall after the stamp that closes the
+    # window; the state itself stays, because the rows are written from it.
+    if ($null -ne $script:TcpIntervalSampling) { $script:TcpIntervalSampling.Active = $false }
+}
+
+function Read-TcpIntervalCounters {
+    # One read of both classes with ONE attempt each: the second attempt exists to save the measurement (backlog #38),
+    # and this read is not the measurement. What it returns has the shape of a snapshot's readings, so the intervals
+    # are computed from the same fields; what failed is recorded with its seconds, as every failed read is.
+    $counters = @{}
+    $failed = New-Object System.Collections.ArrayList
+    foreach ($protocol in @("TCPv4", "TCPv6")) {
+        $className = "Win32_PerfRawData_Tcpip_$protocol"
+        $readAttempts = New-Object System.Collections.ArrayList
+        try {
+            $counter = Get-CimOrWmiInstance -ClassName $className -FailedAttempts $readAttempts -RequireProperty @("SegmentsSentPersec", "SegmentsRetransmittedPersec")
+            $counters[$protocol] = [pscustomobject][ordered]@{
+                Protocol      = $protocol
+                Timestamp     = Get-Date
+                SegmentsSent  = ConvertTo-UInt64Safe $counter.SegmentsSentPersec
+                Retransmitted = ConvertTo-UInt64Safe $counter.SegmentsRetransmittedPersec
+            }
+        }
+        catch {
+            # The attempt is already in $readAttempts: a read inside the window that failed is a fact for the row,
+            # not an error of the run.
+        }
+        foreach ($item in $readAttempts) {
+            [void]$failed.Add([pscustomobject][ordered]@{
+                Protocol = $protocol
+                Phase    = "interval"
+                Attempt  = $item.Attempt
+                Seconds  = $item.Seconds
+                Error    = $item.Error
+            })
+        }
+        # PR #56, round 1: the pass stops at the first class that failed. Reading the next class after a timeout would
+        # spend a second eight seconds on a provider that has just refused - the bound is one timeout per run, not one
+        # per class - and for the class not read the interval this read would have closed merges with its neighbour.
+        if (@($readAttempts).Count -gt 0) { break }
+    }
+    return [pscustomobject][ordered]@{
+        Timestamp      = Get-Date
+        Counters       = $counters
+        FailedAttempts = @($failed)
+    }
+}
+
+function Invoke-TcpIntervalReadIfDue {
+    # The due-check, called after every step and once a second inside the waits. It reads only when the last read is
+    # at least the configured interval old, so a long step simply yields a longer interval - the intervals are stamped
+    # and the row prints each one's length. It never throws: a failure of any kind is a failed read, recorded and
+    # ending the sampling, because a check that runs after every step must not be able to fail the step.
+    $state = $script:TcpIntervalSampling
+    if ($null -eq $state -or -not $state.Active) { return }
+    # PR #56, round 5: past the window's deadline nothing is read, from any path - the read would fall after the
+    # minimum and add its whole cost to the run - and the sampling closes here for good.
+    if ($null -ne $state.Deadline -and (Get-Date) -ge $state.Deadline) { $state.Active = $false; return }
+    if (((Get-Date) - $state.LastRead).TotalSeconds -lt $state.IntervalSeconds) { return }
+    $reading = $null
+    try {
+        $reading = Read-TcpIntervalCounters
+    }
+    catch {
+        $reading = [pscustomobject][ordered]@{
+            Timestamp      = Get-Date
+            Counters       = @{}
+            FailedAttempts = @([pscustomobject][ordered]@{ Protocol = "TCP"; Phase = "interval"; Attempt = 1; Seconds = 0; Error = (Get-ExceptionDetails $_) })
+        }
+    }
+    $reading | Add-Member -NotePropertyName "Extension" -NotePropertyValue ([bool]$state.Extension) -Force
+    [void]$state.Reads.Add($reading)
+    foreach ($item in @($reading.FailedAttempts)) {
+        [void]$state.FailedAttempts.Add([pscustomobject][ordered]@{
+            Protocol  = $item.Protocol
+            Phase     = $item.Phase
+            Attempt   = $item.Attempt
+            Seconds   = $item.Seconds
+            Error     = $item.Error
+            Extension = [bool]$state.Extension
+        })
+    }
+    $state.LastRead = $reading.Timestamp
+    if (@($reading.FailedAttempts).Count -gt 0) {
+        $state.Active = $false
+        $state.StoppedAt = $reading.Timestamp
+        $state.StopReason = ((@($reading.FailedAttempts) | ForEach-Object { [string]$_.Protocol }) -join ", ")
+    }
+}
+
+function Get-TcpIntervalTable {
+    param(
+        [string]$Protocol,
+        [object]$Start,
+        [object]$End,
+        [object[]]$Reads
+    )
+
+    # The intervals of one protocol's window: its baseline reading, every reading of it taken inside the window, its
+    # ending reading - in stamp order, so a reading that fell after this protocol's ending stamp (an extension that
+    # closed the other protocol only) is outside by the stamps alone. Each interval carries its own seconds and
+    # deltas; an empty table means a reading went backwards inside the window, and the row says so.
+    if ($null -eq $Start -or $null -eq $End) { return @() }
+    $points = @($Start)
+    $points += @(@($Reads) | Where-Object { $null -ne $_ -and $null -ne $_.Counters -and $_.Counters.ContainsKey($Protocol) } | ForEach-Object { $_.Counters[$Protocol] } | Where-Object { $_.Timestamp -gt $Start.Timestamp -and $_.Timestamp -lt $End.Timestamp } | Sort-Object -Property Timestamp)
+    $points += $End
+    $table = @()
+    for ($i = 1; $i -lt $points.Count; $i++) {
+        $from = $points[$i - 1]
+        $to = $points[$i]
+        $sent = [double]$to.SegmentsSent - [double]$from.SegmentsSent
+        $retrans = [double]$to.Retransmitted - [double]$from.Retransmitted
+        if ($sent -lt 0 -or $retrans -lt 0) { return @() }
+        $table += [pscustomobject][ordered]@{
+            Index         = $i
+            FromSeconds   = [math]::Round(($from.Timestamp - $Start.Timestamp).TotalSeconds, 1)
+            ToSeconds     = [math]::Round(($to.Timestamp - $Start.Timestamp).TotalSeconds, 1)
+            Seconds       = ($to.Timestamp - $from.Timestamp).TotalSeconds
+            Sent          = [uint64]$sent
+            Retransmitted = [uint64]$retrans
+        }
+    }
+    return @($table)
+}
+
+function Get-TcpDistributionLines {
+    param(
+        [string]$Protocol,
+        [object[]]$Intervals,
+        [uint64]$RetransDelta,
+        [double]$SampleSeconds,
+        [object]$State,
+        [object[]]$FailedInside
+    )
+
+    # What a measured row says about where its retransmissions fell - only where there were any: a window that
+    # retransmitted nothing has nothing to place, and a row explains what happened (backlog #40). The interval with
+    # the most retransmissions is named with its share of them and its share of the window's seconds, side by side,
+    # so that a reader sees a burst - most of the retransmissions in a small part of the time - without the tool
+    # calling it one: no adjective, no threshold, and no rate for an interval, because a two-second interval on a
+    # quiet machine is the small sample closed item #51 is about.
+    $lines = @()
+    if ($null -eq $State -or $State.IntervalSeconds -le 0 -or $RetransDelta -eq 0) { return $lines }
+    $table = @($Intervals)
+    if ($table.Count -eq 0) {
+        $lines += "A counter read inside the window went backwards, so the retransmissions cannot be placed in time."
+        return $lines
+    }
+    if ($table.Count -lt 2) {
+        # PR #56, round 4: a window with no reading inside it says why, and "none was due" is only one of the reasons -
+        # the reads may have stopped at a read that failed before this window had a reading, and that read is named
+        # on the row with its seconds; a sentence saying none was due beside it would contradict the row.
+        # Round 7: the failed reads inside THIS protocol's window, which the caller knows and the state does not.
+        if (@($FailedInside).Count -gt 0) {
+            $lines += "The reads inside the window stopped at a read that failed before this window had a reading inside it - that read and its seconds are named above - so the retransmissions cannot be placed in time."
+        }
+        else {
+            $lines += ("No counter read fell inside this window between its two samples, so the retransmissions cannot be placed in time: the reads are taken between the checks and during the wait, at least {0} second(s) apart, and none was due before the window closed." -f $State.IntervalSeconds)
+        }
+        return $lines
+    }
+    $lines += ("Where the retransmissions fell inside the window (the counters were read again at least {0} second(s) apart: {1} readings, {2} intervals):" -f $State.IntervalSeconds, ($table.Count + 1), $table.Count)
+    foreach ($interval in $table) {
+        $lines += ("  {0}-{1} s: sent {2}, retransmitted {3}" -f $interval.FromSeconds, $interval.ToSeconds, $interval.Sent, $interval.Retransmitted)
+    }
+    # The most retransmissions; among equals the shorter interval, then the earlier one.
+    $worst = @($table | Sort-Object -Property @{ Expression = "Retransmitted"; Descending = $true }, @{ Expression = "Seconds"; Descending = $false }, @{ Expression = "Index"; Descending = $false })[0]
+    $share = [math]::Round(100.0 * [double]$worst.Retransmitted / [double]$RetransDelta)
+    $timeShare = 0
+    if ($SampleSeconds -gt 0) { $timeShare = [math]::Round(100.0 * $worst.Seconds / $SampleSeconds) }
+    $lines += ("The interval with the most retransmissions held {0} of the {1} ({2}%) in {3} seconds, {4}% of the window." -f $worst.Retransmitted, $RetransDelta, $share, [math]::Round($worst.Seconds, 1), $timeShare)
+    $lines += "These lines place the retransmissions in time and nothing more: an interval is too small a sample to carry a rate, so none is computed from it; a segment sent again is not a segment lost; and no figure here changes this row's status."
+    return $lines
+}
+
+function Get-TcpIntervalStopLine {
+    param([object]$State)
+
+    # Every row this analysis writes carries this line where the sampling stopped, because a read that failed is
+    # kept and named wherever it fell (backlog #38), and the reads before the failure still stand.
+    if ($null -eq $State -or $null -eq $State.StoppedAt) { return @() }
+    return @(("The reads inside the window stopped at {0} after a read of {1} failed ({2} seconds); the intervals before it stand, and the last interval runs to the ending sample." -f $State.StoppedAt.ToString("HH:mm:ss"), $State.StopReason, (Get-TcpAttemptSeconds @($State.FailedAttempts))))
 }
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -6071,15 +6377,22 @@ function Wait-ForMinimumTcpSample {
         [int]$ProgressPercent = 87
     )
 
-    $elapsed = ((Get-Date) - $StartTime).TotalSeconds
-    $remaining = [math]::Ceiling($MinimumSeconds - $elapsed)
-    if ($remaining -le 0) {
-        return
-    }
-
-    for ($i = $remaining; $i -gt 0; $i--) {
-        Set-UiProgress -Percent $ProgressPercent -Text ("Sampling TCP retransmissions, approximately $i second(s) remaining")
-        Start-Sleep -Seconds 1
+    # Clock-based since 1.2.14 (backlog #65): the wait ends at the minimum whatever ran inside it, so a counter read
+    # taken during the wait consumes time the run was going to sleep through and lengthens nothing. Until then the
+    # count of seconds was fixed when the wait began, and anything done inside it pushed the window past the minimum.
+    while ($true) {
+        $elapsed = ((Get-Date) - $StartTime).TotalSeconds
+        $remainingMs = [int][math]::Ceiling(($MinimumSeconds - $elapsed) * 1000.0)
+        if ($remainingMs -le 0) {
+            return
+        }
+        $remainingSeconds = [int][math]::Ceiling($remainingMs / 1000.0)
+        Set-UiProgress -Percent $ProgressPercent -Text ("Sampling TCP retransmissions, approximately $remainingSeconds second(s) remaining")
+        Start-Sleep -Milliseconds ([math]::Min(1000, $remainingMs))
+        # PR #56, round 2: a read due on the last sleep would run after the minimum had passed and add its whole cost
+        # to the run; the deadline is checked again first, and the ending read that follows closes the window.
+        if (((Get-Date) - $StartTime).TotalSeconds -ge $MinimumSeconds) { return }
+        Invoke-TcpIntervalReadIfDue
         if ($script:GuiAvailable) {
             [System.Windows.Forms.Application]::DoEvents()
         }
@@ -6781,6 +7094,8 @@ function Run-AllChecks {
     # And the access-point samples (backlog #61's other half): a run compares the samples it took itself.
     $script:WifiAssociationSamples = New-Object System.Collections.ArrayList
     $script:GatewayNeighborRows = New-Object System.Collections.ArrayList
+    # And the reads inside the TCP window (backlog #65): one run's state, never a later run's.
+    $script:TcpIntervalSampling = $null
     $script:LastHtmlReport = $null
     $script:LastTextReport = $null
     $script:LastJsonReport = $null
@@ -6886,7 +7201,10 @@ function Run-AllChecks {
         # row per read that failed out of this object, which says the same thing with the evidence attached.
         return (Get-TcpCounterSnapshot -WarmUp)
     }
+    $minimumSampleSeconds = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.RetransmissionSampleSeconds 8))
     $tcpSampleStart = Get-Date
+    # The reads inside the window open at the baseline stamp and close before the ending read (backlog #65).
+    Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since $tcpSampleStart -Deadline $tcpSampleStart.AddSeconds($minimumSampleSeconds)
 
     $adapterStatsBefore = Invoke-CheckStep -Category "Network Adapter Error Counters" -Name "Get Network Adapter Error Baseline" -Progress 13 -Weightless -Action {
         return (Get-AdapterStatisticsSnapshot)
@@ -6933,7 +7251,6 @@ function Run-AllChecks {
         Add-DriverInfoResult -Adapters $networkSnapshot
     } | Out-Null
 
-    $minimumSampleSeconds = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.RetransmissionSampleSeconds 8))
     # The position is the point (backlog #51): the ping samples that were put aside are finished here, before the
     # retransmission window sleeps out the seconds it still owes, so what the spread probes spend is time the run
     # was going to spend anyway. Anywhere else in the run and they would make it longer.
@@ -6946,6 +7263,10 @@ function Run-AllChecks {
         } | Out-Null
     }
     Wait-ForMinimumTcpSample -StartTime $tcpSampleStart -MinimumSeconds $minimumSampleSeconds
+    # PR #56, round 3: the reads inside the window close at the wait's deadline. Two steps run between the wait and
+    # the ending read - the adapter counters' ending values and their analysis - and a read due after the wait would
+    # have run after them, past the minimum, adding its whole cost to the run; the ending read closes the window.
+    Stop-TcpIntervalSampling
 
     $adapterStatsAfter = Invoke-CheckStep -Category "Network Adapter Error Counters" -Name "Get Ending Network Adapter Error Values" -Progress 82 -Weightless -Action {
         return (Get-AdapterStatisticsSnapshot)
@@ -6961,6 +7282,7 @@ function Run-AllChecks {
     } | Out-Null
 
     $tcpAfter = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Get Ending TCP Retransmission Values" -Progress 89 -Weightless -Action {
+        Stop-TcpIntervalSampling
         return (Get-TcpCounterSnapshot)
     }
 
@@ -6970,7 +7292,9 @@ function Run-AllChecks {
     # read that fails can never cost a reading the first one already had.
     if (Test-TcpSampleNeedsExtension -Before $tcpBaseline -After $tcpAfter) {
         $tcpExtended = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Extend the TCP Sample Where It Was Too Small to Rate" -Progress 90 -Weightless -Action {
+            Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since (Get-Date) -Extension -Boundary $tcpAfter -Deadline (Get-Date).AddSeconds($minimumSampleSeconds)
             Wait-ForMinimumTcpSample -StartTime (Get-Date) -MinimumSeconds $minimumSampleSeconds -ProgressPercent 90
+            Stop-TcpIntervalSampling
             return (Merge-TcpEndingSnapshot -Original $tcpAfter -Extended (Get-TcpCounterSnapshot))
         }
         if ($null -ne $tcpExtended) { $tcpAfter = $tcpExtended }

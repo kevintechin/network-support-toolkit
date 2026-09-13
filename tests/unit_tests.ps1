@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Compare-WifiRetryCounters', 'Get-WifiRetrySnapshot', 'Get-WifiInterfaceStateText', 'Get-Win32ErrorText', 'Get-TcpInitialRto', 'New-TcpConnectSample', 'Get-TcpConnectSampleText', 'Invoke-TcpConnectionTest', 'Get-LatencySpreadText', 'Get-WifiAssociationSample', 'Add-WifiAssociationSample', 'Compare-WifiAssociation', 'Get-MacRelation', 'Get-AccessPointGatewayText', 'Get-AccessPointGatewayEvidence', 'Update-AccessPointGatewayHints', 'Get-WlanApiType', 'Get-WlanInterfaceStates', 'Get-WifiInterfaceView', 'Get-WifiNetshReasonText', 'Get-WifiRadioSwitchText', 'Get-WifiApiSummaryText', 'Get-LocationConsentState', 'Test-WifiSampleReadable', 'Get-RadioSwitchState'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Compare-WifiRetryCounters', 'Get-WifiRetrySnapshot', 'Get-WifiInterfaceStateText', 'Get-Win32ErrorText', 'Get-TcpInitialRto', 'New-TcpConnectSample', 'Get-TcpConnectSampleText', 'Invoke-TcpConnectionTest', 'Get-LatencySpreadText', 'Get-WifiAssociationSample', 'Add-WifiAssociationSample', 'Compare-WifiAssociation', 'Get-MacRelation', 'Get-AccessPointGatewayText', 'Get-AccessPointGatewayEvidence', 'Update-AccessPointGatewayHints', 'Get-WlanApiType', 'Get-WlanInterfaceStates', 'Get-WifiInterfaceView', 'Get-WifiNetshReasonText', 'Get-WifiRadioSwitchText', 'Get-WifiApiSummaryText', 'Get-LocationConsentState', 'Test-WifiSampleReadable', 'Get-RadioSwitchState', 'Get-TcpIntervalSeconds', 'Start-TcpIntervalSampling', 'Stop-TcpIntervalSampling', 'Read-TcpIntervalCounters', 'Invoke-TcpIntervalReadIfDue', 'Get-TcpIntervalTable', 'Get-TcpDistributionLines', 'Get-TcpIntervalStopLine', 'Wait-ForMinimumTcpSample'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -2374,6 +2374,291 @@ $rfBody = Get-FunctionBody 'Add-WifiRfResult'
 Assert-Equal '#62 row: the radio row reads the sample through the view and has the branch for an interface netsh printed nothing for' (($rfBody -match 'Get-WifiInterfaceView -Sample \$sample') -and ($rfBody -match '(?s)if \(-not \$wifi\.NetshListed\) \{.*?continue\s*\}.*?\$rssi = ')) True
 Assert-Equal '#62 row: the ordinary row names the source of its state' ($rfBody -match '\$stateSource') True
 Assert-Equal '#62 row r2: the manual check of the not-listed row is chosen by the witness - Refused, then AccessDenied, then the plain read' ($rfBody -match '(?s)if \(\$wifi\.Refused\) \{ \$details \+= "[^"]*ms-settings:privacy-location[^"]*" \}\s*elseif \(\$wifi\.AccessDenied\) \{ \$details \+= "[^"]*" \}\s*else \{ \$details \+= "[^"]*" \}') True
+
+# ---------------------------------------------------------------------------
+# backlog #65: the counters read again inside the sample window, at least Tests.RetransmissionIntervalSeconds apart,
+# and a measured row placing its retransmissions in time beside the whole-window figure. Language-neutral throughout -
+# numbers, tokens, statuses and line counts; the prose is each package's own.
+# ---------------------------------------------------------------------------
+# The one rule for the interval: 2 as shipped, 0 is off, and anything the file gets wrong is the shipped 2.
+$thresholds65 = $script:Config.Thresholds
+function Set-Interval65($value) {
+    if ($null -eq $value) { $script:Config = [pscustomobject]@{ Thresholds = $thresholds65; Tests = [pscustomobject]@{} } }
+    else { $script:Config = [pscustomobject]@{ Thresholds = $thresholds65; Tests = [pscustomobject]@{ RetransmissionIntervalSeconds = $value } } }
+}
+Set-Interval65 $null
+Assert-Equal '#65 interval: absent from the file is the shipped 2' (Get-TcpIntervalSeconds) 2
+Set-Interval65 0
+Assert-Equal '#65 interval: 0 is off, not a mistake' (Get-TcpIntervalSeconds) 0
+Set-Interval65 3
+Assert-Equal '#65 interval: a whole number is taken as it is' (Get-TcpIntervalSeconds) 3
+Set-Interval65 -1
+Assert-Equal '#65 interval: a negative value is the shipped 2' (Get-TcpIntervalSeconds) 2
+Set-Interval65 2.5
+Assert-Equal '#65 interval: a fraction is the shipped 2' (Get-TcpIntervalSeconds) 2
+Set-Interval65 'abc'
+Assert-Equal '#65 interval: text is the shipped 2' (Get-TcpIntervalSeconds) 2
+Set-Interval65 2
+
+# The read inside the window: one attempt per class, never a second, its failure kept with the phase that names it.
+Reset-CimStub @{ $v4Class = @('fail') }
+$intervalRead = Read-TcpIntervalCounters
+Assert-Equal '#65 read: the class that failed was attempted once' (Get-CimCallCount $v4Class) 1
+Assert-Equal '#65 read: the class after the one that failed is not attempted in that pass (PR #56, round 1)' ("{0}/{1}" -f (Get-CimCallCount $v6Class), $intervalRead.Counters.ContainsKey('TCPv6')) '0/False'
+Assert-Equal '#65 read: no counter is invented for the one that failed' ($intervalRead.Counters.ContainsKey('TCPv4')) False
+Assert-Equal '#65 read: the failed attempt is kept with its phase and its number' ("{0}/{1}/{2}" -f @($intervalRead.FailedAttempts).Count, @($intervalRead.FailedAttempts)[0].Phase, @($intervalRead.FailedAttempts)[0].Attempt) '1/interval/1'
+Assert-Equal '#65 read: and is named apart from a measured read of the same number' ((Format-TcpAttemptList @($intervalRead.FailedAttempts)) -ne (Format-TcpAttemptList @([pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'read'; Attempt = 1 }))) True
+Reset-CimStub @{}
+$intervalClean = Read-TcpIntervalCounters
+Assert-Equal '#65 read: a clean read carries both classes and no failure' ("{0}/{1}" -f $intervalClean.Counters.Count, @($intervalClean.FailedAttempts).Count) '2/0'
+Assert-Equal '#65 read: the reader passes no attempt count, so the helper makes its single attempt' ((Get-FunctionBody 'Read-TcpIntervalCounters') -match '-Attempts') False
+
+# The due-check: nothing before the interval has passed, one read once it has, none at all where the interval is 0,
+# and after a read that failed nothing more for the run - not even through the extension.
+$script:TcpIntervalSampling = $null
+Reset-CimStub @{}
+Start-TcpIntervalSampling -IntervalSeconds 2 -Since (Get-Date)
+Invoke-TcpIntervalReadIfDue
+Assert-Equal '#65 due: not yet' (@($script:TcpIntervalSampling.Reads).Count) 0
+$script:TcpIntervalSampling.LastRead = (Get-Date).AddSeconds(-3)
+Invoke-TcpIntervalReadIfDue
+Assert-Equal '#65 due: one read once the interval has passed' (@($script:TcpIntervalSampling.Reads).Count) 1
+Assert-Equal '#65 due: the reading carries both classes' ($script:TcpIntervalSampling.Reads[0].Counters.Count) 2
+Invoke-TcpIntervalReadIfDue
+Assert-Equal '#65 due: and not again until the next interval' (@($script:TcpIntervalSampling.Reads).Count) 1
+Assert-Equal '#65 due: the last read is the reference for the next' (((Get-Date) - $script:TcpIntervalSampling.LastRead).TotalSeconds -lt 2) True
+Stop-TcpIntervalSampling
+$script:TcpIntervalSampling.LastRead = (Get-Date).AddSeconds(-3)
+Invoke-TcpIntervalReadIfDue
+Assert-Equal '#65 due: nothing after the window is closed' (@($script:TcpIntervalSampling.Reads).Count) 1
+$script:TcpIntervalSampling = $null
+Reset-CimStub @{}
+Start-TcpIntervalSampling -IntervalSeconds 0 -Since (Get-Date).AddSeconds(-10)
+Invoke-TcpIntervalReadIfDue
+Assert-Equal '#65 due: an interval of 0 reads nothing' ("{0}/{1}" -f @($script:TcpIntervalSampling.Reads).Count, $script:TcpIntervalSampling.Active) '0/False'
+$script:TcpIntervalSampling = $null
+Reset-CimStub @{ $v4Class = @('fail') }
+Start-TcpIntervalSampling -IntervalSeconds 2 -Since (Get-Date).AddSeconds(-3)
+Invoke-TcpIntervalReadIfDue
+$stopped65 = $script:TcpIntervalSampling
+Assert-Equal '#65 stop: the failed read is kept, with its attempt' ("{0}/{1}" -f @($stopped65.Reads).Count, @($stopped65.FailedAttempts).Count) '1/1'
+Assert-Equal '#65 stop: the sampling is over, named by the class that failed' ("{0}/{1}/{2}" -f $stopped65.Active, ($null -ne $stopped65.StoppedAt), $stopped65.StopReason) 'False/True/TCPv4'
+Assert-Equal '#65 stop: the class that failed was attempted once, not twice' (Get-CimCallCount $v4Class) 1
+Assert-Equal '#65 stop: the pass stopped at the class that failed - the other was not attempted' ("{0}/{1}" -f (Get-CimCallCount $v6Class), $stopped65.Reads[0].Counters.ContainsKey('TCPv6')) '0/False'
+Start-TcpIntervalSampling -IntervalSeconds 2 -Since (Get-Date).AddSeconds(-3) -Extension
+Invoke-TcpIntervalReadIfDue
+Assert-Equal '#65 stop: the extension does not reopen a stopped sampling' ("{0}/{1}" -f $stopped65.Active, @($stopped65.Reads).Count) 'False/1'
+Assert-Equal '#65 stop: the stop line names the class' ((@(Get-TcpIntervalStopLine -State $stopped65) -join '') -match 'TCPv4') True
+Assert-Equal '#65 stop: no stop line without a stop' (@(Get-TcpIntervalStopLine -State ([pscustomobject]@{ StoppedAt = $null })).Count) 0
+
+# The table: the window's own readings in stamp order, a reading outside the window left out, deltas per interval.
+$t65 = Get-Date '2026-09-13T07:00:00'
+function New-Read65($offset, $v4Sent, $v4Retrans, $v6Sent = 5000, $v6Retrans = 0, $extension = $false) {
+    return [pscustomobject]@{ Timestamp = $t65.AddSeconds($offset); Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65.AddSeconds($offset) $v4Sent $v4Retrans); 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds($offset + 0.1) $v6Sent $v6Retrans) }; FailedAttempts = @(); Extension = $extension }
+}
+$start65 = New-CounterFixture 'TCPv4' $t65 100000 1000
+$end65 = New-CounterFixture 'TCPv4' $t65.AddSeconds(8.8) 103000 1057
+$burstReads = @((New-Read65 2.1 100120 1000), (New-Read65 4.3 100460 1048), (New-Read65 6.4 100670 1053), (New-Read65 12.0 200000 9999))
+$burstTable = @(Get-TcpIntervalTable -Protocol 'TCPv4' -Start $start65 -End $end65 -Reads $burstReads)
+Assert-Equal '#65 table: three readings inside the window make four intervals, the one after it left out' $burstTable.Count 4
+Assert-Equal '#65 table: each interval carries its own deltas' ((@($burstTable | ForEach-Object { "{0}/{1}" -f $_.Sent, $_.Retransmitted })) -join ',') '120/0,340/48,210/5,2330/4'
+Assert-Equal '#65 table: and its own seconds, from the stamps' ((@($burstTable | ForEach-Object { [math]::Round($_.Seconds, 1) })) -join ',') '2.1,2.2,2.1,2.4'
+Assert-Equal '#65 table: the offsets run from the baseline stamp' ("{0}-{1}" -f $burstTable[1].FromSeconds, $burstTable[1].ToSeconds) '2.1-4.3'
+Assert-Equal '#65 table: a reading that went backwards empties the table' (@(Get-TcpIntervalTable -Protocol 'TCPv4' -Start $start65 -End $end65 -Reads @((New-Read65 3.0 99000 1000))).Count) 0
+Assert-Equal '#65 table: no reading inside the window is one interval' (@(Get-TcpIntervalTable -Protocol 'TCPv4' -Start $start65 -End $end65 -Reads @()).Count) 1
+# A pass that stopped at TCPv6 (PR #56, round 1) carries TCPv4's reading alone: TCPv4's table takes it, TCPv6's skips it.
+$partialRead65 = [pscustomobject]@{ Timestamp = $t65.AddSeconds(2); Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65.AddSeconds(2) 100100 1000) }; FailedAttempts = @() }
+Assert-Equal '#65 table: a read where the second class failed keeps the first class''s reading, and the other table skips it' ("{0}/{1}" -f (@(Get-TcpIntervalTable -Protocol 'TCPv4' -Start $start65 -End $end65 -Reads @($partialRead65))).Count, (@(Get-TcpIntervalTable -Protocol 'TCPv6' -Start (New-CounterFixture 'TCPv6' $t65 5000 0) -End (New-CounterFixture 'TCPv6' $t65.AddSeconds(8.9) 5000 0) -Reads @($partialRead65))).Count) '2/1'
+function New-State65($reads, $interval = 2, $failed = @(), $stoppedAt = $null, $reason = '') {
+    return [pscustomobject]@{ Active = $false; IntervalSeconds = $interval; LastRead = $t65; Extension = $false; Reads = @($reads); FailedAttempts = @($failed); StoppedAt = $stoppedAt; StopReason = $reason }
+}
+Assert-Equal '#65 lines: a backwards reading is one sentence' (@(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals @() -RetransDelta 5 -SampleSeconds 8 -State (New-State65 @())).Count) 1
+Assert-Equal '#65 lines: nothing to place where nothing was retransmitted' (@(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $burstTable -RetransDelta 0 -SampleSeconds 8.8 -State (New-State65 $burstReads)).Count) 0
+Assert-Equal '#65 lines: nothing where the reads are off' (@(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $burstTable -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 $burstReads 0)).Count) 0
+Assert-Equal '#65 lines: the header, four intervals, the worst and the disclaimer' (@(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $burstTable -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 $burstReads)).Count) 7
+
+# The acceptance's two cases: a burst inside a healthy window and an even spread that reach the same totals - the same
+# status and the same message, and only the placement telling them apart.
+function Get-Rows65($reads, $sent, $retrans, $interval = 2, $failed = @(), $stoppedAt = $null, $reason = '') {
+    $script:TcpIntervalSampling = New-State65 $reads $interval $failed $stoppedAt $reason
+    $before = [pscustomobject]@{ Timestamp = $t65; Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65 100000 1000); 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(0.1) 5000 0) }; Errors = @(); FailedAttempts = @(); WarmUpFailures = @() }
+    $after = [pscustomobject]@{ Timestamp = $t65.AddSeconds(8.9); Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65.AddSeconds(8.8) (100000 + $sent) (1000 + $retrans)); 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(8.9) 5000 0) }; Errors = @(); FailedAttempts = @(); WarmUpFailures = @() }
+    $script:TcpRows = New-Object System.Collections.ArrayList
+    Compare-TcpCounters -Before $before -After $after
+    return @($script:TcpRows)
+}
+$burstRows = Get-Rows65 $burstReads 3000 57
+$burstV4 = @($burstRows | Where-Object { $_.Check -eq 'TCPv4' })[0]
+$evenReads = @((New-Read65 2.1 100750 1014), (New-Read65 4.3 101500 1028), (New-Read65 6.4 102250 1043))
+$evenRows = Get-Rows65 $evenReads 3000 57
+$evenV4 = @($evenRows | Where-Object { $_.Check -eq 'TCPv4' })[0]
+Assert-Equal '#65 rows: 57 of 3000 is 1.9% either way, a pass either way' ("{0}/{1}" -f $burstV4.Status, $evenV4.Status) 'PASS/PASS'
+Assert-Equal '#65 rows: and the same message' ($burstV4.Message -eq $evenV4.Message) True
+# The worst-interval sentence orders its numbers differently in the two packages, so a line is asked for all of them at once.
+function Test-DetailLineHasAll($row, [string[]]$numbers) {
+    $lines = @([string]$row.Details -split "`r`n|`n")
+    return (@($lines | Where-Object { $line = $_; @($numbers | Where-Object { $line -match ('(?<![\d.])' + [regex]::Escape($_) + '(?![\d.])') }).Count -eq $numbers.Count }).Count -gt 0)
+}
+Assert-Equal '#65 rows: the burst names 48 of the 57 in one interval, 84%' (Test-DetailLineHasAll $burstV4 @('48', '57', '84')) True
+Assert-Equal '#65 rows: in 2.2 seconds, a quarter of the window' (Test-DetailLineHasAll $burstV4 @('84', '2.2', '25')) True
+Assert-Equal '#65 rows: the even spread names 15 of the 57, 26%' (Test-DetailLineHasAll $evenV4 @('15', '57', '26')) True
+Assert-Equal '#65 rows: four interval lines on each' ("{0}/{1}" -f (Get-DetailMatchCount $burstV4 '(?m)^  [\d.]+-[\d.]+ '), (Get-DetailMatchCount $evenV4 '(?m)^  [\d.]+-[\d.]+ ')) '4/4'
+Assert-Equal '#65 rows: the interval lines carry counts and no percentage' ((@(([string]$burstV4.Details -split "`r`n|`n") | Where-Object { $_ -match '^  [\d.]+-[\d.]+ ' -and $_ -match '%' })).Count) 0
+Assert-Equal '#65 rows: the whole-window figures are untouched' (($burstV4.Details -match '(?<![\d.])3000(?![\d.])') -and ($burstV4.Message -match '(?<![\d.])57(?![\d.])')) True
+Assert-Equal '#65 rows: the row decides the run as it did' $burstV4.Weightless False
+Assert-Equal '#65 rows: the other protocol, with nothing retransmitted, places nothing' (Get-DetailMatchCount @($burstRows | Where-Object { $_.Check -eq 'TCPv6' })[0] '(?m)^  [\d.]+-[\d.]+ ') 0
+$quietV4 = @((Get-Rows65 $burstReads 3000 0) | Where-Object { $_.Check -eq 'TCPv4' })[0]
+Assert-Equal '#65 rows: a window without a retransmission has nothing to place, and says nothing' (Get-DetailMatchCount $quietV4 '(?m)^  [\d.]+-[\d.]+ ') 0
+$offV4 = @((Get-Rows65 $burstReads 3000 57 0) | Where-Object { $_.Check -eq 'TCPv4' })[0]
+Assert-Equal '#65 rows: with the reads off, the row is the row it was' ("{0}/{1}" -f (Get-DetailMatchCount $offV4 '(?m)^  [\d.]+-[\d.]+ '), $offV4.Status) '0/PASS'
+$noneInsideV4 = @((Get-Rows65 @() 3000 57) | Where-Object { $_.Check -eq 'TCPv4' })[0]
+Assert-Equal '#65 rows: no read inside the window is one sentence more than the row with the reads off, and no interval line' ("{0}/{1}" -f (Get-DetailMatchCount $noneInsideV4 '(?m)^  [\d.]+-[\d.]+ '), ((Get-DetailLineCount $noneInsideV4) - (Get-DetailLineCount $offV4))) '0/1'
+
+# A read inside the window that failed: named on both protocols' rows - it lies inside both windows - with its seconds
+# in the note and the stop line on every row; no row of its own, no status moved, the intervals before it standing.
+$failed65 = @([pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'interval'; Attempt = 1; Seconds = 8.3; Error = 'Timed out'; Extension = $false })
+$stopReads = @((New-Read65 2.1 100120 1000), [pscustomobject]@{ Timestamp = $t65.AddSeconds(4.5); Counters = @{}; FailedAttempts = $failed65; Extension = $false })
+$stopRows = Get-Rows65 $stopReads 3000 57 2 $failed65 $t65.AddSeconds(4.5) 'TCPv4'
+Assert-Equal '#65 failure: still one row per protocol, no row for the failed read' (@($stopRows).Count) 2
+$stopV4 = @($stopRows | Where-Object { $_.Check -eq 'TCPv4' })[0]
+$stopV6 = @($stopRows | Where-Object { $_.Check -eq 'TCPv6' })[0]
+Assert-Equal '#65 failure: the seconds it spent are in both rows'' window notes' (($stopV4.Details -match '(?<![\d.])8\.3(?![\d.])') -and ($stopV6.Details -match '(?<![\d.])8\.3(?![\d.])')) True
+Assert-Equal '#65 failure: named as a read between the samples on both' (($stopV4.Details -match 'TCPv4 #1') -and ($stopV6.Details -match 'TCPv4 #1')) True
+Assert-Equal '#65 failure: the stop line is on both rows, with the time' (($stopV4.Details -match '07:00:04') -and ($stopV6.Details -match '07:00:04')) True
+Assert-Equal '#65 failure: the status is the measurement''s' $stopV4.Status 'PASS'
+Assert-Equal '#65 failure: the intervals before it stand - two, the last running to the ending sample' (Get-DetailMatchCount $stopV4 '(?m)^  [\d.]+-[\d.]+ ') 2
+# And where a counter could not be read at all, its Unable to Check row carries the stop line as well - the failed
+# read is named on every row this analysis writes.
+$script:TcpIntervalSampling = New-State65 $stopReads 2 $failed65 $t65.AddSeconds(4.5) 'TCPv4'
+$errBefore65 = [pscustomobject]@{ Timestamp = $t65; Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65 100000 1000); 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(0.1) 5000 0) }; Errors = @(); FailedAttempts = @(); WarmUpFailures = @() }
+$errAfter65 = [pscustomobject]@{ Timestamp = $t65.AddSeconds(24.9); Counters = @{ 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(24.9) 5000 0) }; Errors = @([pscustomobject]@{ Protocol = 'TCPv4'; Error = 'Timed out'; Diagnostics = '' }); FailedAttempts = @([pscustomobject]@{ Protocol = 'TCPv4'; Attempt = 1; Seconds = 8.0; Error = 'Timed out' }, [pscustomobject]@{ Protocol = 'TCPv4'; Attempt = 2; Seconds = 8.0; Error = 'Timed out' }); WarmUpFailures = @() }
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $errBefore65 -After $errAfter65
+$errRow65 = @($script:TcpRows | Where-Object { $_.Status -eq 'ERROR' })[0]
+Assert-Equal '#65 failure: the row of a counter that could not be read carries the stop line too' ($errRow65.Details -match '07:00:04') True
+# The window note of the protocol that was read sums the ending read's two failed attempts (8 + 8) and the failed read
+# inside the window (8.3) on the line that names them - 24.3, which a note that left the interior read out cannot print.
+Assert-Equal '#65 failure: and the protocol that was read still names the failed read inside its window, its seconds in the note' ((Get-DetailLine @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv6' })[0] 'TCPv4 #1') -match '(?<![\d.])24\.3(?![\d.])') True
+
+# Through an extension: a failed read taken while the window was being extended is inside only the windows the
+# extension closed - TCPv4 here - and outside TCPv6's, whose reading kept the first stamp; the stop line is on both.
+$extFailed = @([pscustomobject]@{ Protocol = 'TCPv4'; Phase = 'interval'; Attempt = 1; Seconds = 8.0; Error = 'Timed out'; Extension = $true })
+$script:TcpIntervalSampling = New-State65 @((New-Read65 2.1 100120 1000), [pscustomobject]@{ Timestamp = $t65.AddSeconds(10.5); Counters = @{}; FailedAttempts = $extFailed; Extension = $true }) 2 $extFailed $t65.AddSeconds(10.5) 'TCPv4'
+$extBefore = [pscustomobject]@{ Timestamp = $t65; Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65 100000 1000); 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(0.1) 5000 0) }; Errors = @(); FailedAttempts = @(); WarmUpFailures = @() }
+$extAfter = [pscustomobject]@{ Timestamp = $t65.AddSeconds(18.9); Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65.AddSeconds(18.8) 100400 1006); 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(8.9) 5000 0) }; Errors = @(); FailedAttempts = @(); WarmUpFailures = @(); Extended = $true; ExtendedProtocols = @('TCPv4') }
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $extBefore -After $extAfter
+$extV4 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv4' })[0]
+$extV6 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv6' })[0]
+Assert-Equal '#65 extension: the failed read is inside the window the extension closed' ($extV4.Details -match '(?<![\d.])8(?![\d.])[^\r\n]*TCPv4 #1') True
+Assert-Equal '#65 extension: and not inside the one it did not close' ($extV6.Details -match 'TCPv4 #1') False
+Assert-Equal '#65 extension: the stop line is on both' (($extV4.Details -match '07:00:10') -and ($extV6.Details -match '07:00:10')) True
+$script:TcpIntervalSampling = $null
+
+# Where the reads are taken, read off the AST: after every step, inside the wait, inside the spread probes' slices;
+# opened at the baseline stamp, closed before the ending read, reopened for the extension and closed before its read;
+# the state cleared with the results; and no fourth snapshot call - the read inside the window is its own reader.
+Assert-Equal '#65 ast: the step wrapper runs the due-check once, after its try and catch' ((Get-FunctionBody 'Invoke-CheckStep') -match '(?s)catch \{.*\}\s*(#[^\r\n]*\s*)*Invoke-TcpIntervalReadIfDue\s*return \$result') True
+Assert-Equal '#65 ast: and only once' (([regex]::Matches((Get-FunctionBody 'Invoke-CheckStep'), 'Invoke-TcpIntervalReadIfDue')).Count) 1
+Assert-Equal '#65 ast: the wait loop runs it after every sleep - behind the deadline recheck since round 2' ((Get-FunctionBody 'Wait-ForMinimumTcpSample') -match 'Start-Sleep -Milliseconds[^\r\n]*\s*(#[^\r\n]*\s*)*if [^\r\n]*\s*Invoke-TcpIntervalReadIfDue') True
+Assert-Equal '#65 ast: and the wait is clock-based, so a read inside it lengthens nothing' ((Get-FunctionBody 'Wait-ForMinimumTcpSample') -match 'while \(\$true\)') True
+Assert-Equal '#65 ast: the spread probes run it after every slice' ((Get-FunctionBody 'Invoke-PingMeasurement') -match 'Start-Sleep -Milliseconds \$sliceMs \}\s*Invoke-TcpIntervalReadIfDue') True
+$runBody65 = Get-FunctionBody 'Run-AllChecks'
+Assert-Equal '#65 ast: the run clears the state with the results' ($runBody65 -match '\$script:TcpIntervalSampling = \$null') True
+Assert-Equal '#65 ast: opens the reads at the baseline stamp' ($runBody65 -match '\$tcpSampleStart = Get-Date\s*(#[^\r\n]*\s*)*Start-TcpIntervalSampling -IntervalSeconds \(Get-TcpIntervalSeconds\) -Since \$tcpSampleStart') True
+Assert-Equal '#65 ast: closes them before the ending read' ($runBody65 -match 'Stop-TcpIntervalSampling\s*return \(Get-TcpCounterSnapshot\)') True
+Assert-Equal '#65 ast: reopens them for the extension, with the first ending snapshot as the boundary point and the extension''s deadline, and closes them before its read' ($runBody65 -match '(?s)Start-TcpIntervalSampling -IntervalSeconds \(Get-TcpIntervalSeconds\) -Since \(Get-Date\) -Extension -Boundary \$tcpAfter -Deadline \(Get-Date\)\.AddSeconds\(\$minimumSampleSeconds\)\s*Wait-ForMinimumTcpSample[^\r\n]*\s*Stop-TcpIntervalSampling\s*return \(Merge-TcpEndingSnapshot') True
+Assert-Equal '#65 ast: the configuration check names the key' ((Get-FunctionBody 'Test-ConfigurationSemantics') -match 'RetransmissionIntervalSeconds') True
+Assert-Equal '#65 ast: the run options carry it for the profile' ((Get-FunctionBody 'Set-RunOptions') -match 'IntervalSeconds = Get-TcpIntervalSeconds') True
+Assert-Equal '#65 ast: no snapshot call was added' (@($scriptAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-TcpCounterSnapshot' }, $true)).Count) 3
+
+
+# PR #56, round 2. (a) A read due on the last sleep of the wait would run after the minimum had passed and add its whole
+# cost to the run: the wait is loaded with the progress writer stubbed, and the clock decides, so these take a few seconds.
+function Set-UiProgress { param([int]$Percent, [string]$Text) }
+$script:GuiAvailable = $false
+$script:TcpIntervalSampling = $null
+Reset-CimStub @{}
+Start-TcpIntervalSampling -IntervalSeconds 1 -Since (Get-Date).AddSeconds(-5)
+Wait-ForMinimumTcpSample -StartTime (Get-Date).AddSeconds(-5) -MinimumSeconds 1
+Assert-Equal '#65 wait r2: a wait already past its minimum reads nothing' (@($script:TcpIntervalSampling.Reads).Count) 0
+Wait-ForMinimumTcpSample -StartTime (Get-Date).AddSeconds(-0.8) -MinimumSeconds 1
+Assert-Equal '#65 wait r2: a read due on the last sleep is not taken, because the minimum had passed' (@($script:TcpIntervalSampling.Reads).Count) 0
+$waitStarted65 = Get-Date
+Wait-ForMinimumTcpSample -StartTime (Get-Date) -MinimumSeconds 3
+$waited65 = ((Get-Date) - $waitStarted65).TotalSeconds
+Assert-Equal '#65 wait r2: with time left the reads are taken inside the wait, and the wait still ends at its minimum' ("{0}/{1}" -f (@($script:TcpIntervalSampling.Reads).Count -ge 1), (($waited65 -ge 3) -and ($waited65 -lt 4.5))) 'True/True'
+Assert-Equal '#65 wait r2: the deadline is checked between the sleep and the due-check, off the AST' ((Get-FunctionBody 'Wait-ForMinimumTcpSample') -match 'Start-Sleep -Milliseconds[^\r\n]*\s*(#[^\r\n]*\s*)*if \(\(\(Get-Date\) - \$StartTime\)\.TotalSeconds -ge \$MinimumSeconds\) \{ return \}\s*Invoke-TcpIntervalReadIfDue') True
+# (b) The reading that closed the first window stays a point of the table when the window is extended, so the intervals
+# of the first window and of the extension are told apart; a protocol the extension did not close, whose ending stamp is
+# that very reading, does not count it twice.
+$script:TcpIntervalSampling = $null
+$boundary65 = [pscustomobject]@{ Timestamp = $t65.AddSeconds(8.9); Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65.AddSeconds(8.8) 100300 1004); 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(8.9) 5000 0) }; Errors = @(); FailedAttempts = @(); WarmUpFailures = @() }
+Start-TcpIntervalSampling -IntervalSeconds 2 -Since (Get-Date) -Extension -Boundary $boundary65
+Assert-Equal '#65 boundary r2: reopening for the extension adds the first ending reading as a point, marked as one' ("{0}/{1}/{2}" -f @($script:TcpIntervalSampling.Reads).Count, [bool]@($script:TcpIntervalSampling.Reads)[0].Boundary, @($script:TcpIntervalSampling.Reads)[0].Counters.Count) '1/True/2'
+$script:TcpIntervalSampling = $null
+Start-TcpIntervalSampling -IntervalSeconds 2 -Since (Get-Date)
+Assert-Equal '#65 boundary r2: the first opening adds no point' (@($script:TcpIntervalSampling.Reads).Count) 0
+$extReads65 = @((New-Read65 2.1 100120 1000), [pscustomobject]@{ Timestamp = $t65.AddSeconds(8.9); Counters = $boundary65.Counters; FailedAttempts = @(); Extension = $false; Boundary = $true }, [pscustomobject]@{ Timestamp = $t65.AddSeconds(10.5); Counters = @{}; FailedAttempts = $extFailed; Extension = $true })
+$extV4Table65 = @(Get-TcpIntervalTable -Protocol 'TCPv4' -Start (New-CounterFixture 'TCPv4' $t65 100000 1000) -End (New-CounterFixture 'TCPv4' $t65.AddSeconds(18.8) 100400 1006) -Reads $extReads65)
+Assert-Equal '#65 boundary r2: the extended window is told apart from the first - three intervals, the boundary at 8.8' ("{0}/{1}" -f $extV4Table65.Count, $extV4Table65[1].ToSeconds) '3/8.8'
+Assert-Equal '#65 boundary r2: with the first window''s and the extension''s retransmissions apart' ((@($extV4Table65 | ForEach-Object { $_.Retransmitted })) -join ',') '0,4,2'
+Assert-Equal '#65 boundary r2: a protocol the extension did not close does not count the boundary twice' (@(Get-TcpIntervalTable -Protocol 'TCPv6' -Start (New-CounterFixture 'TCPv6' $t65.AddSeconds(0.1) 5000 0) -End (New-CounterFixture 'TCPv6' $t65.AddSeconds(8.9) 5000 0) -Reads $extReads65).Count) 2
+$script:TcpIntervalSampling = $null
+
+# PR #56, round 3: the reads close at the wait's deadline, before the two steps that run between the wait and the ending
+# read - so no read is taken after the minimum on that path either.
+Assert-Equal '#65 ast r3: the run closes the reads at the wait''s deadline' ((Get-FunctionBody 'Run-AllChecks') -match 'Wait-ForMinimumTcpSample -StartTime \$tcpSampleStart -MinimumSeconds \$minimumSampleSeconds\s*(#[^\r\n]*\s*)*Stop-TcpIntervalSampling') True
+
+# PR #56, round 4: a window with retransmissions and no reading inside it says why - none was due, or the reads stopped at
+# a read that failed before this window had one - and the two sentences differ, because the second row also names the
+# failed read and its seconds, which "none was due" beside them would contradict.
+$oneInterval65 = @(Get-TcpIntervalTable -Protocol 'TCPv4' -Start $start65 -End $end65 -Reads @())
+$noneDueLine65 = @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $oneInterval65 -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 @()))[0]
+$failedFirstLine65 = @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $oneInterval65 -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 @() 2 $failed65 $t65.AddSeconds(2.5) 'TCPv4') -FailedInside $failed65)[0]
+Assert-Equal '#65 lines r4: one sentence either way' ("{0}/{1}" -f @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $oneInterval65 -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 @())).Count, @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $oneInterval65 -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 @() 2 $failed65 $t65.AddSeconds(2.5) 'TCPv4') -FailedInside $failed65).Count) '1/1'
+Assert-Equal '#65 lines r4: and not the same sentence - a failed first read is not "none was due"' ($failedFirstLine65 -ne $noneDueLine65) True
+$failedFirstRows65 = Get-Rows65 @([pscustomobject]@{ Timestamp = $t65.AddSeconds(2.5); Counters = @{}; FailedAttempts = $failed65; Extension = $false }) 3000 57 2 $failed65 $t65.AddSeconds(2.5) 'TCPv4'
+$failedFirstV4 = @($failedFirstRows65 | Where-Object { $_.Check -eq 'TCPv4' })[0]
+Assert-Equal '#65 rows r4: the row whose first read inside the window failed carries that sentence, the failed read and the stop line, and not "none was due"' ("{0}/{1}/{2}/{3}" -f ($failedFirstV4.Details -like ('*' + $failedFirstLine65 + '*')), ($failedFirstV4.Details -like ('*' + $noneDueLine65 + '*')), ($failedFirstV4.Details -match 'TCPv4 #1'), ($failedFirstV4.Details -match '07:00:02')) 'True/False/True/True'
+Assert-Equal '#65 rows r4: the row with no read due keeps its own sentence' ($noneInsideV4.Details -like ('*' + $noneDueLine65 + '*')) True
+
+# PR #56, round 5: the window's deadline travels with the state, and the due-check takes nothing once it has passed -
+# from any path - which is the one rule behind the three paths rounds 2, 3 and 5 found one at a time.
+$script:TcpIntervalSampling = $null
+Reset-CimStub @{}
+Start-TcpIntervalSampling -IntervalSeconds 1 -Since (Get-Date).AddSeconds(-5) -Deadline (Get-Date).AddSeconds(-1)
+Invoke-TcpIntervalReadIfDue
+Assert-Equal '#65 deadline r5: a read due after the deadline is not taken, and the sampling closes' ("{0}/{1}" -f @($script:TcpIntervalSampling.Reads).Count, $script:TcpIntervalSampling.Active) '0/False'
+$script:TcpIntervalSampling = $null
+Start-TcpIntervalSampling -IntervalSeconds 1 -Since (Get-Date).AddSeconds(-5) -Deadline (Get-Date).AddSeconds(30)
+Invoke-TcpIntervalReadIfDue
+Assert-Equal '#65 deadline r5: before the deadline the read is taken' (@($script:TcpIntervalSampling.Reads).Count) 1
+$script:TcpIntervalSampling = $null
+Start-TcpIntervalSampling -IntervalSeconds 1 -Since (Get-Date).AddSeconds(-5)
+Invoke-TcpIntervalReadIfDue
+Assert-Equal '#65 deadline r5: a state opened without a deadline reads as before' (@($script:TcpIntervalSampling.Reads).Count) 1
+$script:TcpIntervalSampling = $null
+Assert-Equal '#65 deadline r5: the run opens the reads with the window''s deadline - the baseline stamp plus the configured minimum' ($runBody65 -match 'Start-TcpIntervalSampling -IntervalSeconds \(Get-TcpIntervalSeconds\) -Since \$tcpSampleStart -Deadline \$tcpSampleStart\.AddSeconds\(\$minimumSampleSeconds\)') True
+Assert-Equal '#65 deadline r5: and the minimum is computed before the window opens' ($runBody65.IndexOf('$minimumSampleSeconds = [math]::Max(1,') -lt $runBody65.IndexOf('$tcpSampleStart = Get-Date')) True
+Assert-Equal '#65 deadline r5: the due-check refuses past the deadline before it asks whether a read is due' ((Get-FunctionBody 'Invoke-TcpIntervalReadIfDue') -match '(?s)if \(\$null -ne \$state\.Deadline -and \(Get-Date\) -ge \$state\.Deadline\) \{ \$state\.Active = \$false; return \}.*?TotalSeconds -lt \$state\.IntervalSeconds') True
+
+# PR #56, round 7: the sentence follows the failed reads inside THIS protocol's window. A read that failed during the
+# extension is outside the window of a protocol the extension did not close - its ending stamp is the first one - so
+# its block says none was due, while the protocol the extension closed, with that read inside its window, says the
+# reads stopped at it.
+$script:TcpIntervalSampling = New-State65 @([pscustomobject]@{ Timestamp = $t65.AddSeconds(10.5); Counters = @{}; FailedAttempts = $extFailed; Extension = $true }) 2 $extFailed $t65.AddSeconds(10.5) 'TCPv4'
+$r7Before = [pscustomobject]@{ Timestamp = $t65; Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65 100000 1000); 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(0.1) 5000 100) }; Errors = @(); FailedAttempts = @(); WarmUpFailures = @() }
+$r7After = [pscustomobject]@{ Timestamp = $t65.AddSeconds(18.9); Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65.AddSeconds(18.8) 100400 1006); 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(8.9) 5400 106) }; Errors = @(); FailedAttempts = @(); WarmUpFailures = @(); Extended = $true; ExtendedProtocols = @('TCPv4') }
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $r7Before -After $r7After
+$r7V4 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv4' })[0]
+$r7V6 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv6' })[0]
+$noneDue7 = @(Get-TcpDistributionLines -Protocol 'TCPv6' -Intervals @(Get-TcpIntervalTable -Protocol 'TCPv6' -Start $r7Before.Counters['TCPv6'] -End $r7After.Counters['TCPv6'] -Reads @()) -RetransDelta 6 -SampleSeconds 8.8 -State $script:TcpIntervalSampling -FailedInside @())[0]
+$failedFirst7 = @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals @(Get-TcpIntervalTable -Protocol 'TCPv4' -Start $r7Before.Counters['TCPv4'] -End $r7After.Counters['TCPv4'] -Reads @()) -RetransDelta 6 -SampleSeconds 18.8 -State $script:TcpIntervalSampling -FailedInside $extFailed)[0]
+Assert-Equal '#65 rows r7: a protocol the extension did not close, the failed read outside its window, says none was due' ("{0}/{1}" -f ($r7V6.Details -like ('*' + $noneDue7 + '*')), ($r7V6.Details -like ('*' + $failedFirst7 + '*'))) 'True/False'
+Assert-Equal '#65 rows r7: the protocol the extension closed, that read inside its window, says the reads stopped at it' ("{0}/{1}" -f ($r7V4.Details -like ('*' + $failedFirst7 + '*')), ($r7V4.Details -like ('*' + $noneDue7 + '*'))) 'True/False'
+$script:TcpIntervalSampling = $null
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails
