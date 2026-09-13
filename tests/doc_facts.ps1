@@ -82,7 +82,7 @@ function Get-CodeSpans([string]$path) {
         $stripped = [regex]::Replace($text, '(?s)```.*?```', ' ')
         foreach ($m in [regex]::Matches($stripped, '`([^`\r\n]+)`')) { $out.Add($m.Groups[1].Value.Trim()) }
     }
-    return @($out | Sort-Object -Unique)
+    return @($out | Sort-Object -CaseSensitive -Unique)
 }
 function Get-ScriptFacts([string]$scriptPath) {
     # The -Tag arguments and the exit codes, from the AST rather than from a regular expression: both can be reached
@@ -186,6 +186,8 @@ function Get-ScriptFacts([string]$scriptPath) {
     }
 }
 function Get-EmphasisSpans([string]$path) {
+    # Unique, case-sensitively: a manual writes both `**Information**` and `**information**`, and a fold would keep
+    # one of them - which is how the strings this reader exists for came to be missing from it (PR #64, round 2).
     # What a document quotes from the screen - a verdict line, a badge word - is emphasised rather than coded: it is
     # a phrase the reader sees in the report, not an identifier. Only the coverage direction is ever asserted over
     # these, because a manual emphasises ordinary phrases too and the reverse reading would be prose interpretation.
@@ -201,7 +203,7 @@ function Get-EmphasisSpans([string]$path) {
         foreach ($m in [regex]::Matches($text, '\*\*([^*\r\n]+)\*\*')) { $out.Add($m.Groups[1].Value.Trim()) }
         foreach ($m in [regex]::Matches($text, '(?<![*\w])\*([^*\r\n]+)\*(?![*\w])')) { $out.Add($m.Groups[1].Value.Trim()) }
     }
-    return @($out | Sort-Object -Unique)
+    return @($out | Sort-Object -CaseSensitive -Unique)
 }
 
 function Get-SectionRegion([string]$path, [string]$number) {
@@ -317,12 +319,12 @@ foreach ($lang in $Languages) {
     # The strings the report puts on the screen (backlog #33, tier 2), read from the two functions that produce them:
     # the verdict of a run, and the badge of a row. A document quotes these as text, so the ground truth has to be the
     # text and not the code behind it.
-    $verdictOf = @{}
+    $verdictOf = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
     $fnOverall = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-OverallStatus' }, $true))
     if ($fnOverall.Count -ne 1) { throw ('Get-OverallStatus not found once in ' + $scriptPath) }
     foreach ($m in [regex]::Matches($fnOverall[0].Extent.Text, '(?s)Code\s*=\s*"([A-Z]+)"\s*[\r\n]+\s*Text\s*=\s*"([^"]*)"')) { $verdictOf[$m.Groups[1].Value] = $m.Groups[2].Value }
     $verdicts[$lang] = $verdictOf
-    $badgeOf = @{}
+    $badgeOf = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
     $fnBadge = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-StatusText' }, $true))
     if ($fnBadge.Count -ne 1) { throw ('Get-StatusText not found once in ' + $scriptPath) }
     foreach ($m in [regex]::Matches($fnBadge[0].Extent.Text, '"([A-Z]+)"\s*\{\s*return\s*"([^"]*)"')) { $badgeOf[$m.Groups[1].Value] = $m.Groups[2].Value }
@@ -383,31 +385,31 @@ Write-Output ("Identifiers: {0} tags, {1} fingerprints, {2} configuration keys, 
 # the half that can only be measured after a run and so lives in the chain's resultset step.
 $UserManualOf = @{}
 foreach ($lang in $Languages) { $UserManualOf[$lang] = @($UserManuals | Where-Object { $_ -like ('*\' + $lang + '\*') }) }
-function Get-QuotedStrings([string]$doc) { return @(@(Get-EmphasisSpans $doc) + @(Get-CodeSpans $doc) | Sort-Object -Unique) }
+function Get-QuotedStrings([string]$doc) { return @(@(Get-EmphasisSpans $doc) + @(Get-CodeSpans $doc) | Sort-Object -CaseSensitive -Unique) }
 
 if ($ReportPath) {
     $reportFile = (Resolve-Path -LiteralPath $ReportPath).Path
     $report = Get-Content -LiteralPath $reportFile -Raw -Encoding UTF8 | ConvertFrom-Json
     $lang = $ReportLanguage
     $quoted = @(); foreach ($doc in $UserManualOf[$lang]) { $quoted += @(Get-QuotedStrings $doc) }
-    $quoted = @($quoted | Sort-Object -Unique)
+    $quoted = @($quoted | Sort-Object -CaseSensitive -Unique)
     $name = Split-Path -Leaf $reportFile
 
     # The report carries the code and the text together, and the script is what pairs them: a text that is merely
     # one of the four would pass while the report showed the wrong one of them (PR #64, round 1).
     $verdictText = [string]$report.Overall.Text
     $verdictCode = [string]$report.Overall.Code
-    $expectedText = [string]$verdicts[$lang][$verdictCode]
+    $expectedText = $(if ($verdicts[$lang].ContainsKey($verdictCode)) { [string]$verdicts[$lang][$verdictCode] } else { '' })
     $verdictDetail = $(if (-not $expectedText) { "the report's code " + $verdictCode + " is not one the script produces: " + (@($verdicts[$lang].Keys | Sort-Object) -join ', ') } else { "the report pairs " + $verdictCode + " with '" + $verdictText + "'; the script pairs it with '" + $expectedText + "'" })
     Assert-True ("G2 [{0}] the verdict it shows is the one the {1} script pairs with its code" -f $name, $lang) ($expectedText -and ($expectedText -ceq $verdictText)) $verdictDetail
-    Assert-True ("G3 [{0}] the user manual quotes the verdict it shows" -f $name) ($quoted -contains $verdictText) ("not quoted in the {0} user manual: '{1}'" -f $lang, $verdictText)
+    Assert-True ("G3 [{0}] the user manual quotes the verdict it shows" -f $name) ($quoted -ccontains $verdictText) ("not quoted in the {0} user manual: '{1}'" -f $lang, $verdictText)
 
-    $codes = @(@($report.Results) | ForEach-Object { [string]$_.Status } | Where-Object { $_ } | Sort-Object -Unique)
+    $codes = @(@($report.Results) | ForEach-Object { [string]$_.Status } | Where-Object { $_ } | Sort-Object -CaseSensitive -Unique)
     $badgeProblems = @()
     foreach ($code in $codes) {
-        $badge = [string]$badges[$lang][$code]
+        $badge = $(if ($badges[$lang].ContainsKey($code)) { [string]$badges[$lang][$code] } else { '' })
         if (-not $badge) { $badgeProblems += ("status " + $code + " has no badge in the script"); continue }
-        if ($quoted -notcontains $badge) { $badgeProblems += ("status " + $code + " shows as '" + $badge + "', which the manual does not quote") }
+        if (-not ($quoted -ccontains $badge)) { $badgeProblems += ("status " + $code + " shows as '" + $badge + "', which the manual does not quote") }
     }
     Assert-True ("G4 [{0}] every badge its {1} row(s) carry is defined and quoted ({2})" -f $name, @($report.Results).Count, ($codes -join ', ')) ($badgeProblems.Count -eq 0) ($badgeProblems -join '; ')
 }
@@ -417,10 +419,11 @@ if ($ReportOnly) {
 }
 
 foreach ($lang in $Languages) {
-    $expected = @(@($verdicts[$lang].Values) + @($badges[$lang].Values) | Sort-Object -Unique)
+    $expected = @(@($verdicts[$lang].Values) + @($badges[$lang].Values) | Sort-Object -CaseSensitive -Unique)
     foreach ($doc in $UserManualOf[$lang]) {
         $quoted = Get-QuotedStrings $doc
-        Assert-Covered ("G1 [{0}] every verdict and badge the report can show is quoted ({1})" -f (Split-Path -Leaf $doc), $expected.Count) $expected $quoted
+        $missing = @($expected | Where-Object { -not ($quoted -ccontains $_) })
+        Assert-True ("G1 [{0}] every verdict and badge the report can show is quoted ({1})" -f (Split-Path -Leaf $doc), $expected.Count) ($missing.Count -eq 0) ('not documented: ' + ($missing -join ', '))
     }
 }
 
@@ -498,7 +501,7 @@ if (-not $PackageOnly) {
             foreach ($m in [regex]::Matches($region, '(?m)^\|\s*`([a-z-]+)`\s*' + $middot + '\s*([^|]+)\|')) { $rows.Add(@{ Key = $m.Groups[1].Value; Title = $m.Groups[2].Value.Trim() }) }
         }
         $keys = @($rows | ForEach-Object { $_.Key })
-        Assert-True ("C2 [{0}] its fingerprint table is the chain's own order, the default last ({1} rows)" -f $name, $keys.Count) (($keys -join ',') -eq ($expectedRows -join ',')) ("the table reads " + ($keys -join ', ') + "; the chain tries " + (@($chain | Select-Object -Skip 1) -join ', ') + ", and falls back to " + $default)
+        Assert-True ("C2 [{0}] its fingerprint table is the chain's own order, the default last ({1} rows)" -f $name, $keys.Count) (($keys -join ',') -ceq ($expectedRows -join ',')) ("the table reads " + ($keys -join ', ') + "; the chain tries " + (@($chain | Select-Object -Skip 1) -join ', ') + ", and falls back to " + $default)
         $wrongTitle = @($rows | Where-Object { [string]$fingerprintTitleOf['en-US'][$_.Key] -cne $_.Title } | ForEach-Object { "{0}: the table says '{1}', the script '{2}'" -f $_.Key, $_.Title, [string]$fingerprintTitleOf['en-US'][$_.Key] })
         Assert-True ("C3 [{0}] every row's title is the title the script gives that fingerprint" -f $name) ($wrongTitle.Count -eq 0) ($wrongTitle -join '; ')
     }

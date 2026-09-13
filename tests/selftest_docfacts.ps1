@@ -22,14 +22,17 @@ $PsExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.e
 # The copy: everything the step reads, without the report folders, which it never opens. docs/ is part of it because
 # the technical guides point at the repository design note that lives there, and the step resolves such a path.
 New-Item -ItemType Directory -Force -Path $Tree | Out-Null
-foreach ($sub in @('healthcheck', 'sop', 'docs')) {
-    $src = Join-Path $Root $sub
-    Get-ChildItem -LiteralPath $src -Recurse -File | Where-Object { $_.FullName -notlike '*\Reports\*' } | ForEach-Object {
-        $rel = $_.FullName.Substring($Root.Length).TrimStart('\')
-        $dst = Join-Path $Tree $rel
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
-        Copy-Item -LiteralPath $_.FullName -Destination $dst -Force
-    }
+$ErrorActionPreference = 'Continue'
+$trackedSource = @(& git -C $Root ls-files healthcheck sop docs 2>$null | ForEach-Object { [string]$_ } | Where-Object { $_ })
+$ErrorActionPreference = 'Stop'
+if (-not $trackedSource.Count) { throw 'the checkout''s tracked files could not be listed, and the copy would be whatever the folders happen to hold' }
+foreach ($rel in $trackedSource) {
+    $relWindows = $rel -replace '/', '\'
+    $src = Join-Path $Root $relWindows
+    if (-not (Test-Path -LiteralPath $src)) { continue }
+    $dst = Join-Path $Tree $relWindows
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
+    Copy-Item -LiteralPath $src -Destination $dst -Force
 }
 $Package = Join-Path $Tree 'healthcheck'
 $ErrorActionPreference = 'Continue'
@@ -320,6 +323,18 @@ Assert-Catches 'a fingerprint chain the two scripts try in a different order' 'A
     if ($rows.Count -ne 2) { throw ('expected the dns and quality branches once each, found ' + $rows.Count) }
     $swapped = $text.Substring(0, $rows[0].Index) + $rows[1].Value + $text.Substring($rows[0].Index + $rows[0].Length, $rows[1].Index - $rows[0].Index - $rows[0].Length) + $rows[0].Value + $text.Substring($rows[1].Index + $rows[1].Length)
     Write-All $ZhScript $swapped
+}
+
+Assert-Catches 'a report whose overall code is the right word in the wrong case' 'G2' {
+    # A PowerShell hashtable folds the case of its keys, so 'pass' used to find the PASS entry (PR #64, round 2).
+    [void](New-ReportFixture 'report-lowercase-code.json' 'Overall Healthy' @('PASS') 'pass')
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-lowercase-code.json'), '-ReportLanguage', 'en-US')
+Assert-Catches 'a report row whose status is the right word in the wrong case' 'G4' {
+    [void](New-ReportFixture 'report-lowercase-status.json' 'Overall Healthy' @('pass'))
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-lowercase-status.json'), '-ReportLanguage', 'en-US')
+Assert-Catches 'a user manual quoting a verdict in another case' 'G1' {
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', '**Overall healthy**'))
+    Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('>Overall Healthy</span>', '>Overall healthy</span>'))
 }
 
 # 5m - and the control the third finding is about: a file a run leaves behind is not a file the package ships, so
