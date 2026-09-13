@@ -9,7 +9,8 @@
     main with a body and no row, and how the README's count of open items said twenty-two where the page itself said
     twenty-three. This step reads the page and asserts the four statements the page makes about itself - an open row
     has a body, a body has an open row, no number stands in both tables, no number between 1 and the highest used is
-    in neither and none is below 1 - and then reads the README's Backlog row, which restates the page, against the page: its count of
+    in neither and none is below 1, and every row of the two tables and every item heading has the shape the step
+    reads, so that a line it cannot read is a failure and not a silence - and then reads the README's Backlog row, which restates the page, against the page: its count of
     open items, every item it lists as open (in both directions), the anchor each listed item links to, the count
     each of its groups states, and its list of closed numbers.
 
@@ -88,6 +89,13 @@ $BodyHeading = '^### (\d+) ' + [string][char]0x2014 + ' (.+?)\s*$'
 # The open table is the rows between the Open items heading and the first item body; a table inside a body is that
 # body's own. The bodies are every item heading before the Closed items heading, with the heading text kept for the
 # anchor. The closed table is every row between the Closed items heading and the rules.
+# A line the step cannot read is a failure and not a silence (PR #63, round 6: a row '| -1 |' with a heading
+# '### -1 -' matched neither pattern, so the number reached no check at all). In a table region, every line that
+# begins a table cell is a row and its first cell has to be a number, the header ('#') and the separator ('---')
+# apart; in the open section, every '### ' heading has to be an item's.
+$TableLine = '^\|'
+$TableFurniture = '^\|\s*(#|:?-+:?)\s*\|'
+$malformed = New-Object System.Collections.Generic.List[string]
 $openRows = New-Object System.Collections.Generic.List[string]
 $bodyNumbers = New-Object System.Collections.Generic.List[string]
 $headings = @{}
@@ -99,10 +107,17 @@ for ($i = $openAt + 1; $i -lt $closedAt; $i++) {
         if (-not $headings.ContainsKey($n)) { $headings[$n] = $line.Substring(4).TrimEnd() }
         continue
     }
-    if (($bodyNumbers.Count -eq 0) -and ($line -match $TableRow)) { $openRows.Add([string][int]$Matches[1]) }
+    if ($line.StartsWith('### ')) { $malformed.Add((('line {0}: heading "{1}" is not "N ' + $em + ' title"') -f ($i + 1), $line.TrimEnd())); continue }
+    if ($bodyNumbers.Count -gt 0) { continue }   # inside a body: its own text, tables included
+    if ($line -match $TableRow) { $openRows.Add([string][int]$Matches[1]); continue }
+    if (($line -match $TableLine) -and -not ($line -match $TableFurniture)) { $malformed.Add(('line {0}: open-table row "{1}" does not begin with a number' -f ($i + 1), $line.TrimEnd())) }
 }
 $closedRows = New-Object System.Collections.Generic.List[string]
-for ($i = $closedAt + 1; $i -lt $rulesAt; $i++) { if ($lines[$i] -match $TableRow) { $closedRows.Add([string][int]$Matches[1]) } }
+for ($i = $closedAt + 1; $i -lt $rulesAt; $i++) {
+    $line = $lines[$i]
+    if ($line -match $TableRow) { $closedRows.Add([string][int]$Matches[1]); continue }
+    if (($line -match $TableLine) -and -not ($line -match $TableFurniture)) { $malformed.Add(('line {0}: closed-table row "{1}" does not begin with a number' -f ($i + 1), $line.TrimEnd())) }
+}
 
 $open = @($openRows | Sort-Object { [int]$_ } -Unique)
 $closed = @($closedRows | Sort-Object { [int]$_ } -Unique)
@@ -133,6 +148,7 @@ if ($dupOpen.Count) { $dupDetail += ('twice in the open table: ' + (Format-Numbe
 if ($dupClosed.Count) { $dupDetail += ('twice in the closed table: ' + (Format-Numbers $dupClosed)) }
 if ($dupBody.Count) { $dupDetail += ('two bodies: ' + (Format-Numbers $dupBody)) }
 Assert-True 'I5 no number is listed twice in a table or has two bodies' ($dupDetail.Count -eq 0) ($dupDetail -join '; ')
+Assert-True ('I6 every table row begins with a number and every item heading is "N ' + $em + ' title" ({0} rows, {1} headings)' -f ($openRows.Count + $closedRows.Count), $bodyNumbers.Count) ($malformed.Count -eq 0) (@($malformed | ForEach-Object { if ($_.Length -gt 120) { $_.Substring(0, 120) + '...' } else { $_ } }) -join '; ')
 
 # ------------------------------------------ R. the README's Backlog row against the page
 $readme = Read-Lines $ReadmePath

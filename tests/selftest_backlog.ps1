@@ -135,6 +135,19 @@ Assert-Catches 'a row numbered 0, the README listing it too' 'I4' {
     Edit-All $Backlog ($nl + $nl + '## Adding and closing an item') ($nl + '| 0 | an item before the first | never |' + $nl + $nl + '## Adding and closing an item')
     Edit-All $Readme 'Numbers 1 to 20' 'Numbers 0, 1 to 20'
 }
+Assert-Catches 'a row and a body numbered -1, which no pattern reads' 'I6' {
+    # PR #63, round 6: the row and the heading both fell outside what the two patterns read, so the number reached no
+    # check; a line the step cannot read is a failure now, and this is the one thing wrong with the copy.
+    $nl = Get-Newline $Backlog
+    Edit-All $Backlog ($nl + 'The table is an index;') ($nl + '| -1 | an item before the first, unread | tests |' + $nl + $nl + 'The table is an index;')
+    Edit-All $Backlog ($nl + '## Closed items') ($nl + '### -1 ' + $Em + ' An item before the first, unread' + $nl + $nl + 'Raised by nobody.' + $nl + $nl + '## Closed items')
+}
+Assert-Catches 'an item heading with a hyphen where the em dash goes' 'I6' {
+    # The other way a heading falls outside the pattern; a new number, so that no row is left without its body.
+    $highest = ([regex]::Matches((Read-All $Backlog), '(?m)^\|\s*(\d+)\s*\|') | ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Maximum).Maximum
+    $nl = Get-Newline $Backlog
+    Edit-All $Backlog ($nl + '## Closed items') ($nl + '### ' + ($highest + 1) + ' - A body headed with a hyphen' + $nl + $nl + 'Raised by nobody.' + $nl + $nl + '## Closed items')
+}
 Assert-Catches 'a closed row listed twice' 'I5' {
     $rowLine = (Get-FirstMatch $Backlog '(?m)^\| 32 \|.*$').Value.TrimEnd("`r")
     Edit-All $Backlog $rowLine ($rowLine + (Get-Newline $Backlog) + $rowLine)
