@@ -2758,6 +2758,15 @@ Assert-Equal '#54 reason: the zero-width space is named by code point and positi
 Assert-Equal '#54 reason: the percent sign is named by code point and position' (([string](Get-HostNameSyntaxProblem 'ab%cd.example.com')) -match 'U\+0025' -and ([string](Get-HostNameSyntaxProblem 'ab%cd.example.com')) -match '(^|\D)3(\D|$)') True
 Assert-Equal '#54 reason: the eszett is named where IDNA changes it' (([string](Get-HostNameSyntaxProblem ('stra' + [string][char]0xDF + 'e.de'))) -match 'U\+00DF') True
 Assert-Equal '#54 reason: a full-width letter in the second label is placed after the first label' (([string](Get-HostNameSyntaxProblem ('ab.' + [string][char]0xFF45 + 'x.com'))) -match '(^|\D)4(\D|$)') True
+# PR #58 round 5: a position belongs to the label as configured. The alphabet check on a non-ASCII label used to read the
+# Punycode form ('xn--%-dha' for an umlaut and a percent sign), and NFC composition can shorten a label before the index.
+$umlautPercent = [string](Get-HostNameSyntaxProblem ('a.' + [string][char]0xFC + '%.com'))
+Assert-Equal '#54 reason: a percent sign after an umlaut is placed in the configured label, not in the Punycode' (($umlautPercent -match 'U\+0025') -and ($umlautPercent -match '(^|\D)4(\D|$)')) True
+$decomposedPercent = [string](Get-HostNameSyntaxProblem ('a.u' + [string][char]0x0308 + '%.com'))
+Assert-Equal '#54 reason: a percent sign after a decomposed umlaut keeps its typed position, which NFC would have shifted' (($decomposedPercent -match 'U\+0025') -and ($decomposedPercent -match '(^|\D)5(\D|$)')) True
+$decomposedEszett = [string](Get-HostNameSyntaxProblem ('u' + [string][char]0x0308 + [string][char]0xDF + '.de'))
+Assert-Equal '#54 reason: an eszett after a decomposed umlaut is placed where it was typed' (($decomposedEszett -match 'U\+00DF') -and ($decomposedEszett -match '(^|\D)3(\D|$)')) True
+Assert-Equal '#54 reason: a bidirectional override after a decomposed umlaut is placed where it was typed' (([string](Get-HostNameSyntaxProblem ('u' + [string][char]0x0308 + [string][char]0x202E + 'x.de'))) -match '(^|\D)3(\D|$)') True
 Assert-Equal '#54 reason: the bidirectional override is named' (([string](Get-HostNameSyntaxProblem ('foo' + [string][char]0x202E + 'bar.example.com'))) -match 'U\+202E') True
 Assert-Equal '#54 reason: a blank has one' (([string](Get-HostNameSyntaxProblem '   ')).Length -gt 0) True
 # A lone surrogate has no code point; the reason names its UTF-16 value instead of throwing (PR #58, round 1). The calls

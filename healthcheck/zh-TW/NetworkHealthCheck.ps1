@@ -923,7 +923,9 @@ function Get-HostNameSyntaxProblem {
                     $refused = $false
                     try { [void]$idn.GetAscii("a" + $unit + "b") } catch { $refused = $true }
                     $code = $(if ($unit.Length -eq 2) { [char]::ConvertToUtf32($unit, 0) } else { [int]$unit[0] })
-                    if ($refused) { return ("位置 {1} 的 U+{0:X4} 無法編碼送上線：IDNA 拒絕它" -f $code, ($position + $i)) }
+                    $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
+                    if ($at -lt 0) { $at = $i }
+                    if ($refused) { return ("位置 {1} 的 U+{0:X4} 無法編碼送上線：IDNA 拒絕它" -f $code, ($position + $at)) }
                     $i += $unit.Length
                 }
                 return ("位置 {0} 的標籤無法編碼送上線：IDNA 拒絕它，或編碼後超過 63 個字元" -f $position)
@@ -942,12 +944,21 @@ function Get-HostNameSyntaxProblem {
                 while ($index -lt $limit -and [int]$decoded[$index] -eq [int]$folded[$index]) { $index++ }
                 if ($index -ge $normalized.Length) { $index = $normalized.Length - 1 }
                 $code = [int]$normalized[$index]
-                if ([char]::IsHighSurrogate($normalized[$index]) -and ($index + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$index + 1])) { $code = [char]::ConvertToUtf32($normalized, $index) }
-                return ("位置 {1} 的 U+{0:X4} 會被 IDNA 移除或改寫，送出去問的名字就不會是設定的名字" -f $code, ($position + $index))
+                $unit = [string]$normalized[$index]
+                if ([char]::IsHighSurrogate($normalized[$index]) -and ($index + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$index + 1])) { $code = [char]::ConvertToUtf32($normalized, $index); $unit = $normalized.Substring($index, 2) }
+                # 位置是設定的標籤裡那個字元的位置：NFC 組合可能讓這個索引之前的標籤變短，所以到操作者打的那個標籤裡找
+                # 它（第 5 輪）。
+                $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
+                if ($at -lt 0) { $at = $index }
+                return ("位置 {1} 的 U+{0:X4} 會被 IDNA 移除或改寫，送出去問的名字就不會是設定的名字" -f $code, ($position + $at))
             }
         }
+        # 不允許的 ASCII 字元到設定的標籤裡找，不到編碼後的形式裡找：ASCII 以外的標籤編碼後是 Punycode，那個字元會排在
+        # 「xn--」之後（第 5 輪）；編碼後的形式也檢查，以防 IDNA 產生了一個，那時位置就是編碼後形式的。
+        $outside = [regex]::Match($label, '[\x00-\x7F-[A-Za-z0-9_-]]')
+        if ($outside.Success) { return ("位置 {1} 的 U+{0:X4} 不是字母、數字、連字號或底線" -f [int]$label[$outside.Index], ($position + $outside.Index)) }
         $outside = [regex]::Match($encoded, '[^A-Za-z0-9_-]')
-        if ($outside.Success) { return ("位置 {1} 的 U+{0:X4} 不是字母、數字、連字號或底線" -f [int]$encoded[$outside.Index], ($position + $outside.Index)) }
+        if ($outside.Success) { return ("編碼後形式位置 {1} 的 U+{0:X4} 不是字母、數字、連字號或底線" -f [int]$encoded[$outside.Index], ($outside.Index + 1)) }
         if ($encoded.Length -gt 63) { return ("位置 {0} 的標籤超過 63 個字元" -f $position) }
         if ($encoded.StartsWith("-") -or $encoded.EndsWith("-")) { return ("位置 {0} 的標籤以連字號開頭或結尾" -f $position) }
         $encodedLength += $encoded.Length + 1

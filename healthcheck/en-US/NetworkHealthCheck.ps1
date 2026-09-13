@@ -957,7 +957,9 @@ function Get-HostNameSyntaxProblem {
                     $refused = $false
                     try { [void]$idn.GetAscii("a" + $unit + "b") } catch { $refused = $true }
                     $code = $(if ($unit.Length -eq 2) { [char]::ConvertToUtf32($unit, 0) } else { [int]$unit[0] })
-                    if ($refused) { return ("U+{0:X4} at position {1} cannot be encoded for the wire: IDNA refuses it" -f $code, ($position + $i)) }
+                    $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
+                    if ($at -lt 0) { $at = $i }
+                    if ($refused) { return ("U+{0:X4} at position {1} cannot be encoded for the wire: IDNA refuses it" -f $code, ($position + $at)) }
                     $i += $unit.Length
                 }
                 return ("the label at position {0} cannot be encoded for the wire: IDNA refuses it, or it is longer than 63 characters once encoded" -f $position)
@@ -977,12 +979,22 @@ function Get-HostNameSyntaxProblem {
                 while ($index -lt $limit -and [int]$decoded[$index] -eq [int]$folded[$index]) { $index++ }
                 if ($index -ge $normalized.Length) { $index = $normalized.Length - 1 }
                 $code = [int]$normalized[$index]
-                if ([char]::IsHighSurrogate($normalized[$index]) -and ($index + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$index + 1])) { $code = [char]::ConvertToUtf32($normalized, $index) }
-                return ("U+{0:X4} at position {1} would be dropped or changed by IDNA, so the name asked would not be the name configured" -f $code, ($position + $index))
+                $unit = [string]$normalized[$index]
+                if ([char]::IsHighSurrogate($normalized[$index]) -and ($index + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$index + 1])) { $code = [char]::ConvertToUtf32($normalized, $index); $unit = $normalized.Substring($index, 2) }
+                # The position is the character's in the label as configured: NFC composition may have shortened the
+                # label before this index, so the character is looked for where the operator typed it (round 5).
+                $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
+                if ($at -lt 0) { $at = $index }
+                return ("U+{0:X4} at position {1} would be dropped or changed by IDNA, so the name asked would not be the name configured" -f $code, ($position + $at))
             }
         }
+        # A disallowed ASCII character is looked for in the label as configured, not in the encoded form: for a label
+        # beyond ASCII the encoded form is Punycode, where the character sits after 'xn--' (round 5); the encoded form is
+        # checked too, in case IDNA ever produced one, and then the position is the encoded form's.
+        $outside = [regex]::Match($label, '[\x00-\x7F-[A-Za-z0-9_-]]')
+        if ($outside.Success) { return ("U+{0:X4} at position {1} is not a letter, a digit, a hyphen or an underscore" -f [int]$label[$outside.Index], ($position + $outside.Index)) }
         $outside = [regex]::Match($encoded, '[^A-Za-z0-9_-]')
-        if ($outside.Success) { return ("U+{0:X4} at position {1} is not a letter, a digit, a hyphen or an underscore" -f [int]$encoded[$outside.Index], ($position + $outside.Index)) }
+        if ($outside.Success) { return ("U+{0:X4} at position {1} of the encoded form is not a letter, a digit, a hyphen or an underscore" -f [int]$encoded[$outside.Index], ($outside.Index + 1)) }
         if ($encoded.Length -gt 63) { return ("the label at position {0} is longer than 63 characters" -f $position) }
         if ($encoded.StartsWith("-") -or $encoded.EndsWith("-")) { return ("the label at position {0} starts or ends with a hyphen" -f $position) }
         $encodedLength += $encoded.Length + 1
