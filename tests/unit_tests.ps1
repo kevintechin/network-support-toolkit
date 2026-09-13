@@ -2678,6 +2678,9 @@ Assert-Equal '#34 call site: exactly one call' $waitCalls.Count 1
 $guiIf = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -match 'Initialize-Gui' }, $true)
 Assert-Equal '#34 call site: in the else branch of the Initialize-Gui test, after the console run' (($null -ne $guiIf) -and ($null -ne $guiIf.ElseClause) -and ($guiIf.ElseClause.Extent.Text -match 'Start-ConsoleMode[\s\S]*Wait-ForConsoleClose')) True
 Assert-Equal '#34 call site: not on the window path' (($null -ne $guiIf) -and ($guiIf.Clauses[0].Item2.Extent.Text -notmatch 'Wait-ForConsoleClose')) True
+# PR #57 round 2: only after a fallback run that exited 0 - on any other code the launcher pauses under its own error,
+# and a second prompt about report paths that were not written would be wrong twice.
+Assert-Equal '#34 call site: only after a run that exited 0' (($null -ne $guiIf) -and ($guiIf.ElseClause.Extent.Text -match 'if \(\$exitCode -eq 0\)\s*\{\s*\[void\]\(Wait-ForConsoleClose\)\s*\}')) True
 $consoleOnlyIf = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -match '^\(?\s*\$ConsoleOnly\s*\)?$' }, $true)
 Assert-Equal '#34 call site: not on the -ConsoleOnly path' (($null -ne $consoleOnlyIf) -and ($consoleOnlyIf.Clauses[0].Item2.Extent.Text -notmatch 'Wait-ForConsoleClose')) True
 

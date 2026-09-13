@@ -7144,7 +7144,8 @@ function Start-ConsoleMode {
 # 腳本只在這次執行確實是退回模式時才在這裡等一個按鍵：不是以 -ConsoleOnly 啟動（文字模式啟動器自己會暫停，而驗證
 # 鏈的文字模式執行不能等）、主控台前有人（排程工作或服務沒有）、而且標準輸入沒有被導向（餵 NUL 的測試工具絕不能被
 # 卡住）。每個條件都是參數、預設值就是即時的值，讓這個決定不需要主控台也能測；ReadKey 本身也有防護，因為沒有鍵盤的
-# 主機會擲出例外。回傳值是有沒有等。
+# 主機會擲出例外。回傳值是有沒有等。呼叫端再加第四個條件：只在退回執行以 0 結束之後——其他結束代碼由啟動器自己
+# 在它的錯誤下方暫停，再多一個宣稱有報告路徑可讀的提示會錯兩次。
 function Wait-ForConsoleClose {
     param(
         [bool]$ConsoleOnlyRun = [bool]$ConsoleOnly,
@@ -7669,7 +7670,7 @@ try {
         }
         else {
             $exitCode = Start-ConsoleMode
-            [void](Wait-ForConsoleClose)
+            if ($exitCode -eq 0) { [void](Wait-ForConsoleClose) }
         }
     }
 }

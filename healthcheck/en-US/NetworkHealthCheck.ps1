@@ -7412,7 +7412,9 @@ function Start-ConsoleMode {
 # (the console launcher pauses by itself, and the chain's console runs must not wait), with a person at the console
 # (a scheduled task or a service has none), and with the standard input not redirected (a harness feeding NUL must
 # never block). Each gate is a parameter whose default is the live value, so that the decision can be tested without
-# a console; ReadKey itself is guarded, because a host without a keyboard throws. Returns whether it waited.
+# a console; ReadKey itself is guarded, because a host without a keyboard throws. Returns whether it waited. The
+# call site adds a fourth gate: only after a fallback run that ended with 0 - on any other code the launcher itself
+# pauses under its own error, and a second prompt claiming report paths to read would be wrong twice over.
 function Wait-ForConsoleClose {
     param(
         [bool]$ConsoleOnlyRun = [bool]$ConsoleOnly,
@@ -7946,7 +7948,7 @@ try {
         }
         else {
             $exitCode = Start-ConsoleMode
-            [void](Wait-ForConsoleClose)
+            if ($exitCode -eq 0) { [void](Wait-ForConsoleClose) }
         }
     }
 }
