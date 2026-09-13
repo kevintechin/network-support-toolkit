@@ -47,10 +47,12 @@ $stageRoot = Join-Path $WorkDir 'launcher (1)'
 # The labels, per language. zh-TW: "suggestion", "error", "date/time", "PowerShell messages", "JSON report", each with
 # a full-width colon; the closing full-width parenthesis of the short-date pattern.
 $labels = @{
-    'en-US' = @{ Suggested = 'Suggested action: '; Error = 'Error: '; Date = 'Date/time: '; Messages = 'PowerShell messages: '; Json = 'JSON report: '; Close = ')' }
+    'en-US' = @{ Suggested = 'Suggested action: '; Error = 'Error: '; Screen = 'ERROR: '; Date = 'Date/time: '; Messages = 'PowerShell messages: '; Json = 'JSON report: '; Close = ')'; ScreenOnly = 'on this screen only' }
     'zh-TW' = @{
         Suggested = [string]([char]0x5EFA + [char]0x8B70 + [char]0xFF1A)
         Error     = [string]([char]0x932F + [char]0x8AA4 + [char]0xFF1A)
+        Screen    = [string]([char]0x932F + [char]0x8AA4 + [char]0xFF1A)   # the screen's error label is the file's in zh-TW
+        ScreenOnly = [string]([char]0x53EA + [char]0x5728 + [char]0x9019 + [char]0x500B + [char]0x756B + [char]0x9762 + [char]0x4E0A)   # "on this screen only", the uncaptured suggestion's phrase
         Date      = [string]([char]0x65E5 + [char]0x671F + [char]0x6642 + [char]0x9593 + [char]0xFF1A)
         Messages  = 'PowerShell ' + [string]([char]0x8A0A + [char]0x606F + [char]0xFF1A)
         Json      = 'JSON ' + [string]([char]0x5831 + [char]0x544A + [char]0xFF1A)
@@ -99,7 +101,7 @@ function Get-Line([string[]]$Lines, [string]$Label) { @($Lines | Where-Object { 
 # The zh-TW labels spelled above must be the launcher's own: a wrong character code would make every zh-TW case
 # fail for the label rather than for the launcher, so the spelling is checked against the file first.
 $zhLauncher = [IO.File]::ReadAllText((Join-Path $PackageDir 'zh-TW\Start-NetworkCheck.cmd'), $utf8NoBom)
-foreach ($k in @('Suggested', 'Error', 'Date', 'Messages')) {
+foreach ($k in @('Suggested', 'Error', 'Date', 'Messages', 'ScreenOnly')) {
     Assert-True ("zh-TW label '{0}' as spelled here is in the zh-TW launcher" -f $k) ($zhLauncher.Contains($labels['zh-TW'][$k])) 'character codes and launcher disagree'
 }
 $zhScript = [IO.File]::ReadAllText((Join-Path $PackageDir 'zh-TW\NetworkHealthCheck.ps1'), $utf8Bom)
@@ -173,6 +175,7 @@ foreach ($lang in @('en-US', 'zh-TW')) {
                 }
             }
             Assert-True "$case - the screen shows the suggestion under the reason" (@(Get-Line $output $L.Suggested).Count -ge 1) ((@($output | Select-Object -Last 6)) -join ' | ')
+            Assert-True "$case - the first thing on the screen is the error line: nothing leaked before it" ([string]@($output | Where-Object { $_.Trim() -ne '' })[0] -like ($L.Screen + '*')) ((@($output | Select-Object -First 3)) -join ' | ')
             Assert-Equal "$case - nothing went to the temporary folder" (@(Get-TempFiles 'NetworkHealthCheck_LauncherError_*.txt' $tempStart) + @(Get-TempFiles 'NetworkHealthCheck_PowerShellMessages_*.txt' $tempStart)).Count 0
 
             if ($reason.Name -eq 'missing program file') {
@@ -219,6 +222,7 @@ foreach ($lang in @('en-US', 'zh-TW')) {
     }
     else {
         Assert-Equal "$case - the launcher exits 1" $r.ExitCode 1
+        Assert-True "$case - the first thing on the screen is the error line: the refused create and the refused writes printed nothing" ([string]@($r.Output | Where-Object { $_.Trim() -ne '' })[0] -like ($L.Screen + '*')) ((@($r.Output | Select-Object -First 3)) -join ' | ')
         Assert-Equal "$case - nothing was written beside the launcher" ((Get-Reports $stage).Count + (Get-Messages $stage).Count) 0
         $tempReports = @(Get-TempFiles 'NetworkHealthCheck_LauncherError_*.txt' $tempStart)
         $tempMessages = @(Get-TempFiles 'NetworkHealthCheck_PowerShellMessages_*.txt' $tempStart)
@@ -232,6 +236,79 @@ foreach ($lang in @('en-US', 'zh-TW')) {
             Assert-True "$case - the screen names the report in the temporary folder" (@($r.Output | Where-Object { $_.Contains($tempReports[0].FullName) }).Count -ge 1) ((@($r.Output | Select-Object -Last 6)) -join ' | ')
         }
         foreach ($f in @($tempReports) + @($tempMessages)) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue }
+    }
+
+    # Round 1 of PR #57: where neither the launcher's folder nor %TEMP% accepts a file, PowerShell runs without the
+    # capture and the launcher must say so - the suggestion sends the person to the screen, not to a file that was
+    # never created, and nothing claims that PowerShell was not started. Both places are denied here: the stage as
+    # above, and a second denied folder handed to the child as its TEMP. No report can be written either, so the
+    # screen is the only evidence, and the path it names is one the folder refused (the second write is not checked).
+    $case = '{0} Start-NetworkCheck.cmd, exit code 1 with no place for any file' -f $lang
+    $stage = New-Stage ($lang + '_Start-NetworkCheck_no-place-for-a-file') $lang 'Start-NetworkCheck.cmd' $stderrStub
+    $deniedTemp = Join-Path $stageRoot ($lang + '_denied-temp')
+    if (Test-Path -LiteralPath $deniedTemp) { & $icacls $deniedTemp '/remove:d' $env:USERNAME 2>&1 | Out-Null; Remove-Item -LiteralPath $deniedTemp -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $deniedTemp | Out-Null
+    $savedTemp = $env:TEMP
+    $denied = $false
+    try {
+        & $icacls $stage '/deny' ($env:USERNAME + ':(WD,AD)') 2>&1 | Out-Null
+        $denied = ($LASTEXITCODE -eq 0)
+        & $icacls $deniedTemp '/deny' ($env:USERNAME + ':(WD,AD)') 2>&1 | Out-Null
+        $denied = $denied -and ($LASTEXITCODE -eq 0)
+        if ($denied) { $env:TEMP = $deniedTemp; $r = Invoke-Launcher $stage 'Start-NetworkCheck.cmd' }
+    }
+    finally {
+        $env:TEMP = $savedTemp
+        & $icacls $stage '/remove:d' $env:USERNAME 2>&1 | Out-Null
+        & $icacls $deniedTemp '/remove:d' $env:USERNAME 2>&1 | Out-Null
+    }
+    if (-not $denied) {
+        Write-Output "[SKIP] $case - icacls could not deny writing on the two folders"
+    }
+    else {
+        Assert-Equal "$case - the launcher exits 1" $r.ExitCode 1
+        $nonEmpty = @($r.Output | Where-Object { $_.Trim() -ne '' })
+        Assert-True "$case - what PowerShell printed reached the screen, uncaptured, and the error line follows it: nothing else leaked" (($nonEmpty.Count -ge 2) -and ([string]$nonEmpty[0] -eq $marker) -and ([string]$nonEmpty[1] -like ($L.Screen + '*'))) ((@($nonEmpty | Select-Object -First 3)) -join ' | ')
+        $suggested = @(Get-Line $r.Output $L.Suggested)
+        Assert-Equal "$case - one suggested-action line on the screen" $suggested.Count 1
+        $line = [string]$(if ($suggested.Count) { $suggested[0] } else { '' })
+        Assert-True "$case - the suggestion says the explanation is on the screen only, and still names the program to allow" ($line.Contains($L.ScreenOnly) -and $line -match 'NetworkHealthCheck\.ps1') $line
+        Assert-True "$case - the suggestion does not claim a messages file" (-not $line.Contains('PowerShellMessages_')) $line
+        Assert-Equal "$case - nothing was written beside the launcher" ((Get-Reports $stage).Count + (Get-Messages $stage).Count) 0
+        Assert-Equal "$case - nothing was written in the denied temporary folder" (@(Get-ChildItem -LiteralPath $deniedTemp -File -ErrorAction SilentlyContinue)).Count 0
+    }
+
+    # Round 1 of PR #57: two launchers started back to back in one folder must leave two reports and two messages
+    # files, each holding its own process's line - whether or not their stamps collided, which is what the fsutil
+    # reservation is for and what cannot be forced from outside.
+    $case = '{0} Start-NetworkCheck.cmd, two launchers started back to back' -f $lang
+    $stage = New-Stage ($lang + '_Start-NetworkCheck_two-at-once') $lang 'Start-NetworkCheck.cmd' '[Console]::Error.WriteLine("nhc-instance " + $PID); exit 1'
+    $procs = @()
+    foreach ($i in 1, 2) {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $cmdExe
+        $psi.Arguments = '/s /c ""' + (Join-Path $stage 'Start-NetworkCheck.cmd') + '" <nul"'
+        $psi.WorkingDirectory = $stage
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $procs += @{ Process = $p; Out = $p.StandardOutput.ReadToEndAsync(); Err = $p.StandardError.ReadToEndAsync() }
+    }
+    foreach ($e in $procs) { if (-not $e.Process.WaitForExit(120000)) { try { $e.Process.Kill() } catch { } }; $e.Process.WaitForExit() }
+    Assert-True "$case - both exit 1" (@($procs | Where-Object { $_.Process.ExitCode -eq 1 }).Count -eq 2) (($procs | ForEach-Object { $_.Process.ExitCode }) -join ' / ')
+    $reports = Get-Reports $stage
+    $messages = Get-Messages $stage
+    Assert-Equal "$case - two reports with different names" (@($reports | ForEach-Object { $_.Name } | Sort-Object -Unique)).Count 2
+    Assert-Equal "$case - two messages files with different names" (@($messages | ForEach-Object { $_.Name } | Sort-Object -Unique)).Count 2
+    $pids = @($messages | ForEach-Object { [regex]::Matches([IO.File]::ReadAllText($_.FullName, $utf8NoBom), 'nhc-instance (\d+)') | ForEach-Object { $_.Groups[1].Value } })
+    Assert-Equal "$case - each messages file holds exactly its own process's line" (($pids | Sort-Object -Unique).Count) 2
+    Assert-Equal "$case - and no file holds two" ($pids.Count) 2
+    foreach ($rep in $reports) {
+        $lines = @(Get-Content -LiteralPath $rep.FullName -Encoding UTF8)
+        $named = [string]@(Get-Line $lines $L.Messages)[0]
+        Assert-True ("$case - the report {0} names a messages file that exists" -f $rep.Name) (($named -match 'PowerShellMessages_') -and (Test-Path -LiteralPath ($named.Substring($L.Messages.Length)))) $named
     }
 }
 
