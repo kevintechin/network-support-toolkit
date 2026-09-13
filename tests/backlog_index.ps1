@@ -20,7 +20,8 @@
     a word from one to twenty or in digits. The arithmetic the item asked for - the stated counts sum to the open
     count plus one for each further group an item is listed in - is checked as three statements so that one mistake
     fails one check: every listed item is an open row (R2), every open row is listed (R3), and each group's stated
-    count is the number of items it encloses (R5).
+    count is the number of items it encloses, with no link standing outside every group and, where the row has a
+    sentence stating what the groups sum to and how many items there are, that sentence saying what they do (R5).
 
     What it does not check is the prose: the row restates each item in a clause of its own, and whether that clause
     is still what the item's body says is what a reader with both documents open is for. The page's own rule for it
@@ -183,7 +184,7 @@ for ($i = 0; $i -lt $scan.Length; $i++) {
                 # tail of what precedes it.
                 $label = $(if ($counts.Count) { $before.Substring($counts[$counts.Count - 1].Index).Trim() } else { $before.Trim() })
                 if ($label.Length -gt 60) { $label = '...' + $label.Substring($label.Length - 60) }
-                $groups.Add(@{ Label = $label; Members = $members; Stated = $(if ($counts.Count) { ConvertTo-Count $counts[$counts.Count - 1].Groups[1].Value } else { -1 }) })
+                $groups.Add(@{ Label = $label; Members = $members; Start = $start; End = $i; Stated = $(if ($counts.Count) { ConvertTo-Count $counts[$counts.Count - 1].Groups[1].Value } else { -1 }) })
                 $previousEnd = $i + 1
             }
             $start = -1
@@ -197,10 +198,25 @@ foreach ($g in $groups) {
     if ($g.Stated -lt 0) { $groupProblems += ('no count before "{0}"' -f $g.Label) }
     elseif ($g.Stated -ne $g.Members.Count) { $groupProblems += ('"{0}" says {1} and lists {2}: {3}' -f $g.Label, $g.Stated, $g.Members.Count, (Format-Numbers $g.Members)) }
 }
+# A link outside every group is listed and counted nowhere, and the row's rule is that an item stands inside a group:
+# with the groups blanked out, any item link left is such a link (PR #63, round 1 - a link moved out of its group,
+# the group's count lowered with it, passed every check).
+$outside = $scan
+foreach ($g in $groups) { $outside = $outside.Substring(0, $g.Start) + (' ' * ($g.End - $g.Start + 1)) + $outside.Substring($g.End + 1) }
+$ungrouped = @([regex]::Matches($outside, '\[#(\d+)\]') | ForEach-Object { [string][int]$_.Groups[1].Value })
+if ($ungrouped.Count) { $groupProblems += ('listed outside every group: ' + (Format-Numbers $ungrouped)) }
+# Where the row states what the groups sum to and how many items there are - 'the groups sum to fifteen where the
+# items are fourteen' - the two numbers are the arithmetic above and no other; a row without the sentence states
+# no total to check.
+$overlap = [regex]::Match($openPart, '(?i)\bsum to (\d+|[a-z]+) where the items are (\d+|[a-z]+)\b')
+if ($overlap.Success) {
+    $saidSum = ConvertTo-Count $overlap.Groups[1].Value; $saidItems = ConvertTo-Count $overlap.Groups[2].Value
+    if (($saidSum -ne $sum) -or ($saidItems -ne $listed.Count)) { $groupProblems += ('the row says the groups sum to {0} where the items are {1}; they sum to {2} and the items are {3}' -f $saidSum, $saidItems, $sum, $listed.Count) }
+}
 $repeated = @($groups | ForEach-Object { $_.Members } | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
 $arithmetic = ('{0} = {1}' -f (@($groups | ForEach-Object { [string]$_.Stated }) -join ' + '), $sum)
 if ($repeated.Count) { $arithmetic += (': {0} items, {1} in more than one group' -f $listed.Count, (Format-Numbers $repeated)) } else { $arithmetic += (': {0} items, none in more than one group' -f $listed.Count) }
-Assert-True ('R5 each group''s stated count is the number of items it lists ({0} groups; {1})' -f $groups.Count, $arithmetic) (($groups.Count -gt 0) -and ($groupProblems.Count -eq 0)) $(if ($groups.Count -eq 0) { 'the row has no group: no parenthesis holding an item link' } else { $groupProblems -join '; ' })
+Assert-True ('R5 each group''s stated count is the number of items it lists, and no listed item stands outside a group ({0} groups; {1})' -f $groups.Count, $arithmetic) (($groups.Count -gt 0) -and ($groupProblems.Count -eq 0)) $(if ($groups.Count -eq 0) { 'the row has no group: no parenthesis holding an item link' } else { $groupProblems -join '; ' })
 
 # R6: the closed list, 'Numbers 1 to 20, 23, 24, ... are closed', expanded and set against the closed table.
 $listedClosed = @(); $unreadable = @()

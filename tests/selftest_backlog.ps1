@@ -134,16 +134,31 @@ Assert-Catches 'a closed item still listed as open, its group counted right' 'R2
     # The number is closed, the group's count is raised with it, and the link has no body to point at: R4 leaves
     # a link without a body to I1, so only R2 sees the closed number.
     Edit-All $Readme 'two changes to the tool ([#38]' 'three changes to the tool ([#40](docs/backlog.md#40--the-report-explained-the-badge) the badge explanation, [#38]'
+    Edit-All $Readme 'sum to fifteen where the items are fourteen' 'sum to sixteen where the items are fifteen'
 }
 Assert-Catches 'an open item dropped from the row, its group counted right' 'R3' {
     Edit-All $Readme '[#21](docs/backlog.md#21--the-asset-build-is-not-reproducible-byte-for-byte) a reproducible asset, ' ''
     Edit-All $Readme 'nine in `tests/` and the build' 'eight in `tests/` and the build'
+    Edit-All $Readme 'sum to fifteen where the items are fourteen' 'sum to fourteen where the items are thirteen'
 }
 Assert-Catches 'a link to a heading the page does not have' 'R4' {
     Edit-All $Readme 'docs/backlog.md#21--the-asset-build-is-not-reproducible-byte-for-byte' 'docs/backlog.md#21--the-asset-build-is-reproducible-byte-for-byte'
 }
 Assert-Catches 'a group whose stated count is not what it lists' 'R5' {
     Edit-All $Readme 'two changes to the tool (' 'three changes to the tool ('
+    Edit-All $Readme 'sum to fifteen where the items are fourteen' 'sum to sixteen where the items are fourteen'
+}
+Assert-Catches 'an open item linked outside every group, its group counted right' 'R5' {
+    # PR #63, round 1: the link leaves its group, the group's count follows it, and the link stands in the row's prose
+    # between the last group and the closed list, where it is listed (R2, R3) and points at its heading (R4) and is
+    # in no group; the overlap sentence is moved with the count so that this is the one thing R5 has to say.
+    Edit-All $Readme '[#21](docs/backlog.md#21--the-asset-build-is-not-reproducible-byte-for-byte) a reproducible asset, ' ''
+    Edit-All $Readme 'nine in `tests/` and the build' 'eight in `tests/` and the build'
+    Edit-All $Readme 'sum to fifteen where the items are fourteen' 'sum to fourteen where the items are fourteen'
+    Edit-All $Readme ' Numbers 1 to 20' ' [#21](docs/backlog.md#21--the-asset-build-is-not-reproducible-byte-for-byte) stands outside every group. Numbers 1 to 20'
+}
+Assert-Catches 'the overlap sentence stating a sum the groups do not make' 'R5' {
+    Edit-All $Readme 'sum to fifteen where the items are fourteen' 'sum to sixteen where the items are fourteen'
 }
 Assert-Catches 'a number listed as closed that no closed row carries' 'R6' {
     Edit-All $Readme ' are closed' ', 999 are closed'
