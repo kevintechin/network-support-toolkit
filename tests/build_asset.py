@@ -3,11 +3,26 @@
 construction; working-tree bytes, so the CRLF checkout is preserved; one top-level NetworkHealthCheck-<version>/ folder;
 deflate. The version is read from the en-US script. Prints the size and the SHA256 that go into the release notes.
 
+Every entry is stamped with the date of the last commit that touched healthcheck/, so that one package content
+gives one archive byte for byte, on any machine and from any ref that carries it (backlog #21). Without that stamp zipfile writes the build time into each file entry, which is
+why four CI builds of identical content produced four digests; the directory entries were already deterministic,
+because a bare ZipInfo dates from 1980, and they keep that date. The platform a ZipInfo would record - 0 on
+Windows, 3 elsewhere - is pinned as well, so the archive does not depend on the host that built it either. The stamp makes the digest a fact about the commit:
+built from a working tree that differs from it, the archive is what the tree says and the digest is not reproducible,
+which is why the tree's state is printed beside it.
+
 Usage (from anywhere):  python tests/build_asset.py [<out.zip>]    default: NetworkHealthCheck-<version>.zip in the current directory"""
-import hashlib, pathlib, subprocess, sys, zipfile
+import hashlib, pathlib, subprocess, sys, time, zipfile
+
+EPOCH_1980 = (1980, 1, 1, 0, 0, 0)   # what a bare ZipInfo carries, and what the folder entries have always had
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / 'healthcheck'
+
+
+def git(*args):
+    return subprocess.run(['git', '-C', str(ROOT), *args], capture_output=True, text=True, check=True).stdout.strip()
+
 
 version = None
 for line in (PACKAGE / 'en-US' / 'NetworkHealthCheck.ps1').read_text(encoding='utf-8-sig').splitlines():
@@ -18,23 +33,89 @@ assert version, 'tool version not found'
 TOP = f'NetworkHealthCheck-{version}'
 OUT = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else pathlib.Path(f'{TOP}.zip')
 
-tracked = subprocess.run(['git', '-C', str(ROOT), 'ls-files', 'healthcheck'], capture_output=True, text=True, check=True).stdout.split('\n')
+tracked = git('ls-files', 'healthcheck').split('\n')
 files = sorted(p[len('healthcheck/'):] for p in (x.strip() for x in tracked) if p)
 assert files and not any(f.startswith('Reports/') or '/Reports/' in f for f in files)
 missing = [f for f in files if not (PACKAGE / f).is_file()]
 assert not missing, f'tracked but absent from the working tree: {missing}'
+
+# The date of the last commit that touched the packaged files, as UTC.
+#
+# Not of whatever commit is checked out: a pull request is built from an ephemeral merge commit that GitHub makes at
+# the moment the run starts, so the runner and this machine stamped one tree six seconds apart and the digests
+# differed while every byte of content matched (measured on PR #64, run 34776806390). The packaged files' own last
+# change is a fact both refs agree on, and it is the honest thing for the stamp to mean: this is when the package
+# last changed, whatever has happened around it since.
+#
+# A ZIP entry holds six numbers and no zone, so the seconds since the epoch are converted here rather than by git:
+# every git date format that renders a wall clock renders it in some machine's zone - the committer's, or with
+# -local the builder's - and a stamp that moves with the builder's zone is the same defect one hour at a time.
+commit = git('log', '-1', '--format=%H', '--', 'healthcheck')
+if not commit:
+    sys.exit('no commit in this history touches healthcheck/, so there is no date to stamp the asset with')
+stamp = time.gmtime(int(git('log', '-1', '--format=%ct', commit)))[:6]
+assert len(stamp) == 6 and stamp[0] >= 1980, f'unusable commit date: {stamp}'
+# A ZIP entry stores the second halved, so an odd second is written and read back as the even one below it
+# (measured: 0, 1, 2, 3 come back as 0, 0, 2, 2). The stamp is rounded down here so that what the archive holds is
+# what this script asked for - roughly half of all commits have an odd second, and the check below would refuse
+# every one of them (PR #64, round 4).
+stamp = stamp[:5] + (stamp[5] - stamp[5] % 2,)
+# Tracked changes only: the archive holds the tracked files' working-tree bytes, so an untracked LauncherError
+# left by a run cannot change it, and calling the tree dirty for one would deny a digest that is reproducible
+# (PR #64, round 6).
+dirty = git('status', '--porcelain', '--untracked-files=no', '--', 'healthcheck')
 print(f'version {version}: {len(files)} tracked files')
+print('healthcheck/ last changed in {}: {:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d} UTC, working tree {}'.format(
+    commit[:7], *stamp, 'has uncommitted changes - this digest is not reproducible from that commit' if dirty else 'clean'))
+
+
+def entry_for(name, date_time):
+    """A ZipInfo whose every field is chosen here rather than taken from the machine.
+
+    ZipInfo writes the building platform into create_system - 0 on Windows and 3 everywhere else - so the central
+    directory, and with it the digest, would still depend on the host that built it. It is pinned to 0, which is what
+    Windows already produced, so the releases built so far keep their bytes; the side effect is that a POSIX extractor
+    ignores the permission bits below and uses its own default, which is what a package extracted on Linux should get
+    rather than the owner-only 0o600 those bits would impose.
+    """
+    entry = zipfile.ZipInfo(name, date_time)
+    entry.create_system = 0
+    return entry
+
 
 dirs = sorted({str(pathlib.PurePosixPath(f).parent) for f in files if '/' in f})
 OUT.parent.mkdir(parents=True, exist_ok=True)
 if OUT.exists():
     OUT.unlink()
 with zipfile.ZipFile(OUT, 'w', zipfile.ZIP_DEFLATED) as z:
-    z.writestr(zipfile.ZipInfo(TOP + '/'), b'')
+    # The folder entries keep the 1980 a bare ZipInfo carries: they were already the same in every build, and moving
+    # them would change the bytes of every asset for nothing.
+    z.writestr(entry_for(TOP + '/', EPOCH_1980), b'')
     for d in dirs:
-        z.writestr(zipfile.ZipInfo(f'{TOP}/{d}/'), b'')
+        z.writestr(entry_for(f'{TOP}/{d}/', EPOCH_1980), b'')
     for f in files:
-        z.writestr(f'{TOP}/{f}', (PACKAGE / f).read_bytes())
+        # The fields writestr fills in for a bare name, with the build clock replaced by the commit's date: deflate
+        # (a ZipInfo of its own defaults to STORED, which would quietly triple the asset) and the same 0o600.
+        entry = entry_for(f'{TOP}/{f}', stamp)
+        entry.compress_type = zipfile.ZIP_DEFLATED
+        entry.external_attr = 0o600 << 16
+        # The level is asked for rather than left to the runtime's default, which a future zlib could move: 6 is what
+        # Z_DEFAULT_COMPRESSION resolves to today, and pinning it was measured to change no byte of this asset. It is
+        # passed to writestr, which has taken it since Python 3.7; the entry attribute of the same name is 3.13 and
+        # later, and this script runs wherever the package's prerequisite does - any Python 3 (PR #64, round 8).
+        # What no level can pin is the encoder itself - this machine's CPython links zlib-ng - and that difference is
+        # the one backlog #21's acceptance allows to be recorded rather than removed.
+        z.writestr(entry, (PACKAGE / f).read_bytes(), compresslevel=6)
+
+# What the archive claims about itself, read back from the archive: every entry made by the same platform, every file
+# stamped with the commit, every folder with the 1980 they have always had.
+with zipfile.ZipFile(OUT) as z:
+    systems = sorted({i.create_system for i in z.infolist()})
+    file_stamps = sorted({i.date_time for i in z.infolist() if not i.filename.endswith('/')})
+    dir_stamps = sorted({i.date_time for i in z.infolist() if i.filename.endswith('/')})
+assert systems == [0], f'create_system varies: {systems}'
+assert file_stamps == [tuple(stamp)], f'file entries carry more than the commit date: {file_stamps}'
+assert dir_stamps == [EPOCH_1980], f'folder entries are not the constant date: {dir_stamps}'
 
 digest = hashlib.sha256(OUT.read_bytes()).hexdigest()
 print(f'{OUT.name}: {OUT.stat().st_size} bytes')

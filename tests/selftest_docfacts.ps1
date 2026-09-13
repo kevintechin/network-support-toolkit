@@ -22,17 +22,26 @@ $PsExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.e
 # The copy: everything the step reads, without the report folders, which it never opens. docs/ is part of it because
 # the technical guides point at the repository design note that lives there, and the step resolves such a path.
 New-Item -ItemType Directory -Force -Path $Tree | Out-Null
-foreach ($sub in @('healthcheck', 'sop', 'docs')) {
-    $src = Join-Path $Root $sub
-    Get-ChildItem -LiteralPath $src -Recurse -File | Where-Object { $_.FullName -notlike '*\Reports\*' } | ForEach-Object {
-        $rel = $_.FullName.Substring($Root.Length).TrimStart('\')
-        $dst = Join-Path $Tree $rel
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
-        Copy-Item -LiteralPath $_.FullName -Destination $dst -Force
-    }
+$ErrorActionPreference = 'Continue'
+$trackedSource = @(& git -C $Root ls-files healthcheck sop docs 2>$null | ForEach-Object { [string]$_ } | Where-Object { $_ })
+$ErrorActionPreference = 'Stop'
+if (-not $trackedSource.Count) { throw 'the checkout''s tracked files could not be listed, and the copy would be whatever the folders happen to hold' }
+foreach ($rel in $trackedSource) {
+    $relWindows = $rel -replace '/', '\'
+    $src = Join-Path $Root $relWindows
+    if (-not (Test-Path -LiteralPath $src)) { continue }
+    $dst = Join-Path $Tree $relWindows
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
+    Copy-Item -LiteralPath $src -Destination $dst -Force
 }
 $Package = Join-Path $Tree 'healthcheck'
-Write-Output ("Copy: {0}" -f $Tree)
+$ErrorActionPreference = 'Continue'
+& git init -q $Tree 2>&1 | Out-Null
+& git -C $Tree add -f -A healthcheck 2>&1 | Out-Null
+$trackedInCopy = @(& git -C $Tree ls-files healthcheck 2>$null).Count
+$ErrorActionPreference = 'Stop'
+if (-not $trackedInCopy) { throw 'the copy could not be made a git repository, and E3 would read the folder instead of what ships' }
+Write-Output ("Copy: {0} ({1} files tracked in it)" -f $Tree, $trackedInCopy)
 
 $fails = 0; $passes = 0
 $saved = @{}
@@ -63,15 +72,35 @@ function Assert-Clean([string]$name, [string[]]$extra) {
     if ($ok) { $script:passes++; Write-Output "[PASS] $name -> $summary" }
     else { $script:fails++; Write-Output ("[FAIL] $name -> exit {0}; {1}" -f $r.ExitCode, (@($r.Output | Where-Object { $_ -like '`[FAIL`]*' }) -join ' | ')) }
 }
-function Assert-Catches([string]$name, [string]$expectedCheck, [scriptblock]$mutation) {
+function Assert-Catches([string]$name, [string]$expectedCheck, [scriptblock]$mutation, [string[]]$extra = @()) {
     & $mutation
-    $r = Invoke-DocFacts @()
+    $r = Invoke-DocFacts $extra
     Restore-All
     $failed = @($r.Output | Where-Object { $_ -like '`[FAIL`]*' })
     $hit = @($failed | Where-Object { $_ -match ('^\[FAIL\]\s+' + [regex]::Escape($expectedCheck)) })
     $ok = ($r.ExitCode -gt 0) -and ($hit.Count -gt 0)
     if ($ok) { $script:passes++; Write-Output ("[PASS] {0} -> {1} caught it: {2}" -f $name, $expectedCheck, ($hit[0] -replace '^\[FAIL\]\s+', '')) }
     else { $script:fails++; Write-Output ("[FAIL] {0} -> expected {1} to fail; got: {2}" -f $name, $expectedCheck, $(if ($failed.Count) { $failed -join ' | ' } else { 'nothing failed' })) }
+}
+
+function Assert-StillClean([string]$name, [scriptblock]$change) {
+    # A change a document may legitimately carry: the step has to keep passing, or a well-formed manual is refused.
+    try { & $change }
+    catch { Restore-All; $script:fails++; Write-Output ("[FAIL] {0} -> the change could not be applied: {1}" -f $name, $_.Exception.Message); return }
+    $r = Invoke-DocFacts @()
+    Restore-All
+    $summary = [string]@($r.Output | Where-Object { $_ -match '^Summary:' })[-1]
+    $ok = ($r.ExitCode -eq 0) -and ($summary -match '^Summary:\s+\d+ passed, 0 failed')
+    if ($ok) { $script:passes++; Write-Output "[PASS] $name -> still $summary" }
+    else { $script:fails++; Write-Output ("[FAIL] {0} -> expected nothing to fail; got: {1}" -f $name, (@($r.Output | Where-Object { $_ -like '`[FAIL`]*' }) -join ' | ')) }
+}
+
+function New-ReportFixture([string]$name, [string]$verdict, [string[]]$statuses, [string]$code = 'PASS') {
+    $results = @($statuses | ForEach-Object { '{ "Status": "' + $_ + '", "Tag": "ping-target" }' })
+    $json = '{ "SchemaVersion": "2", "Overall": { "Code": "' + $code + '", "Text": "' + $verdict + '" }, "Results": [' + ($results -join ', ') + '] }'
+    $path = Join-Path $WorkDir $name
+    [IO.File]::WriteAllText($path, $json, (New-Object System.Text.UTF8Encoding($false)))
+    return $path
 }
 
 $EnScript = 'healthcheck\en-US\NetworkHealthCheck.ps1'
@@ -82,6 +111,7 @@ $EnIt = 'healthcheck\en-US\NetworkHealthCheck_IT_Deployment_Manual_en-US.md'
 $ZhIt = 'healthcheck\zh-TW\NetworkHealthCheck_IT_Deployment_Manual_zh-TW.md'
 $EnItHtml = 'healthcheck\en-US\NetworkHealthCheck_IT_Deployment_Manual_en-US.html'
 $EnUser = 'healthcheck\en-US\NetworkHealthCheck_User_Manual_en-US.md'
+$EnUserHtml = 'healthcheck\en-US\NetworkHealthCheck_User_Manual_en-US.html'
 $Guide = 'healthcheck\docs\NetworkHealthCheck_Technical_Guide_en-US.md'
 $Field = 'sop\support-engineer-field-manual.md'
 $FieldHtml = 'sop\support-engineer-field-manual.html'
@@ -250,6 +280,146 @@ Assert-Catches 'an exit code written as a code span' 'A7' {
 Assert-Catches 'a code attributed to the launcher that only the program produces' 'A7' {
     Write-All $Field ((Read-All $Field) -replace 'launcher exits `1`', 'launcher exits `3`')
 }
+
+# 5i - the file table the other way round (backlog #41): a file that ships and that no row names.
+Assert-Catches 'a shipped file the file table stopped naming' 'E3' {
+    Write-All $EnUser ((Read-All $EnUser).Replace('| `en-US\Start-NetworkCheck-Console.cmd` | Text mode, for a computer where the window cannot open |' + "`r`n", ''))
+}
+Assert-Catches 'a file-table row that names another language''s copy of the file' 'E3' {
+    # A stale name that E1 cannot see: the file it names exists, so only the file it stopped naming is missing.
+    Write-All $EnUser ((Read-All $EnUser).Replace('`en-US\Start-NetworkCheck-Console.cmd` | Text mode', '`zh-TW\Start-NetworkCheck-Console.cmd` | Text mode'))
+}
+
+# 5j - the fingerprint chain's order and titles (backlog #33, tier 3).
+Assert-Catches 'a fingerprint table that puts two rows in the wrong order' 'C2' {
+    $text = Read-All $Field
+    $rows = @([regex]::Matches($text, '(?m)^\| `(dns|quality)` .*$'))
+    if ($rows.Count -ne 2) { throw ('expected the dns and quality rows once each, found ' + $rows.Count) }
+    $swapped = $text.Substring(0, $rows[0].Index) + $rows[1].Value + $text.Substring($rows[0].Index + $rows[0].Length, $rows[1].Index - $rows[0].Index - $rows[0].Length) + $rows[0].Value + $text.Substring($rows[1].Index + $rows[1].Length)
+    Write-All $Field $swapped
+}
+Assert-Catches 'a fingerprint table row with a title the script does not give it' 'C3' {
+    Write-All $Field ((Read-All $Field) -replace 'Warnings to review', 'Warnings worth reviewing')
+}
+
+# 5k - the strings a report puts on the screen (backlog #33, tier 2). The script side first: a verdict the manual
+# stops quoting; then the live half, where the report is a fixture written to be wrong in one way each.
+Assert-Catches 'a verdict the user manual stopped quoting' 'G1' {
+    Write-All $EnUser ((Read-All $EnUser) -replace '\*\*Overall Healthy\*\*', '**Overall Fine**')
+}
+Assert-Catches 'a report whose verdict the script does not define' 'G2' {
+    $script:fixtureUnknown = New-ReportFixture 'report-unknown-verdict.json' 'Everything Is Fine' @('PASS')
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-unknown-verdict.json'), '-ReportLanguage', 'en-US')
+Assert-Catches 'a verdict the report shows and the manual does not quote' 'G3' {
+    [void](New-ReportFixture 'report-healthy.json' 'Overall Healthy' @('PASS'))
+    Write-All $EnUser ((Read-All $EnUser) -replace '\*\*Overall Healthy\*\*', '**Overall Fine**')
+    # Both formats: the page badges the verdict where the markdown puts it in bold, and G3 reads the manual of a
+    # language as the pair - one format losing it alone is G1's finding, which has a case of its own above.
+    Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('>Overall Healthy</span>', '>Overall Fine</span>'))
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-healthy.json'), '-ReportLanguage', 'en-US')
+Assert-Catches 'a report row whose status the script has no badge for' 'G4' {
+    [void](New-ReportFixture 'report-unknown-status.json' 'Overall Healthy' @('PASS', 'SKIPPED'))
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-unknown-status.json'), '-ReportLanguage', 'en-US')
+
+# 5l - the three round-1 findings of PR #64, each with the case it asked for.
+Assert-Catches 'a report pairing a code with another code''s verdict' 'G2' {
+    [void](New-ReportFixture 'report-mismatched-verdict.json' 'Overall Healthy' @('PASS') 'ERROR')
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-mismatched-verdict.json'), '-ReportLanguage', 'en-US')
+Assert-Catches 'a report whose overall code the script does not produce' 'G2' {
+    [void](New-ReportFixture 'report-unknown-code.json' 'Overall Healthy' @('PASS') 'SKIPPED')
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-unknown-code.json'), '-ReportLanguage', 'en-US')
+Assert-Catches 'a fingerprint chain the two scripts try in a different order' 'A10' {
+    # The same keys in both scripts, tried in another order in one of them: A2 compares them as sets and passes.
+    $text = Read-All $ZhScript
+    $rows = @([regex]::Matches($text, '(?m)^\s*elseif \(.*\$key = "(dns|quality)" \}\s*$'))
+    if ($rows.Count -ne 2) { throw ('expected the dns and quality branches once each, found ' + $rows.Count) }
+    $swapped = $text.Substring(0, $rows[0].Index) + $rows[1].Value + $text.Substring($rows[0].Index + $rows[0].Length, $rows[1].Index - $rows[0].Index - $rows[0].Length) + $rows[0].Value + $text.Substring($rows[1].Index + $rows[1].Length)
+    Write-All $ZhScript $swapped
+}
+
+Assert-Catches 'a report whose overall code is the right word in the wrong case' 'G2' {
+    # A PowerShell hashtable folds the case of its keys, so 'pass' used to find the PASS entry (PR #64, round 2).
+    [void](New-ReportFixture 'report-lowercase-code.json' 'Overall Healthy' @('PASS') 'pass')
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-lowercase-code.json'), '-ReportLanguage', 'en-US')
+Assert-Catches 'a report row whose status is the right word in the wrong case' 'G4' {
+    [void](New-ReportFixture 'report-lowercase-status.json' 'Overall Healthy' @('pass'))
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-lowercase-status.json'), '-ReportLanguage', 'en-US')
+Assert-Catches 'a user manual quoting a verdict in another case' 'G1' {
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', '**Overall healthy**'))
+    Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('>Overall Healthy</span>', '>Overall healthy</span>'))
+}
+
+Assert-Catches 'a user manual presenting a verdict as an identifier instead of a screen phrase' 'G1' {
+    # A code span is how this step reads an identifier, and a verdict is not one: the reader sees it on the screen,
+    # and the manuals emphasise it everywhere today (PR #64, round 5).
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', '`Overall Healthy`'))
+    Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('>Overall Healthy</span>', '>Overall Healthy</code>').Replace('<span class="verdict pass">Overall Healthy</code>', '<code>Overall Healthy</code>'))
+}
+
+Assert-Catches 'a user manual wrapping an emphasised verdict in a code span' 'G1' {
+    # Markdown renders the whole span as code, so the asterisks inside it are not emphasis (PR #64, round 6).
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', '`**Overall Healthy**`'))
+    Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('<span class="verdict pass">Overall Healthy</span>', '<code><strong>Overall Healthy</strong></code>'))
+}
+Assert-Catches 'a verdict branch written in a shape the reader cannot follow' 'A11' {
+    # The same refactor in both scripts: A8 would compare two equally reduced maps and say nothing. The pattern carries no newline escape on purpose - one written here as \r?\n was turned into real control characters by the tooling that wrote this file, and stopped matching (PR #64, round 7).
+    foreach ($s in @($EnScript, $ZhScript)) {
+        $text = Read-All $s
+        $joined = [regex]::Replace($text, '(?s)Code = "ERROR"\s+Text = ', 'Code = "ERROR"; Text = ')
+        if ($joined -ceq $text) { throw 'the ERROR branch was not found in its two-line shape' }
+        Write-All $s $joined
+    }
+}
+
+Assert-Catches 'a user manual hiding a verdict in a double-backtick span' 'G1' {
+    # A run of backticks of any length opens a code span, and an HTML comment renders as nothing at all.
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', '`` **Overall Healthy** ``'))
+    Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('<span class="verdict pass">Overall Healthy</span>', '<!-- <strong>Overall Healthy</strong> -->'))
+}
+Assert-Catches 'a report row that carries no status at all' 'G4' {
+    $json = '{ "SchemaVersion": "2", "Overall": { "Code": "PASS", "Text": "Overall Healthy" }, "Results": [{ "Status": "PASS", "Tag": "ping-target" }, { "Tag": "config" }] }'
+    [IO.File]::WriteAllText((Join-Path $WorkDir 'report-statusless-row.json'), $json, (New-Object System.Text.UTF8Encoding($false)))
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-statusless-row.json'), '-ReportLanguage', 'en-US')
+
+Assert-Catches 'a user manual moving a verdict into a tilde-fenced block' 'G1' {
+    # Markdown fences with tildes as well as with backticks (PR #64, round 8); the page has no such form, so only
+    # the markdown copy is moved and G1 reports it per file.
+    $fenced = "~~~text" + [Environment]::NewLine + "**Overall Healthy**" + [Environment]::NewLine + "~~~"
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', $fenced))
+    Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('<span class="verdict pass">Overall Healthy</span>', '<pre><strong>Overall Healthy</strong></pre>'))
+}
+
+Assert-Catches 'a user manual indenting a verdict into markdown code' 'G1' {
+    # Four spaces where a paragraph could have started: markdown renders the line as code (PR #64, round 9).
+    $indented = [Environment]::NewLine + [Environment]::NewLine + '    **Overall Healthy**' + [Environment]::NewLine
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', $indented))
+    Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('<span class="verdict pass">Overall Healthy</span>', '<pre>  <strong>Overall Healthy</strong></pre>'))
+}
+
+# 5n - and the other direction of that rule: inside a list those four spaces are the item's own text, and a reader
+# that took them for code would report a verdict the manual does quote.
+Assert-StillClean 'an indented continuation of a list item is text, not code' {
+    $continued = '- a list item' + [Environment]::NewLine + '    **Overall Healthy** continues it' + [Environment]::NewLine + [Environment]::NewLine + '**Overall Healthy**'
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', $continued))
+}
+
+Assert-Catches 'a file table whose row answers for the whole folder with a wildcard' 'E3' {
+    # A wildcard names a family that shares a row; one that covers the folder would leave E3 asserting nothing
+    # (PR #64, round 10).
+    Write-All $EnUser ((Read-All $EnUser).Replace('`en-US\NetworkHealthCheck_Technical_Guide_*.md`', '`en-US\*`'))
+}
+
+# 5o - and its other direction: a manual may emphasise with underscores, and what renders is the same phrase.
+Assert-StillClean 'a verdict emphasised with underscores is still quoted' {
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', '__Overall Healthy__'))
+}
+
+# 5m - and the control the third finding is about: a file a run leaves behind is not a file the package ships, so
+# the step has to keep passing with one in a language folder (PR #64, round 1).
+$artefact = Join-Path $Package 'en-US\LauncherError_20260914_000000.txt'
+[IO.File]::WriteAllText($artefact, 'a launcher error a run left behind')
+Assert-Clean 'an untracked file a run left in a language folder is not a shipped file' @()
+Remove-Item -LiteralPath $artefact -Force
 
 # 6 - and the control again, to prove every mutation was put back
 Assert-Clean 'the copy is clean again after every mutation' @()
