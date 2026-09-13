@@ -5171,7 +5171,10 @@ function Compare-TcpCounters {
         $windowAttempts += @(@(Get-PropertyValue $After "FailedAttempts" @()) | Where-Object { $readOrder.IndexOf([string]$_.Protocol) -ge 0 -and $readOrder.IndexOf([string]$_.Protocol) -le $selfIndex -and (([string]$_.Phase -ne "extension") -or $closedByExtension) })
         # backlog #65：窗內失敗的讀取落在兩個通訊協定的窗裡——它在兩個基準時間戳之後、兩個結束時間戳之前——只有延長
         # 取樣窗期間的那些例外，它們只落在延長真的關閉的那些窗裡。
-        $windowAttempts += @(@(Get-PropertyValue $intervalState "FailedAttempts" @()) | Where-Object { (-not [bool]$_.Extension) -or $closedByExtension })
+        # PR #56 第 7 輪：下面定位區塊的「沒有讀數」那一句也由同一份清單決定——延長期間失敗的讀取，對延長沒有關閉的
+        # 通訊協定來說落在它的窗之外，它的區塊不能說讀取停在一個它們根本沒到過的窗裡。
+        $intervalInsideAttempts = @(@(Get-PropertyValue $intervalState "FailedAttempts" @()) | Where-Object { (-not [bool]$_.Extension) -or $closedByExtension })
+        $windowAttempts += $intervalInsideAttempts
         $windowNote = ""
         if (@($windowAttempts).Count -gt 0) {
             $windowNote = ("補充：這 {0} 秒當中有 {1} 秒花在取樣窗內失敗的計數器讀取（{2}）；設定的最短時間是 {3} 秒。" -f $sampleSeconds, (Get-TcpAttemptSeconds $windowAttempts), (Format-TcpAttemptList $windowAttempts), $configuredSeconds)
@@ -5254,7 +5257,7 @@ function Compare-TcpCounters {
         # backlog #65：窗內數到重傳時，說它們落在哪裡。這張表是這個通訊協定自己的、由它自己的時間戳算出，這幾行不做任何判定。
         if ($null -ne $intervalState -and $intervalState.IntervalSeconds -gt 0 -and $retransDelta -gt 0) {
             $intervalTable = @(Get-TcpIntervalTable -Protocol $protocol -Start $start -End $end -Reads @(Get-PropertyValue $intervalState "Reads" @()))
-            foreach ($line in @(Get-TcpDistributionLines -Protocol $protocol -Intervals $intervalTable -RetransDelta $retransDelta -SampleSeconds (New-TimeSpan -Start $start.Timestamp -End $end.Timestamp).TotalSeconds -State $intervalState)) {
+            foreach ($line in @(Get-TcpDistributionLines -Protocol $protocol -Intervals $intervalTable -RetransDelta $retransDelta -SampleSeconds (New-TimeSpan -Start $start.Timestamp -End $end.Timestamp).TotalSeconds -State $intervalState -FailedInside $intervalInsideAttempts)) {
                 $details += [Environment]::NewLine + $line
             }
         }
@@ -5580,7 +5583,8 @@ function Get-TcpDistributionLines {
         [object[]]$Intervals,
         [uint64]$RetransDelta,
         [double]$SampleSeconds,
-        [object]$State
+        [object]$State,
+        [object[]]$FailedInside
     )
 
     # 有量測結果的列對「重傳落在哪裡」要說的話——只在有重傳時才說：沒有重傳的窗沒有東西可放，一列只解釋發生過的事
@@ -5597,7 +5601,8 @@ function Get-TcpDistributionLines {
     if ($table.Count -lt 2) {
         # PR #56 第 4 輪：窗內沒有讀數的窗要說出原因，而「沒有一次到期」只是原因之一——讀取可能在這個窗還沒有窗內讀數之前，
         # 就停在一次失敗的讀取上，而那次讀取連同秒數已經在列上點名；旁邊再寫一句「沒有一次到期」就自相矛盾了。
-        if (@(Get-PropertyValue $State "FailedAttempts" @()).Count -gt 0) {
+        # 第 7 輪：落在「這個」通訊協定的窗內的失敗讀取——呼叫端知道，狀態物件不知道。
+        if (@($FailedInside).Count -gt 0) {
             $lines += "窗內的讀取在這個窗還沒有任何窗內讀數之前，就停在一次失敗的讀取上——那次讀取和它的秒數在上面點名了——所以無法把重傳放到時間軸上。"
         }
         else {

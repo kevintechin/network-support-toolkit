@@ -2615,8 +2615,8 @@ Assert-Equal '#65 ast r3: the run closes the reads at the wait''s deadline' ((Ge
 # failed read and its seconds, which "none was due" beside them would contradict.
 $oneInterval65 = @(Get-TcpIntervalTable -Protocol 'TCPv4' -Start $start65 -End $end65 -Reads @())
 $noneDueLine65 = @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $oneInterval65 -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 @()))[0]
-$failedFirstLine65 = @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $oneInterval65 -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 @() 2 $failed65 $t65.AddSeconds(2.5) 'TCPv4'))[0]
-Assert-Equal '#65 lines r4: one sentence either way' ("{0}/{1}" -f @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $oneInterval65 -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 @())).Count, @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $oneInterval65 -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 @() 2 $failed65 $t65.AddSeconds(2.5) 'TCPv4')).Count) '1/1'
+$failedFirstLine65 = @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $oneInterval65 -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 @() 2 $failed65 $t65.AddSeconds(2.5) 'TCPv4') -FailedInside $failed65)[0]
+Assert-Equal '#65 lines r4: one sentence either way' ("{0}/{1}" -f @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $oneInterval65 -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 @())).Count, @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals $oneInterval65 -RetransDelta 57 -SampleSeconds 8.8 -State (New-State65 @() 2 $failed65 $t65.AddSeconds(2.5) 'TCPv4') -FailedInside $failed65).Count) '1/1'
 Assert-Equal '#65 lines r4: and not the same sentence - a failed first read is not "none was due"' ($failedFirstLine65 -ne $noneDueLine65) True
 $failedFirstRows65 = Get-Rows65 @([pscustomobject]@{ Timestamp = $t65.AddSeconds(2.5); Counters = @{}; FailedAttempts = $failed65; Extension = $false }) 3000 57 2 $failed65 $t65.AddSeconds(2.5) 'TCPv4'
 $failedFirstV4 = @($failedFirstRows65 | Where-Object { $_.Check -eq 'TCPv4' })[0]
@@ -2642,6 +2642,23 @@ $script:TcpIntervalSampling = $null
 Assert-Equal '#65 deadline r5: the run opens the reads with the window''s deadline - the baseline stamp plus the configured minimum' ($runBody65 -match 'Start-TcpIntervalSampling -IntervalSeconds \(Get-TcpIntervalSeconds\) -Since \$tcpSampleStart -Deadline \$tcpSampleStart\.AddSeconds\(\$minimumSampleSeconds\)') True
 Assert-Equal '#65 deadline r5: and the minimum is computed before the window opens' ($runBody65.IndexOf('$minimumSampleSeconds = [math]::Max(1,') -lt $runBody65.IndexOf('$tcpSampleStart = Get-Date')) True
 Assert-Equal '#65 deadline r5: the due-check refuses past the deadline before it asks whether a read is due' ((Get-FunctionBody 'Invoke-TcpIntervalReadIfDue') -match '(?s)if \(\$null -ne \$state\.Deadline -and \(Get-Date\) -ge \$state\.Deadline\) \{ \$state\.Active = \$false; return \}.*?TotalSeconds -lt \$state\.IntervalSeconds') True
+
+# PR #56, round 7: the sentence follows the failed reads inside THIS protocol's window. A read that failed during the
+# extension is outside the window of a protocol the extension did not close - its ending stamp is the first one - so
+# its block says none was due, while the protocol the extension closed, with that read inside its window, says the
+# reads stopped at it.
+$script:TcpIntervalSampling = New-State65 @([pscustomobject]@{ Timestamp = $t65.AddSeconds(10.5); Counters = @{}; FailedAttempts = $extFailed; Extension = $true }) 2 $extFailed $t65.AddSeconds(10.5) 'TCPv4'
+$r7Before = [pscustomobject]@{ Timestamp = $t65; Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65 100000 1000); 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(0.1) 5000 100) }; Errors = @(); FailedAttempts = @(); WarmUpFailures = @() }
+$r7After = [pscustomobject]@{ Timestamp = $t65.AddSeconds(18.9); Counters = @{ 'TCPv4' = (New-CounterFixture 'TCPv4' $t65.AddSeconds(18.8) 100400 1006); 'TCPv6' = (New-CounterFixture 'TCPv6' $t65.AddSeconds(8.9) 5400 106) }; Errors = @(); FailedAttempts = @(); WarmUpFailures = @(); Extended = $true; ExtendedProtocols = @('TCPv4') }
+$script:TcpRows = New-Object System.Collections.ArrayList
+Compare-TcpCounters -Before $r7Before -After $r7After
+$r7V4 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv4' })[0]
+$r7V6 = @($script:TcpRows | Where-Object { $_.Check -eq 'TCPv6' })[0]
+$noneDue7 = @(Get-TcpDistributionLines -Protocol 'TCPv6' -Intervals @(Get-TcpIntervalTable -Protocol 'TCPv6' -Start $r7Before.Counters['TCPv6'] -End $r7After.Counters['TCPv6'] -Reads @()) -RetransDelta 6 -SampleSeconds 8.8 -State $script:TcpIntervalSampling -FailedInside @())[0]
+$failedFirst7 = @(Get-TcpDistributionLines -Protocol 'TCPv4' -Intervals @(Get-TcpIntervalTable -Protocol 'TCPv4' -Start $r7Before.Counters['TCPv4'] -End $r7After.Counters['TCPv4'] -Reads @()) -RetransDelta 6 -SampleSeconds 18.8 -State $script:TcpIntervalSampling -FailedInside $extFailed)[0]
+Assert-Equal '#65 rows r7: a protocol the extension did not close, the failed read outside its window, says none was due' ("{0}/{1}" -f ($r7V6.Details -like ('*' + $noneDue7 + '*')), ($r7V6.Details -like ('*' + $failedFirst7 + '*'))) 'True/False'
+Assert-Equal '#65 rows r7: the protocol the extension closed, that read inside its window, says the reads stopped at it' ("{0}/{1}" -f ($r7V4.Details -like ('*' + $failedFirst7 + '*')), ($r7V4.Details -like ('*' + $noneDue7 + '*'))) 'True/False'
+$script:TcpIntervalSampling = $null
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails

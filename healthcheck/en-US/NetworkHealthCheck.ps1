@@ -5349,7 +5349,11 @@ function Compare-TcpCounters {
         # backlog #65: a read inside the window that failed lies inside both protocols' windows - it was taken after
         # both baseline stamps and before both ending stamps - except one taken while the window was being extended,
         # which is inside only the windows the extension closed.
-        $windowAttempts += @(@(Get-PropertyValue $intervalState "FailedAttempts" @()) | Where-Object { (-not [bool]$_.Extension) -or $closedByExtension })
+        # PR #56, round 7: the same list decides the no-reading sentence of the placement block below - a read that failed
+        # during the extension is outside the window of a protocol the extension did not close, and its block must
+        # not claim the reads stopped inside a window they never reached.
+        $intervalInsideAttempts = @(@(Get-PropertyValue $intervalState "FailedAttempts" @()) | Where-Object { (-not [bool]$_.Extension) -or $closedByExtension })
+        $windowAttempts += $intervalInsideAttempts
         $windowNote = ""
         if (@($windowAttempts).Count -gt 0) {
             $windowNote = ("Note: {1} of these {0} seconds went on counter reads that failed inside the window ({2}); the configured minimum is {3} seconds." -f $sampleSeconds, (Get-TcpAttemptSeconds $windowAttempts), (Format-TcpAttemptList $windowAttempts), $configuredSeconds)
@@ -5440,7 +5444,7 @@ function Compare-TcpCounters {
         # its own stamps, and the lines decide nothing.
         if ($null -ne $intervalState -and $intervalState.IntervalSeconds -gt 0 -and $retransDelta -gt 0) {
             $intervalTable = @(Get-TcpIntervalTable -Protocol $protocol -Start $start -End $end -Reads @(Get-PropertyValue $intervalState "Reads" @()))
-            foreach ($line in @(Get-TcpDistributionLines -Protocol $protocol -Intervals $intervalTable -RetransDelta $retransDelta -SampleSeconds (New-TimeSpan -Start $start.Timestamp -End $end.Timestamp).TotalSeconds -State $intervalState)) {
+            foreach ($line in @(Get-TcpDistributionLines -Protocol $protocol -Intervals $intervalTable -RetransDelta $retransDelta -SampleSeconds (New-TimeSpan -Start $start.Timestamp -End $end.Timestamp).TotalSeconds -State $intervalState -FailedInside $intervalInsideAttempts)) {
                 $details += [Environment]::NewLine + $line
             }
         }
@@ -5793,7 +5797,8 @@ function Get-TcpDistributionLines {
         [object[]]$Intervals,
         [uint64]$RetransDelta,
         [double]$SampleSeconds,
-        [object]$State
+        [object]$State,
+        [object[]]$FailedInside
     )
 
     # What a measured row says about where its retransmissions fell - only where there were any: a window that
@@ -5813,7 +5818,8 @@ function Get-TcpDistributionLines {
         # PR #56, round 4: a window with no reading inside it says why, and "none was due" is only one of the reasons -
         # the reads may have stopped at a read that failed before this window had a reading, and that read is named
         # on the row with its seconds; a sentence saying none was due beside it would contradict the row.
-        if (@(Get-PropertyValue $State "FailedAttempts" @()).Count -gt 0) {
+        # Round 7: the failed reads inside THIS protocol's window, which the caller knows and the state does not.
+        if (@($FailedInside).Count -gt 0) {
             $lines += "The reads inside the window stopped at a read that failed before this window had a reading inside it - that read and its seconds are named above - so the retransmissions cannot be placed in time."
         }
         else {
