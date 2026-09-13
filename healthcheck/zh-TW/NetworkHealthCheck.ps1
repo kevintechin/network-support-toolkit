@@ -867,9 +867,9 @@ function Test-HttpTargetSyntax {
     if (-not [System.Uri]::TryCreate([string]$Value, [System.UriKind]::Absolute, [ref]$uri)) { return $false }
     if (-not ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")) { return $false }
     # 網址裡面的主機名稱也是一個主機名稱：Uri.TryCreate 會接受 'http://foo..bar/'，而那個空標籤要等到
-    # 請求已經送出去才會被發現，到時候看起來就像網站不回應（PR #41，第 9 輪）。Uri 會拿掉 IPv6 文字
-    # 位址的方括號，也不會把使用者資訊留在 Host 裡，所以這裡檢查的就是名稱本身。
-    return (Test-HostNameSyntax $uri.Host)
+    # 請求已經送出去才會被發現，到時候看起來就像網站不回應（PR #41，第 9 輪）。這裡檢查的是 URL 裡寫的那個主機，
+    # 不是 Uri 的 .Host：Uri 會先把主機轉小寫並正規化再放出來，會讓規則在別處都拒絕的寫法通過（PR #58 第 3 輪）。
+    return (Test-HostNameSyntax (Get-UrlConfiguredHost $Value))
 }
 
 # 待辦 #54：主機名稱判定的規則寫在這一處，取代審查者一次一個找出來的字元清單（PR #41 第 5 到 21 輪）。設定的值能被
@@ -957,6 +957,30 @@ function Get-HostNameSyntaxProblem {
     return ""
 }
 
+# URL 裡的主機，照寫的樣子，而不是 System.Uri 顯示的樣子：Uri 會先把主機轉成小寫、把國際化的主機正規化，再放進 .Host，
+# 所以透過 .Host 判定的 URL 會讓規則在別處都拒絕的主機通過——https://大寫 Ü 開頭的 BER.de/ 回來已是小寫（PR #58 第 3
+# 輪）。authority 是 scheme 的「//」之後、第一個「/」「?」「#」之前的部分；「@」之前的 userinfo 和最後一個「:」之後的
+# 連接埠去掉；IPv6 字面值保留方括號裡的內容。全部用序數搜尋。
+function Get-UrlConfiguredHost {
+    param([string]$Url)
+    $text = ([string]$Url).Trim()
+    $start = $text.IndexOf("//", [System.StringComparison]::Ordinal)
+    if ($start -lt 0) { return "" }
+    $authority = $text.Substring($start + 2)
+    $end = $authority.IndexOfAny([char[]]@("/", "?", "#"))
+    if ($end -ge 0) { $authority = $authority.Substring(0, $end) }
+    $at = $authority.LastIndexOf([char]"@")
+    if ($at -ge 0) { $authority = $authority.Substring($at + 1) }
+    if ($authority.Length -gt 0 -and [int]$authority[0] -eq 91) {
+        $close = $authority.IndexOf([char]"]")
+        if ($close -lt 0) { return "" }
+        return $authority.Substring(1, $close - 1)
+    }
+    $colon = $authority.LastIndexOf([char]":")
+    if ($colon -ge 0) { $authority = $authority.Substring(0, $colon) }
+    return $authority
+}
+
 # URL 的列或設定錯誤要帶的後綴：URL 本身是絕對的 http(s) 位址、問題出在主機名稱時，寫出主機的理由（待辦 #54）；
 # URL 因 scheme 或形狀而失敗時什麼都不加，讓它保有自己的訊息。
 function Get-UrlHostProblemSuffix {
@@ -964,7 +988,7 @@ function Get-UrlHostProblemSuffix {
     $uri = $null
     if (-not [System.Uri]::TryCreate([string]$Url, [System.UriKind]::Absolute, [ref]$uri)) { return "" }
     if (-not ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")) { return "" }
-    $problem = [string](Get-HostNameSyntaxProblem $uri.Host)
+    $problem = [string](Get-HostNameSyntaxProblem (Get-UrlConfiguredHost $Url))
     if ($problem.Length -eq 0) { return "" }
     return ("；主機：" + $problem)
 }

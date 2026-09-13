@@ -892,9 +892,10 @@ function Test-HttpTargetSyntax {
     if (-not ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")) { return $false }
     # The host inside the URL is a host name like any other: Uri.TryCreate is happy with 'http://foo..bar/',
     # and the empty label is only found when the request is already on its way, where the failure reads as a
-    # site that would not answer (PR #41, round 9). Uri strips the brackets from an IPv6 literal and keeps
-    # the userinfo out of Host, so what is tested here is the name itself.
-    return (Test-HostNameSyntax $uri.Host)
+    # site that would not answer (PR #41, round 9). The host tested is the one written in the URL, not Uri's
+    # .Host: Uri lowercases and normalises the host before exposing it, and would have passed a spelling the rule
+    # refuses everywhere else (PR #58, round 3).
+    return (Test-HostNameSyntax (Get-UrlConfiguredHost $Value))
 }
 
 # Backlog #54: the rule of the host-name predicate, stated once, instead of a list of characters that reviewers found
@@ -991,6 +992,31 @@ function Get-HostNameSyntaxProblem {
     return ""
 }
 
+# The host of a URL as it was written, not as System.Uri shows it: Uri lowercases the host and normalises an
+# internationalised one before exposing .Host, so a URL judged through .Host would pass a host the rule refuses
+# everywhere else - https://<capital U-umlaut>BER.de/ came back as the lowercase form (PR #58, round 3). The authority
+# is what follows the scheme's "//" up to the first "/", "?" or "#"; userinfo before "@" and a port after the last
+# ":" are dropped; an IPv6 literal keeps what is between its brackets. Ordinal searches throughout.
+function Get-UrlConfiguredHost {
+    param([string]$Url)
+    $text = ([string]$Url).Trim()
+    $start = $text.IndexOf("//", [System.StringComparison]::Ordinal)
+    if ($start -lt 0) { return "" }
+    $authority = $text.Substring($start + 2)
+    $end = $authority.IndexOfAny([char[]]@("/", "?", "#"))
+    if ($end -ge 0) { $authority = $authority.Substring(0, $end) }
+    $at = $authority.LastIndexOf([char]"@")
+    if ($at -ge 0) { $authority = $authority.Substring($at + 1) }
+    if ($authority.Length -gt 0 -and [int]$authority[0] -eq 91) {
+        $close = $authority.IndexOf([char]"]")
+        if ($close -lt 0) { return "" }
+        return $authority.Substring(1, $close - 1)
+    }
+    $colon = $authority.LastIndexOf([char]":")
+    if ($colon -ge 0) { $authority = $authority.Substring(0, $colon) }
+    return $authority
+}
+
 # The suffix a URL's row or configuration error carries when the URL is an absolute http(s) address whose host is what
 # cannot be used (backlog #54): the host's reason, named; nothing for a URL that fails for its scheme or its shape.
 function Get-UrlHostProblemSuffix {
@@ -998,7 +1024,7 @@ function Get-UrlHostProblemSuffix {
     $uri = $null
     if (-not [System.Uri]::TryCreate([string]$Url, [System.UriKind]::Absolute, [ref]$uri)) { return "" }
     if (-not ($uri.Scheme -eq "http" -or $uri.Scheme -eq "https")) { return "" }
-    $problem = [string](Get-HostNameSyntaxProblem $uri.Host)
+    $problem = [string](Get-HostNameSyntaxProblem (Get-UrlConfiguredHost $Url))
     if ($problem.Length -eq 0) { return "" }
     return ("; the host: " + $problem)
 }
