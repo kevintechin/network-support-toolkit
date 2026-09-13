@@ -246,8 +246,17 @@ function Invoke-LauncherRun([string]$Id, [string]$Lang) {
     $messageFile = @($messageFiles | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
     return @{
         Copy = $copy; ExitCode = $r.ExitCode; Output = $r.Output
-        LauncherError = $(if ($launcherError.Count) { Get-Content -LiteralPath $launcherError[0].FullName -Raw } else { '' })
-        PowerShellMessages = @($(if ($messageFile.Count) { Get-Content -LiteralPath $messageFile[0].FullName -ErrorAction SilentlyContinue } else { @() }))
+        # Both files are read as UTF-8 by name. The launchers run `chcp 65001` on their third line, so everything they
+        # write - and everything PowerShell writes into the redirected stream under them - is UTF-8 without a byte-order
+        # mark, and Windows PowerShell 5.1's Get-Content without -Encoding decodes a file without one in the machine's
+        # ANSI code page. Measured on this machine (CP950, 2026-09-14): a capture holding PowerShell's zh-TW signature
+        # refusal read back without -Encoding does not contain that message, and read with -Encoding UTF8 it does. The
+        # scenario runs the en-US launcher, but PowerShell's own message follows the machine's display language, so the
+        # file is in Chinese on a zh-TW machine whatever the launcher says (PR #65, round 2). The error report matters
+        # for the same reason once a path in it carries a character outside ASCII: a mis-decoded three-byte sequence
+        # takes the byte after it with it, and what follows in that file is the ASCII the scenarios match on.
+        LauncherError = $(if ($launcherError.Count) { Get-Content -LiteralPath $launcherError[0].FullName -Raw -Encoding UTF8 } else { '' })
+        PowerShellMessages = @($(if ($messageFile.Count) { Get-Content -LiteralPath $messageFile[0].FullName -Encoding UTF8 -ErrorAction SilentlyContinue } else { @() }))
         PowerShellMessagesFile = $(if ($messageFile.Count) { $messageFile[0].Name } else { '' })
         EnvironmentReports = @($envReports | ForEach-Object { $_.FullName }); Reports = @($reports | ForEach-Object { $_.FullName })
     }
@@ -912,7 +921,7 @@ function Get-Plan {
                $policyAfter = Get-MachinePolicyExecutionPolicy
                if ($policyAfter -ne 'AllSigned') { $bad += ('MachinePolicy is ' + $policyAfter + ' after the run, and AllSigned before it: what refused the script cannot be tied to the policy') }
                $shown = @($r.Output | Where-Object { $_.Trim() -ne '' } | Select-Object -First 4) -join ' / '
-               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; refusal read from {2}: {3}; MachinePolicy after the run: {4}; what the user sees: {5}' -f $r.ExitCode, $r.EnvironmentReports.Count, $(if ($r.PowerShellMessagesFile) { $r.PowerShellMessagesFile } else { 'no messages file' }), $refusal.Detail, $policyAfter, $shown)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\PowerShellMessages_*.txt') }
+               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; refusal read from {2}: {3}; MachinePolicy after the run: {4}; what the user sees: {5}' -f $r.ExitCode, $r.EnvironmentReports.Count, $(if ($r.PowerShellMessagesFile) { $r.PowerShellMessagesFile } else { 'no messages file' }), $refusal.Detail, $policyAfter, $shown)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\PowerShellMessages_*.txt', 'en-US\NetworkHealthCheck_PowerShellMessages_*.txt') }
            }
            # The revert restores what Prepare recorded, not a blank: a machine that had a policy before M8 gets it back, and the
            # verification compares with that, not with Undefined (Codex round 1 on PR #14). A scriptblock, evaluated at revert time.

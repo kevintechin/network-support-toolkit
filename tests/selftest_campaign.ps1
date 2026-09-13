@@ -774,6 +774,19 @@ if ($m8Hash37.Count -eq 1 -and $pair37.Count -eq 1) {
     if ($calls37.Count -eq 1 -and $calls37[0].CommandElements.Count -ge 2) { $fed37 = [string]$calls37[0].CommandElements[1].Extent.Text }
 }
 Assert-True '37. and M8 feeds it what PowerShell printed, not the console the launcher wrote that suggestion into' ($fed37 -eq '$r.PowerShellMessages') ('fed with: ' + $(if ($fed37) { $fed37 } else { 'nothing this case could read' }))
+# Round 2 of PR #65: the file was read without naming its encoding. The launchers run `chcp 65001` on their third line,
+# so what they and the PowerShell under them write is UTF-8 with no byte-order mark, and Get-Content without -Encoding
+# decodes a file without one in the machine's ANSI code page - on this machine, CP950, the zh-TW refusal comes back as
+# something the predicate cannot find. A rule rather than one call, and over the whole function, because every file
+# Invoke-LauncherRun reads was written by our own launcher under that same chcp: the Zone.Identifier stream elsewhere
+# in the driver is Windows's and is ASCII, and is not this rule's business.
+$unencoded37 = @()
+if ($defs37.ContainsKey('Invoke-LauncherRun')) {
+    $unencoded37 = @($defs37['Invoke-LauncherRun'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-Content' }, $true) |
+        Where-Object { @($_.CommandElements | Where-Object { ($_ -is [System.Management.Automation.Language.CommandParameterAst]) -and ($_.ParameterName -eq 'Encoding') }).Count -eq 0 } |
+        ForEach-Object { 'line ' + $_.Extent.StartLineNumber })
+}
+Assert-True '37. and every file Invoke-LauncherRun reads names its encoding, since the launcher writes UTF-8 and this runtime would read it in the machine''s ANSI code page' (($defs37.ContainsKey('Invoke-LauncherRun')) -and ($unencoded37.Count -eq 0)) ('reads without -Encoding: ' + $(if ($unencoded37.Count) { $unencoded37 -join ', ' } else { 'none' }) + '; function found: ' + $defs37.ContainsKey('Invoke-LauncherRun'))
 
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
