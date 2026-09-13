@@ -2787,6 +2787,16 @@ Assert-Equal '#54 rtl: an overlong Hebrew label is reported as a whole, not blam
 # runtime that enforces the bidirectional rule refuses it as a whole. Either way no single letter is blamed.
 $hebrewMixed = [string](Get-HostNameSyntaxProblem (($hebrew * 2) + 'b.example.com'))
 Assert-Equal '#54 rtl: a label mixing directions is usable or reported as a whole, never blamed on a letter' (($hebrewMixed.Length -eq 0) -or (($hebrewMixed -notmatch 'U\+05D0') -and ($hebrewMixed -notmatch 'U\+0062'))) True
+# PR #58 round 9: the character named is the one whose removal makes the label encodable, in the label's own context - a
+# joiner valid only between the letters it joins (IDNA2008's ContextJ; this runtime maps it away) is never blamed for a
+# prohibited character after it, two prohibited characters name the first, and a length is a length.
+$arabic = [string][char]0x0628
+$joinerThenOverride = [string](Get-HostNameSyntaxProblem ($arabic + [string][char]0x200C + $arabic + [string][char]0x202E + '.example.com'))
+Assert-Equal '#54 context: the override after a joiner between Arabic letters is named, not the joiner' (($joinerThenOverride -match 'U\+202E') -and ($joinerThenOverride -notmatch 'U\+200C')) True
+$twoOverrides = [string](Get-HostNameSyntaxProblem ('a' + [string][char]0x202E + 'b' + [string][char]0x202E + 'c.example.com'))
+Assert-Equal '#54 context: two prohibited characters name the first, at its position' (($twoOverrides -match 'U\+202E') -and ($twoOverrides -match '(^|\D)2(\D|$)')) True
+$longWithAccent = [string](Get-HostNameSyntaxProblem (('a' * 63) + [string][char]0xE9 + '.example.com'))
+Assert-Equal '#54 context: 64 characters ending in an accent is the length, not the accent' (($longWithAccent -match '63') -and ($longWithAccent -notmatch 'U\+00E9')) True
 Assert-Equal '#54 reason: the bidirectional override is named' (([string](Get-HostNameSyntaxProblem ('foo' + [string][char]0x202E + 'bar.example.com'))) -match 'U\+202E') True
 Assert-Equal '#54 reason: a blank has one' (([string](Get-HostNameSyntaxProblem '   ')).Length -gt 0) True
 # A lone surrogate has no code point; the reason names its UTF-16 value instead of throwing (PR #58, round 1). The calls

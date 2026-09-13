@@ -951,28 +951,49 @@ function Get-HostNameSyntaxProblem {
                 $decoded = $idn.GetUnicode($encoded)
             }
             catch {
-                # The label as a whole is refused; the character that decides it is found one at a time, a surrogate
-                # pair as one, so that the reason can name it; a lone surrogate - what a JSON escape of one half produces -
-                # has no code point and is named by its UTF-16 value (PR #58, round 1). None found means the label is too
-                # long once encoded.
+                # The label as a whole is refused. The character that decided it is the one whose removal makes the
+                # label encodable - probed in the label's own context, because a character probed alone or between two
+                # Latin letters is judged as a different label (round 8: a right-to-left letter between "a" and "b";
+                # round 9: a joiner that is valid only between the letters it joins). A label of more than 63 characters
+                # is the length before anything is searched. Exactly one such character is named; none - two prohibited
+                # characters, say - is searched in pairs, and the first of the first pair that works is named; more than
+                # one, or a label no pair rescues, is reported as a whole.
+                if ($normalized.Length -gt 63) { return ("the label at position {0} is longer than 63 characters" -f (& $scalarPosition ($position - 1))) }
+                $units = New-Object System.Collections.ArrayList
                 $i = 0
                 while ($i -lt $normalized.Length) {
                     $unit = [string]$normalized[$i]
                     if ([char]::IsHighSurrogate($normalized[$i]) -and ($i + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$i + 1])) { $unit = $normalized.Substring($i, 2) }
-                    # Alone first: a right-to-left letter between "a" and "b" is a bidirectional violation of the probe's
-                    # own making, which blamed a valid Hebrew or Arabic letter for what came after it (round 8); a unit
-                    # that stands alone is not the cause, and a unit that IDNA maps to nothing fails alone (an empty
-                    # label) but not between letters, so only a unit refused both ways is named.
-                    $refused = $false
-                    try { [void]$idn.GetAscii($unit) } catch { $refused = $true }
-                    if ($refused) { try { [void]$idn.GetAscii("a" + $unit + "b"); $refused = $false } catch { $refused = $true } }
-                    $code = $(if ($unit.Length -eq 2) { [char]::ConvertToUtf32($unit, 0) } else { [int]$unit[0] })
-                    $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
-                    if ($at -lt 0) { $at = $i }
-                    if ($refused) { return ("U+{0:X4} at position {1} cannot be encoded for the wire: IDNA refuses it" -f $code, (& $scalarPosition ($position - 1 + $at))) }
+                    [void]$units.Add(@{ Unit = $unit; Offset = $i })
                     $i += $unit.Length
                 }
-                return ("the label at position {0} cannot be encoded for the wire: IDNA refuses it as a whole - a mix of right-to-left and left-to-right characters, or more than 63 characters once encoded" -f (& $scalarPosition ($position - 1)))
+                $rescuers = @()
+                for ($u = 0; $u -lt $units.Count; $u++) {
+                    $without = $normalized.Substring(0, $units[$u].Offset) + $normalized.Substring($units[$u].Offset + $units[$u].Unit.Length)
+                    $ok = $false
+                    if ($without.Length -gt 0) { try { [void]$idn.GetAscii($without); $ok = $true } catch { $ok = $false } }
+                    if ($ok) { $rescuers += $u }
+                }
+                $culprit = -1
+                if ($rescuers.Count -eq 1) { $culprit = $rescuers[0] }
+                elseif ($rescuers.Count -eq 0) {
+                    for ($u = 0; $u -lt $units.Count -and $culprit -lt 0; $u++) {
+                        for ($v = $u + 1; $v -lt $units.Count -and $culprit -lt 0; $v++) {
+                            $without = $normalized.Substring(0, $units[$u].Offset) + $normalized.Substring($units[$u].Offset + $units[$u].Unit.Length, $units[$v].Offset - $units[$u].Offset - $units[$u].Unit.Length) + $normalized.Substring($units[$v].Offset + $units[$v].Unit.Length)
+                            $ok = $false
+                            if ($without.Length -gt 0) { try { [void]$idn.GetAscii($without); $ok = $true } catch { $ok = $false } }
+                            if ($ok) { $culprit = $u }
+                        }
+                    }
+                }
+                if ($culprit -ge 0) {
+                    $unit = [string]$units[$culprit].Unit
+                    $code = $(if ($unit.Length -eq 2) { [char]::ConvertToUtf32($unit, 0) } else { [int]$unit[0] })
+                    $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
+                    if ($at -lt 0) { $at = [int]$units[$culprit].Offset }
+                    return ("U+{0:X4} at position {1} cannot be encoded for the wire: IDNA refuses it" -f $code, (& $scalarPosition ($position - 1 + $at)))
+                }
+                return ("the label at position {0} cannot be encoded for the wire: IDNA refuses it as a whole - more than 63 characters once encoded, or a combination no single character explains" -f (& $scalarPosition ($position - 1)))
             }
             # ASCII case alone is folded before the comparison: IDNA lowercases A-Z, and that is the one change the rule
             # allows. A culture-free ignore-case comparison folded more - U+017F (the long s) and 's' both uppercase to

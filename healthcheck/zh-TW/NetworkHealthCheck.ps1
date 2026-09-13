@@ -918,25 +918,47 @@ function Get-HostNameSyntaxProblem {
                 $decoded = $idn.GetUnicode($encoded)
             }
             catch {
-                # 整個標籤被拒絕；決定它的字元一次一個找出來（代理對算一個），好讓理由寫得出它。一個都找不到就表示
-                # 標籤編碼後太長。落單的代理字元——JSON 只逸出一半時就會產生——沒有碼位，就以它的 UTF-16 值命名（PR #58 第 1 輪）。
+                # 整個標籤被拒絕。決定它的字元，是「拿掉它之後標籤就能編碼」的那一個——在標籤自己的脈絡裡探測，因為單獨探測
+                # 或夾在兩個拉丁字母之間探測，判定的是另一個標籤（第 8 輪：右到左字母夾在「a」「b」之間；第 9 輪：只在
+                # 它所連接的字母之間才合法的連接子）。超過 63 個字元的標籤，先算長度，不搜尋。剛好一個這樣的字元就點名它；
+                # 一個都沒有——例如兩個被禁止的字元——就成對搜尋，點名第一個成功的那一對裡靠前的；多於一個，或沒有任何一對
+                # 救得了的標籤，就整個回報。
+                if ($normalized.Length -gt 63) { return ("位置 {0} 的標籤超過 63 個字元" -f (& $scalarPosition ($position - 1))) }
+                $units = New-Object System.Collections.ArrayList
                 $i = 0
                 while ($i -lt $normalized.Length) {
                     $unit = [string]$normalized[$i]
                     if ([char]::IsHighSurrogate($normalized[$i]) -and ($i + 1) -lt $normalized.Length -and [char]::IsLowSurrogate($normalized[$i + 1])) { $unit = $normalized.Substring($i, 2) }
-                    # 先單獨試：一個右到左的字母夾在「a」和「b」之間，是探測自己造成的雙向規則違規，會把後面的東西怪到一個
-                    # 正常的希伯來或阿拉伯字母頭上（第 8 輪）；能單獨成立的碼元不是原因，而 IDNA 對應成空的碼元單獨會失敗
-                    # （空標籤）、夾在字母間卻不會，所以只有兩種試法都被拒絕的碼元才會被點名。
-                    $refused = $false
-                    try { [void]$idn.GetAscii($unit) } catch { $refused = $true }
-                    if ($refused) { try { [void]$idn.GetAscii("a" + $unit + "b"); $refused = $false } catch { $refused = $true } }
-                    $code = $(if ($unit.Length -eq 2) { [char]::ConvertToUtf32($unit, 0) } else { [int]$unit[0] })
-                    $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
-                    if ($at -lt 0) { $at = $i }
-                    if ($refused) { return ("位置 {1} 的 U+{0:X4} 無法編碼送上線：IDNA 拒絕它" -f $code, (& $scalarPosition ($position - 1 + $at))) }
+                    [void]$units.Add(@{ Unit = $unit; Offset = $i })
                     $i += $unit.Length
                 }
-                return ("位置 {0} 的標籤無法編碼送上線：IDNA 整個拒絕它——右到左和左到右的字元混在一起，或編碼後超過 63 個字元" -f (& $scalarPosition ($position - 1)))
+                $rescuers = @()
+                for ($u = 0; $u -lt $units.Count; $u++) {
+                    $without = $normalized.Substring(0, $units[$u].Offset) + $normalized.Substring($units[$u].Offset + $units[$u].Unit.Length)
+                    $ok = $false
+                    if ($without.Length -gt 0) { try { [void]$idn.GetAscii($without); $ok = $true } catch { $ok = $false } }
+                    if ($ok) { $rescuers += $u }
+                }
+                $culprit = -1
+                if ($rescuers.Count -eq 1) { $culprit = $rescuers[0] }
+                elseif ($rescuers.Count -eq 0) {
+                    for ($u = 0; $u -lt $units.Count -and $culprit -lt 0; $u++) {
+                        for ($v = $u + 1; $v -lt $units.Count -and $culprit -lt 0; $v++) {
+                            $without = $normalized.Substring(0, $units[$u].Offset) + $normalized.Substring($units[$u].Offset + $units[$u].Unit.Length, $units[$v].Offset - $units[$u].Offset - $units[$u].Unit.Length) + $normalized.Substring($units[$v].Offset + $units[$v].Unit.Length)
+                            $ok = $false
+                            if ($without.Length -gt 0) { try { [void]$idn.GetAscii($without); $ok = $true } catch { $ok = $false } }
+                            if ($ok) { $culprit = $u }
+                        }
+                    }
+                }
+                if ($culprit -ge 0) {
+                    $unit = [string]$units[$culprit].Unit
+                    $code = $(if ($unit.Length -eq 2) { [char]::ConvertToUtf32($unit, 0) } else { [int]$unit[0] })
+                    $at = $label.IndexOf($unit, [System.StringComparison]::Ordinal)
+                    if ($at -lt 0) { $at = [int]$units[$culprit].Offset }
+                    return ("位置 {1} 的 U+{0:X4} 無法編碼送上線：IDNA 拒絕它" -f $code, (& $scalarPosition ($position - 1 + $at)))
+                }
+                return ("位置 {0} 的標籤無法編碼送上線：IDNA 整個拒絕它——編碼後超過 63 個字元，或是沒有單一字元能解釋的組合" -f (& $scalarPosition ($position - 1)))
             }
             # 比較前只折疊 ASCII 的大小寫：IDNA 會把 A-Z 變小寫，這是規則唯一容許的改變。不分文化的忽略大小寫比較折疊得
             # 更多——U+017F（長 s）和「s」的大寫都是「S」，詞尾 sigma 和 sigma 也算同一個字母——讓 IDNA 會送成「asb」的
