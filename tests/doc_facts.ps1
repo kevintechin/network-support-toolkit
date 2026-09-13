@@ -237,6 +237,10 @@ function Get-EmphasisSpans([string]$path) {
         $text = Remove-IndentedCode $text
         foreach ($m in [regex]::Matches($text, '\*\*([^*\r\n]+)\*\*')) { $out.Add($m.Groups[1].Value.Trim()) }
         foreach ($m in [regex]::Matches($text, '(?<![*\w])\*([^*\r\n]+)\*(?![*\w])')) { $out.Add($m.Groups[1].Value.Trim()) }
+        # Underscores emphasise too, and a manual that changed delimiter without changing what renders would have
+        # been told its verdict was undocumented (PR #64, round 10).
+        foreach ($m in [regex]::Matches($text, '__([^_\r\n]+)__')) { $out.Add($m.Groups[1].Value.Trim()) }
+        foreach ($m in [regex]::Matches($text, '(?<![_\w])_([^_\r\n]+)_(?![_\w])')) { $out.Add($m.Groups[1].Value.Trim()) }
     }
     return @($out | Sort-Object -CaseSensitive -Unique)
 }
@@ -783,6 +787,7 @@ foreach ($lang in $Languages) {
         $region = Get-SectionRegion $doc '8'
         $spans = @(Get-SpansIn $doc $region | ForEach-Object { ($_ -replace '\\', '/').Trim() } | Where-Object { $_ })
         $matchers = New-Object System.Collections.Generic.List[string]
+        $tooBroad = New-Object System.Collections.Generic.List[string]
         $previous = ''
         foreach ($span in $spans) {
             if ($span -match '/$') { continue }                                  # a folder: an entry for itself
@@ -793,8 +798,23 @@ foreach ($lang in $Languages) {
             if ($span -notmatch '^[A-Za-z0-9*][A-Za-z0-9_.\-]*(/[A-Za-z0-9*][A-Za-z0-9_.*\-]*)?$') { continue }
             $matchers.Add($span)
             $previous = $span
+            # A wildcard stands for a family that shares one row - the two technical guides - and not for a folder.
+            # `*` or `en-US/*` would have made every required file documented and left this check asserting nothing,
+            # which is the hazard the folder rule above exists for, arriving through the other door (PR #64, round 10).
+            if ($span -match '\*') {
+                $leaf = @($span -split '/')[-1]
+                $stem = @($leaf -split '\*')[0]
+                if (($stem.Length -lt 3) -or ($leaf -notmatch '\.[A-Za-z0-9]+$')) { $tooBroad.Add(('{0}: a wildcard names a family, so it needs at least three characters before the * and a file extension after it' -f $span)) }
+            }
+        }
+        # How much each wildcard covers is part of the shape: a row groups a pair, and one that answered for half the
+        # folder would hide whatever the package gained next.
+        foreach ($matcher in @($matchers | Where-Object { $_ -match '\*' } | Sort-Object -CaseSensitive -Unique)) {
+            $covered = @($required | Where-Object { $_ -like $matcher })
+            if ($covered.Count -gt 2) { $tooBroad.Add(('{0}: one row may group a pair, and this covers {1} files ({2})' -f $matcher, $covered.Count, ($covered -join ', '))) }
         }
         $unnamed = @($required | Where-Object { $file = $_; -not @($matchers | Where-Object { $file -like $_ }).Count })
+        if ($tooBroad.Count) { $unnamed = @($unnamed) + @($tooBroad) }
         Assert-True ("E3 [{0}] every file the package ships in the root and in {1}\ is named by the file table ({2} files by {3}, {4} names)" -f $name, $lang, $required.Count, $inventory, $matchers.Count) ($unnamed.Count -eq 0) ('not in the table: ' + ($unnamed -join ', '))
     }
 }

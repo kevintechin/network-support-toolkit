@@ -403,6 +403,17 @@ Assert-StillClean 'an indented continuation of a list item is text, not code' {
     Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', $continued))
 }
 
+Assert-Catches 'a file table whose row answers for the whole folder with a wildcard' 'E3' {
+    # A wildcard names a family that shares a row; one that covers the folder would leave E3 asserting nothing
+    # (PR #64, round 10).
+    Write-All $EnUser ((Read-All $EnUser).Replace('`en-US\NetworkHealthCheck_Technical_Guide_*.md`', '`en-US\*`'))
+}
+
+# 5o - and its other direction: a manual may emphasise with underscores, and what renders is the same phrase.
+Assert-StillClean 'a verdict emphasised with underscores is still quoted' {
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', '__Overall Healthy__'))
+}
+
 # 5m - and the control the third finding is about: a file a run leaves behind is not a file the package ships, so
 # the step has to keep passing with one in a language folder (PR #64, round 1).
 $artefact = Join-Path $Package 'en-US\LauncherError_20260914_000000.txt'
