@@ -5416,7 +5416,8 @@ function Start-TcpIntervalSampling {
         [int]$IntervalSeconds,
         [datetime]$Since,
         [switch]$Extension,
-        [object]$Boundary
+        [object]$Boundary,
+        [object]$Deadline
     )
 
     # 打開窗內讀取：從基準時間戳開始，延長取樣窗（backlog #51）時再從延長的起點開始。被失敗讀取停掉的取樣在延長期間
@@ -5431,11 +5432,16 @@ function Start-TcpIntervalSampling {
             FailedAttempts  = New-Object System.Collections.ArrayList
             StoppedAt       = $null
             StopReason      = ""
+            Deadline        = $null
         }
     }
     $state = $script:TcpIntervalSampling
     $state.Extension = [bool]$Extension
     $state.LastRead = $Since
+    # PR #56 第 5 輪：窗的期限——開窗的時間戳加上設定的最短時間——隨狀態一起帶著，期限一過，不論哪條路來問，到期檢查
+    # 都不再讀。第 2、3 輪各關掉一條路（等待的最後一次睡眠、等待之後的步驟）；分散 ping 探測的停頓和超過最短時間的
+    # 步驟是第三條，把規則放在一個地方才不會有第四條。
+    if ($Deadline -is [datetime]) { $state.Deadline = $Deadline }
     # PR #56 第 2 輪：延長取樣窗時，關閉第一個窗的那次讀數是表裡的一個點，這樣第一個窗與延長段的各段才分得開；它不花任何
     # 成本——那是量測自己的讀取——而且不論取樣是否還開著都保留。
     if ($null -ne $Boundary -and $null -ne $Boundary.Counters) {
@@ -5499,6 +5505,9 @@ function Invoke-TcpIntervalReadIfDue {
     # 記錄下來並結束取樣，因為每個步驟之後都會跑的檢查絕不能讓步驟失敗。
     $state = $script:TcpIntervalSampling
     if ($null -eq $state -or -not $state.Active) { return }
+    # PR #56 第 5 輪：窗的期限一過，不論從哪條路來都不再讀——那次讀取會落在最短時間之後，把整個成本疊到執行上——取樣也就在
+    # 這裡徹底關閉。
+    if ($null -ne $state.Deadline -and (Get-Date) -ge $state.Deadline) { $state.Active = $false; return }
     if (((Get-Date) - $state.LastRead).TotalSeconds -lt $state.IntervalSeconds) { return }
     $reading = $null
     try {
@@ -6926,9 +6935,10 @@ function Run-AllChecks {
         # 讀取寫出一列，說的是同一件事，但證據都在。
         return (Get-TcpCounterSnapshot -WarmUp)
     }
+    $minimumSampleSeconds = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.RetransmissionSampleSeconds 8))
     $tcpSampleStart = Get-Date
     # 窗內讀取從基準時間戳打開，在讀取結束值之前關閉（backlog #65）。
-    Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since $tcpSampleStart
+    Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since $tcpSampleStart -Deadline $tcpSampleStart.AddSeconds($minimumSampleSeconds)
 
     $adapterStatsBefore = Invoke-CheckStep -Category "網卡錯誤計數" -Name "取得網卡錯誤基準值" -Progress 13 -Weightless -Action {
         return (Get-AdapterStatisticsSnapshot)
@@ -6975,7 +6985,6 @@ function Run-AllChecks {
         Add-DriverInfoResult -Adapters $networkSnapshot
     } | Out-Null
 
-    $minimumSampleSeconds = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.RetransmissionSampleSeconds 8))
     # 位置就是重點（backlog #51）：擱下的 ping 取樣在這裡送完，也就是在重傳視窗把剩餘秒數睡掉之前，因此那些
     # 探測分散用掉的是本來就要花的等待時間。放在別處都會讓一次執行變長。
     # 有東西擱著才走這一步：Invoke-CheckStep 每次都會寫一行「開始：…」並推進進度列，而大多數的執行根本
@@ -7013,7 +7022,7 @@ function Run-AllChecks {
     # 做的，所以第二次讀取失敗絕不會弄丟第一次已經讀到的結果。
     if (Test-TcpSampleNeedsExtension -Before $tcpBaseline -After $tcpAfter) {
         $tcpExtended = Invoke-CheckStep -Category "TCP 重傳" -Name "樣本太小無法評分時延長 TCP 取樣窗" -Progress 90 -Weightless -Action {
-            Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since (Get-Date) -Extension -Boundary $tcpAfter
+            Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since (Get-Date) -Extension -Boundary $tcpAfter -Deadline (Get-Date).AddSeconds($minimumSampleSeconds)
             Wait-ForMinimumTcpSample -StartTime (Get-Date) -MinimumSeconds $minimumSampleSeconds -ProgressPercent 90
             Stop-TcpIntervalSampling
             return (Merge-TcpEndingSnapshot -Original $tcpAfter -Extended (Get-TcpCounterSnapshot))

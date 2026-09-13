@@ -5620,7 +5620,8 @@ function Start-TcpIntervalSampling {
         [int]$IntervalSeconds,
         [datetime]$Since,
         [switch]$Extension,
-        [object]$Boundary
+        [object]$Boundary,
+        [object]$Deadline
     )
 
     # Opens the window for the reads inside it: from the baseline stamp, and again from the start of the extension
@@ -5636,11 +5637,17 @@ function Start-TcpIntervalSampling {
             FailedAttempts  = New-Object System.Collections.ArrayList
             StoppedAt       = $null
             StopReason      = ""
+            Deadline        = $null
         }
     }
     $state = $script:TcpIntervalSampling
     $state.Extension = [bool]$Extension
     $state.LastRead = $Since
+    # PR #56, round 5: the window's deadline - the stamp the window opened at plus the configured minimum - travels with
+    # the state, and the due-check takes nothing once it has passed, whichever path asks. Rounds 2 and 3 closed two
+    # paths one at a time (the wait's last sleep, the steps after the wait); the spread probes' pauses and a step
+    # that overran the minimum were the third, and one rule in one place is what stops there being a fourth.
+    if ($Deadline -is [datetime]) { $state.Deadline = $Deadline }
     # PR #56, round 2: the reading that closed the first window is a point of the table when the window is extended,
     # so the intervals of the first window and of the extension are told apart; it costs nothing, being the
     # measurement's own read, and it is kept whether or not the sampling is still open.
@@ -5710,6 +5717,9 @@ function Invoke-TcpIntervalReadIfDue {
     # ending the sampling, because a check that runs after every step must not be able to fail the step.
     $state = $script:TcpIntervalSampling
     if ($null -eq $state -or -not $state.Active) { return }
+    # PR #56, round 5: past the window's deadline nothing is read, from any path - the read would fall after the
+    # minimum and add its whole cost to the run - and the sampling closes here for good.
+    if ($null -ne $state.Deadline -and (Get-Date) -ge $state.Deadline) { $state.Active = $false; return }
     if (((Get-Date) - $state.LastRead).TotalSeconds -lt $state.IntervalSeconds) { return }
     $reading = $null
     try {
@@ -7185,9 +7195,10 @@ function Run-AllChecks {
         # row per read that failed out of this object, which says the same thing with the evidence attached.
         return (Get-TcpCounterSnapshot -WarmUp)
     }
+    $minimumSampleSeconds = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.RetransmissionSampleSeconds 8))
     $tcpSampleStart = Get-Date
     # The reads inside the window open at the baseline stamp and close before the ending read (backlog #65).
-    Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since $tcpSampleStart
+    Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since $tcpSampleStart -Deadline $tcpSampleStart.AddSeconds($minimumSampleSeconds)
 
     $adapterStatsBefore = Invoke-CheckStep -Category "Network Adapter Error Counters" -Name "Get Network Adapter Error Baseline" -Progress 13 -Weightless -Action {
         return (Get-AdapterStatisticsSnapshot)
@@ -7234,7 +7245,6 @@ function Run-AllChecks {
         Add-DriverInfoResult -Adapters $networkSnapshot
     } | Out-Null
 
-    $minimumSampleSeconds = [math]::Max(1, (ConvertTo-IntSafe $script:Config.Tests.RetransmissionSampleSeconds 8))
     # The position is the point (backlog #51): the ping samples that were put aside are finished here, before the
     # retransmission window sleeps out the seconds it still owes, so what the spread probes spend is time the run
     # was going to spend anyway. Anywhere else in the run and they would make it longer.
@@ -7276,7 +7286,7 @@ function Run-AllChecks {
     # read that fails can never cost a reading the first one already had.
     if (Test-TcpSampleNeedsExtension -Before $tcpBaseline -After $tcpAfter) {
         $tcpExtended = Invoke-CheckStep -Category "TCP Retransmissions" -Name "Extend the TCP Sample Where It Was Too Small to Rate" -Progress 90 -Weightless -Action {
-            Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since (Get-Date) -Extension -Boundary $tcpAfter
+            Start-TcpIntervalSampling -IntervalSeconds (Get-TcpIntervalSeconds) -Since (Get-Date) -Extension -Boundary $tcpAfter -Deadline (Get-Date).AddSeconds($minimumSampleSeconds)
             Wait-ForMinimumTcpSample -StartTime (Get-Date) -MinimumSeconds $minimumSampleSeconds -ProgressPercent 90
             Stop-TcpIntervalSampling
             return (Merge-TcpEndingSnapshot -Original $tcpAfter -Extended (Get-TcpCounterSnapshot))

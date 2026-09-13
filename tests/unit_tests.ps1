@@ -2567,7 +2567,7 @@ $runBody65 = Get-FunctionBody 'Run-AllChecks'
 Assert-Equal '#65 ast: the run clears the state with the results' ($runBody65 -match '\$script:TcpIntervalSampling = \$null') True
 Assert-Equal '#65 ast: opens the reads at the baseline stamp' ($runBody65 -match '\$tcpSampleStart = Get-Date\s*(#[^\r\n]*\s*)*Start-TcpIntervalSampling -IntervalSeconds \(Get-TcpIntervalSeconds\) -Since \$tcpSampleStart') True
 Assert-Equal '#65 ast: closes them before the ending read' ($runBody65 -match 'Stop-TcpIntervalSampling\s*return \(Get-TcpCounterSnapshot\)') True
-Assert-Equal '#65 ast: reopens them for the extension, with the first ending snapshot as the boundary point, and closes them before its read' ($runBody65 -match '(?s)Start-TcpIntervalSampling -IntervalSeconds \(Get-TcpIntervalSeconds\) -Since \(Get-Date\) -Extension -Boundary \$tcpAfter\s*Wait-ForMinimumTcpSample[^\r\n]*\s*Stop-TcpIntervalSampling\s*return \(Merge-TcpEndingSnapshot') True
+Assert-Equal '#65 ast: reopens them for the extension, with the first ending snapshot as the boundary point and the extension''s deadline, and closes them before its read' ($runBody65 -match '(?s)Start-TcpIntervalSampling -IntervalSeconds \(Get-TcpIntervalSeconds\) -Since \(Get-Date\) -Extension -Boundary \$tcpAfter -Deadline \(Get-Date\)\.AddSeconds\(\$minimumSampleSeconds\)\s*Wait-ForMinimumTcpSample[^\r\n]*\s*Stop-TcpIntervalSampling\s*return \(Merge-TcpEndingSnapshot') True
 Assert-Equal '#65 ast: the configuration check names the key' ((Get-FunctionBody 'Test-ConfigurationSemantics') -match 'RetransmissionIntervalSeconds') True
 Assert-Equal '#65 ast: the run options carry it for the profile' ((Get-FunctionBody 'Set-RunOptions') -match 'IntervalSeconds = Get-TcpIntervalSeconds') True
 Assert-Equal '#65 ast: no snapshot call was added' (@($scriptAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-TcpCounterSnapshot' }, $true)).Count) 3
@@ -2622,6 +2622,26 @@ $failedFirstRows65 = Get-Rows65 @([pscustomobject]@{ Timestamp = $t65.AddSeconds
 $failedFirstV4 = @($failedFirstRows65 | Where-Object { $_.Check -eq 'TCPv4' })[0]
 Assert-Equal '#65 rows r4: the row whose first read inside the window failed carries that sentence, the failed read and the stop line, and not "none was due"' ("{0}/{1}/{2}/{3}" -f ($failedFirstV4.Details -like ('*' + $failedFirstLine65 + '*')), ($failedFirstV4.Details -like ('*' + $noneDueLine65 + '*')), ($failedFirstV4.Details -match 'TCPv4 #1'), ($failedFirstV4.Details -match '07:00:02')) 'True/False/True/True'
 Assert-Equal '#65 rows r4: the row with no read due keeps its own sentence' ($noneInsideV4.Details -like ('*' + $noneDueLine65 + '*')) True
+
+# PR #56, round 5: the window's deadline travels with the state, and the due-check takes nothing once it has passed -
+# from any path - which is the one rule behind the three paths rounds 2, 3 and 5 found one at a time.
+$script:TcpIntervalSampling = $null
+Reset-CimStub @{}
+Start-TcpIntervalSampling -IntervalSeconds 1 -Since (Get-Date).AddSeconds(-5) -Deadline (Get-Date).AddSeconds(-1)
+Invoke-TcpIntervalReadIfDue
+Assert-Equal '#65 deadline r5: a read due after the deadline is not taken, and the sampling closes' ("{0}/{1}" -f @($script:TcpIntervalSampling.Reads).Count, $script:TcpIntervalSampling.Active) '0/False'
+$script:TcpIntervalSampling = $null
+Start-TcpIntervalSampling -IntervalSeconds 1 -Since (Get-Date).AddSeconds(-5) -Deadline (Get-Date).AddSeconds(30)
+Invoke-TcpIntervalReadIfDue
+Assert-Equal '#65 deadline r5: before the deadline the read is taken' (@($script:TcpIntervalSampling.Reads).Count) 1
+$script:TcpIntervalSampling = $null
+Start-TcpIntervalSampling -IntervalSeconds 1 -Since (Get-Date).AddSeconds(-5)
+Invoke-TcpIntervalReadIfDue
+Assert-Equal '#65 deadline r5: a state opened without a deadline reads as before' (@($script:TcpIntervalSampling.Reads).Count) 1
+$script:TcpIntervalSampling = $null
+Assert-Equal '#65 deadline r5: the run opens the reads with the window''s deadline - the baseline stamp plus the configured minimum' ($runBody65 -match 'Start-TcpIntervalSampling -IntervalSeconds \(Get-TcpIntervalSeconds\) -Since \$tcpSampleStart -Deadline \$tcpSampleStart\.AddSeconds\(\$minimumSampleSeconds\)') True
+Assert-Equal '#65 deadline r5: and the minimum is computed before the window opens' ($runBody65.IndexOf('$minimumSampleSeconds = [math]::Max(1,') -lt $runBody65.IndexOf('$tcpSampleStart = Get-Date')) True
+Assert-Equal '#65 deadline r5: the due-check refuses past the deadline before it asks whether a read is due' ((Get-FunctionBody 'Invoke-TcpIntervalReadIfDue') -match '(?s)if \(\$null -ne \$state\.Deadline -and \(Get-Date\) -ge \$state\.Deadline\) \{ \$state\.Active = \$false; return \}.*?TotalSeconds -lt \$state\.IntervalSeconds') True
 
 Write-Output ("Summary: {0} passed, {1} failed" -f $passes, $fails)
 exit $fails
