@@ -191,15 +191,21 @@ function Get-EmphasisSpans([string]$path) {
     # What a document quotes from the screen - a verdict line, a badge word - is emphasised rather than coded: it is
     # a phrase the reader sees in the report, not an identifier. Only the coverage direction is ever asserted over
     # these, because a manual emphasises ordinary phrases too and the reverse reading would be prose interpretation.
+    # Code regions go first, both ways round: `**Overall Healthy**` renders as code, and a reader of the raw source
+    # would take the asterisks inside it for emphasis and call the verdict documented (PR #64, round 6).
     $text = Read-Text $path
     $out = New-Object System.Collections.Generic.List[string]
     if ($path -like '*.html') {
+        $text = [regex]::Replace($text, '(?s)<code[^>]*>.*?</code>', ' ')
+        $text = [regex]::Replace($text, '(?s)<pre[^>]*>.*?</pre>', ' ')
         foreach ($m in [regex]::Matches($text, '(?s)<(strong|b|em)[^>]*>(.*?)</\1>')) { $out.Add((ConvertFrom-HtmlText $m.Groups[2].Value).Trim()) }
         # A page gives a verdict its own badge where the markdown puts it in bold, as the sop/ pages badge a
         # fingerprint name: the first run of this check reported "Overall Healthy" as undocumented in both HTML
         # manuals, where it is on the screen in a badge and the markdown's bold row is what the reader sees.
         foreach ($m in [regex]::Matches($text, '(?s)<span class="verdict[^"]*"[^>]*>(.*?)</span>')) { $out.Add((ConvertFrom-HtmlText $m.Groups[1].Value).Trim()) }
     } else {
+        $text = [regex]::Replace($text, '(?s)```.*?```', ' ')
+        $text = [regex]::Replace($text, '`[^`\r\n]*`', ' ')
         foreach ($m in [regex]::Matches($text, '\*\*([^*\r\n]+)\*\*')) { $out.Add($m.Groups[1].Value.Trim()) }
         foreach ($m in [regex]::Matches($text, '(?<![*\w])\*([^*\r\n]+)\*(?![*\w])')) { $out.Add($m.Groups[1].Value.Trim()) }
     }
@@ -283,6 +289,7 @@ function Get-ProseText([string]$path) {
 $Languages = @('en-US', 'zh-TW')
 $tags = @{}; $unresolvedTags = @{}; $fingerprints = @{}; $fingerprintTitles = @{}; $exitCodes = @{}; $exitShapes = @{}; $configKeys = @{}
 $fingerprintOrder = @{}; $fingerprintTitleOf = @{}; $verdicts = @{}; $badges = @{}
+$verdictBranchCount = @{}; $badgeBranchCount = @{}
 foreach ($lang in $Languages) {
     $scriptPath = Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1')
     $text = Read-Text $scriptPath
@@ -320,15 +327,23 @@ foreach ($lang in $Languages) {
     # the verdict of a run, and the badge of a row. A document quotes these as text, so the ground truth has to be the
     # text and not the code behind it.
     $verdictOf = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    $verdictBranches = 0; $badgeBranches = 0
     $fnOverall = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-OverallStatus' }, $true))
     if ($fnOverall.Count -ne 1) { throw ('Get-OverallStatus not found once in ' + $scriptPath) }
+    # Every branch that names a code, counted: the pair below is read in the shape the function is written in
+    # today, and a refactor this reader cannot follow would drop a verdict from the ground truth of both scripts at
+    # once, where A8 compares two equally reduced maps and says nothing (PR #64, round 6).
+    $verdictBranches = @([regex]::Matches($fnOverall[0].Extent.Text, 'Code\s*=\s*[''"][A-Za-z]+[''"]')).Count
     foreach ($m in [regex]::Matches($fnOverall[0].Extent.Text, '(?s)Code\s*=\s*"([A-Z]+)"\s*[\r\n]+\s*Text\s*=\s*"([^"]*)"')) { $verdictOf[$m.Groups[1].Value] = $m.Groups[2].Value }
     $verdicts[$lang] = $verdictOf
     $badgeOf = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
     $fnBadge = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-StatusText' }, $true))
     if ($fnBadge.Count -ne 1) { throw ('Get-StatusText not found once in ' + $scriptPath) }
+    $badgeBranches = @([regex]::Matches($fnBadge[0].Extent.Text, '(?m)^\s*[''"][A-Za-z]+[''"]\s*\{')).Count
     foreach ($m in [regex]::Matches($fnBadge[0].Extent.Text, '"([A-Z]+)"\s*\{\s*return\s*"([^"]*)"')) { $badgeOf[$m.Groups[1].Value] = $m.Groups[2].Value }
     $badges[$lang] = $badgeOf
+    $verdictBranchCount[$lang] = $verdictBranches
+    $badgeBranchCount[$lang] = $badgeBranches
 
     $cfg = Get-Content -LiteralPath (Join-Path $PackageDir ($lang + '\NetworkHealthCheck.config.json')) -Raw -Encoding UTF8 | ConvertFrom-Json
     $keys = New-Object System.Collections.Generic.List[string]
@@ -449,6 +464,9 @@ foreach ($lang in $Languages) {
     Assert-SetEqual ("A5 [{0}] every fingerprint key has a case in the switch" -f $lang) $fingerprintTitles[$lang] @($fingerprints[$lang] | Where-Object { $_ -ne 'healthy' })
     # A tag this step cannot resolve to a literal is a tag it is not checking, so it says so instead of passing.
     Assert-True ("A6 [{0}] every -Tag argument resolves to a literal" -f $lang) ($unresolvedTags[$lang].Count -eq 0) ('unresolved: ' + ($unresolvedTags[$lang] -join '; '))
+    # And the same rule for the strings on the screen: as many verdicts and badges as there are branches naming one.
+    $readCounts = ('{0} of {1} verdict(s), {2} of {3} badge(s)' -f $verdicts[$lang].Count, $verdictBranchCount[$lang], $badges[$lang].Count, $badgeBranchCount[$lang])
+    Assert-True ("A11 [{0}] every verdict and badge branch was read ({1})" -f $lang, $readCounts) (($verdicts[$lang].Count -eq $verdictBranchCount[$lang]) -and ($badges[$lang].Count -eq $badgeBranchCount[$lang])) ('a branch the reader could not follow would be missing from the ground truth: ' + $readCounts)
 }
 
 # ------------------------- B. the configuration file and the IT deployment manual

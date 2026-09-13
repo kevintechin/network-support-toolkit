@@ -344,6 +344,19 @@ Assert-Catches 'a user manual presenting a verdict as an identifier instead of a
     Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('>Overall Healthy</span>', '>Overall Healthy</code>').Replace('<span class="verdict pass">Overall Healthy</code>', '<code>Overall Healthy</code>'))
 }
 
+Assert-Catches 'a user manual wrapping an emphasised verdict in a code span' 'G1' {
+    # Markdown renders the whole span as code, so the asterisks inside it are not emphasis (PR #64, round 6).
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', '`**Overall Healthy**`'))
+    Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('<span class="verdict pass">Overall Healthy</span>', '<code><strong>Overall Healthy</strong></code>'))
+}
+Assert-Catches 'a verdict branch written in a shape the reader cannot follow' 'A11' {
+    # The same refactor in both scripts: A8 would compare two equally reduced maps and say nothing.
+    foreach ($s in @($EnScript, $ZhScript)) {
+        Write-All $s ((Read-All $s) -replace '(?m)^(\s*)Code = "ERROR"?
+\s*Text = ', '$1Code = "ERROR"; Text = ')
+    }
+}
+
 # 5m - and the control the third finding is about: a file a run leaves behind is not a file the package ships, so
 # the step has to keep passing with one in a language folder (PR #64, round 1).
 $artefact = Join-Path $Package 'en-US\LauncherError_20260914_000000.txt'
