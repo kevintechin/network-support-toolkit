@@ -350,12 +350,24 @@ Assert-Catches 'a user manual wrapping an emphasised verdict in a code span' 'G1
     Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('<span class="verdict pass">Overall Healthy</span>', '<code><strong>Overall Healthy</strong></code>'))
 }
 Assert-Catches 'a verdict branch written in a shape the reader cannot follow' 'A11' {
-    # The same refactor in both scripts: A8 would compare two equally reduced maps and say nothing.
+    # The same refactor in both scripts: A8 would compare two equally reduced maps and say nothing. The pattern carries no newline escape on purpose - one written here as \r?\n was turned into real control characters by the tooling that wrote this file, and stopped matching (PR #64, round 7).
     foreach ($s in @($EnScript, $ZhScript)) {
-        Write-All $s ((Read-All $s) -replace '(?m)^(\s*)Code = "ERROR"?
-\s*Text = ', '$1Code = "ERROR"; Text = ')
+        $text = Read-All $s
+        $joined = [regex]::Replace($text, '(?s)Code = "ERROR"\s+Text = ', 'Code = "ERROR"; Text = ')
+        if ($joined -ceq $text) { throw 'the ERROR branch was not found in its two-line shape' }
+        Write-All $s $joined
     }
 }
+
+Assert-Catches 'a user manual hiding a verdict in a double-backtick span' 'G1' {
+    # A run of backticks of any length opens a code span, and an HTML comment renders as nothing at all.
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', '`` **Overall Healthy** ``'))
+    Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('<span class="verdict pass">Overall Healthy</span>', '<!-- <strong>Overall Healthy</strong> -->'))
+}
+Assert-Catches 'a report row that carries no status at all' 'G4' {
+    $json = '{ "SchemaVersion": "2", "Overall": { "Code": "PASS", "Text": "Overall Healthy" }, "Results": [{ "Status": "PASS", "Tag": "ping-target" }, { "Tag": "config" }] }'
+    [IO.File]::WriteAllText((Join-Path $WorkDir 'report-statusless-row.json'), $json, (New-Object System.Text.UTF8Encoding($false)))
+} @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-statusless-row.json'), '-ReportLanguage', 'en-US')
 
 # 5m - and the control the third finding is about: a file a run leaves behind is not a file the package ships, so
 # the step has to keep passing with one in a language folder (PR #64, round 1).

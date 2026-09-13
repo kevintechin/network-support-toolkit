@@ -89,6 +89,11 @@ with zipfile.ZipFile(OUT, 'w', zipfile.ZIP_DEFLATED) as z:
         # (a ZipInfo of its own defaults to STORED, which would quietly triple the asset) and the same 0o600.
         entry = entry_for(f'{TOP}/{f}', stamp)
         entry.compress_type = zipfile.ZIP_DEFLATED
+        # The level is asked for rather than left to the runtime's default, which a future zlib could move: 6 is what
+        # Z_DEFAULT_COMPRESSION resolves to today, and pinning it was measured to change no byte of this asset. What
+        # it cannot pin is the encoder itself - this machine's CPython links zlib-ng - and that difference is the one
+        # backlog #21's acceptance allows to be recorded rather than removed (PR #64, round 7).
+        entry.compress_level = 6
         entry.external_attr = 0o600 << 16
         z.writestr(entry, (PACKAGE / f).read_bytes())
 

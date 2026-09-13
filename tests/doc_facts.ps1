@@ -196,6 +196,7 @@ function Get-EmphasisSpans([string]$path) {
     $text = Read-Text $path
     $out = New-Object System.Collections.Generic.List[string]
     if ($path -like '*.html') {
+        $text = [regex]::Replace($text, '(?s)<!--.*?-->', ' ')
         $text = [regex]::Replace($text, '(?s)<code[^>]*>.*?</code>', ' ')
         $text = [regex]::Replace($text, '(?s)<pre[^>]*>.*?</pre>', ' ')
         foreach ($m in [regex]::Matches($text, '(?s)<(strong|b|em)[^>]*>(.*?)</\1>')) { $out.Add((ConvertFrom-HtmlText $m.Groups[2].Value).Trim()) }
@@ -204,8 +205,12 @@ function Get-EmphasisSpans([string]$path) {
         # manuals, where it is on the screen in a badge and the markdown's bold row is what the reader sees.
         foreach ($m in [regex]::Matches($text, '(?s)<span class="verdict[^"]*"[^>]*>(.*?)</span>')) { $out.Add((ConvertFrom-HtmlText $m.Groups[1].Value).Trim()) }
     } else {
-        $text = [regex]::Replace($text, '(?s)```.*?```', ' ')
-        $text = [regex]::Replace($text, '`[^`\r\n]*`', ' ')
+        # A code span is opened by a run of backticks of any length and closed by one as long, which covers the
+        # fenced block and the double-backtick span alike; an HTML comment renders as nothing at all. Round 6 read
+        # one backtick only, so `` **Overall Healthy** `` still offered its asterisks to the reader below
+        # (PR #64, round 7).
+        $text = [regex]::Replace($text, '(?s)<!--.*?-->', ' ')
+        $text = [regex]::Replace($text, '(?s)(`+)(?:(?!\1).)*\1', ' ')
         foreach ($m in [regex]::Matches($text, '\*\*([^*\r\n]+)\*\*')) { $out.Add($m.Groups[1].Value.Trim()) }
         foreach ($m in [regex]::Matches($text, '(?<![*\w])\*([^*\r\n]+)\*(?![*\w])')) { $out.Add($m.Groups[1].Value.Trim()) }
     }
@@ -423,8 +428,13 @@ if ($ReportPath) {
     Assert-True ("G2 [{0}] the verdict it shows is the one the {1} script pairs with its code" -f $name, $lang) ($expectedText -and ($expectedText -ceq $verdictText)) $verdictDetail
     Assert-True ("G3 [{0}] the user manual quotes the verdict it shows" -f $name) ($quoted -ccontains $verdictText) ("not quoted in the {0} user manual: '{1}'" -f $lang, $verdictText)
 
-    $codes = @(@($report.Results) | ForEach-Object { [string]$_.Status } | Where-Object { $_ } | Sort-Object -CaseSensitive -Unique)
+    $rows = @($report.Results)
+    $codes = @($rows | ForEach-Object { [string]$_.Status } | Where-Object { $_ } | Sort-Object -CaseSensitive -Unique)
     $badgeProblems = @()
+    # A row whose status is missing or empty renders a badge of nothing, and dropping it here would have let the
+    # report say so in silence (PR #64, round 7).
+    $statusless = @($rows | Where-Object { -not [string]$_.Status }).Count
+    if ($statusless) { $badgeProblems += ('{0} row(s) carry no status at all, so they can render no defined badge' -f $statusless) }
     foreach ($code in $codes) {
         $badge = $(if ($badges[$lang].ContainsKey($code)) { [string]$badges[$lang][$code] } else { '' })
         if (-not $badge) { $badgeProblems += ("status " + $code + " has no badge in the script"); continue }
