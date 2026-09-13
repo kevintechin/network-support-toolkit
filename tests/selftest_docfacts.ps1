@@ -369,6 +369,14 @@ Assert-Catches 'a report row that carries no status at all' 'G4' {
     [IO.File]::WriteAllText((Join-Path $WorkDir 'report-statusless-row.json'), $json, (New-Object System.Text.UTF8Encoding($false)))
 } @('-ReportOnly', '-ReportPath', (Join-Path $WorkDir 'report-statusless-row.json'), '-ReportLanguage', 'en-US')
 
+Assert-Catches 'a user manual moving a verdict into a tilde-fenced block' 'G1' {
+    # Markdown fences with tildes as well as with backticks (PR #64, round 8); the page has no such form, so only
+    # the markdown copy is moved and G1 reports it per file.
+    $fenced = "~~~text" + [Environment]::NewLine + "**Overall Healthy**" + [Environment]::NewLine + "~~~"
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', $fenced))
+    Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('<span class="verdict pass">Overall Healthy</span>', '<pre><strong>Overall Healthy</strong></pre>'))
+}
+
 # 5m - and the control the third finding is about: a file a run leaves behind is not a file the package ships, so
 # the step has to keep passing with one in a language folder (PR #64, round 1).
 $artefact = Join-Path $Package 'en-US\LauncherError_20260914_000000.txt'

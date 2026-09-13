@@ -89,13 +89,14 @@ with zipfile.ZipFile(OUT, 'w', zipfile.ZIP_DEFLATED) as z:
         # (a ZipInfo of its own defaults to STORED, which would quietly triple the asset) and the same 0o600.
         entry = entry_for(f'{TOP}/{f}', stamp)
         entry.compress_type = zipfile.ZIP_DEFLATED
-        # The level is asked for rather than left to the runtime's default, which a future zlib could move: 6 is what
-        # Z_DEFAULT_COMPRESSION resolves to today, and pinning it was measured to change no byte of this asset. What
-        # it cannot pin is the encoder itself - this machine's CPython links zlib-ng - and that difference is the one
-        # backlog #21's acceptance allows to be recorded rather than removed (PR #64, round 7).
-        entry.compress_level = 6
         entry.external_attr = 0o600 << 16
-        z.writestr(entry, (PACKAGE / f).read_bytes())
+        # The level is asked for rather than left to the runtime's default, which a future zlib could move: 6 is what
+        # Z_DEFAULT_COMPRESSION resolves to today, and pinning it was measured to change no byte of this asset. It is
+        # passed to writestr, which has taken it since Python 3.7; the entry attribute of the same name is 3.13 and
+        # later, and this script runs wherever the package's prerequisite does - any Python 3 (PR #64, round 8).
+        # What no level can pin is the encoder itself - this machine's CPython links zlib-ng - and that difference is
+        # the one backlog #21's acceptance allows to be recorded rather than removed.
+        z.writestr(entry, (PACKAGE / f).read_bytes(), compresslevel=6)
 
 # What the archive claims about itself, read back from the archive: every entry made by the same platform, every file
 # stamped with the commit, every folder with the 1980 they have always had.

@@ -210,6 +210,8 @@ function Get-EmphasisSpans([string]$path) {
         # one backtick only, so `` **Overall Healthy** `` still offered its asterisks to the reader below
         # (PR #64, round 7).
         $text = [regex]::Replace($text, '(?s)<!--.*?-->', ' ')
+        # Markdown fences with tildes as well as with backticks, and a ~~~ block is code just the same.
+        $text = [regex]::Replace($text, '(?m)^(~{3,})[^\r\n]*\r?\n[\s\S]*?^\1[^\r\n]*$', ' ')
         $text = [regex]::Replace($text, '(?s)(`+)(?:(?!\1).)*\1', ' ')
         foreach ($m in [regex]::Matches($text, '\*\*([^*\r\n]+)\*\*')) { $out.Add($m.Groups[1].Value.Trim()) }
         foreach ($m in [regex]::Matches($text, '(?<![*\w])\*([^*\r\n]+)\*(?![*\w])')) { $out.Add($m.Groups[1].Value.Trim()) }
