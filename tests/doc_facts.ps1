@@ -385,7 +385,11 @@ Write-Output ("Identifiers: {0} tags, {1} fingerprints, {2} configuration keys, 
 # the half that can only be measured after a run and so lives in the chain's resultset step.
 $UserManualOf = @{}
 foreach ($lang in $Languages) { $UserManualOf[$lang] = @($UserManuals | Where-Object { $_ -like ('*\' + $lang + '\*') }) }
-function Get-QuotedStrings([string]$doc) { return @(@(Get-EmphasisSpans $doc) + @(Get-CodeSpans $doc) | Sort-Object -CaseSensitive -Unique) }
+# Emphasis alone, which is what the rule above says: a code span would let a manual present a verdict as an
+# identifier and still pass. Measured before the rule was narrowed - no user manual codes one of these strings today,
+# in either language or either format - so this refuses a change of style rather than the style there is
+# (PR #64, round 5).
+function Get-QuotedStrings([string]$doc) { return @(Get-EmphasisSpans $doc) }
 
 if ($ReportPath) {
     $reportFile = (Resolve-Path -LiteralPath $ReportPath).Path
@@ -672,6 +676,15 @@ foreach ($doc in $AllDocs) {
 $TableWaivers = @(
     @{ Prefix = 'docs/'; Reason = 'the table names the folder beside the wildcard for the guides, which ship in each language folder as well, where they are named' },
     @{ Prefix = 'tools/'; Reason = 'the table names the folder beside SHA256SUMS.txt; what is in it is the validator, and section 8 is written for the person running the tool' })
+# The extensions the package ships, which is the shape E1 already states for the names a document may quote:
+# runtime artefacts are .txt and nobody ships them, SHA256SUMS.txt apart. The fallback below reads a folder, so it
+# needs the shape; the git path checks that the shape is still the truth, which is what keeps the two paths one rule.
+$ShippedExtensions = @('.ps1', '.cmd', '.json', '.md', '.html', '.py')
+function Test-LooksShipped([string]$rel) {
+    $leaf = Split-Path -Leaf $rel
+    if ($leaf -ceq 'SHA256SUMS.txt') { return $true }
+    return ($ShippedExtensions -ccontains ([IO.Path]::GetExtension($leaf)).ToLowerInvariant())
+}
 # What ships is what the asset carries, and build_asset.py packages the tracked files: a run from the checkout
 # leaves LauncherError_<stamp>.txt or PowerShellMessages_<stamp>.txt in a language folder, and reading the folder
 # would make E3 demand a table row for a file no release has ever contained (PR #64, round 1). An extracted release
@@ -691,11 +704,19 @@ if ($tracked.Count) {
     $inventory = 'git'
     foreach ($rel in $tracked) { if (($rel -notlike '*/Reports/*') -and ($rel -notlike 'Reports/*')) { $shippedRel.Add($rel) } }
 } else {
-    Get-ChildItem -LiteralPath $PackageDir -File | ForEach-Object { $shippedRel.Add($_.Name) }
+    # An extracted release, where there is no git to ask: a launcher that has run there leaves LauncherError_<stamp>.txt
+    # or PowerShellMessages_<stamp>.txt beside the script, and neither is a file any release carries (PR #64, round 5).
+    Get-ChildItem -LiteralPath $PackageDir -File | Where-Object { Test-LooksShipped $_.Name } | ForEach-Object { $shippedRel.Add($_.Name) }
     foreach ($folder in @('en-US', 'zh-TW', 'docs', 'tools')) {
         $path = Join-Path $PackageDir $folder
-        if (Test-Path -LiteralPath $path) { Get-ChildItem -LiteralPath $path -File | ForEach-Object { $shippedRel.Add($folder + '/' + $_.Name) } }
+        if (Test-Path -LiteralPath $path) { Get-ChildItem -LiteralPath $path -File | Where-Object { Test-LooksShipped $_.Name } | ForEach-Object { $shippedRel.Add($folder + '/' + $_.Name) } }
     }
+}
+# The shape is a claim about the package, so it is checked where the package can be read in full: a release that
+# shipped a file of another kind would leave the fallback blind to it, and this is what would say so.
+if ($inventory -eq 'git') {
+    $offShape = @($shippedRel | Where-Object { -not (Test-LooksShipped $_) })
+    Assert-True ('E3 every file the package ships has an extension the fallback inventory knows' ) ($offShape.Count -eq 0) ('outside the shape ' + ($ShippedExtensions -join ', ') + ' and not SHA256SUMS.txt: ' + ($offShape -join ', '))
 }
 $staleWaiver = @($TableWaivers | Where-Object { $prefix = $_.Prefix; -not @($shippedRel | Where-Object { $_ -like ($prefix + '*') }).Count } | ForEach-Object { $_.Prefix })
 Assert-True ('E3 the file-table waiver list has no stale entry' ) ($staleWaiver.Count -eq 0) ('nothing ships under: ' + ($staleWaiver -join ', '))

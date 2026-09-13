@@ -337,6 +337,13 @@ Assert-Catches 'a user manual quoting a verdict in another case' 'G1' {
     Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('>Overall Healthy</span>', '>Overall healthy</span>'))
 }
 
+Assert-Catches 'a user manual presenting a verdict as an identifier instead of a screen phrase' 'G1' {
+    # A code span is how this step reads an identifier, and a verdict is not one: the reader sees it on the screen,
+    # and the manuals emphasise it everywhere today (PR #64, round 5).
+    Write-All $EnUser ((Read-All $EnUser).Replace('**Overall Healthy**', '`Overall Healthy`'))
+    Write-All $EnUserHtml ((Read-All $EnUserHtml).Replace('>Overall Healthy</span>', '>Overall Healthy</code>').Replace('<span class="verdict pass">Overall Healthy</code>', '<code>Overall Healthy</code>'))
+}
+
 # 5m - and the control the third finding is about: a file a run leaves behind is not a file the package ships, so
 # the step has to keep passing with one in a language folder (PR #64, round 1).
 $artefact = Join-Path $Package 'en-US\LauncherError_20260914_000000.txt'
