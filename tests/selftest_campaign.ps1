@@ -1,4 +1,4 @@
-param([string]$WorkDir, [switch]$Full)
+﻿param([string]$WorkDir, [switch]$Full)
 # Backlog #24: the acceptance campaign driver's state machine, driven without a person through -Answers, on an asset
 # built from this checkout with PowerShell alone. What is asserted:
 #   1. a new campaign on scenarios whose preconditions this machine cannot meet (a 1366x768 screen under -SkipGui, a
@@ -865,6 +865,32 @@ Assert-True '39. a campaign whose summary saw the mark first records it as the s
 $r39f = Invoke-Campaign 'marktakeover' @('-Resume', '-Scenarios', 'M2') "M2=done`r`nM2/windows-showed=3`r`nM2/run-finished=done`r`n"
 $s39f = Read-State $r39e.State
 Assert-True '39. and M2, which measures the warning that mark produces, takes the record over when it runs' (([string]$s39f.DownloadMark.By -eq 'M2') -and ([string]$s39f.DownloadMark.Zone -eq 'ZoneId=3')) ('DownloadMark: ' + ($s39f.DownloadMark | ConvertTo-Json -Compress) + '; M2: ' + $s39f.Scenarios.M2.Result)
+# The reading, not the whole summary: M3's own title in the scenario table is "Unblock, extract, ..." and would
+# answer a search over the file for that word.
+$markLine39d = ((($summary39d -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+Assert-True '39. and the Unblock is not named on that line, because M3 never ran in that campaign' ($markLine39d -notmatch 'Unblock') $markLine39d
+# Where M3 IS on record and the file now has no stream, the step that asks for the Unblock is named - and what is said
+# is what M3 asks for and what an Unblock does, not what happened here (PR #65, round 4). M3's result is crafted: the
+# scenario itself needs an extraction and two launcher runs, and none of that is what this assertion is about.
+$stateFile39 = Join-Path $r39d.State 'campaign.json'
+$crafted39 = Get-Content -LiteralPath $stateFile39 -Raw -Encoding UTF8 | ConvertFrom-Json
+$crafted39.Scenarios.M3.Result = 'PASS'; $crafted39.Scenarios.M3.Detail = 'crafted by the self-test'
+[IO.File]::WriteAllText($stateFile39, ($crafted39 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+$r39h = Invoke-Campaign 'markapplied' @('-Resume', '-Scenarios', 'A4', '-SkipGui') "A4=done`r`n"
+$summary39h = Get-Content -LiteralPath (Join-Path $r39h.State 'campaign_summary.md') -Raw -Encoding UTF8
+Assert-True '39. with M3 on record and the stream gone, the line names the step that asks for that Unblock' (($summary39h -match 'the file carries no Internet-zone mark \(no mark\) now - M3 asked for the Unblock that removes the stream')) ((($summary39h -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+# And a download that is gone rather than unmarked reads as missing, which no Unblock accounts for.
+Remove-Item -LiteralPath $zipApplied39 -Force
+$r39i = Invoke-Campaign 'markapplied' @('-Resume', '-Scenarios', 'A3', '-SkipGui') "A3=done`r`n"
+$summary39i = Get-Content -LiteralPath (Join-Path $r39i.State 'campaign_summary.md') -Raw -Encoding UTF8
+$markLine39i = ((($summary39i -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+Assert-True '39. a download that is gone is reported as missing, with no Unblock named on that line although M3 is on record' (($markLine39i -match 'the file carries no Internet-zone mark \(file missing\) now') -and ($markLine39i -notmatch 'Unblock')) $markLine39i
+# A mark that CHANGED was not Unblocked either, so the line says both readings and names no reason for the difference:
+# an explanation is not something a reading can supply.
+Set-Content -LiteralPath $zipTakeover39 -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3`r`nHostUrl=https://example.invalid/again.zip"
+$r39g = Invoke-Campaign 'marktakeover' @('-Resume', '-Scenarios', 'A4') "A4=done`r`n"
+$summary39g = Get-Content -LiteralPath (Join-Path $r39g.State 'campaign_summary.md') -Raw -Encoding UTF8
+Assert-True '39. a mark that changed rather than went is reported as both readings, with no Unblock named for it' (($summary39g -match '- Download mark: ZoneId=3, applied deliberately') -and ($summary39g -match 'the file carries ZoneId=3, downloaded on this machine[^;]*now') -and ($summary39g -notmatch 'now, which is what M3')) ((($summary39g -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
 
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {

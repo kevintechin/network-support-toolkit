@@ -1313,7 +1313,15 @@ function Write-CampaignSummary {
     # said and neither is explained away (PR #65, round 3).
     $markKept = $State.DownloadMark
     $markLine = $(if ($markKept) { '{0} (read by {1} at {2})' -f $markKept.Text, $markKept.By, $markKept.At } else { $script:MarkNow.Text })
-    if ($markKept -and ([string]$markKept.Text -ne [string]$script:MarkNow.Text)) { $markLine += ('; the file carries {0} now, which is what M3''s Unblock leaves behind' -f $script:MarkNow.Text) }
+    # M3 is named only where it ran and the file now has no stream at all. A mark that CHANGED was not Unblocked, and a
+    # download that was deleted or moved reads as missing rather than unmarked - naming the Unblock for either would be
+    # an explanation the reading does not support, and so would naming it in a campaign where M3 never ran (PR #65,
+    # round 4). Where it is named, what is said is what M3 asks for and what an Unblock does, not what happened here.
+    $m3 = $(if ($State.Scenarios) { $State.Scenarios['M3'] } else { $null })
+    $unblockAsked = ($null -ne $m3) -and ((@('PASS', 'FAIL') -contains [string]$m3.Result) -or [bool]$m3.Attempted)
+    if ($markKept -and ([string]$markKept.Text -ne [string]$script:MarkNow.Text)) {
+        $markLine += ('; the file carries {0} now{1}' -f $script:MarkNow.Text, $(if (($script:MarkNow.Zone -eq 'no mark') -and $unblockAsked) { ' - M3 asked for the Unblock that removes the stream' } else { '' }))
+    }
     $md += ('- Download mark: {0} - {1}' -f $markLine, $State.OriginalZip)
     $md += ('- Real windows: {0}; state: {1}' -f $(if ($State.SkipGui) { 'none (-SkipGui)' } else { 'yes' }), $StateDir)
     $ed = $State.Edition
