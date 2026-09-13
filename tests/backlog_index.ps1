@@ -17,7 +17,10 @@
     item's own heading, [#N](docs/backlog.md#anchor); a bare #N on the row is a mention - a cross-reference, the
     sentence about the item that stands in two groups - and is not read. A group is a parenthesis on the row that
     holds at least one such link, and its stated count is the last number before the parenthesis opens, written as
-    a word from one to twenty or in digits. The arithmetic the item asked for - the stated counts sum to the open
+    a word from one to twenty or in digits. The closed numbers are one sentence, "Numbers ... are closed", a
+    comma-separated list of numbers and "a to b" ranges, each number once. The sentence about the overlap, where
+    the row has one, is read as "sum to N where the items are M", in words or digits; any other wording states no
+    total to check. The arithmetic the item asked for - the stated counts sum to the open
     count plus one for each further group an item is listed in - is checked as three statements so that one mistake
     fails one check: every listed item is an open row (R2), every open row is listed (R3), and each group's stated
     count is the number of items it encloses - an item once in each group it stands in, and it may stand in more
@@ -234,15 +237,19 @@ if ($closedSentence.Success) {
         else { $unreadable += $t }
     }
 }
+# A number listed twice - '1 to 20, 20', or two ranges that overlap - is a malformed list, and the set comparison
+# below would not see it (PR #63, round 3); it is found before the list is reduced to a set.
+$twiceClosed = Get-Duplicates $listedClosed
 $listedClosed = @($listedClosed | Sort-Object { [int]$_ } -Unique)
 $closedMissing = @($closed | Where-Object { $listedClosed -notcontains $_ })
 $closedExtra = @($listedClosed | Where-Object { $closed -notcontains $_ })
 $closedDetail = @()
 if (-not $closedSentence.Success) { $closedDetail += 'the row has no "Numbers ... are closed" sentence' }
 if ($unreadable.Count) { $closedDetail += ('unreadable: ' + ($unreadable -join ', ')) }
+if ($twiceClosed.Count) { $closedDetail += ('listed as closed twice: ' + (Format-Numbers $twiceClosed)) }
 if ($closedMissing.Count) { $closedDetail += ('closed and not listed: ' + (Format-Numbers $closedMissing)) }
 if ($closedExtra.Count) { $closedDetail += ('listed as closed and not in the closed table: ' + (Format-Numbers $closedExtra)) }
-Assert-True ('R6 the README''s closed list is the closed table ({0} numbers)' -f $closed.Count) ($closedDetail.Count -eq 0) ($closedDetail -join '; ')
+Assert-True ('R6 the README''s closed list is the closed table, each number once ({0} numbers)' -f $closed.Count) ($closedDetail.Count -eq 0) ($closedDetail -join '; ')
 
 Write-Summary
 exit $fails

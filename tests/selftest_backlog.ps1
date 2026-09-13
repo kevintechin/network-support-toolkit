@@ -169,6 +169,10 @@ Assert-Catches 'an item listed twice in the same group, the count and the sum ra
 Assert-Catches 'a number listed as closed that no closed row carries' 'R6' {
     Edit-All $Readme ' are closed' ', 999 are closed'
 }
+Assert-Catches 'a closed number listed twice, once in a range and once alone' 'R6' {
+    # PR #63, round 3: the list still names every closed number and no other, so only the repeat is wrong.
+    Edit-All $Readme 'Numbers 1 to 20, 23' 'Numbers 1 to 20, 20, 23'
+}
 
 # 4 - and the control again, to prove every mutation was put back.
 Assert-Clean 'the copy is clean again after every mutation'
