@@ -681,6 +681,29 @@ function Get-M8WayBack($Facts) {
     }
     return $lines
 }
+function Get-M9OwnPolicy($Facts) {
+    # Which copy of this machine's own AppLocker policy the campaign has, and whether it had one at all. The automated
+    # apply exports one into the locked folder; the manual path exports nothing and never sets that fact at all, and
+    # what it has instead is the copy Prepare took before the two paths part. Reading only the export's path sent a
+    # person driving M9 by hand to 'delete the Script rules', which on a machine with a policy of its own takes that
+    # policy with it - the finding of round 1, in the place round 6 left it (PR #67 round 7). The notes, the cleanup
+    # instruction and the check now read the same two, in the same order.
+    $path = [string]$Facts['AppLockerPolicyBefore']
+    $from = 'the policy the step exported before it applied its own'
+    if (-not $path) {
+        $path = [string]$Facts['AppLockerPolicyPrepared']
+        $from = 'the copy taken before the scenario started'
+    }
+    if (-not $path) { $from = '' }
+    # Whether it had one is what Prepare read, where it read it; a recorded 'no' is the only answer that allows the
+    # rules to be deleted. 'unknown' - Prepare could not read the local policy at all - takes the careful branch even
+    # with nothing to point at, because 'delete the Script rules' is the one instruction that cannot be taken back;
+    # a record that says nothing at all is the campaign as it was before this fact existed, and there the saved path
+    # decides as it always did.
+    $own = [string]$Facts['OwnPolicyBefore']
+    $hadOwn = (($own -eq 'yes') -or ($own -eq 'unknown') -or (($own -ne 'no') -and $path))
+    return @{ Path = $path; From = $from; Own = $own; HadOwn = [bool]$hadOwn }
+}
 function Get-M9RecoveryLines($Facts) {
     # The M9 section of RECOVER.txt. Under enforced Script rules the campaign cannot start at all - it lives under
     # C:\Users\Public, which is what the policy denies - so these lines are what a person has when the session dies
@@ -689,13 +712,15 @@ function Get-M9RecoveryLines($Facts) {
     # machine had an AppLocker policy of its own, where deleting the Script rules is exactly what must not be done
     # (PR #67 round 3).
     $staged = [string]$Facts['StagedRevert']
-    $saved = [string]$Facts['AppLockerPolicyBefore']
     # Whether the machine had a policy of its own is a fact M9 records before it changes anything, not the presence of
     # the path the apply records either way: a machine with nothing of its own was told it had a policy to preserve,
-    # and the instruction that fits it - delete the Script rules - was never offered (PR #67 round 6). Anything but a
-    # recorded 'no' takes the careful branch, 'unknown' and a record from before this was written included.
-    $own = [string]$Facts['OwnPolicyBefore']
-    $hadOwn = ($saved -and ($own -ne 'no'))
+    # and the instruction that fits it - delete the Script rules - was never offered (PR #67 round 6). Which copy of
+    # that policy there is depends on the path the scenario took, and a manual one has only what Prepare saved
+    # (round 7).
+    $way = Get-M9OwnPolicy $Facts
+    $saved = [string]$way.Path
+    $own = [string]$way.Own
+    $hadOwn = [bool]$way.HadOwn
     $lines = @('M9  AppLocker Script rules')
     if ($staged) {
         $lines += ('    The way back was staged before the policy was applied, and needs no PowerShell. If this file is')
@@ -704,17 +729,26 @@ function Get-M9RecoveryLines($Facts) {
         $lines += '    If it is not there, or it cannot be run, the lines below do the same by hand.'
     }
     if ($hadOwn) {
-        if ($own -eq 'yes') { $lines += '    This machine had an AppLocker policy of its own, saved before M9 replaced it. Do NOT simply delete' }
+        if ($own -eq 'yes') { $lines += ('    This machine had an AppLocker policy of its own' + $(if ($saved) { ', saved before M9 replaced it' } else { '' }) + '. Do NOT simply delete') }
         else {
             $lines += '    Whether this machine had an AppLocker policy of its own could not be read before M9, so treat it as'
             $lines += '    having one and do NOT simply delete'
         }
-        $lines += ('    the Script rules: that would take the machine''s own policy with them. In an ELEVATED PowerShell:')
-        $lines += ('    Set-AppLockerPolicy -XmlPolicy "' + $saved + '"')
-        $lines += '    and then, in a command prompt:'
-        $lines += '    gpupdate /force'
-        $lines += '    (If that file is gone, the local policy is at HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2 and'
-        $lines += '    removing that key removes every rule collection, this machine''s own included.)'
+        $lines += '    the Script rules: that would take the machine''s own policy with them.'
+        if ($saved) {
+            $lines += ('    The copy to put back is ' + [string]$way.From + '. In an ELEVATED PowerShell:')
+            $lines += ('    Set-AppLockerPolicy -XmlPolicy "' + $saved + '"')
+            $lines += '    and then, in a command prompt:'
+            $lines += '    gpupdate /force'
+            $lines += '    (If that file is gone, the local policy is at HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2 and'
+            $lines += '    removing that key removes every rule collection, this machine''s own included.)'
+        }
+        else {
+            $lines += '    No copy of it was saved - reading the local policy failed before M9 - so there is nothing here to'
+            $lines += '    restore from: in secpol.msc, delete the rules M9 added and leave every other rule where it is. The'
+            $lines += '    local policy is at HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2, and removing that key removes'
+            $lines += '    every rule collection, this machine''s own included. Then   gpupdate /force.'
+        }
     }
     else {
         if ($own -eq 'no') { $lines += '    This machine had no AppLocker policy of its own before M9 - the campaign read it and recorded that - so deleting M9''s rules is putting it back:' }
@@ -807,8 +841,12 @@ function Get-M7UndoLines($Facts) {
                          'pause',
                          'exit /b 1')
     }
+    # The failure commands are inside parentheses. Measured on this runtime (cmd 10.0.26100.1): an ungrouped
+    # 'if errorlevel 1 echo ... & pause & exit /b 1' keeps the whole chain inside the condition, so the file did reach
+    # its success message and did exit 0 - the reading round 7 raised is not what this cmd does. The parenthesised
+    # form says so to a reader and cannot be read the other way by any cmd, which is why it is written like this.
     return $head + @((Get-M7UndoCommand $Facts),
-                     'if errorlevel 1 echo Could not put the value back - is this prompt running as administrator? & pause & exit /b 1',
+                     'if errorlevel 1 ( echo Could not put the value back - is this prompt running as administrator? & pause & exit /b 1 )',
                      ('echo __PSLockdownPolicy is ' + $(if ($had) { 'back to what this machine had' } else { 'removed' }) + ': new PowerShell windows are FullLanguage again. Resume the campaign to record the revert.'),
                      'pause')
 }
@@ -1296,6 +1334,13 @@ function Get-Plan {
            }
            Cleanup = @{ Instruction = { param($Ctx)
                             $was = [string]$Ctx.Facts['LockdownValue']
+                            # The same three cases as RECOVER.txt: where the recorded value cannot be carried in a
+                            # command line, the revert refuses to build one - and so must the line a person is shown,
+                            # which they would copy into an elevated prompt (PR #67 round 7).
+                            if (([string]$Ctx.Facts['LockdownExisted'] -eq 'yes') -and -not (Test-PolicyLineData $was)) {
+                                return @('This machine had a __PSLockdownPolicy value that cannot be carried in a command line, so there is no line to copy here: open System Properties > Environment Variables > System variables and put __PSLockdownPolicy back by hand. campaign.json in the state folder holds the value under Scenarios.M7.Facts.LockdownValue. Do NOT delete it. Then answer done.',
+                                         '這台機器的 __PSLockdownPolicy 值沒辦法放進命令列，所以這裡沒有可以複製的指令：請開「系統內容 > 環境變數 > 系統變數」，手動把 __PSLockdownPolicy 改回去。值在 state 資料夾的 campaign.json 的 Scenarios.M7.Facts.LockdownValue。不要刪除它。完成後輸入 done。')
+                            }
                             if ([string]$Ctx.Facts['LockdownExisted'] -eq 'yes') {
                                 return @(('This machine had __PSLockdownPolicy set to ' + $was + ' before M7: put THAT back, do not delete it - in an ELEVATED command prompt:   setx /M __PSLockdownPolicy "' + $was + '"   Then answer done.'),
                                          ('這台機器在 M7 之前 __PSLockdownPolicy 就是 ' + $was + '：請改回那個值，不要刪除——在「以系統管理員身分執行」的命令提示字元執行：setx /M __PSLockdownPolicy "' + $was + '"，然後輸入 done。'))
@@ -1620,7 +1665,11 @@ function Get-Plan {
                             # which is what the campaign's own restoration is there to prevent (PR #67 round 1).
                             $wasMode = [string]$Ctx.Facts.ScriptEnforcementBefore
                             $wasCount = [string]$Ctx.Facts.ScriptRuleCountBefore
-                            $saved = [string]$Ctx.Facts.AppLockerPolicyBefore
+                            # The copy the manual path has is the one Prepare took: this instruction is what a person
+                            # driving M9 by hand is given, and reading only the automated apply's path left them with
+                            # 'delete the Script rules' and no copy named (PR #67 round 7).
+                            $ownWay = Get-M9OwnPolicy $Ctx.Facts
+                            $saved = [string]$ownWay.Path
                             # Whether this machine had a policy of its own is read from the policy that was saved, not
                             # from the Script collection alone: a machine with exe, dll, msi or packaged-app rules and
                             # no script rules had one too, and the apply replaced all of it (PR #67 round 3).
@@ -1628,7 +1677,7 @@ function Get-Plan {
                             if ($saved -and (Test-Path -LiteralPath $saved)) {
                                 try { $savedShape = Get-AppLockerPolicyShape ([string](Get-Content -LiteralPath $saved -Raw -Encoding UTF8 -ErrorAction Stop)) } catch { $savedShape = '' }
                             }
-                            $hadOwn = (($savedShape -and $savedShape -ne 'unreadable') -or (($wasMode) -and ($wasMode -ne 'none') -and ($wasMode -ne 'NotConfigured')) -or (($wasCount) -and ($wasCount -ne '0')))
+                            $hadOwn = (($savedShape -and $savedShape -ne 'unreadable') -or ([string]$ownWay.Own -eq 'yes') -or (($wasMode) -and ($wasMode -ne 'none') -and ($wasMode -ne 'NotConfigured')) -or (($wasCount) -and ($wasCount -ne '0')))
                             $head = 'AppLocker > Configure rule enforcement > Script rules: Not configured; delete the Script rules; gpupdate /force.'
                             $headZh = 'AppLocker > 設定規則強制執行 > 指令碼規則：尚未設定；刪除指令碼規則；gpupdate /force。'
                             if ($hadOwn) {
