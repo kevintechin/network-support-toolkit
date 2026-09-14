@@ -305,6 +305,10 @@ function Get-MarkOrigin([string]$Path) {
     # every other caller uses, and the origin from a second read of the same stream - two reads of a file nothing is
     # writing to while a campaign runs, rather than one reader answering two questions for every caller.
     $zone = Get-ZoneId $Path
+    # A file that is not there was not read, and saying it carries no mark would state a property of something nobody
+    # looked at. The other answers - a stream without a ZoneId, a local or intranet zone - were read (self-audit before
+    # round 7).
+    if ($zone -eq 'file missing') { return @{ Zone = $zone; Origin = ''; Way = 'none'; Text = 'no file at that path' } }
     if (-not (Test-InternetMark $zone)) { return @{ Zone = $zone; Origin = ''; Way = 'none'; Text = ('no Internet-zone mark (' + $zone + ')') } }
     $origin = @(Get-Content -LiteralPath $Path -Stream Zone.Identifier -ErrorAction SilentlyContinue | Where-Object { $_ -match '^(HostUrl|ReferrerUrl)=.' })
     # What is named is what the stream holds, and never where or how it was written: a copy made by something that
@@ -330,12 +334,15 @@ function Update-DownloadMark([string]$By) {
     # (PR #65, round 5; Test-Path itself returns false there and raises nothing, measured under -ErrorAction Stop).
     if ($IsStandardUser) { return @{ Zone = 'not read'; Origin = ''; Way = 'unread'; Text = ('not read in this session - the standard-user run works from ' + $StateDir + ', not from the download') } }
     $reading = Get-MarkOrigin $State.OriginalZip
-    if ($reading.Way -ne 'none') {
-        $kept = $State.DownloadMark
-        if ((-not $kept) -or (($By -ne 'the summary') -and ([string]$kept.By -eq 'the summary'))) {
-            $State.DownloadMark = [ordered]@{ Zone = $reading.Zone; Origin = $reading.Origin; Way = $reading.Way; Text = $reading.Text; By = $By; At = (& $Now) }
-            Save-State
-        }
+    # A scenario's reading always replaces what is kept: it is the mark the run it belongs to was measured against, and
+    # a redo of M2 against a stream that has been rewritten must not leave the summary naming the superseded run's mark
+    # while the row beside it describes the new one (PR #65, round 6). The summary's own reading only fills the record
+    # in where no scenario has read it, and only when it found a mark - a summary written after M3's Unblock must not
+    # take the record away from the run M2 made.
+    $keep = $(if ($By -ne 'the summary') { $true } else { (-not $State.DownloadMark) -and ($reading.Way -ne 'none') })
+    if ($keep) {
+        $State.DownloadMark = [ordered]@{ Zone = $reading.Zone; Origin = $reading.Origin; Way = $reading.Way; Text = $reading.Text; By = $By; At = (& $Now) }
+        Save-State
     }
     return $reading
 }
@@ -785,8 +792,14 @@ function Get-Plan {
            # file state, and the record says which way this run took rather than leaving a reader to assume a browser.
            Prerequisite = { $m = Get-ZoneId $State.OriginalZip
                             if (-not (Test-InternetMark $m)) {
-                                $apply = 'Set-Content -LiteralPath "' + $State.OriginalZip + '" -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"'
-                                @{ Ok = $false; Detail = ('the download carries no Internet-zone Mark of the Web (' + $m + ': ' + $State.OriginalZip + ') - M2 cannot measure the warning; a ZIP copied from another machine never had one, and one taken out of a CI artifact has one only where that artifact was downloaded here with a browser and unpacked with Explorer. Two ways to a file that has: download it with the browser of this machine to the same path, or write the mark deliberately in PowerShell -   ' + $apply + '   - which the summary then reports as applied rather than downloaded. (Or run M2 before M3.)') }
+                                # The path is quoted the way PowerShell takes a literal: single quotes, with any
+                                # apostrophe in it doubled. Inside double quotes a path holding a dollar sign or a
+                                # backtick would be expanded or escaped when the line is pasted, and the stream would
+                                # be written somewhere else or nowhere (PR #65, round 6). The value keeps its double
+                                # quotes, because `r`n has to expand there.
+                                $quoted = "'" + ($State.OriginalZip -replace "'", "''") + "'"
+                                $apply = 'Set-Content -LiteralPath ' + $quoted + ' -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"'
+                                @{ Ok = $false; Detail = ('the download carries no Internet-zone Mark of the Web (' + $m + ': ' + $State.OriginalZip + ') - M2 cannot measure the warning; a ZIP copied from another machine never had one, and one taken out of a CI artifact has one only where that artifact was downloaded here with a browser and unpacked with Explorer. Two ways to a file that has: download it with the browser of this machine to the same path, or write the mark deliberately in PowerShell -   ' + $apply + '   - which the summary then records as a mark whose stream carries no origin, told apart from one a download left. (Or run M2 before M3.)') }
                             }
                             else { @{ Ok = $true; Detail = ('the download is marked: ' + (Get-MarkOrigin $State.OriginalZip).Text) } } }
            Instruction = @(('Right-click the downloaded ZIP > Extract All... into ' + $M2Dir + ' (do NOT Unblock it). The Extract All dialog proposes another folder - replace the destination with ' + $M2Dir + '. When the extraction has finished, answer done; the double-click comes next.'),
@@ -1332,7 +1345,9 @@ function Write-CampaignSummary {
     $unblockAsked = ($null -ne $m3) -and ((@('PASS', 'FAIL') -contains [string]$m3.Result) -or [bool]$m3.Attempted)
     if ($markKept -and ($script:MarkNow.Way -eq 'unread')) { $markLine += ('; ' + $script:MarkNow.Text) }
     elseif ($markKept -and ([string]$markKept.Text -ne [string]$script:MarkNow.Text)) {
-        $markLine += ('; the file carries {0} now{1}' -f $script:MarkNow.Text, $(if (($script:MarkNow.Zone -eq 'no mark') -and $unblockAsked) { ' - M3 asked for the Unblock that removes the stream' } else { '' }))
+        # A download that is gone is said to be gone: "carries" is for a file that was read (self-audit before round 7).
+        if ($script:MarkNow.Zone -eq 'file missing') { $markLine += '; there is no file at that path now' }
+        else { $markLine += ('; the file carries {0} now{1}' -f $script:MarkNow.Text, $(if (($script:MarkNow.Zone -eq 'no mark') -and $unblockAsked) { ' - M3 asked for the Unblock that removes the stream' } else { '' })) }
     }
     $md += ('- Download mark: {0} - {1}' -f $markLine, $State.OriginalZip)
     $md += ('- Real windows: {0}; state: {1}' -f $(if ($State.SkipGui) { 'none (-SkipGui)' } else { 'yes' }), $StateDir)

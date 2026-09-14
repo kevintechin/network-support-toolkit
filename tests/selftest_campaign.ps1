@@ -1,4 +1,4 @@
-﻿param([string]$WorkDir, [switch]$Full)
+param([string]$WorkDir, [switch]$Full)
 # Backlog #24: the acceptance campaign driver's state machine, driven without a person through -Answers, on an asset
 # built from this checkout with PowerShell alone. What is asserted:
 #   1. a new campaign on scenarios whose preconditions this machine cannot meet (a 1366x768 screen under -SkipGui, a
@@ -884,7 +884,7 @@ Remove-Item -LiteralPath $zipApplied39 -Force
 $r39i = Invoke-Campaign 'markapplied' @('-Resume', '-Scenarios', 'A3', '-SkipGui') "A3=done`r`n"
 $summary39i = Get-Content -LiteralPath (Join-Path $r39i.State 'campaign_summary.md') -Raw -Encoding UTF8
 $markLine39i = ((($summary39i -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
-Assert-True '39. a download that is gone is reported as missing, with no Unblock named on that line although M3 is on record' (($markLine39i -match 'the file carries no Internet-zone mark \(file missing\) now') -and ($markLine39i -notmatch 'Unblock')) $markLine39i
+Assert-True '39. a download that is gone is reported as missing, with no Unblock named on that line although M3 is on record' (($markLine39i -match 'there is no file at that path now') -and ($markLine39i -notmatch 'Unblock')) $markLine39i
 # The standard-user session does not go looking for the download at all (PR #65, round 5): it runs from C:\Users\Public
 # because that account cannot reach the administrator's profile, where the download usually sits, and a read from there
 # answers 'file missing' whether the file is gone or merely out of reach - the two raise the same exception, measured.
@@ -906,6 +906,23 @@ Set-Content -LiteralPath $zipTakeover39 -Stream Zone.Identifier -Value "[ZoneTra
 $r39g = Invoke-Campaign 'marktakeover' @('-Resume', '-Scenarios', 'A4') "A4=done`r`n"
 $summary39g = Get-Content -LiteralPath (Join-Path $r39g.State 'campaign_summary.md') -Raw -Encoding UTF8
 Assert-True '39. a mark that changed rather than went is reported as both readings, with no Unblock named for it' (($summary39g -match '- Download mark: ZoneId=3, no origin recorded in the stream') -and ($summary39g -match 'the file carries ZoneId=3, the stream records where it came from[^;]*now') -and ($summary39g -notmatch 'now, which is what M3')) ((($summary39g -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+# And a redo of M2 replaces M2's own earlier reading: the stream was rewritten above, so the run on record now was
+# measured against the new mark, and a summary still naming the superseded one would contradict the row beside it
+# (PR #65, round 6). The extraction this scenario needs is stamped ahead of the clock, so the redo passes it too.
+$atBefore39 = [string]$s39f.DownloadMark.At
+$r39j = Invoke-Campaign 'marktakeover' @('-Resume', '-Redo', 'M2', '-Scenarios', 'M2') "M2=done`r`nM2/windows-showed=3`r`nM2/run-finished=done`r`n"
+$s39j = Read-State $r39e.State
+Assert-True '39. and a redo of M2 takes the record over from M2''s own earlier reading, which the rewritten stream superseded' (([string]$s39j.DownloadMark.Way -eq 'origin-recorded') -and ([string]$s39j.DownloadMark.By -eq 'M2') -and ([string]$s39j.DownloadMark.At -ne $atBefore39)) ('was ' + $atBefore39 + '; now ' + ($s39j.DownloadMark | ConvertTo-Json -Compress))
+# The line the prerequisite offers has to survive being pasted. A path with a dollar sign or an apostrophe in it is
+# the case: inside double quotes PowerShell would expand or escape part of it, and the stream would go somewhere else
+# or nowhere, leaving M2 skipped for a fix that looked right (PR #65, round 6).
+$oddZip39 = Join-Path $WorkDir ('NetworkHealthCheck-' + $version + "-`$odd's copy.zip")
+Copy-Item -LiteralPath $zip -Destination $oddZip39 -Force
+$r39k = Invoke-Campaign 'markoddpath' @('-Zip', $oddZip39, '-Scenarios', 'M2') "M2=done`r`n"
+$s39k = Read-State $r39k.State
+$detail39k = [string]$s39k.Scenarios.M2.Detail
+$wantQuoted39 = "-LiteralPath '" + ($oddZip39 -replace "'", "''") + "'"
+Assert-True '39. the command it offers quotes the path as a literal, apostrophes doubled, so a path with a dollar sign in it survives being pasted' ($detail39k.Contains($wantQuoted39) -and ($detail39k -notmatch '-LiteralPath "')) ('wanted ' + $wantQuoted39 + ' in: ' + $detail39k)
 
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
