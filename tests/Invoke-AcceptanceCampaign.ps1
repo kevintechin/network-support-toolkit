@@ -810,6 +810,22 @@ function Test-PolicyLineData([string]$Data) {
     foreach ($ch in $s.ToCharArray()) { if ([int][char]$ch -lt 32) { return $false } }
     return $true
 }
+function Get-MachineEnvRaw([string]$Name) {
+    # A machine environment variable as the registry holds it: the data unexpanded, and the kind beside it.
+    # [Environment]::GetEnvironmentVariable(..., 'Machine') expands a REG_EXPAND_SZ value before anyone sees it, so a
+    # value of '%SystemRoot%\policy' was recorded as the path it expands to, put back with setx as a REG_SZ holding
+    # that text, and certified by a check that read the same expansion - the machine losing both its kind and its
+    # indirection, and nothing saying so (PR #67 round 9). Existence, data and kind are three facts, which is what
+    # M8's values have been since PR #14.
+    $key = $null
+    try { $key = Get-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -ErrorAction SilentlyContinue } catch { $key = $null }
+    if ($null -eq $key) { return @{ Existed = $false; Value = ''; Kind = '' } }
+    $raw = $key.GetValue($Name, $null, 'DoNotExpandEnvironmentNames')
+    if ($null -eq $raw) { return @{ Existed = $false; Value = ''; Kind = '' } }
+    $kind = ''
+    try { $kind = [string]$key.GetValueKind($Name) } catch { $kind = '' }
+    return @{ Existed = $true; Value = [string]$raw; Kind = $kind }
+}
 function Get-ServiceDelayedAuto([string]$Name) {
     # Whether a service is set to start automatically DELAYED. Get-Service says 'Automatic' for both that and plain
     # automatic - System.ServiceProcess.ServiceStartMode has no member for it - so a campaign that recorded the one
@@ -826,19 +842,21 @@ function Get-ServiceDelayedAuto([string]$Name) {
     }
     catch { return 'unknown' }
 }
-function Test-AppIDSvcDelayedAuto($Facts) {
-    # The delayed-start flag as the check reads it: $null where there is nothing to say - the service was not recorded,
-    # the flag was not read then or cannot be read now - and a refusal where the machine's flag is not the one M9 found.
-    # A revert that put the service back as plain Automatic passes every other reading, because that is the only name
-    # Get-Service has for both (PR #67 round 8).
+function Test-DelayedAutoAgainst($Facts, [string]$Now) {
+    # The delayed-start flag as the check reads it, given what the machine says now. $null is 'nothing to say', and it
+    # means one thing only: no flag was recorded to compare with - the service was not automatic, or the flag could
+    # not be read when M9 recorded the rest. Where one WAS recorded and the machine cannot be read now, that is a
+    # refusal and not a pass: the caller turns $null into Ok = $true, and a revert that left the key unreadable would
+    # have been certified with a row saying the service is as it was (PR #67 round 9). Where both are known and they
+    # differ, the row names the command that puts it back - a revert to plain Automatic passes every other reading,
+    # because that is the only name Get-Service has for both (round 8).
     $wantType = [string]$Facts['AppIDSvcStartType']
     $want = [string]$Facts['AppIDSvcDelayedAuto']
     if ($wantType -ne 'Automatic') { return $null }
     if (@('yes', 'no') -notcontains $want) { return $null }
-    $now = Get-ServiceDelayedAuto 'AppIDSvc'
-    if ($now -eq 'unknown') { return $null }
-    if ($now -eq $want) { return $null }
-    return @{ Ok = $false; Detail = ('AppIDSvc starts ' + $(if ($now -eq 'yes') { 'automatically, delayed' } else { 'automatically' }) + '; before M9 it started ' + $(if ($want -eq 'yes') { 'automatically, delayed' } else { 'automatically' }) + ' - sc config AppIDSvc start= ' + $(if ($want -eq 'yes') { 'delayed-auto' } else { 'auto' })) }
+    if ($Now -eq $want) { return $null }
+    if ($Now -eq 'unknown') { return @{ Ok = $false; Detail = ('AppIDSvc''s delayed-start flag cannot be read now, so nothing here can say it is as it was: before M9 it started ' + $(if ($want -eq 'yes') { 'automatically, delayed' } else { 'automatically' })) } }
+    return @{ Ok = $false; Detail = ('AppIDSvc starts ' + $(if ($Now -eq 'yes') { 'automatically, delayed' } else { 'automatically' }) + '; before M9 it started ' + $(if ($want -eq 'yes') { 'automatically, delayed' } else { 'automatically' }) + ' - sc config AppIDSvc start= ' + $(if ($want -eq 'yes') { 'delayed-auto' } else { 'auto' })) }
 }
 function Get-M7RecoveryLines($Facts) {
     # The M7 section of RECOVER.txt, from what the scenario recorded before it changed anything. Three cases: the
@@ -848,28 +866,46 @@ function Get-M7RecoveryLines($Facts) {
     # value would be lost for good (PR #67 round 6).
     $had = ([string]$Facts['LockdownExisted'] -eq 'yes')
     $value = [string]$Facts['LockdownValue']
-    $safe = ($had -and (Test-PolicyLineData $value))
+    $command = [string](Get-M7UndoCommand $Facts)
+    $safe = ($had -and $command)
     $lines = @('M7  __PSLockdownPolicy (every new PowerShell in ConstrainedLanguage)')
     if ($had -and -not $safe) {
-        $lines += '    This machine had __PSLockdownPolicy set to a value that cannot be carried in a command line. Do'
-        $lines += '    NOT delete it: campaign.json holds it under Scenarios.M7.Facts.LockdownValue and a delete loses'
-        $lines += '    it. Put it back by hand - System Properties > Environment Variables > System variables - or with'
-        $lines += '    setx /M, the value quoted as your shell needs. undo-M7.cmd in this folder says the same and'
-        $lines += '    changes nothing.'
+        $lines += '    This machine had a __PSLockdownPolicy value that no command line can put back - its data, its'
+        $lines += '    kind or its length. Do NOT delete it: campaign.json holds the value under'
+        $lines += '    Scenarios.M7.Facts.LockdownValue and its kind under Scenarios.M7.Facts.LockdownKind, and a'
+        $lines += '    delete loses both. Put it back by hand - System Properties > Environment Variables > System'
+        $lines += '    variables for a plain value, regedit under HKLM\SYSTEM\CurrentControlSet\Control\Session'
+        $lines += '    Manager\Environment for its kind. undo-M7.cmd in this folder says the same and changes nothing.'
         return $lines
     }
     if ($had) { $lines += ('    This machine had __PSLockdownPolicy set to "' + $value + '" before M7: put THAT back, do not delete it.') }
     else { $lines += '    It was not set on this machine before M7, so removing it is putting it back.' }
     $lines += '    right-click undo-M7.cmd in this folder > Run as administrator; or, in an elevated command prompt:'
-    $lines += ('    ' + (Get-M7UndoCommand $Facts))
+    $lines += ('    ' + $command)
     return $lines
 }
 function Get-M7UndoCommand($Facts) {
-    # The one line that puts __PSLockdownPolicy back: setx where the machine had a value, a delete only where it had
-    # none. Asked for only in those two cases - Get-M7RecoveryLines and Get-M7UndoLines answer the third themselves.
+    # The one line that puts __PSLockdownPolicy back, or an empty string where no line can put it back. Four ways a
+    # recorded value has no line: data cmd would read as syntax (the audit after round 3), a kind these commands
+    # cannot write, a REG_EXPAND_SZ value - setx writes a REG_SZ, so the indirection would be lost - and a value
+    # longer than the command can carry, since setx crops an assignment at 1 024 characters, which the revert would
+    # then fail its own check on with every advertised way back repeating the same crop (PR #67 round 9). A value
+    # that is REG_EXPAND_SZ and short enough comes back through reg add, which writes the kind as well. Everything
+    # that reads this - the revert, RECOVER.txt, undo-M7.cmd and the cleanup instruction - gets the same answer.
     $had = ([string]$Facts['LockdownExisted'] -eq 'yes')
-    if ($had) { return ('setx /M __PSLockdownPolicy "' + [string]$Facts['LockdownValue'] + '"') }
-    return 'reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f'
+    if (-not $had) { return 'reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f' }
+    $v = [string]$Facts['LockdownValue']
+    if (-not (Test-PolicyLineData $v)) { return '' }
+    $kind = [string]$Facts['LockdownKind']
+    if ($kind -eq 'ExpandString') {
+        # reg add carries the whole line on the command line, so the limit here is the command's, not setx's.
+        if ($v.Length -gt 2000) { return '' }
+        return ('reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /t REG_EXPAND_SZ /d "' + $v + '" /f')
+    }
+    # A record from before the kind was recorded has none, and setx is what it has always been given.
+    if ($kind -and ($kind -ne 'String')) { return '' }
+    if ($v.Length -gt 1024) { return '' }
+    return ('setx /M __PSLockdownPolicy "' + $v + '"')
 }
 function Get-M7UndoLines($Facts) {
     # undo-M7.cmd: the file a person right-clicks when no PowerShell will start. Where the recorded value cannot be
@@ -877,13 +913,14 @@ function Get-M7UndoLines($Facts) {
     # (PR #67 round 6). Everything it says about this machine comes from the same three cases as the notes above.
     $had = ([string]$Facts['LockdownExisted'] -eq 'yes')
     $value = [string]$Facts['LockdownValue']
-    $safe = ($had -and (Test-PolicyLineData $value))
+    $command = [string](Get-M7UndoCommand $Facts)
+    $safe = ($had -and $command)
     $was = $(if (-not $had) { 'not set' } elseif ($safe) { 'set to "' + $value + '"' } else { 'set to a value this file cannot carry' })
     $head = @('@echo off',
               ('rem Undo M7 of the NetworkHealthCheck acceptance campaign: put __PSLockdownPolicy back as this machine had it (' + $was + '). Run as administrator.'))
     if ($had -and -not $safe) {
-        return $head + @('echo This machine had a __PSLockdownPolicy value that cannot be put back from a command line.',
-                         'echo It is in campaign.json under Scenarios.M7.Facts.LockdownValue. Set it back by hand; do NOT delete it.',
+        return $head + @('echo This machine had a __PSLockdownPolicy value that no command line can put back - its data, its kind or its length.',
+                         'echo It is in campaign.json under Scenarios.M7.Facts.LockdownValue, with its kind under LockdownKind. Set it back by hand; do NOT delete it.',
                          'pause',
                          'exit /b 1')
     }
@@ -891,7 +928,7 @@ function Get-M7UndoLines($Facts) {
     # 'if errorlevel 1 echo ... & pause & exit /b 1' keeps the whole chain inside the condition, so the file did reach
     # its success message and did exit 0 - the reading round 7 raised is not what this cmd does. The parenthesised
     # form says so to a reader and cannot be read the other way by any cmd, which is why it is written like this.
-    return $head + @((Get-M7UndoCommand $Facts),
+    return $head + @($command,
                      'if errorlevel 1 ( echo Could not put the value back - is this prompt running as administrator? & pause & exit /b 1 )',
                      ('echo __PSLockdownPolicy is ' + $(if ($had) { 'back to what this machine had' } else { 'removed' }) + ': new PowerShell windows are FullLanguage again. Resume the campaign to record the revert.'),
                      'pause')
@@ -1372,44 +1409,55 @@ function Get-Plan {
                # Existence and data are two facts, not one string: a machine whose value is literally 'absent', or is
                # an empty string, would otherwise be recorded as having none and the revert would delete it - the
                # mistake M8's kinds were split out to avoid in PR #14 (PR #67 round 5).
-               $v = Get-MachineEnv '__PSLockdownPolicy'
-               return @{ LockdownExisted = $(if ($null -eq $v) { 'no' } else { 'yes' }); LockdownValue = [string]$v }
+               # Read from the registry rather than through [Environment], which expands a REG_EXPAND_SZ value and
+               # drops its kind: what is recorded is what the key holds (PR #67 round 9).
+               $raw = Get-MachineEnvRaw '__PSLockdownPolicy'
+               return @{ LockdownExisted = $(if ($raw.Existed) { 'yes' } else { 'no' }); LockdownValue = [string]$raw.Value; LockdownKind = [string]$raw.Kind }
            }
            Apply = { param($Ctx) Invoke-PolicyChange $Ctx.Id $Ctx 'apply' @('setx /M __PSLockdownPolicy 4') }
            Revert = { param($Ctx)
-               if ([string]$Ctx.Facts['LockdownExisted'] -ne 'yes') { return (Invoke-PolicyChange $Ctx.Id $Ctx 'revert' @('reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f')) }
-               $was = [string]$Ctx.Facts['LockdownValue']
-               if (-not (Test-PolicyLineData $was)) { return @{ Ok = $false; Detail = ('the value this machine had cannot be carried in a command line; RECOVER.txt has the line to type') } }
-               return (Invoke-PolicyChange $Ctx.Id $Ctx 'revert' @('setx /M __PSLockdownPolicy "' + $was + '"'))
+               # The same line RECOVER.txt and undo-M7.cmd give, from the same function - and where there is none,
+               # the person is asked instead of the machine being changed into something else (PR #67 round 9).
+               $cmd = [string](Get-M7UndoCommand $Ctx.Facts)
+               if (-not $cmd) { return @{ Ok = $false; Detail = ('the value this machine had cannot be put back from a command line - its data, its kind or its length; RECOVER.txt says how') } }
+               return (Invoke-PolicyChange $Ctx.Id $Ctx 'revert' @($cmd))
            }
            Cleanup = @{ Instruction = { param($Ctx)
                             $was = [string]$Ctx.Facts['LockdownValue']
-                            # The same three cases as RECOVER.txt: where the recorded value cannot be carried in a
-                            # command line, the revert refuses to build one - and so must the line a person is shown,
-                            # which they would copy into an elevated prompt (PR #67 round 7).
-                            if (([string]$Ctx.Facts['LockdownExisted'] -eq 'yes') -and -not (Test-PolicyLineData $was)) {
-                                return @('This machine had a __PSLockdownPolicy value that cannot be carried in a command line, so there is no line to copy here: open System Properties > Environment Variables > System variables and put __PSLockdownPolicy back by hand. campaign.json in the state folder holds the value under Scenarios.M7.Facts.LockdownValue. Do NOT delete it. Then answer done.',
-                                         '這台機器的 __PSLockdownPolicy 值沒辦法放進命令列，所以這裡沒有可以複製的指令：請開「系統內容 > 環境變數 > 系統變數」，手動把 __PSLockdownPolicy 改回去。值在 state 資料夾的 campaign.json 的 Scenarios.M7.Facts.LockdownValue。不要刪除它。完成後輸入 done。')
+                            # The same cases as RECOVER.txt, from the same function: where no command line can put the
+                            # recorded value back, the revert refuses to build one - and so must the line a person is
+                            # shown, which they would copy into an elevated prompt (PR #67 rounds 7 and 9).
+                            $cmd = [string](Get-M7UndoCommand $Ctx.Facts)
+                            if (([string]$Ctx.Facts['LockdownExisted'] -eq 'yes') -and -not $cmd) {
+                                return @('This machine had a __PSLockdownPolicy value that no command line can put back - its data, its kind or its length - so there is no line to copy here: open System Properties > Environment Variables > System variables for a plain value, or regedit under HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment for its kind. campaign.json in the state folder holds the value under Scenarios.M7.Facts.LockdownValue and the kind under Scenarios.M7.Facts.LockdownKind. Do NOT delete it. Then answer done.',
+                                         '這台機器的 __PSLockdownPolicy 值沒辦法用命令列改回去（值、類型或長度），所以這裡沒有可以複製的指令：一般值請開「系統內容 > 環境變數 > 系統變數」，要連類型一起改請用 regedit 開 HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment。值在 state 資料夾的 campaign.json 的 Scenarios.M7.Facts.LockdownValue，類型在 LockdownKind。不要刪除它。完成後輸入 done。')
                             }
                             if ([string]$Ctx.Facts['LockdownExisted'] -eq 'yes') {
-                                return @(('This machine had __PSLockdownPolicy set to ' + $was + ' before M7: put THAT back, do not delete it - in an ELEVATED command prompt:   setx /M __PSLockdownPolicy "' + $was + '"   Then answer done.'),
-                                         ('這台機器在 M7 之前 __PSLockdownPolicy 就是 ' + $was + '：請改回那個值，不要刪除——在「以系統管理員身分執行」的命令提示字元執行：setx /M __PSLockdownPolicy "' + $was + '"，然後輸入 done。'))
+                                return @(('This machine had __PSLockdownPolicy set to ' + $was + ' before M7: put THAT back, do not delete it - in an ELEVATED command prompt:   ' + $cmd + '   Then answer done.'),
+                                         ('這台機器在 M7 之前 __PSLockdownPolicy 就是 ' + $was + '：請改回那個值，不要刪除——在「以系統管理員身分執行」的命令提示字元執行：' + $cmd + '，然後輸入 done。'))
                             }
                             return @('Remove it - in an ELEVATED command prompt:   reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f   - then answer done.', '移除它——在「以系統管理員身分執行」的命令提示字元執行：reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f，然後輸入 done。')
                         }
                         Verify = { param($Ctx)
                             # Against what the machine had: a machine where the value was already set to
                             # something else is put back to that, and 'gone' would certify the loss of it.
-                            $v = Get-MachineEnv '__PSLockdownPolicy'
-                            $isThere = ($null -ne $v)
+                            # Read as the registry holds it, so that an expandable value is compared with what it
+                            # says and not with what it expands to (PR #67 round 9).
+                            $raw = Get-MachineEnvRaw '__PSLockdownPolicy'
+                            $v = [string]$raw.Value
+                            $isThere = [bool]$raw.Existed
                             $wasThere = ([string]$Ctx.Facts['LockdownExisted'] -eq 'yes')
                             $was = [string]$Ctx.Facts['LockdownValue']
-                            if ($isThere -ne $wasThere) { @{ Ok = $false; Detail = ('__PSLockdownPolicy is ' + $(if ($isThere) { 'there ("' + [string]$v + '")' } else { 'not there' }) + '; before M7 it was ' + $(if ($wasThere) { 'there ("' + $was + '")' } else { 'not there' })) } }
+                            $wasKind = [string]$Ctx.Facts['LockdownKind']
+                            if ($isThere -ne $wasThere) { @{ Ok = $false; Detail = ('__PSLockdownPolicy is ' + $(if ($isThere) { 'there ("' + $v + '")' } else { 'not there' }) + '; before M7 it was ' + $(if ($wasThere) { 'there ("' + $was + '")' } else { 'not there' })) } }
                             elseif (-not $isThere) { @{ Ok = $true; Detail = 'removed, as it was not there before M7' } }
                             # -cne, not -ne, for the same reason as M8's data: -ne folds case, and a value put back as
                             # another case is another value in the environment block (PR #67 round 6).
-                            elseif ([string]$v -cne $was) { @{ Ok = $false; Detail = ('__PSLockdownPolicy is "' + [string]$v + '"; before M7 it was "' + $was + '"') } }
-                            else { @{ Ok = $true; Detail = ('__PSLockdownPolicy="' + $was + '", as before M7') } } } } },
+                            elseif ($v -cne $was) { @{ Ok = $false; Detail = ('__PSLockdownPolicy is "' + $v + '"; before M7 it was "' + $was + '"') } }
+                            # And the kind, where it was recorded: a REG_EXPAND_SZ value put back as a REG_SZ holding
+                            # the same characters is not the value the machine had - it no longer follows what it names.
+                            elseif ($wasKind -and ([string]$raw.Kind -ne $wasKind)) { @{ Ok = $false; Detail = ('__PSLockdownPolicy is a ' + $(if ($raw.Kind) { $raw.Kind } else { 'value of unreadable kind' }) + '; before M7 it was a ' + $wasKind) } }
+                            else { @{ Ok = $true; Detail = ('__PSLockdownPolicy="' + $was + '"' + $(if ($wasKind) { ' (' + $wasKind + ')' } else { '' }) + ', as before M7') } } } } },
         @{ Id = 'M8'; Title = 'Group Policy execution policy: allow only signed scripts'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('Two ways to the same MachinePolicy - PowerShell reads HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell either way:',
                            '  with gpedit.msc: Computer Configuration > Administrative Templates > Windows Components > Windows PowerShell > Turn on Script Execution > Enabled, "Allow only signed scripts" > OK; then in a command prompt:   gpupdate /force',
@@ -1788,7 +1836,7 @@ function Get-Plan {
                                     $svc0 = Get-Service -Name AppIDSvc -ErrorAction Stop
                                     $wantType0 = [string]$Ctx.Facts.AppIDSvcStartType; $wantStatus0 = [string]$Ctx.Facts.AppIDSvcStatus
                                     if ($wantType0 -ne 'n/a' -and ([string]$svc0.StartType -ne $wantType0 -or [string]$svc0.Status -ne $wantStatus0)) { return @{ Ok = $false; Detail = ('Script rules as before M9, but AppIDSvc is {0} ({1}); it was {2} ({3})' -f $svc0.StartType, $svc0.Status, $wantType0, $wantStatus0) } }
-                                    $delayed0 = Test-AppIDSvcDelayedAuto $Ctx.Facts
+                                    $delayed0 = Test-DelayedAutoAgainst $Ctx.Facts (Get-ServiceDelayedAuto 'AppIDSvc')
                                     if ($null -ne $delayed0) { return $delayed0 }
                                     return @{ Ok = $true; Detail = ('Script rules {0} with {1} rule(s) as before M9, and AppIDSvc as before - no policy was saved, so the other collections are not compared' -f $nowMode, $nowCount) }
                                 }
@@ -1800,7 +1848,7 @@ function Get-Plan {
                                 $svc = Get-Service -Name AppIDSvc -ErrorAction Stop
                                 $wantType = [string]$Ctx.Facts.AppIDSvcStartType; $wantStatus = [string]$Ctx.Facts.AppIDSvcStatus
                                 if ($wantType -ne 'n/a' -and ([string]$svc.StartType -ne $wantType -or [string]$svc.Status -ne $wantStatus)) { return @{ Ok = $false; Detail = ('Script rules no longer enforced, but AppIDSvc is {0} ({1}); it was {2} ({3}) before M9' -f $svc.StartType, $svc.Status, $wantType, $wantStatus) } }
-                                $delayedBad = Test-AppIDSvcDelayedAuto $Ctx.Facts
+                                $delayedBad = Test-DelayedAutoAgainst $Ctx.Facts (Get-ServiceDelayedAuto 'AppIDSvc')
                                 if ($null -ne $delayedBad) { return $delayedBad }
                                 @{ Ok = $true; Detail = ('the whole local policy is as it was, compared against {0}; AppIDSvc {1} ({2}) as before' -f $savedFrom, $svc.StartType, $svc.Status) }
                             }

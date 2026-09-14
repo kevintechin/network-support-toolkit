@@ -1582,7 +1582,7 @@ Assert-True '51. the reading that an ungrouped tail runs whatever the condition 
 # and checked on its own now.
 Write-Output ''
 Write-Output '52. the way back as a line a person copies, and the delayed start Get-Service does not distinguish'
-$loaded52 = @('Get-M8WayBack', 'Get-ServiceDelayedAuto', 'Test-AppIDSvcDelayedAuto', 'Test-PolicyLineData')
+$loaded52 = @('Get-M8WayBack', 'Get-ServiceDelayedAuto', 'Test-DelayedAutoAgainst', 'Test-PolicyLineData')
 $defined52 = @($loaded52 | Where-Object { $defs42.ContainsKey($_) -and $defs42[$_].Count -eq 1 })
 Assert-True '52. the driver defines each of the four once, so this case runs those definitions and no others' ($defined52.Count -eq $loaded52.Count) ('defined once: ' + ($defined52 -join ', ') + ' of ' + ($loaded52 -join ', '))
 $needs52 = @(); $free52 = @()
@@ -1624,10 +1624,10 @@ Assert-True '52. and where the flag could not be read, nothing is written for it
 $notesDelayed52 = (@(Get-M9RecoveryLines @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppIDSvcDelayedAuto = 'yes' }) -join "`n")
 Assert-True '52. RECOVER.txt says the same, in the words a person types: the delayed start named, and the value beside Start' (($notesDelayed52 -match 'delayed start') -and ($notesDelayed52 -match 'sc config AppIDSvc start= delayed-auto') -and ($notesDelayed52 -match 'DelayedAutostart')) ($notesDelayed52 -replace "`n", ' / ')
 $wantOther52 = $(if ($live52 -eq 'yes') { 'no' } else { 'yes' })
-$says52 = Test-AppIDSvcDelayedAuto @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = $wantOther52 }
-$quiet52 = Test-AppIDSvcDelayedAuto @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = $live52 }
-$notAuto52 = Test-AppIDSvcDelayedAuto @{ AppIDSvcStartType = 'Manual'; AppIDSvcDelayedAuto = $wantOther52 }
-$unread52 = Test-AppIDSvcDelayedAuto @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = 'unknown' }
+$says52 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = $wantOther52 } $live52
+$quiet52 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = $live52 } $live52
+$notAuto52 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Manual'; AppIDSvcDelayedAuto = $wantOther52 } $live52
+$unread52 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = 'unknown' } $live52
 Assert-True '52. the check refuses a machine whose flag is not the one M9 found, and names the command that puts it back' (($null -ne $says52) -and ($says52.Ok -eq $false) -and ([string]$says52.Detail -like '*sc config AppIDSvc start= *')) ('says: ' + $(if ($null -eq $says52) { '(nothing)' } else { $says52.Detail }))
 Assert-True '52. and it says nothing where there is nothing to say: the flag as this machine has it, a service that was not automatic, and a flag that was never read' (($null -eq $quiet52) -and ($null -eq $notAuto52) -and ($null -eq $unread52)) ('same: ' + $(if ($null -eq $quiet52) { 'quiet' } else { $quiet52.Detail }) + '; not automatic: ' + $(if ($null -eq $notAuto52) { 'quiet' } else { $notAuto52.Detail }) + '; unread: ' + $(if ($null -eq $unread52) { 'quiet' } else { $unread52.Detail }))
 $m9block52 = ''
@@ -1636,7 +1636,76 @@ if ($m9at52 -ge 0) {
     $m9end52 = $m9text45.IndexOf("@{ Id = '", $m9at52 + 10)
     $m9block52 = $(if ($m9end52 -gt $m9at52) { $m9text45.Substring($m9at52, $m9end52 - $m9at52) } else { $m9text45.Substring($m9at52) })
 }
-Assert-True '52. M9 records the flag where it records the rest of the service, and both of its checks read it - the weaker comparison included, since that is the one a manual campaign gets' (($m9block52 -like '*AppIDSvcDelayedAuto = (Get-ServiceDelayedAuto*') -and (@([regex]::Matches($m9block52, 'Test-AppIDSvcDelayedAuto')).Count -ge 2)) ('recorded: ' + ($m9block52 -like '*AppIDSvcDelayedAuto = (Get-ServiceDelayedAuto*') + '; checked ' + @([regex]::Matches($m9block52, 'Test-AppIDSvcDelayedAuto')).Count + ' time(s)')
+Assert-True '52. M9 records the flag where it records the rest of the service, and both of its checks read it - the weaker comparison included, since that is the one a manual campaign gets' (($m9block52 -like '*AppIDSvcDelayedAuto = (Get-ServiceDelayedAuto*') -and (@([regex]::Matches($m9block52, 'Test-DelayedAutoAgainst \$Ctx\.Facts \(Get-ServiceDelayedAuto')).Count -ge 2)) ('recorded: ' + ($m9block52 -like '*AppIDSvcDelayedAuto = (Get-ServiceDelayedAuto*') + '; checked ' + @([regex]::Matches($m9block52, 'Test-DelayedAutoAgainst')).Count + ' time(s)')
+
+# -------------------- 53. what round 9 asked: the value as the registry holds it, and the two answers a check owes --------------------
+# PR #67 round 9, three findings. M7 read __PSLockdownPolicy through [Environment]::GetEnvironmentVariable(..., 'Machine'),
+# which expands a REG_EXPAND_SZ value and says nothing about its kind - so a machine whose value was '%SystemRoot%\x'
+# was recorded as the path it expands to, put back with setx as a REG_SZ holding that text, and certified by a check
+# that read the same expansion: the indirection gone and the kind gone, with every row saying the machine was as
+# before. The delayed-start check returned $null where the service key could not be read NOW, and its callers read
+# $null as 'nothing to object to' - a revert that left the key unreadable was certified. And setx crops an assignment
+# at 1 024 characters, so a longer value passed the command-line reading, came back truncated, failed M7's own check,
+# and every advertised way back repeated the same crop.
+Write-Output ''
+Write-Output '53. the registry''s own data and kind, the command that cannot carry them, and a flag that cannot be read now'
+$loaded53 = @('Get-MachineEnvRaw')
+Assert-True '53. the driver defines Get-MachineEnvRaw once, so this case runs that definition and no other' ($defs42.ContainsKey('Get-MachineEnvRaw') -and $defs42['Get-MachineEnvRaw'].Count -eq 1) ('definitions: ' + $(if ($defs42.ContainsKey('Get-MachineEnvRaw')) { $defs42['Get-MachineEnvRaw'].Count } else { 0 }))
+$needs53 = @(); $free53 = @()
+if ($defs42.ContainsKey('Get-MachineEnvRaw') -and $defs42['Get-MachineEnvRaw'].Count -eq 1) {
+    $needs53 = @($defs42['Get-MachineEnvRaw'][0].Body.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) -and $loaded53 -notcontains $_ } | Sort-Object -Unique)
+    $free53 = @(Get-FreeVariables $defs42['Get-MachineEnvRaw'][0])
+    Invoke-Expression $defs42['Get-MachineEnvRaw'][0].Extent.Text
+}
+Assert-True '53. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs53.Count -eq 0) -and ($free53.Count -eq 0)) ('also needed: ' + ($needs53 -join ', ') + '; free variables: ' + ($free53 -join ', '))
+# The defect itself, on this machine's own environment block: which names read differently raw and expanded.
+$envKey53 = Get-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -ErrorAction SilentlyContinue
+$names53 = @()
+if ($null -ne $envKey53) { $names53 = @($envKey53.GetValueNames() | Where-Object { [string]$envKey53.GetValue($_, $null, 'DoNotExpandEnvironmentNames') -cne [string][Environment]::GetEnvironmentVariable($_, 'Machine') }) }
+Assert-True '53. this machine has machine variables whose stored data is not what [Environment] returns - the reading M7 used to record with' ($names53.Count -ge 1) ('names: ' + ($names53 -join ', ') + ' of ' + $(if ($null -ne $envKey53) { @($envKey53.GetValueNames()).Count } else { 0 }))
+if ($names53.Count -ge 1) {
+    $one53 = @($names53)[0]
+    $raw53 = Get-MachineEnvRaw $one53
+    Assert-True '53. and the raw read gives the data the key holds and the kind beside it, where the expanded read gives neither' (([string]$raw53.Value -ceq [string]$envKey53.GetValue($one53, $null, 'DoNotExpandEnvironmentNames')) -and ([string]$raw53.Value -cne [string][Environment]::GetEnvironmentVariable($one53, 'Machine')) -and ([string]$raw53.Kind -eq 'ExpandString') -and ([bool]$raw53.Existed)) ($one53 + ': raw "' + $raw53.Value + '" (' + $raw53.Kind + ') / expanded "' + [string][Environment]::GetEnvironmentVariable($one53, 'Machine') + '"')
+}
+else {
+    Assert-True '53. and the raw read gives the data the key holds and the kind beside it, where the expanded read gives neither' $false 'this machine has no expandable machine variable to read'
+}
+$absent53 = Get-MachineEnvRaw 'NhcSelftestNoSuchMachineVariable'
+Assert-True '53. a name that is not there reads as not there, rather than as an empty value - the difference M7 records as two facts' ((-not [bool]$absent53.Existed) -and ([string]$absent53.Value -eq '') -and ([string]$absent53.Kind -eq '')) ('existed=' + $absent53.Existed + ' value="' + $absent53.Value + '" kind=' + $absent53.Kind)
+# The one command, by kind and by length.
+$plain53 = Get-M7UndoCommand @{ LockdownExisted = 'yes'; LockdownValue = '4'; LockdownKind = 'String' }
+$expand53 = Get-M7UndoCommand @{ LockdownExisted = 'yes'; LockdownValue = 'SystemRootPolicy'; LockdownKind = 'ExpandString' }
+$percent53 = Get-M7UndoCommand @{ LockdownExisted = 'yes'; LockdownValue = '%SystemRoot%\policy'; LockdownKind = 'ExpandString' }
+$atLimit53 = Get-M7UndoCommand @{ LockdownExisted = 'yes'; LockdownValue = ('a' * 1024); LockdownKind = 'String' }
+$overLimit53 = Get-M7UndoCommand @{ LockdownExisted = 'yes'; LockdownValue = ('a' * 1025); LockdownKind = 'String' }
+$multi53 = Get-M7UndoCommand @{ LockdownExisted = 'yes'; LockdownValue = 'x'; LockdownKind = 'MultiString' }
+$legacy53 = Get-M7UndoCommand @{ LockdownExisted = 'yes'; LockdownValue = '4' }
+$none53 = Get-M7UndoCommand @{ LockdownExisted = 'no'; LockdownValue = '' }
+Assert-True '53. an expandable value comes back as one - reg add writes the kind, and setx would have written a plain string holding the same characters' (($expand53 -like 'reg add *') -and ($expand53 -like '*/t REG_EXPAND_SZ*') -and ($expand53 -like '*SystemRootPolicy*') -and ($plain53 -eq 'setx /M __PSLockdownPolicy "4"')) ('expandable: ' + $expand53)
+Assert-True '53. a value longer than setx will carry has no line at all, rather than one that crops it - 1 024 characters is the documented limit, and the campaign would have failed its own check on the truncation' (($atLimit53 -like 'setx /M *') -and ($overLimit53 -eq '')) ('at the limit: ' + $(if ($atLimit53) { 'a line' } else { 'none' }) + '; one over: ' + $(if ($overLimit53) { 'a line' } else { 'none' }))
+Assert-True '53. nor has a kind these commands cannot write, nor data cmd would read as syntax - and a record from before the kind was recorded is still given the line it always had' (($multi53 -eq '') -and ($percent53 -eq '') -and ($legacy53 -eq 'setx /M __PSLockdownPolicy "4"') -and ($none53 -like 'reg delete *')) ('multi: [' + $multi53 + ']; per-cent: [' + $percent53 + ']; legacy: ' + $legacy53)
+# What the four readers do with that answer.
+$notesOver53 = (@(Get-M7RecoveryLines @{ LockdownExisted = 'yes'; LockdownValue = ('a' * 1025); LockdownKind = 'String' }) -join "`n")
+$undoOver53 = (@(Get-M7UndoLines @{ LockdownExisted = 'yes'; LockdownValue = ('a' * 1025); LockdownKind = 'String' }) -join "`n")
+$notesExpand53 = (@(Get-M7RecoveryLines @{ LockdownExisted = 'yes'; LockdownValue = 'SystemRootPolicy'; LockdownKind = 'ExpandString' }) -join "`n")
+Assert-True '53. a value too long for the command is answered the way an unsafe one is: no line in either file, the kind named beside the value, and nothing deleted' (($notesOver53 -match 'no command line can put back') -and ($notesOver53 -notmatch 'setx') -and ($undoOver53 -notmatch 'setx') -and ($undoOver53 -notmatch 'reg add') -and ($notesOver53 -match 'LockdownKind')) ($notesOver53 -replace "`n", ' / ')
+Assert-True '53. and the reading is not vacuous: an expandable value that CAN be carried is put in both files as the reg add line that writes its kind' (($notesExpand53 -match 'REG_EXPAND_SZ') -and ((@(Get-M7UndoLines @{ LockdownExisted = 'yes'; LockdownValue = 'SystemRootPolicy'; LockdownKind = 'ExpandString' }) -join "`n") -match 'REG_EXPAND_SZ')) ($notesExpand53 -replace "`n", ' / ')
+$m7block53 = ''
+$m7at53 = $m9text45.IndexOf("@{ Id = 'M7'")
+if ($m7at53 -ge 0) {
+    $m7end53 = $m9text45.IndexOf("@{ Id = '", $m7at53 + 10)
+    $m7block53 = $(if ($m7end53 -gt $m7at53) { $m9text45.Substring($m7at53, $m7end53 - $m7at53) } else { $m9text45.Substring($m7at53) })
+}
+Assert-True '53. M7 records the kind where it records the value, its revert asks the same function for its line, and its check compares the kind as well as the data' (($m7block53 -like '*Get-MachineEnvRaw ''__PSLockdownPolicy''*') -and ($m7block53 -like '*LockdownKind*') -and ($m7block53 -like '*Get-M7UndoCommand $Ctx.Facts*') -and ($m7block53 -like '*before M7 it was a*')) 'M7 still records or compares the expanded value alone'
+Assert-True '53. and both readings of it are the registry''s: the check reads the raw value too, not what [Environment] would expand it to' (($m7block53 -notlike '*Get-MachineEnv ''__PSLockdownPolicy''*') -or (@([regex]::Matches($m7block53, 'Get-MachineEnvRaw')).Count -ge 2)) ('raw reads: ' + @([regex]::Matches($m7block53, 'Get-MachineEnvRaw')).Count + '; expanded reads: ' + @([regex]::Matches($m7block53, 'Get-MachineEnv ')).Count)
+# A flag that cannot be read now is not a flag that agrees.
+$unreadable53 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = 'yes' } 'unknown'
+$agrees53 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = 'yes' } 'yes'
+$differs53 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = 'yes' } 'no'
+$neverRead53 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = 'unknown' } 'unknown'
+Assert-True '53. where M9 recorded the flag and the machine cannot be read now, the check refuses instead of staying quiet - its callers read quiet as nothing to object to' (($null -ne $unreadable53) -and ($unreadable53.Ok -eq $false) -and ([string]$unreadable53.Detail -like '*cannot be read now*')) ('says: ' + $(if ($null -eq $unreadable53) { '(nothing)' } else { $unreadable53.Detail }))
+Assert-True '53. and it is quiet in the two standings that mean nothing to compare: a flag that agrees, and one that was never read when the rest was recorded' (($null -eq $agrees53) -and ($null -eq $neverRead53) -and ($null -ne $differs53)) ('agrees: ' + $(if ($null -eq $agrees53) { 'quiet' } else { 'says something' }) + '; never read: ' + $(if ($null -eq $neverRead53) { 'quiet' } else { 'says something' }) + '; differs: ' + $(if ($null -eq $differs53) { 'quiet' } else { 'says something' }))
 
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
