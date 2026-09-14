@@ -1766,6 +1766,61 @@ $delayedThrow54 = $m9prep54.IndexOf('delayed-start flag cannot be read')
 $applyAt54 = $m9prep54.IndexOf('Apply = {')
 Assert-True '54. M9 refuses an automatic service whose delayed-start flag it could not read, rather than setting start= auto over a setting it cannot put back' (($delayedThrow54 -ge 0) -and ($applyAt54 -gt $delayedThrow54) -and ($m9prep54 -like '*StartType -eq ''Automatic'') -and ($delayedNow -eq ''unknown'')*')) ('refusal at ' + $delayedThrow54 + ', apply at ' + $applyAt54)
 
+# -------------------- 55. the command line that starts the helper elevated --------------------
+# The campaign of 2026-09-15 on the Windows 10 Pro VM - the first time the automated policy path ever ran on a machine
+# - failed every elevated step before it started: `helper exit 1; the helper wrote no result file`, with the consent
+# granted. Start-Process -Verb RunAs on a .cmd goes through HKCR\cmdfile\shell\runas\command, which is
+# `cmd.exe /C "%1" %*`, and cmd removes the FIRST and the LAST quote character of a line that carries more than two of
+# them (cmd /?): the helper's path came out ending in a stray quote, cmd could not find it, exited 1 and ran nothing.
+# Ten review rounds did not catch it because case 41 calls the helper directly and the elevated path was only ever
+# read as text. This case runs the line the driver builds, unelevated - the quoting is what is under test, not the
+# consent - and keeps the broken shape beside it, because a line that works proves nothing until the one that failed
+# is shown failing.
+Write-Output ''
+Write-Output '55. the line the driver hands cmd.exe, run for real - and the shape that ran nothing'
+$loaded55 = @('Get-ElevatedHelperArguments')
+Assert-True '55. the driver defines Get-ElevatedHelperArguments once, so this case runs that definition and no other' ($defs42.ContainsKey('Get-ElevatedHelperArguments') -and $defs42['Get-ElevatedHelperArguments'].Count -eq 1) ('definitions: ' + $(if ($defs42.ContainsKey('Get-ElevatedHelperArguments')) { $defs42['Get-ElevatedHelperArguments'].Count } else { 0 }))
+$needs55 = @(); $free55 = @()
+if ($defs42.ContainsKey('Get-ElevatedHelperArguments') -and $defs42['Get-ElevatedHelperArguments'].Count -eq 1) {
+    $needs55 = @($defs42['Get-ElevatedHelperArguments'][0].Body.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) -and $loaded55 -notcontains $_ } | Sort-Object -Unique)
+    $free55 = @(Get-FreeVariables $defs42['Get-ElevatedHelperArguments'][0])
+    Invoke-Expression $defs42['Get-ElevatedHelperArguments'][0].Extent.Text
+}
+Assert-True '55. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs55.Count -eq 0) -and ($free55.Count -eq 0)) ('also needed: ' + ($needs55 -join ', ') + '; free variables: ' + ($free55 -join ', '))
+# A probe that answers with the three arguments it was given, in a folder whose name has a space in it - a path the
+# campaign's own folders do not have today and a person's profile may.
+$dir55 = Join-Path $WorkDir 'case55\a folder with spaces'
+New-Item -ItemType Directory -Force -Path $dir55 | Out-Null
+$probe55 = Join-Path $dir55 'probe helper.cmd'
+Set-Content -LiteralPath $probe55 -Encoding Ascii -Value @('@echo off', '> "%~2" echo 1=%~1', '>> "%~2" echo 2=%~2', '>> "%~2" echo 3=%~3')
+$cmds55 = Join-Path $dir55 'policy-apply.cmd'
+Set-Content -LiteralPath $cmds55 -Encoding Ascii -Value @('@echo off', 'rem NHC-POLICY-STEP SELFTEST harmless')
+$result55 = Join-Path $dir55 'policy-apply-result.txt'
+$digest55 = [string](Get-FileHash -LiteralPath $cmds55 -Algorithm SHA256).Hash
+$cmdExe55 = Join-Path (Join-Path $env:SystemRoot 'System32') 'cmd.exe'
+function Invoke-Line55($ArgumentList) {
+    # The same call the driver makes, minus -Verb RunAs: what is under test is how cmd reads the line, which elevation
+    # does not change. Elevation is what the machine campaign measures, and no self-test can raise a consent prompt.
+    if ([IO.File]::Exists($result55)) { [IO.File]::Delete($result55) }
+    $ErrorActionPreference = 'Continue'
+    $p = Start-Process -FilePath $cmdExe55 -ArgumentList $ArgumentList -Wait -PassThru -WindowStyle Hidden
+    $ErrorActionPreference = 'Stop'
+    $said = @()
+    if ([IO.File]::Exists($result55)) { $said = @([IO.File]::ReadAllLines($result55)) }
+    return @{ ExitCode = $p.ExitCode; Lines = $said }
+}
+$good55 = Invoke-Line55 (Get-ElevatedHelperArguments $probe55 $cmds55 $result55 $digest55)
+Assert-True '55. the line the driver builds delivers the three arguments as they were written, spaces in the paths and all, and cmd exits 0' (($good55.ExitCode -eq 0) -and (@($good55.Lines).Count -eq 3) -and (@($good55.Lines)[0] -eq ('1=' + $cmds55)) -and (@($good55.Lines)[1] -eq ('2=' + $result55)) -and (@($good55.Lines)[2] -eq ('3=' + $digest55))) ('exit ' + $good55.ExitCode + '; ' + (@($good55.Lines) -join ' | '))
+# And the shape the shell's own association produces for a .cmd, which is what the campaign was sending until the
+# machine run of 2026-09-15: cmd.exe /C "<helper>" "<commands>" "<result>" <digest>, with no pair to strip.
+$bare55 = @('/c', ('"' + $probe55 + '" "' + $cmds55 + '" "' + $result55 + '" ' + $digest55))
+$bad55 = Invoke-Line55 $bare55
+Assert-True '55. and the reading is not vacuous: the shape Start-Process -Verb RunAs builds for a .cmd runs nothing at all - cmd strips the first and the last quote, the path it is left with does not exist, and no result file is written' (($bad55.ExitCode -ne 0) -and (@($bad55.Lines).Count -eq 0)) ('exit ' + $bad55.ExitCode + '; ' + $(if (@($bad55.Lines).Count) { (@($bad55.Lines) -join ' | ') } else { 'no result file, which is the defect' }))
+$stepText55 = ''
+$fnStep55 = @($ast42.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-PolicyStepFile' }, $true))
+if ($fnStep55.Count -eq 1) { $stepText55 = [string]$fnStep55[0].Extent.Text }
+Assert-True '55. and the step starts cmd.exe by its own path under System32 with that line - not the .cmd through its association, and not %ComSpec%, which a session can point elsewhere' (($stepText55 -like '*Start-Process -FilePath $cmdExe*') -and ($stepText55 -like '*Get-ElevatedHelperArguments $Helper $CmdFile $resultFile $digest*') -and ($stepText55 -like "*Join-Path (Join-Path `$env:SystemRoot 'System32') 'cmd.exe'*") -and ($stepText55 -notlike '*ComSpec*') -and ($stepText55 -notlike '*Start-Process -FilePath $Helper*')) 'the step still starts the helper through the shell association'
+
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
 Write-Output '38. the bundle name carries the time to the millisecond and the process id (backlog #25). A name good to the second collided whenever a second invocation of the same campaign fell inside the same second as the first: Compress-Archive refuses a destination that exists, and the record kept that refusal as a bundle failure - twice on GitHub Actions, both times on a commit that touched nothing the step reads. The collision is reproduced here rather than waited for: every second-precision name the clock can produce in the next five minutes is occupied before the invocation runs'

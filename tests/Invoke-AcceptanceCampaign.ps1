@@ -1106,6 +1106,18 @@ function New-PolicyStepFile([string]$Id, [string]$What, [string[]]$Lines, [strin
     [IO.File]::WriteAllLines($cmdFile, [string[]]$body, $oem)
     return $cmdFile
 }
+function Get-ElevatedHelperArguments([string]$Helper, [string]$CmdFile, [string]$ResultFile, [string]$Digest) {
+    # What cmd.exe is given, to run the helper elevated - and the shape is the whole point. Start-Process -Verb RunAs
+    # on a .cmd goes through the shell's association for that type, HKCR\cmdfile\shell\runas\command, which is
+    # `cmd.exe /C "%1" %*`; and cmd, handed a line with more than two quote characters, removes the FIRST and the LAST
+    # one (cmd /?). The helper's path then ends in a stray quote, cmd answers that it cannot find the path, exits 1 and
+    # runs nothing - so every elevated step of M7, M8 and M9 failed before it started, on the first machine this was
+    # ever run on (the campaign of 2026-09-15, backlog #29). cmd.exe is started itself now, by its own path under
+    # %SystemRoot%\System32 rather than through %ComSpec%, which a session can point elsewhere - the rule round 6 gave
+    # find.exe and certutil.exe - and the whole command is wrapped in one more pair of quotes: the pair cmd strips, so
+    # the three arguments arrive as they were written, spaces in a path included.
+    return @('/c', ('"' + '"' + $Helper + '" "' + $CmdFile + '" "' + $ResultFile + '" ' + $Digest + '"'))
+}
 function Invoke-PolicyStepFile([string]$Id, [string]$What, [string]$CmdFile, [string]$Helper, [string]$Dir, [string]$Digest) {
     # One elevated run of one commands file. The campaign itself stays unelevated - A1 measures what an ordinary user
     # gets - so a machine change is a consent prompt for one step, and nothing of the campaign runs elevated after it.
@@ -1150,7 +1162,8 @@ function Invoke-PolicyStepFile([string]$Id, [string]$What, [string]$CmdFile, [st
     if (-not $digest) { return @{ Ok = $false; Detail = ('the commands file could not be hashed: ' + $CmdFile); Lines = @(); CommandsFile = $CmdFile } }
     Write-Host ('  {0}: {1} through the elevated helper - answer the consent prompt Windows raises' -f $Id, $What) -ForegroundColor Cyan
     $proc = $null
-    try { $proc = Start-Process -FilePath $Helper -ArgumentList @(('"' + $CmdFile + '"'), ('"' + $resultFile + '"'), $digest) -Verb RunAs -Wait -PassThru -ErrorAction Stop }
+    $cmdExe = Join-Path (Join-Path $env:SystemRoot 'System32') 'cmd.exe'
+    try { $proc = Start-Process -FilePath $cmdExe -ArgumentList (Get-ElevatedHelperArguments $Helper $CmdFile $resultFile $digest) -Verb RunAs -Wait -PassThru -ErrorAction Stop }
     catch { return @{ Ok = $false; Detail = ('the elevated helper did not start (' + $_.Exception.Message + ')'); Lines = @(); CommandsFile = $CmdFile } }
     finally { if ($null -ne $helperStream) { $helperStream.Dispose() } }
     $out = @()
