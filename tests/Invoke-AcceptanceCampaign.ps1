@@ -676,6 +676,16 @@ function Get-M8WayBack($Facts) {
         else { $existed = ($data -and $data -ne 'absent'); if (-not $existed) { $data = '' } }   # a legacy record: the data alone
         if (-not $existed) { $lines += ('reg delete ' + $k + ' /v ' + $v.Name + ' /f'); continue }
         $type = $(if ($kind -and $types.ContainsKey($kind)) { $types[$kind] } elseif (-not $kind) { $v.Default } else { '' })
+        # Data that cannot be carried in a command line does not get one here either. These lines are the way back a
+        # person is given - RECOVER.txt and M8's own cleanup instruction print them - and a copy of one would restore
+        # something else: %SystemRoot% in a REG_EXPAND_SZ value expands as it is typed, a quote ends the argument and
+        # what follows is more command. The automated revert has refused such a value since the audit after round 3;
+        # the line a person reads refuses it now too, and names where the value is recorded (PR #67 round 8, the rule
+        # M7's way back has followed since round 6).
+        if ($type -and -not (Test-PolicyLineData $data)) {
+            $lines += ('(' + $v.Name + ' was a value of kind ' + $(if ($kind) { $kind } else { 'String or DWord' }) + ' whose data cannot be put in a command line - campaign.json holds it under Scenarios.M8.Facts.' + $v.Data + '; set it back with regedit, and do not copy it from a line here)')
+            continue
+        }
         if ($type) { $lines += ('reg add ' + $k + ' /v ' + $v.Name + ' /t ' + $type + ' /d "' + $data + '" /f') }
         else { $lines += ('(' + $v.Name + ' was a ' + $kind + ' value with data "' + $data + '" - put it back with regedit; reg add cannot write that kind)') }
     }
@@ -759,16 +769,22 @@ function Get-M9RecoveryLines($Facts) {
     $mapNumber = @{ Automatic = '2'; Manual = '3'; Disabled = '4' }
     $t = [string]$Facts['AppIDSvcStartType']
     $svcStatus = [string]$Facts['AppIDSvcStatus']
+    # Automatic and automatic-delayed are one word to Get-Service and two settings on the machine (PR #67 round 8).
+    $svcDelayed = ([string]$Facts['AppIDSvcDelayedAuto'] -eq 'yes')
     if ($t -and $t -ne 'n/a') {
-        $lines += ('    The Application Identity service was ' + $t + ', ' + $svcStatus + ' before M9. Put it back with the')
+        $lines += ('    The Application Identity service was ' + $t + $(if ($svcDelayed) { ' (delayed start)' } else { '' }) + ', ' + $svcStatus + ' before M9. Put it back with the')
         $lines += '    command(s) below, each on its own line and nothing else on the line:'
-        $lines += ('    sc config AppIDSvc start= ' + $(if ($map.ContainsKey($t)) { $map[$t] } else { $t.ToLowerInvariant() }))
+        $lines += ('    sc config AppIDSvc start= ' + $(if (($t -eq 'Automatic') -and $svcDelayed) { 'delayed-auto' } elseif ($map.ContainsKey($t)) { $map[$t] } else { $t.ToLowerInvariant() }))
         if ($svcStatus -eq 'Stopped') { $lines += '    net stop AppIDSvc' }
         $lines += '    If sc config answers "Access is denied" - Windows protects the service configuration once the rules'
         $lines += '    are gone, although the same command is accepted while they are in force - set the value it reads:'
         if ($mapNumber.ContainsKey($t)) {
             $lines += ('    (' + $mapNumber[$t] + ' = ' + $t + ')')
             $lines += ('    reg add "HKLM\SYSTEM\CurrentControlSet\Services\AppIDSvc" /v Start /t REG_DWORD /d ' + $mapNumber[$t] + ' /f')
+            if (($t -eq 'Automatic') -and (@('yes', 'no') -contains [string]$Facts['AppIDSvcDelayedAuto'])) {
+                $lines += ('    (delayed start is that same Start = 2 with DelayedAutostart = ' + $(if ($svcDelayed) { '1' } else { '0' }) + ', which is what this machine had)')
+                $lines += ('    reg add "HKLM\SYSTEM\CurrentControlSet\Services\AppIDSvc" /v DelayedAutostart /t REG_DWORD /d ' + $(if ($svcDelayed) { '1' } else { '0' }) + ' /f')
+            }
         }
         else {
             $lines += ('    HKLM\SYSTEM\CurrentControlSet\Services\AppIDSvc\Start = ' + $t + ' (2 = Automatic, 3 = Manual, 4 = Disabled)')
@@ -793,6 +809,36 @@ function Test-PolicyLineData([string]$Data) {
     foreach ($c in @('&', '|', '<', '>', '^', '%', '`')) { if ($s.IndexOf($c) -ge 0) { return $false } }
     foreach ($ch in $s.ToCharArray()) { if ([int][char]$ch -lt 32) { return $false } }
     return $true
+}
+function Get-ServiceDelayedAuto([string]$Name) {
+    # Whether a service is set to start automatically DELAYED. Get-Service says 'Automatic' for both that and plain
+    # automatic - System.ServiceProcess.ServiceStartMode has no member for it - so a campaign that recorded the one
+    # and put back the other would have taken the setting off the machine and certified itself (PR #67 round 8). What
+    # decides it is DelayedAutostart beside Start in the service's own key, which any account may read; 'unknown'
+    # where it cannot be read, and then nothing here claims to know.
+    try {
+        $key = Get-Item -Path ('HKLM:\SYSTEM\CurrentControlSet\Services\' + $Name) -ErrorAction SilentlyContinue
+        if ($null -eq $key) { return 'unknown' }
+        $v = $key.GetValue('DelayedAutostart', $null)
+        # Absent on a service that was never set delayed, and that absence is an answer rather than a failure to read.
+        if ($null -eq $v) { return 'no' }
+        return $(if ([int]$v -ne 0) { 'yes' } else { 'no' })
+    }
+    catch { return 'unknown' }
+}
+function Test-AppIDSvcDelayedAuto($Facts) {
+    # The delayed-start flag as the check reads it: $null where there is nothing to say - the service was not recorded,
+    # the flag was not read then or cannot be read now - and a refusal where the machine's flag is not the one M9 found.
+    # A revert that put the service back as plain Automatic passes every other reading, because that is the only name
+    # Get-Service has for both (PR #67 round 8).
+    $wantType = [string]$Facts['AppIDSvcStartType']
+    $want = [string]$Facts['AppIDSvcDelayedAuto']
+    if ($wantType -ne 'Automatic') { return $null }
+    if (@('yes', 'no') -notcontains $want) { return $null }
+    $now = Get-ServiceDelayedAuto 'AppIDSvc'
+    if ($now -eq 'unknown') { return $null }
+    if ($now -eq $want) { return $null }
+    return @{ Ok = $false; Detail = ('AppIDSvc starts ' + $(if ($now -eq 'yes') { 'automatically, delayed' } else { 'automatically' }) + '; before M9 it started ' + $(if ($want -eq 'yes') { 'automatically, delayed' } else { 'automatically' }) + ' - sc config AppIDSvc start= ' + $(if ($want -eq 'yes') { 'delayed-auto' } else { 'auto' })) }
 }
 function Get-M7RecoveryLines($Facts) {
     # The M7 section of RECOVER.txt, from what the scenario recorded before it changed anything. Three cases: the
@@ -978,11 +1024,15 @@ function Get-M9RevertLines($Ctx) {
     $t = [string]$Ctx.Facts['AppIDSvcStartType']
     # Only the three startup types Windows has: the value is recorded state, and anything else would be carried into
     # the command line as it stands. An unknown one is left to the person, whom RECOVER.txt already tells what to do.
+    # Delayed automatic start is Start=2 with DelayedAutostart=1, and sc config spells it delayed-auto; Get-Service
+    # calls it Automatic like any other, so the flag is recorded and put back on its own (PR #67 round 8).
+    $delayed = [string]$Ctx.Facts['AppIDSvcDelayedAuto']
     if ($t -and $map.ContainsKey($t)) {
-        $lines += ('sc config AppIDSvc start= ' + $map[$t])
+        $lines += ('sc config AppIDSvc start= ' + $(if (($t -eq 'Automatic') -and ($delayed -eq 'yes')) { 'delayed-auto' } else { $map[$t] }))
         # Measured on the Windows 10 Pro VM (campaign win10-zhTW, 2026-09-06): sc config is refused once the rules are
         # gone, although the same command was accepted while they were in force - so the value it reads is set as well.
         if ($mapNumber.ContainsKey($t)) { $lines += ('reg add "HKLM\SYSTEM\CurrentControlSet\Services\AppIDSvc" /v Start /t REG_DWORD /d ' + $mapNumber[$t] + ' /f') }
+        if (($t -eq 'Automatic') -and (@('yes', 'no') -contains $delayed)) { $lines += ('reg add "HKLM\SYSTEM\CurrentControlSet\Services\AppIDSvc" /v DelayedAutostart /t REG_DWORD /d ' + $(if ($delayed -eq 'yes') { '1' } else { '0' }) + ' /f') }
         if ([string]$Ctx.Facts['AppIDSvcStatus'] -eq 'Stopped') { $lines += 'net stop AppIDSvc' }
     }
     $lines += 'gpupdate /force'
@@ -1541,7 +1591,9 @@ function Get-Plan {
                # it: the scenario is not attempted at all rather than left running with a startup type of its own
                # (PR #67 round 4). A machine without AppLocker never reaches this - the prerequisite skips it first.
                try { $svc = Get-Service -Name AppIDSvc -ErrorAction Stop } catch { throw ('the Application Identity service cannot be read (' + $_.Exception.Message + '), so nothing here could put it back after M9 changed it') }
-               return ($before + @{ AppIDSvcStartType = [string]$svc.StartType; AppIDSvcStatus = [string]$svc.Status })
+               # And whether that automatic start is the delayed one, which Get-Service does not distinguish: the apply
+               # sets start= auto, so a machine configured delayed would come back plain automatic (PR #67 round 8).
+               return ($before + @{ AppIDSvcStartType = [string]$svc.StartType; AppIDSvcStatus = [string]$svc.Status; AppIDSvcDelayedAuto = (Get-ServiceDelayedAuto 'AppIDSvc') })
            }
            Apply = { param($Ctx)
                # What the campaign applies is a policy file in tests\, not a sequence of clicks: AppLocker's default
@@ -1736,6 +1788,8 @@ function Get-Plan {
                                     $svc0 = Get-Service -Name AppIDSvc -ErrorAction Stop
                                     $wantType0 = [string]$Ctx.Facts.AppIDSvcStartType; $wantStatus0 = [string]$Ctx.Facts.AppIDSvcStatus
                                     if ($wantType0 -ne 'n/a' -and ([string]$svc0.StartType -ne $wantType0 -or [string]$svc0.Status -ne $wantStatus0)) { return @{ Ok = $false; Detail = ('Script rules as before M9, but AppIDSvc is {0} ({1}); it was {2} ({3})' -f $svc0.StartType, $svc0.Status, $wantType0, $wantStatus0) } }
+                                    $delayed0 = Test-AppIDSvcDelayedAuto $Ctx.Facts
+                                    if ($null -ne $delayed0) { return $delayed0 }
                                     return @{ Ok = $true; Detail = ('Script rules {0} with {1} rule(s) as before M9, and AppIDSvc as before - no policy was saved, so the other collections are not compared' -f $nowMode, $nowCount) }
                                 }
                                 $nowXml = [string](Get-AppLockerPolicy -Local -Xml -ErrorAction Stop)
@@ -1746,6 +1800,8 @@ function Get-Plan {
                                 $svc = Get-Service -Name AppIDSvc -ErrorAction Stop
                                 $wantType = [string]$Ctx.Facts.AppIDSvcStartType; $wantStatus = [string]$Ctx.Facts.AppIDSvcStatus
                                 if ($wantType -ne 'n/a' -and ([string]$svc.StartType -ne $wantType -or [string]$svc.Status -ne $wantStatus)) { return @{ Ok = $false; Detail = ('Script rules no longer enforced, but AppIDSvc is {0} ({1}); it was {2} ({3}) before M9' -f $svc.StartType, $svc.Status, $wantType, $wantStatus) } }
+                                $delayedBad = Test-AppIDSvcDelayedAuto $Ctx.Facts
+                                if ($null -ne $delayedBad) { return $delayedBad }
                                 @{ Ok = $true; Detail = ('the whole local policy is as it was, compared against {0}; AppIDSvc {1} ({2}) as before' -f $savedFrom, $svc.StartType, $svc.Status) }
                             }
                             catch { @{ Ok = $false; Detail = ('cannot read the AppLocker policy or the service now: ' + $_.Exception.Message) } }

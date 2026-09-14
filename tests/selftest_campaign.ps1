@@ -1569,6 +1569,75 @@ Assert-True '51. and that form does what it says: the run whose command succeede
 $ungrouped51 = Invoke-Shape51 'ungrouped-ok' 'ver >nul' 'if errorlevel 1 echo FAILED & echo WOULD-PAUSE & exit /b 1'
 Assert-True '51. the reading that an ungrouped tail runs whatever the condition is not what this cmd does - the claim was rejected on this measurement, and the parentheses were written for the reader' (($ungrouped51.ExitCode -eq 0) -and ($ungrouped51.Text -like '*REACHED-THE-END*') -and ($ungrouped51.Text -notlike '*WOULD-PAUSE*')) ('cmd ' + (Get-Item (Join-Path $env:SystemRoot 'System32\cmd.exe')).VersionInfo.ProductVersion + ': exit ' + $ungrouped51.ExitCode + ' ' + $ungrouped51.Text)
 
+# -------------------- 52. what round 8 asked: the line a person copies, and a start type with no name --------------------
+# PR #67 round 8, two findings, both about a machine that cannot be put back from what the campaign wrote down. M8's
+# way back interpolated the recorded data into reg add commands - and those commands are the only manual route the
+# campaign advertises, printed in RECOVER.txt and in M8's own cleanup instruction. A REG_EXPAND_SZ value holding
+# %SystemRoot% expands as it is typed, a quote ends the argument and what follows is more command: the automated
+# revert has refused such a value since the audit after round 3, and the line a person reads refuses it now too. And
+# .NET has one name, Automatic, for both automatic and automatic-delayed start (ServiceStartMode has no member for
+# the second), so a machine whose Application Identity service was delayed was recorded as Automatic, put back with
+# 'sc config start= auto', and certified by a check that compares the same one name - the setting gone and nothing
+# saying so. DelayedAutostart beside Start in the service's own key is what decides it, and it is recorded, put back
+# and checked on its own now.
+Write-Output ''
+Write-Output '52. the way back as a line a person copies, and the delayed start Get-Service does not distinguish'
+$loaded52 = @('Get-M8WayBack', 'Get-ServiceDelayedAuto', 'Test-AppIDSvcDelayedAuto', 'Test-PolicyLineData')
+$defined52 = @($loaded52 | Where-Object { $defs42.ContainsKey($_) -and $defs42[$_].Count -eq 1 })
+Assert-True '52. the driver defines each of the four once, so this case runs those definitions and no others' ($defined52.Count -eq $loaded52.Count) ('defined once: ' + ($defined52 -join ', ') + ' of ' + ($loaded52 -join ', '))
+$needs52 = @(); $free52 = @()
+if ($defined52.Count -eq $loaded52.Count) {
+    foreach ($fn52 in $loaded52) {
+        $needs52 += @($defs42[$fn52][0].Body.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) -and $loaded52 -notcontains $_ })
+        $free52 += @(Get-FreeVariables $defs42[$fn52][0])
+        Invoke-Expression $defs42[$fn52][0].Extent.Text
+    }
+    $needs52 = @($needs52 | Sort-Object -Unique)
+    $free52 = @($free52 | Sort-Object -Unique)
+}
+Assert-True '52. they call and read nothing of the driver beyond each other, so what runs here is what runs there' (($needs52.Count -eq 0) -and ($free52.Count -eq 0)) ('also needed: ' + ($needs52 -join ', ') + '; free variables: ' + ($free52 -join ', '))
+# M8's way back, on data that cannot be carried and on data that can.
+$expand52 = @(Get-M8WayBack @{ RegExecutionPolicyBefore = '%SystemRoot%\policy'; RegExecutionPolicyKindBefore = 'ExpandString'; RegEnableScriptsBefore = '1'; RegEnableScriptsKindBefore = 'DWord' })
+$quote52 = @(Get-M8WayBack @{ RegExecutionPolicyBefore = ('All' + [char]34 + ' & calc & ' + [char]34 + 'Signed'); RegExecutionPolicyKindBefore = 'String'; RegEnableScriptsBefore = '1'; RegEnableScriptsKindBefore = 'DWord' })
+$plain52 = @(Get-M8WayBack @{ RegExecutionPolicyBefore = 'AllSigned'; RegExecutionPolicyKindBefore = 'String'; RegEnableScriptsBefore = '1'; RegEnableScriptsKindBefore = 'DWord' })
+Assert-True '52. a recorded value holding a per-cent sign gets no reg add line - typing it would expand it, and the machine would come back with other data' ((@($expand52)[0] -notlike 'reg add*') -and (@($expand52)[0] -like '*cannot be put in a command line*') -and (@($expand52)[0] -like '*Scenarios.M8.Facts.RegExecutionPolicyBefore*') -and (-not (@($expand52)[0]).Contains('%SystemRoot%'))) ('lines: ' + ($expand52 -join ' / '))
+Assert-True '52. nor does one holding a quote, which would end the argument it sits in and leave the rest as command' ((@($quote52)[0] -notlike 'reg add*') -and (@($quote52)[0] -like '*regedit*')) ('lines: ' + ($quote52 -join ' / '))
+Assert-True '52. and the reading is not vacuous: ordinary data is still put back by the line that carries it, and the other value is unaffected either way' ((@($plain52)[0] -like 'reg add*ExecutionPolicy*AllSigned*') -and (@($plain52)[1] -like 'reg add*EnableScripts*') -and (@($expand52)[1] -like 'reg add*EnableScripts*')) ('plain: ' + ($plain52 -join ' / '))
+$m8instr52 = ''
+$m8at52 = $m9text45.IndexOf("@{ Id = 'M8'")
+if ($m8at52 -ge 0) {
+    $m8end52 = $m9text45.IndexOf("@{ Id = '", $m8at52 + 10)
+    $m8instr52 = $(if ($m8end52 -gt $m8at52) { $m9text45.Substring($m8at52, $m8end52 - $m8at52) } else { $m9text45.Substring($m8at52) })
+}
+Assert-True '52. and both places a person reads those lines build them with that function, so neither can drift from it' (($m8instr52 -like '*Cleanup = @{ Instruction*') -and ($m8instr52 -like '*Get-M8WayBack $Ctx.Facts*') -and ($m9text45 -like '*$m8Back = @(Get-M8WayBack*')) 'the instruction or RECOVER.txt spells M8''s way back itself'
+# The delayed start, read where Windows keeps it.
+Assert-True '52. a service that is not there reads as unknown, so nothing is claimed about a machine that could not be read' ((Get-ServiceDelayedAuto 'NoSuchServiceNhcSelftest') -eq 'unknown') ('reads as: ' + (Get-ServiceDelayedAuto 'NoSuchServiceNhcSelftest'))
+$live52 = Get-ServiceDelayedAuto 'AppIDSvc'
+Assert-True '52. and the reading is not vacuous: the Application Identity service of this machine answers yes or no, from its own key' (@('yes', 'no') -contains $live52) ('AppIDSvc reads as: ' + $live52)
+# The lines that put it back, and the check that reads it.
+$delayed52 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppIDSvcDelayedAuto = 'yes' } })
+$plainAuto52 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppIDSvcDelayedAuto = 'no' } })
+$unknown52 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppIDSvcDelayedAuto = 'unknown' } })
+Assert-True '52. a service that started delayed is put back delayed - by the word sc config has for it, and by the value it reads where sc config is refused' ((@($delayed52 | Where-Object { $_ -eq 'sc config AppIDSvc start= delayed-auto' }).Count -eq 1) -and (@($delayed52 | Where-Object { $_ -like '*DelayedAutostart*/d 1 /f' }).Count -eq 1)) ($delayed52 -join ' / ')
+Assert-True '52. one that started plain automatic is put back plain, and the flag is written as 0 rather than left as it is' ((@($plainAuto52 | Where-Object { $_ -eq 'sc config AppIDSvc start= auto' }).Count -eq 1) -and (@($plainAuto52 | Where-Object { $_ -like '*DelayedAutostart*/d 0 /f' }).Count -eq 1)) ($plainAuto52 -join ' / ')
+Assert-True '52. and where the flag could not be read, nothing is written for it - a campaign that does not know does not set' ((@($unknown52 | Where-Object { $_ -eq 'sc config AppIDSvc start= auto' }).Count -eq 1) -and (@($unknown52 | Where-Object { $_ -like '*DelayedAutostart*' }).Count -eq 0)) ($unknown52 -join ' / ')
+$notesDelayed52 = (@(Get-M9RecoveryLines @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppIDSvcDelayedAuto = 'yes' }) -join "`n")
+Assert-True '52. RECOVER.txt says the same, in the words a person types: the delayed start named, and the value beside Start' (($notesDelayed52 -match 'delayed start') -and ($notesDelayed52 -match 'sc config AppIDSvc start= delayed-auto') -and ($notesDelayed52 -match 'DelayedAutostart')) ($notesDelayed52 -replace "`n", ' / ')
+$wantOther52 = $(if ($live52 -eq 'yes') { 'no' } else { 'yes' })
+$says52 = Test-AppIDSvcDelayedAuto @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = $wantOther52 }
+$quiet52 = Test-AppIDSvcDelayedAuto @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = $live52 }
+$notAuto52 = Test-AppIDSvcDelayedAuto @{ AppIDSvcStartType = 'Manual'; AppIDSvcDelayedAuto = $wantOther52 }
+$unread52 = Test-AppIDSvcDelayedAuto @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = 'unknown' }
+Assert-True '52. the check refuses a machine whose flag is not the one M9 found, and names the command that puts it back' (($null -ne $says52) -and ($says52.Ok -eq $false) -and ([string]$says52.Detail -like '*sc config AppIDSvc start= *')) ('says: ' + $(if ($null -eq $says52) { '(nothing)' } else { $says52.Detail }))
+Assert-True '52. and it says nothing where there is nothing to say: the flag as this machine has it, a service that was not automatic, and a flag that was never read' (($null -eq $quiet52) -and ($null -eq $notAuto52) -and ($null -eq $unread52)) ('same: ' + $(if ($null -eq $quiet52) { 'quiet' } else { $quiet52.Detail }) + '; not automatic: ' + $(if ($null -eq $notAuto52) { 'quiet' } else { $notAuto52.Detail }) + '; unread: ' + $(if ($null -eq $unread52) { 'quiet' } else { $unread52.Detail }))
+$m9block52 = ''
+$m9at52 = $m9text45.IndexOf("@{ Id = 'M9'")
+if ($m9at52 -ge 0) {
+    $m9end52 = $m9text45.IndexOf("@{ Id = '", $m9at52 + 10)
+    $m9block52 = $(if ($m9end52 -gt $m9at52) { $m9text45.Substring($m9at52, $m9end52 - $m9at52) } else { $m9text45.Substring($m9at52) })
+}
+Assert-True '52. M9 records the flag where it records the rest of the service, and both of its checks read it - the weaker comparison included, since that is the one a manual campaign gets' (($m9block52 -like '*AppIDSvcDelayedAuto = (Get-ServiceDelayedAuto*') -and (@([regex]::Matches($m9block52, 'Test-AppIDSvcDelayedAuto')).Count -ge 2)) ('recorded: ' + ($m9block52 -like '*AppIDSvcDelayedAuto = (Get-ServiceDelayedAuto*') + '; checked ' + @([regex]::Matches($m9block52, 'Test-AppIDSvcDelayedAuto')).Count + ' time(s)')
+
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
 Write-Output '38. the bundle name carries the time to the millisecond and the process id (backlog #25). A name good to the second collided whenever a second invocation of the same campaign fell inside the same second as the first: Compress-Archive refuses a destination that exists, and the record kept that refusal as a bundle failure - twice on GitHub Actions, both times on a commit that touched nothing the step reads. The collision is reproduced here rather than waited for: every second-precision name the clock can produce in the next five minutes is occupied before the invocation runs'
