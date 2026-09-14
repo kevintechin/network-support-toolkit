@@ -102,7 +102,7 @@ if ([string]$ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
 # so it is checked against this before it is started (PR #67 round 4). The anchor is this file: an account that can
 # rewrite the driver decides what the campaign asks for anyway, and the campaign is what a person deliberately
 # runs. The self-test checks this constant against the file it names, so it cannot go stale unnoticed.
-$PolicyHelperDigest = '2159068C66ABCB9B0C1BEC5F0F66723AE338BFC3F3C6B0BD14751EDB2B1FEEE0'
+$PolicyHelperDigest = '9545E8643F70E170252EAE51FD425840F430A2ABC9BCFE89C414A4A5160CC85C'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)   # the first .NET object: nothing above this line needs FullLanguage
 $Now = { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' }
 # A standard user has no Administrators group in the token at all; an administrator under UAC has it, marked deny-only
@@ -690,6 +690,12 @@ function Get-M9RecoveryLines($Facts) {
     # (PR #67 round 3).
     $staged = [string]$Facts['StagedRevert']
     $saved = [string]$Facts['AppLockerPolicyBefore']
+    # Whether the machine had a policy of its own is a fact M9 records before it changes anything, not the presence of
+    # the path the apply records either way: a machine with nothing of its own was told it had a policy to preserve,
+    # and the instruction that fits it - delete the Script rules - was never offered (PR #67 round 6). Anything but a
+    # recorded 'no' takes the careful branch, 'unknown' and a record from before this was written included.
+    $own = [string]$Facts['OwnPolicyBefore']
+    $hadOwn = ($saved -and ($own -ne 'no'))
     $lines = @('M9  AppLocker Script rules')
     if ($staged) {
         $lines += ('    The way back was staged before the policy was applied, and needs no PowerShell. If this file is')
@@ -697,8 +703,12 @@ function Get-M9RecoveryLines($Facts) {
         $lines += ('    ' + $staged)
         $lines += '    If it is not there, or it cannot be run, the lines below do the same by hand.'
     }
-    if ($saved) {
-        $lines += ('    This machine had an AppLocker policy of its own, saved before M9 replaced it. Do NOT simply delete')
+    if ($hadOwn) {
+        if ($own -eq 'yes') { $lines += '    This machine had an AppLocker policy of its own, saved before M9 replaced it. Do NOT simply delete' }
+        else {
+            $lines += '    Whether this machine had an AppLocker policy of its own could not be read before M9, so treat it as'
+            $lines += '    having one and do NOT simply delete'
+        }
         $lines += ('    the Script rules: that would take the machine''s own policy with them. In an ELEVATED PowerShell:')
         $lines += ('    Set-AppLockerPolicy -XmlPolicy "' + $saved + '"')
         $lines += '    and then, in a command prompt:'
@@ -707,6 +717,7 @@ function Get-M9RecoveryLines($Facts) {
         $lines += '    removing that key removes every rule collection, this machine''s own included.)'
     }
     else {
+        if ($own -eq 'no') { $lines += '    This machine had no AppLocker policy of its own before M9 - the campaign read it and recorded that - so deleting M9''s rules is putting it back:' }
         $lines += '    secpol.msc > Application Control Policies > AppLocker > Configure rule enforcement > Script rules: Not configured;'
         $lines += '    delete the Script rules; then   gpupdate /force.'
     }
@@ -735,6 +746,72 @@ function Get-M9RecoveryLines($Facts) {
     }
     return $lines
 }
+function Test-PolicyLineData([string]$Data) {
+    # Whether a piece of recorded state can be put inside a command line the elevated helper will run. The revert's
+    # lines carry what the machine had - M8's two registry values, M9's service startup type - and a value holding a
+    # quote ends the argument it sits in, so what follows is more command. The campaign's state is a file under
+    # C:\Users\Public that the account it runs as can write, so this is not a hypothesis about the registry alone.
+    # Where a value cannot be carried safely the helper is not asked for it and the person is, with the line in
+    # RECOVER.txt as it always was (self-audit after PR #67 round 3).
+    if ($null -eq $Data) { return $true }
+    $s = [string]$Data
+    if ($s.IndexOf('"') -ge 0) { return $false }
+    foreach ($c in @('&', '|', '<', '>', '^', '%', '`')) { if ($s.IndexOf($c) -ge 0) { return $false } }
+    foreach ($ch in $s.ToCharArray()) { if ([int][char]$ch -lt 32) { return $false } }
+    return $true
+}
+function Get-M7RecoveryLines($Facts) {
+    # The M7 section of RECOVER.txt, from what the scenario recorded before it changed anything. Three cases: the
+    # machine had no value, so removing it is putting it back; it had one that can be carried in a command line, so
+    # that line puts it back; or it had one that cannot, and then neither this file nor undo-M7.cmd may offer a delete
+    # - these two are the only route back advertised while the campaign cannot run, and the delete is how the recorded
+    # value would be lost for good (PR #67 round 6).
+    $had = ([string]$Facts['LockdownExisted'] -eq 'yes')
+    $value = [string]$Facts['LockdownValue']
+    $safe = ($had -and (Test-PolicyLineData $value))
+    $lines = @('M7  __PSLockdownPolicy (every new PowerShell in ConstrainedLanguage)')
+    if ($had -and -not $safe) {
+        $lines += '    This machine had __PSLockdownPolicy set to a value that cannot be carried in a command line. Do'
+        $lines += '    NOT delete it: campaign.json holds it under Scenarios.M7.Facts.LockdownValue and a delete loses'
+        $lines += '    it. Put it back by hand - System Properties > Environment Variables > System variables - or with'
+        $lines += '    setx /M, the value quoted as your shell needs. undo-M7.cmd in this folder says the same and'
+        $lines += '    changes nothing.'
+        return $lines
+    }
+    if ($had) { $lines += ('    This machine had __PSLockdownPolicy set to "' + $value + '" before M7: put THAT back, do not delete it.') }
+    else { $lines += '    It was not set on this machine before M7, so removing it is putting it back.' }
+    $lines += '    right-click undo-M7.cmd in this folder > Run as administrator; or, in an elevated command prompt:'
+    $lines += ('    ' + (Get-M7UndoCommand $Facts))
+    return $lines
+}
+function Get-M7UndoCommand($Facts) {
+    # The one line that puts __PSLockdownPolicy back: setx where the machine had a value, a delete only where it had
+    # none. Asked for only in those two cases - Get-M7RecoveryLines and Get-M7UndoLines answer the third themselves.
+    $had = ([string]$Facts['LockdownExisted'] -eq 'yes')
+    if ($had) { return ('setx /M __PSLockdownPolicy "' + [string]$Facts['LockdownValue'] + '"') }
+    return 'reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f'
+}
+function Get-M7UndoLines($Facts) {
+    # undo-M7.cmd: the file a person right-clicks when no PowerShell will start. Where the recorded value cannot be
+    # carried in a command line it says so and ends with 1, rather than offering a delete that would lose the value
+    # (PR #67 round 6). Everything it says about this machine comes from the same three cases as the notes above.
+    $had = ([string]$Facts['LockdownExisted'] -eq 'yes')
+    $value = [string]$Facts['LockdownValue']
+    $safe = ($had -and (Test-PolicyLineData $value))
+    $was = $(if (-not $had) { 'not set' } elseif ($safe) { 'set to "' + $value + '"' } else { 'set to a value this file cannot carry' })
+    $head = @('@echo off',
+              ('rem Undo M7 of the NetworkHealthCheck acceptance campaign: put __PSLockdownPolicy back as this machine had it (' + $was + '). Run as administrator.'))
+    if ($had -and -not $safe) {
+        return $head + @('echo This machine had a __PSLockdownPolicy value that cannot be put back from a command line.',
+                         'echo It is in campaign.json under Scenarios.M7.Facts.LockdownValue. Set it back by hand; do NOT delete it.',
+                         'pause',
+                         'exit /b 1')
+    }
+    return $head + @((Get-M7UndoCommand $Facts),
+                     'if errorlevel 1 echo Could not put the value back - is this prompt running as administrator? & pause & exit /b 1',
+                     ('echo __PSLockdownPolicy is ' + $(if ($had) { 'back to what this machine had' } else { 'removed' }) + ': new PowerShell windows are FullLanguage again. Resume the campaign to record the revert.'),
+                     'pause')
+}
 function Write-RecoveryNotes {
     # RECOVER.txt and undo-M7.cmd in the state folder: how to put the machine back WITHOUT PowerShell, for a policy
     # scenario interrupted before its revert - under M7 every new PowerShell is ConstrainedLanguage and this script's
@@ -748,24 +825,18 @@ function Write-RecoveryNotes {
     $m9 = $State.Scenarios['M9']
     $m9Facts = $(if ($null -ne $m9 -and $null -ne $m9.Facts) { $m9.Facts } else { @{} })
     $m9Lines = @(Get-M9RecoveryLines $m9Facts)
-    # M7's way back is the value the machine had, where it had one: the file below and the lines above are what a
-    # person has when the campaign cannot run at all, and deleting is not putting back (PR #67 round 5).
+    # M7's way back is the value the machine had, where it had one: RECOVER.txt and undo-M7.cmd are what a person
+    # has when the campaign cannot run at all, and deleting is not putting back (PR #67 round 5). Both files' M7 half
+    # is a function of the recorded facts alone, so that the three cases can be run and not only read (round 6).
     $m7 = $State.Scenarios['M7']
     $m7Facts = $(if ($null -ne $m7 -and $null -ne $m7.Facts) { $m7.Facts } else { @{} })
-    $m7Had = ([string]$m7Facts['LockdownExisted'] -eq 'yes')
-    $m7Value = [string]$m7Facts['LockdownValue']
-    $m7Safe = ($m7Had -and (Test-PolicyLineData $m7Value))
-    $m7Back = $(if ($m7Safe) { 'setx /M __PSLockdownPolicy "' + $m7Value + '"' } else { 'reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f' })
-    $m7Note = $(if ($m7Had -and -not $m7Safe) { '    This machine had __PSLockdownPolicy set to a value that cannot be typed on one line; campaign.json holds it under Scenarios.M7.Facts.LockdownValue - set it back with setx /M.' } elseif ($m7Had) { ('    This machine had __PSLockdownPolicy set to "' + $m7Value + '" before M7: put THAT back, do not delete it.') } else { '    It was not set on this machine before M7, so removing it is putting it back.' })
+    $m7Lines = @(Get-M7RecoveryLines $m7Facts)
     $lines = @(
         ('NetworkHealthCheck acceptance campaign "' + $Campaign + '" - how to put the machine back WITHOUT PowerShell'),
         ('Written ' + (& $Now) + '. For a policy scenario interrupted before its revert: under M7 every new PowerShell is'),
         'ConstrainedLanguage and the campaign cannot resume; under M8 the unsigned campaign script does not start at all.',
-        '',
-        'M7  __PSLockdownPolicy (every new PowerShell in ConstrainedLanguage)',
-        $m7Note,
-        '    right-click undo-M7.cmd in this folder > Run as administrator; or, in an elevated command prompt:',
-        ('    ' + $m7Back),
+        ''
+    ) + $m7Lines + @(
         '',
         ('M8  Group Policy execution policy (AllSigned) - MachinePolicy was ' + $m8Before + ' before M8'),
         '    with gpedit.msc: Computer Configuration > Administrative Templates > Windows Components > Windows PowerShell',
@@ -781,38 +852,45 @@ function Write-RecoveryNotes {
         ('    ' + $ResumeCommand)
     )
     Set-Content -LiteralPath $RecoveryNotes -Value $lines -Encoding UTF8
-    $cmd = @(
-        '@echo off',
-        ('rem Undo M7 of the NetworkHealthCheck acceptance campaign: put __PSLockdownPolicy back as this machine had it (' + $(if ($m7Safe) { 'set to "' + $m7Value + '"' } else { 'not set' }) + '). Run as administrator.'),
-        $m7Back,
-        'if errorlevel 1 echo Could not put the value back - is this prompt running as administrator? & pause & exit /b 1',
-        ('echo __PSLockdownPolicy is ' + $(if ($m7Safe) { 'back to what this machine had' } else { 'removed' }) + ': new PowerShell windows are FullLanguage again. Resume the campaign to record the revert.'),
-        'pause'
-    )
+    $cmd = @(Get-M7UndoLines $m7Facts)
     [IO.File]::WriteAllLines((Join-Path $StateDir 'undo-M7.cmd'), [string[]]$cmd, [Text.Encoding]::ASCII)
 }
 Write-RecoveryNotes
 
-function Test-PolicyLineData([string]$Data) {
-    # Whether a piece of recorded state can be put inside a command line the elevated helper will run. The revert's
-    # lines carry what the machine had - M8's two registry values, M9's service startup type - and a value holding a
-    # quote ends the argument it sits in, so what follows is more command. The campaign's state is a file under
-    # C:\Users\Public that the account it runs as can write, so this is not a hypothesis about the registry alone.
-    # Where a value cannot be carried safely the helper is not asked for it and the person is, with the line in
-    # RECOVER.txt as it always was (self-audit after PR #67 round 3).
-    if ($null -eq $Data) { return $true }
-    $s = [string]$Data
-    if ($s.IndexOf('"') -ge 0) { return $false }
-    foreach ($c in @('&', '|', '<', '>', '^', '%', '`')) { if ($s.IndexOf($c) -ge 0) { return $false } }
-    foreach ($ch in $s.ToCharArray()) { if ([int][char]$ch -lt 32) { return $false } }
-    return $true
-}
 function Get-M8RegistryLines {
     # The two values PowerShell reads as a MachinePolicy of AllSigned, as the lines a person would type. One source for
     # the instruction, for the automated apply and for the record, so that the three cannot drift apart (backlog #29).
     $k = '"HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell"'
     return @(('reg add ' + $k + ' /v EnableScripts /t REG_DWORD /d 1 /f'),
              ('reg add ' + $k + ' /v ExecutionPolicy /t REG_SZ /d AllSigned /f'))
+}
+function ConvertTo-XmlShape($Node) {
+    # One node as a string that depends on what it says and not on how it was written: the element's name, its
+    # attributes in name order with their values exactly as they are, the text it carries, and its children in turn,
+    # each read the same way. Collapsing whitespace
+    # over the whole of OuterXml squeezed it inside attribute values as well, where it is not formatting - a path
+    # condition for 'C:\Data  Set\*' read as one for 'C:\Data Set\*', and those match different folders
+    # (PR #67 round 6).
+    if ($null -eq $Node) { return '' }
+    # What a node says is part of the policy, text included: a shape built from elements and attributes alone
+    # would read two rules whose text differs as one. The whitespace BETWEEN elements is formatting, so a text
+    # node that is nothing else drops out, and one that says something keeps its own spacing.
+    if (($Node.NodeType -eq [System.Xml.XmlNodeType]::Text) -or ($Node.NodeType -eq [System.Xml.XmlNodeType]::CDATA)) {
+        $t = [string]$Node.Value
+        if ((-not $t) -or (-not $t.Trim())) { return '' }
+        return ('[' + $t.Trim() + ']')
+    }
+    if ($Node.NodeType -ne [System.Xml.XmlNodeType]::Element) { return '' }
+    $attrs = @()
+    if ($null -ne $Node.Attributes) {
+        foreach ($a in @($Node.Attributes | Sort-Object -Property Name)) { $attrs += ([string]$a.Name + '=' + [string]$a.Value) }
+    }
+    $kids = @()
+    foreach ($k in @($Node.ChildNodes)) {
+        $shape = ConvertTo-XmlShape $k
+        if ($shape) { $kids += $shape }
+    }
+    return ('<' + [string]$Node.Name + ' ' + ($attrs -join ' ') + $(if ($kids.Count) { '>' + ($kids -join '') } else { '' }) + '>')
 }
 function Get-AppLockerPolicyShape([string]$Xml) {
     # What an AppLocker policy is, reduced to what a revert has to put back: every rule collection that says anything,
@@ -833,12 +911,14 @@ function Get-AppLockerPolicyShape([string]$Xml) {
         $ids = @()
         # The whole rule, not its id: the same id with another action, another account, another path or another
         # condition is another rule, and a shape built from ids would have read the two as one (PR #67 round 4).
-        # Whitespace is collapsed because both sides are written by Get-AppLockerPolicy and only the text matters.
+        # How a document was written is not part of what it says: the element, its attributes in name order and
+        # its children, with every value as it stands - collapsing whitespace over the text squeezed it inside
+        # the attribute values as well, and a path is not formatting (round 6).
         foreach ($r in @($c.ChildNodes)) {
             if ($null -eq $r) { continue }
-            $text = [string]$r.OuterXml
+            $text = ConvertTo-XmlShape $r
             if (-not $text) { continue }
-            $ids += (($text -replace '\s+', ' ').Trim())
+            $ids += $text
         }
         $mode = [string]$c.EnforcementMode
         if (-not $mode) { $mode = 'NotConfigured' }
@@ -877,7 +957,12 @@ function New-PolicyStepFile([string]$Id, [string]$What, [string[]]$Lines, [strin
     # run-as-standard-user.cmd already follows.
     $cmdFile = Join-Path $Dir ('policy-' + $What + '.cmd')
     if (Test-Path -LiteralPath $cmdFile) { Remove-Item -LiteralPath $cmdFile -Force }
-    $body = @('@echo off', ('rem NHC-POLICY-STEP ' + $Id + ' ' + $What), 'set NHCFAIL=0')
+    # The line after the marker is what makes every command below Windows' own program: the helper normalises
+    # PATH for the file it calls, but RECOVER.txt has a person run M9's staged way back by hand, and that one
+    # inherits whatever PATH the person has (PR #67 round 6, measured on this project's own self-test).
+    $body = @('@echo off', ('rem NHC-POLICY-STEP ' + $Id + ' ' + $What),
+              'set "PATH=%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\Wbem;%SystemRoot%\System32\WindowsPowerShell\v1.0"',
+              'set NHCFAIL=0')
     $n = 0
     foreach ($l in @($Lines)) {
         if (-not $l) { continue }
@@ -1226,7 +1311,9 @@ function Get-Plan {
                             $was = [string]$Ctx.Facts['LockdownValue']
                             if ($isThere -ne $wasThere) { @{ Ok = $false; Detail = ('__PSLockdownPolicy is ' + $(if ($isThere) { 'there ("' + [string]$v + '")' } else { 'not there' }) + '; before M7 it was ' + $(if ($wasThere) { 'there ("' + $was + '")' } else { 'not there' })) } }
                             elseif (-not $isThere) { @{ Ok = $true; Detail = 'removed, as it was not there before M7' } }
-                            elseif ([string]$v -ne $was) { @{ Ok = $false; Detail = ('__PSLockdownPolicy is "' + [string]$v + '"; before M7 it was "' + $was + '"') } }
+                            # -cne, not -ne, for the same reason as M8's data: -ne folds case, and a value put back as
+                            # another case is another value in the environment block (PR #67 round 6).
+                            elseif ([string]$v -cne $was) { @{ Ok = $false; Detail = ('__PSLockdownPolicy is "' + [string]$v + '"; before M7 it was "' + $was + '"') } }
                             else { @{ Ok = $true; Detail = ('__PSLockdownPolicy="' + $was + '", as before M7') } } } } },
         @{ Id = 'M8'; Title = 'Group Policy execution policy: allow only signed scripts'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('Two ways to the same MachinePolicy - PowerShell reads HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell either way:',
@@ -1329,7 +1416,9 @@ function Get-Plan {
                                 $raw = $key.GetValue($v.Name, $null, 'DoNotExpandEnvironmentNames')
                                 $data = $(switch ($kind) { 'MultiString' { @($raw) -join '\0' } 'Binary' { (@($raw) | ForEach-Object { ([byte]$_).ToString('x2') }) -join '' } default { [string]$raw } })
                                 if ($wantKind -and $kind -ne $wantKind) { $bad += ('{0} is a {1} value; before M8 it was a {2} one' -f $v.Name, $kind, $wantKind) }
-                                if ($data -ne $wantData) { $bad += ('{0} is "{1}"; before M8 it was "{2}"' -f $v.Name, $data, $wantData) }
+                                # -ne folds case on strings, so a value restored as 'foo' where 'Foo' was recorded would pass
+                                # while the registry holds something else (PR #67 round 6; the same rule as #54's -cmatch).
+                                if ([string]$data -cne [string]$wantData) { $bad += ('{0} is "{1}"; before M8 it was "{2}"' -f $v.Name, $data, $wantData) }
                             }
                             if ($bad.Count) { return @{ Ok = $false; Detail = (($bad -join '; ') + ' - the revert did not put the key back as it was') } }
                             $p = Get-MachinePolicyExecutionPolicy
@@ -1379,6 +1468,28 @@ function Get-Plan {
                    $p0 = Get-AppLockerPolicy -Effective -ErrorAction Stop
                    $s0 = @($p0.RuleCollections | Where-Object { [string]$_.RuleCollectionType -eq 'Script' })[0]
                    if ($null -ne $s0) { $before = @{ ScriptEnforcementBefore = [string]$s0.EnforcementMode; ScriptRuleCountBefore = [string][int]$s0.Count } }
+               }
+               catch { }
+               # And the whole local policy, saved here where it can be: this runs before the automated and the manual
+               # paths part, so a campaign driven by hand has something to be checked against as well - a mode and a
+               # count would accept M9's own two rules as the machine's own two (PR #67 round 6). Reading the local
+               # policy may need rights this session does not have; where it does, the check says what it compared.
+               $prepared = Join-Path $Ctx.Dir 'applocker-before-prepare.xml'
+               # And whether this machine has a policy of its own at all, which decides what RECOVER.txt may tell a
+               # person to do: deleting the Script rules is putting a machine with nothing of its own back, and is how
+               # a machine with its own rules loses them. It was read from the path recorded for the export before -
+               # a path the apply records whether or not the export ever ran - so every M9 said the machine had one
+               # (PR #67 round 6). Read here, where the policy in force is still the machine's own; 'unknown' where
+               # this session may not read it, and the conservative wording stands for that as it always did.
+               $before['OwnPolicyBefore'] = 'unknown'
+               try {
+                   $localXml = [string](Get-AppLockerPolicy -Local -Xml -ErrorAction Stop)
+                   if ($localXml) {
+                       Set-Content -LiteralPath $prepared -Value $localXml -Encoding UTF8 -ErrorAction Stop
+                       $before['AppLockerPolicyPrepared'] = $prepared
+                   }
+                   $shape0 = Get-AppLockerPolicyShape $localXml
+                   if ($shape0 -ne 'unreadable') { $before['OwnPolicyBefore'] = $(if ($shape0) { 'yes' } else { 'no' }) }
                }
                catch { }
                # A service whose state could not be read is a service nothing here could put back, and the apply changes
@@ -1541,7 +1652,24 @@ function Get-Plan {
                                 $savedPath = [string]$Ctx.Facts.AppLockerPolicyBefore
                                 $savedXml = ''
                                 if ($savedPath -and (Test-Path -LiteralPath $savedPath)) { try { $savedXml = [string](Get-Content -LiteralPath $savedPath -Raw -Encoding UTF8 -ErrorAction Stop) } catch { $savedXml = '' } }
-                                if ($savedPath -and -not $savedXml) { return @{ Ok = $false; Detail = ('the policy saved before M9 cannot be read (' + $savedPath + '), so nothing here can say the machine was put back') } }
+                                # A path recorded before the step ran is not a policy that was exported: the campaign records it so
+                                # that a session dying mid-step still knows where to look, and a consent prompt refused leaves
+                                # the path with no file behind it. Only where the step reported success is a missing file a
+                                # reason to refuse (PR #67 round 6).
+                                if ($savedPath -and -not $savedXml) {
+                                    if ([string]$Ctx.Facts['applyBy'] -like 'the elevated helper*') { return @{ Ok = $false; Detail = ('the policy saved before M9 cannot be read (' + $savedPath + '), so nothing here can say the machine was put back') } }
+                                    $savedPath = ''
+                                }
+                                # The manual path exports nothing of its own, so the copy Prepare took is what it is checked
+                                # against where there is one (PR #67 round 6).
+                                $savedFrom = 'the policy the step exported before it applied its own'
+                                if (-not $savedPath) {
+                                    $preparedPath = [string]$Ctx.Facts['AppLockerPolicyPrepared']
+                                    if ($preparedPath -and (Test-Path -LiteralPath $preparedPath)) {
+                                        try { $savedXml = [string](Get-Content -LiteralPath $preparedPath -Raw -Encoding UTF8 -ErrorAction Stop) } catch { $savedXml = '' }
+                                        if ($savedXml) { $savedPath = $preparedPath; $savedFrom = 'the copy taken before the scenario started' }
+                                    }
+                                }
                                 # No saved policy at all means the scenario was done by hand - only the automated apply
                                 # exports one, and it needs elevation this session does not have. Then the comparison is
                                 # the one the campaign has always made, on the Script collection the facts recorded; it
@@ -1565,11 +1693,11 @@ function Get-Plan {
                                 $wantShape = Get-AppLockerPolicyShape $savedXml
                                 $nowShape = Get-AppLockerPolicyShape $nowXml
                                 if ($wantShape -eq 'unreadable') { return @{ Ok = $false; Detail = ('the policy saved before M9 is not readable as XML (' + $savedPath + ')') } }
-                                if ($nowShape -ne $wantShape) { return @{ Ok = $false; Detail = ('the local AppLocker policy is [{0}]; before M9 it was [{1}]' -f $(if ($nowShape) { $nowShape } else { 'nothing' }), $(if ($wantShape) { $wantShape } else { 'nothing' })) } }
+                                if ($nowShape -ne $wantShape) { return @{ Ok = $false; Detail = ('the local AppLocker policy is [{0}]; before M9 it was [{1}] - compared against {2}' -f $(if ($nowShape) { $nowShape } else { 'nothing' }), $(if ($wantShape) { $wantShape } else { 'nothing' }), $savedFrom) } }
                                 $svc = Get-Service -Name AppIDSvc -ErrorAction Stop
                                 $wantType = [string]$Ctx.Facts.AppIDSvcStartType; $wantStatus = [string]$Ctx.Facts.AppIDSvcStatus
                                 if ($wantType -ne 'n/a' -and ([string]$svc.StartType -ne $wantType -or [string]$svc.Status -ne $wantStatus)) { return @{ Ok = $false; Detail = ('Script rules no longer enforced, but AppIDSvc is {0} ({1}); it was {2} ({3}) before M9' -f $svc.StartType, $svc.Status, $wantType, $wantStatus) } }
-                                @{ Ok = $true; Detail = ('Script rules no longer enforced; AppIDSvc {0} ({1}) as before' -f $svc.StartType, $svc.Status) }
+                                @{ Ok = $true; Detail = ('the whole local policy is as it was, compared against {0}; AppIDSvc {1} ({2}) as before' -f $savedFrom, $svc.StartType, $svc.Status) }
                             }
                             catch { @{ Ok = $false; Detail = ('cannot read the AppLocker policy or the service now: ' + $_.Exception.Message) } }
                         } } },

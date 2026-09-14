@@ -30,6 +30,13 @@ rem What it closes is the step between writing a commands file and running it: a
 rem tests\, a half-written file, a helper edited between two steps - which this project has been bitten by. That is
 rem the owner's decision of 2026-09-14, in backlog #29's second Status of that day and in the record beside it.
 setlocal
+rem The programs below are Windows' own, whatever the session that started the campaign carries: a PATH with
+rem another find.exe or certutil.exe in front of System32 would otherwise decide the two checks this file is
+rem for. Measured on 2026-09-14, not supposed: a self-test run started from a shell carrying GNU tools took
+rem GNU find here, and every commands file the campaign had written was refused as 'not the campaign's'
+rem (PR #67 round 6). The commands files the campaign writes carry the same line, because RECOVER.txt has a
+rem person run the staged one by hand.
+set "PATH=%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\Wbem;%SystemRoot%\System32\WindowsPowerShell\v1.0"
 if "%~3"=="" goto :usage
 if not exist "%~1" goto :nocommands
 find /i "NHC-POLICY-STEP" "%~1" >nul 2>&1

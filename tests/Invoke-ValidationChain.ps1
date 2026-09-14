@@ -1213,7 +1213,7 @@ try {
             $ok = (($r.ExitCode -eq 0) -and ($r.Output -contains 'ALL SELF-TESTS OK'))
             # The count this row advertises, read against the run that just happened - the guard the unit, report,
             # envguard, backlog and result-set steps have had, and the one step with a total in its row that did not
-            # (backlog #29: this change adds ten assertions to it, and nothing would have said the row was stale).
+            # (backlog #29: that change grew it round after round, and nothing would have said the row was stale).
             $drift = Test-DocumentedTotal $s '^\|\s*`campaign`' '(\d+)\s*assertions'
             if ($ok -and $drift) { $ok = $false }
             @{ Passed = $ok; Detail = $(if ($drift) { '{0}; {1}' -f $s, $drift } else { $s }) }
