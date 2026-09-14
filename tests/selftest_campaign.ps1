@@ -743,6 +743,18 @@ $r37d = Get-SignatureRefusal @('The system cannot find the path specified.', '')
 Assert-True '37. output with neither the message nor the classification is a miss that says which it was' ((-not $r37d.Matched) -and (-not $r37d.Generic) -and ($r37d.Detail -like '*neither the signature message nor any security classification*')) ('Matched: ' + $r37d.Matched + '; ' + $r37d.Detail)
 $r37e = Get-SignatureRefusal @()
 Assert-True '37. a launcher that captured nothing is a miss, not a match' (-not $r37e.Matched) ('Matched: ' + $r37e.Matched + '; ' + $r37e.Detail)
+# PowerShell names the script it refused inside its error, and the operator names the folder that script was copied
+# into: a state directory called after the message would put the phrase on the line of a refusal that has nothing to do
+# with signing (PR #65, round 7). The paths are taken out of the line before it is searched. Asserted as a pair, so
+# that the trap is shown to be real rather than assumed: the same output matches when nothing is taken out.
+$trapDir37 = 'C:\nhc\is not digitally signed'
+$trap37 = @(('File ' + $trapDir37 + '\M8\en-US\NetworkHealthCheck.ps1 cannot be loaded because it is blocked by software restriction policies, such as those created by using Group Policy.'),
+            '    + CategoryInfo          : SecurityError: (:) [], PSSecurityException',
+            '    + FullyQualifiedErrorId : UnauthorizedAccess')
+$r37f = Get-SignatureRefusal $trap37 @($trapDir37)
+Assert-True '37. a folder named after the message is not the message' ((-not $r37f.Matched) -and $r37f.Generic) ('Matched: ' + $r37f.Matched + '; ' + $r37f.Detail)
+$r37g = Get-SignatureRefusal $trap37 @()
+Assert-True '37. and the trap is real: the same output, with no path taken out of it, does match' ($r37g.Matched) ('Matched: ' + $r37g.Matched + '; culture: ' + $r37g.Culture)
 # The predicate being right is half of it: M8 has to be the scenario that asks it, and it has to read the policy again
 # after the run - a correct predicate the scenario never calls would measure nothing.
 $m8Hash37 = @($ast37.FindAll({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] -and @($n.KeyValuePairs | Where-Object { ($_.Item1.Extent.Text.Trim("'", '"') -eq 'Id') -and ($_.Item2.Extent.Text.Trim("'", '"') -eq 'M8') }).Count -eq 1 }, $true))
@@ -774,6 +786,9 @@ if ($m8Hash37.Count -eq 1 -and $pair37.Count -eq 1) {
     if ($calls37.Count -eq 1 -and $calls37[0].CommandElements.Count -ge 2) { $fed37 = [string]$calls37[0].CommandElements[1].Extent.Text }
 }
 Assert-True '37. and M8 feeds it what PowerShell printed, not the console the launcher wrote that suggestion into' ($fed37 -eq '$r.PowerShellMessages') ('fed with: ' + $(if ($fed37) { $fed37 } else { 'nothing this case could read' }))
+$fedPaths37 = ''
+if ($calls37.Count -eq 1 -and $calls37[0].CommandElements.Count -ge 3) { $fedPaths37 = [string]$calls37[0].CommandElements[2].Extent.Text }
+Assert-True '37. and hands over the paths PowerShell prints inside its error, so the folder the script was copied into cannot answer for the message' (($fedPaths37 -match '\$r\.Copy') -and ($fedPaths37 -match '\$StateDir')) ('second argument: ' + $(if ($fedPaths37) { $fedPaths37 } else { 'none' }))
 # Round 2 of PR #65: the file was read without naming its encoding. The launchers run `chcp 65001` on their third line,
 # so what they and the PowerShell under them write is UTF-8 with no byte-order mark, and Get-Content without -Encoding
 # decodes a file without one in the machine's ANSI code page - on this machine, CP950, the zh-TW refusal comes back as

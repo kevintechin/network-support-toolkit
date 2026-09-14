@@ -413,7 +413,7 @@ function Get-MachinePolicyExecutionPolicy {
     # Read in a new process, the way the launcher's PowerShell will see it.
     return ([string](& $PsExe -NoProfile -Command 'Get-ExecutionPolicy -Scope MachinePolicy')).Trim()
 }
-function Get-SignatureRefusal([string[]]$Lines) {
+function Get-SignatureRefusal([string[]]$Lines, [string[]]$Paths) {
     # Whether captured console output carries PowerShell's refusal to run an UNSIGNED script - the one thing M8 is for.
     # The classification printed beside that message is not evidence of it: SecurityError and UnauthorizedAccess name a
     # category - a security policy refused this script - and not which policy, so output recognized by those two words
@@ -425,8 +425,19 @@ function Get-SignatureRefusal([string[]]$Lines) {
     # Ordinal comparison, so that a message is found by its characters and a future entry needs no regex escaping.
     $known = @(@{ Culture = 'en-US'; Text = 'is not digitally signed' }, @{ Culture = 'zh-TW'; Text = '未經數位簽署' })
     $generic = @(@($Lines) | Where-Object { $_ -match 'UnauthorizedAccess|SecurityError' }).Count -gt 0
+    # $Paths is what PowerShell printed that is not its message: the path of the script it refused, which it names
+    # inside the error. An operator names -StateDir, and a folder called after the message itself would put the phrase
+    # on the same line as a refusal that has nothing to do with signing (PR #65, round 7). Those paths are taken out of
+    # the line before it is searched, case-insensitively because Windows paths are - the second time this predicate has
+    # been asked to read only PowerShell's own words and not the text the campaign put beside them; round 1 was the
+    # launcher's suggested action, in the console output this no longer reads at all.
+    $lines = @(@($Lines) | ForEach-Object {
+        $text = [string]$_
+        foreach ($drop in @($Paths)) { if ($drop) { $text = $text -replace [regex]::Escape([string]$drop), ' ' } }
+        $text
+    })
     foreach ($k in $known) {
-        foreach ($line in @($Lines)) {
+        foreach ($line in $lines) {
             if (([string]$line).IndexOf([string]$k.Text, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
                 return @{ Matched = $true; Culture = [string]$k.Culture; Generic = $generic; Detail = ('the signature refusal in ' + $k.Culture + ' ("' + $k.Text + '")') }
             }
@@ -953,7 +964,7 @@ function Get-Plan {
                # Read from what PowerShell itself printed, which the launcher keeps in a file of its own, and never from
                # the console text: the launcher's own suggested action names the signature refusal on every blocked run,
                # so the console would carry the phrase whatever had refused the script (PR #65, round 1).
-               $refusal = Get-SignatureRefusal $r.PowerShellMessages
+               $refusal = Get-SignatureRefusal $r.PowerShellMessages @($r.Copy, $StateDir)
                if (-not $refusal.Matched) { $bad += ('what PowerShell printed does not carry the signature refusal itself' + $(if ($r.PowerShellMessagesFile) { ' (' + $r.PowerShellMessagesFile + ')' } else { ' - and the launcher kept no messages file, so there is nothing to read it from' }) + ' - ' + $refusal.Detail) }
                if ($r.EnvironmentReports.Count) { $bad += ('an environment report was written ({0}): the script started, so it was not AllSigned that stopped it' -f $r.EnvironmentReports.Count) }
                # The policy is read again after the run: the precondition saw it before, and what this scenario claims is
