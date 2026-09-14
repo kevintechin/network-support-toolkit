@@ -221,6 +221,24 @@ function Copy-LanguageFolder([string]$Lang, [string]$Destination) {
     Get-ChildItem -LiteralPath (Join-Path $State.PackageRoot $Lang) -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $Destination }
     return $Destination
 }
+function Select-CapturedMessages($Candidates, [string]$NamedIn, [string]$Copy) {
+    # Which capture of PowerShell's messages belongs to THIS run. The launcher writes one beside itself and falls back
+    # to %TEMP% only where that folder refuses a file - and the fallback name carries no run identity, so a second
+    # launcher started by the same account while this one runs leaves a file that looks just as fresh. Taking the
+    # newest of them would let another run's refusal answer for this one (PR #65, round 8).
+    # $NamedIn is the text this run's launcher wrote - its error report and its console output - in which it names the
+    # file it kept those messages in. That is the correlation, and it holds in any display language, because a path is
+    # a path. A capture in the scenario's own folder is this run's too: that folder is made for this run and emptied
+    # first. Anything else is refused rather than read, and the reason is carried back so the row can say it.
+    $list = @(@($Candidates) | Where-Object { $_ })
+    if (-not $list.Count) { return @{ File = $null; Reason = 'the launcher kept no messages file' } }
+    $named = @($list | Where-Object { ([string]$NamedIn).IndexOf([string]$_.FullName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 })
+    if ($named.Count) { return @{ File = @($named | Sort-Object LastWriteTime -Descending)[0]; Reason = 'named by this run''s launcher' } }
+    $here = @($list | Where-Object { [string]$_.DirectoryName -eq [string]$Copy })
+    if ($here.Count -eq 1) { return @{ File = $here[0]; Reason = 'the one capture in this run''s own folder' } }
+    if ($here.Count -gt 1) { return @{ File = $null; Reason = ('{0} captures in this run''s own folder, and the launcher named none of them' -f $here.Count) } }
+    return @{ File = $null; Reason = ('{0} capture(s) were written under this account while this run went on, and the launcher named none of them - none can be read as this run''s' -f $list.Count) }
+}
 function Invoke-LauncherRun([string]$Id, [string]$Lang) {
     # The shipped console launcher of one language, started the way a double-click starts it (cmd.exe; stdin from NUL
     # so that its pause returns), from a fresh copy under the scenario's folder. The console launcher rather than the
@@ -235,9 +253,34 @@ function Invoke-LauncherRun([string]$Id, [string]$Lang) {
     $envReports = @(Get-ChildItem -LiteralPath $copy -Filter 'NetworkHealthCheck_ENVIRONMENT_*.txt' -ErrorAction SilentlyContinue) + @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'NetworkHealthCheck_ENVIRONMENT_*.txt' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $started })
     foreach ($e in $envReports) { if ($e.DirectoryName -ne $copy) { Copy-Item -LiteralPath $e.FullName -Destination $copy -Force } }
     $reports = @(Get-ChildItem -LiteralPath (Join-Path $copy 'Reports') -Filter '*.json' -ErrorAction SilentlyContinue)
+    # What PowerShell itself said, as the launcher kept it: PowerShellMessages_<stamp>.txt beside the copy, or
+    # NetworkHealthCheck_PowerShellMessages_<stamp>.txt in TEMP where the folder could not be written to. This is not
+    # the console text: the launcher's own suggested action names the signature refusal on every blocked run, in both
+    # languages ("if the file is not digitally signed or is blocked by a policy", and the same in zh-TW), so a
+    # scenario that reads the console output to decide WHICH policy refused the script finds that phrase whatever had
+    # refused it - which is how M8 could still have passed an application-control block (PR #65, round 1).
+    $messageFiles = @(Get-ChildItem -LiteralPath $copy -Filter 'PowerShellMessages_*.txt' -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $started }) + @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'NetworkHealthCheck_PowerShellMessages_*.txt' -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $started })
+    $errorText = $(if ($launcherError.Count) { Get-Content -LiteralPath $launcherError[0].FullName -Raw -Encoding UTF8 } else { '' })
+    # The launcher names the file it kept PowerShell's messages in, in its error report and on the screen; that is what
+    # says which capture is this run's, and only that one is read and only that one travels as evidence.
+    $picked = Select-CapturedMessages $messageFiles ($errorText + "`n" + (@($r.Output) -join "`n")) $copy
+    $messageFile = @($picked.File)
+    if ($messageFile.Count -and ($messageFile[0].DirectoryName -ne $copy)) { Copy-Item -LiteralPath $messageFile[0].FullName -Destination $copy -Force }
     return @{
         Copy = $copy; ExitCode = $r.ExitCode; Output = $r.Output
-        LauncherError = $(if ($launcherError.Count) { Get-Content -LiteralPath $launcherError[0].FullName -Raw } else { '' })
+        # Both files are read as UTF-8 by name. The launchers run `chcp 65001` on their third line, so everything they
+        # write - and everything PowerShell writes into the redirected stream under them - is UTF-8 without a byte-order
+        # mark, and Windows PowerShell 5.1's Get-Content without -Encoding decodes a file without one in the machine's
+        # ANSI code page. Measured on this machine (CP950, 2026-09-14): a capture holding PowerShell's zh-TW signature
+        # refusal read back without -Encoding does not contain that message, and read with -Encoding UTF8 it does. The
+        # scenario runs the en-US launcher, but PowerShell's own message follows the machine's display language, so the
+        # file is in Chinese on a zh-TW machine whatever the launcher says (PR #65, round 2). The error report matters
+        # for the same reason once a path in it carries a character outside ASCII: a mis-decoded three-byte sequence
+        # takes the byte after it with it, and what follows in that file is the ASCII the scenarios match on.
+        LauncherError = $errorText
+        PowerShellMessages = @($(if ($messageFile.Count) { Get-Content -LiteralPath $messageFile[0].FullName -Encoding UTF8 -ErrorAction SilentlyContinue } else { @() }))
+        PowerShellMessagesFile = $(if ($messageFile.Count) { $messageFile[0].Name } else { '' })
+        PowerShellMessagesNote = [string]$picked.Reason
         EnvironmentReports = @($envReports | ForEach-Object { $_.FullName }); Reports = @($reports | ForEach-Object { $_.FullName })
     }
 }
@@ -275,6 +318,56 @@ function Test-InternetMark([string]$Zone) {
     # The Mark of the Web a browser download carries: the Internet (3) or Restricted (4) zone. A stream without a
     # ZoneId, or a local / intranet / trusted zone, is not the mark whose warning M2 measures (PR #11 round 13).
     return ($Zone -match '^ZoneId=[34]$')
+}
+function Get-MarkOrigin([string]$Path) {
+    # How the Mark of the Web on this file came to be there, as far as the stream itself says (backlog #30). A browser
+    # writes where the file came from beside the zone - HostUrl, and usually ReferrerUrl - and a mark written by hand
+    # carries neither, so the two routes the M2 prerequisite names are told apart by what the stream holds. Evidence,
+    # not history: a browser that records no origin leaves the same stream as a hand-written mark does, so the second
+    # answer names both possibilities instead of calling the file hand-marked. The zone comes from Get-ZoneId, which
+    # every other caller uses, and the origin from a second read of the same stream - two reads of a file nothing is
+    # writing to while a campaign runs, rather than one reader answering two questions for every caller.
+    $zone = Get-ZoneId $Path
+    # A file that is not there was not read, and saying it carries no mark would state a property of something nobody
+    # looked at. The other answers - a stream without a ZoneId, a local or intranet zone - were read (self-audit before
+    # round 7).
+    if ($zone -eq 'file missing') { return @{ Zone = $zone; Origin = ''; Way = 'none'; Text = 'no file at that path' } }
+    if (-not (Test-InternetMark $zone)) { return @{ Zone = $zone; Origin = ''; Way = 'none'; Text = ('no Internet-zone mark (' + $zone + ')') } }
+    $origin = @(Get-Content -LiteralPath $Path -Stream Zone.Identifier -ErrorAction SilentlyContinue | Where-Object { $_ -match '^(HostUrl|ReferrerUrl)=.' })
+    # What is named is what the stream holds, and never where or how it was written: a copy made by something that
+    # preserves alternate data streams carries these fields from another machine, and a stream can be written by hand
+    # with them in it, so 'downloaded on this machine' would be a claim the reading cannot support (PR #65, round 5).
+    if ($origin.Count) { return @{ Zone = $zone; Origin = ($origin -join '; '); Way = 'origin-recorded'; Text = ($zone + ', the stream records where it came from: ' + ($origin -join '; ') + ' - what a browser download writes, and what a copy that preserves alternate data streams carries across from another machine') } }
+    return @{ Zone = $zone; Origin = ''; Way = 'no-origin'; Text = ($zone + ', no origin recorded in the stream - what a mark written by hand leaves, and what a browser that records no origin leaves too') }
+}
+function Update-DownloadMark([string]$By) {
+    # The mark as it is now, and the state's memory of the reading that saw one. M3 asks for this very download to be
+    # Unblocked, which removes the stream, and the summary is written after that - so a summary that only re-reads the
+    # file reports "no mark" for every campaign that got as far as M3, losing the one thing backlog #30 asked it to
+    # record (PR #65, round 3). The first reading that finds a mark is kept, with who read it and when; a later reading
+    # that finds none never overwrites it, and the summary shows both. A reading by a scenario replaces one the summary
+    # made, because the scenario's is the moment the warning was measured; nothing else replaces anything, so a mark
+    # seen once is the mark this campaign is on record as having run against.
+    # The standard-user session does not go looking for the download. The campaign put the asset, the extracted package
+    # and tests\ under C:\Users\Public exactly because that account cannot reach the administrator's profile, where the
+    # download usually sits (this script's own example is $env:USERPROFILE\Downloads), and a read from there answers
+    # 'file missing' whether the file is gone or merely out of reach: measured on this machine, opening a file inside a
+    # folder that denies traversal raises FileNotFoundException, the same exception a genuinely missing file raises, so
+    # the two cannot be told apart. This session says it did not look, rather than reporting the download as gone
+    # (PR #65, round 5; Test-Path itself returns false there and raises nothing, measured under -ErrorAction Stop).
+    if ($IsStandardUser) { return @{ Zone = 'not read'; Origin = ''; Way = 'unread'; Text = ('not read in this session - the standard-user run works from ' + $StateDir + ', not from the download') } }
+    $reading = Get-MarkOrigin $State.OriginalZip
+    # A scenario's reading always replaces what is kept: it is the mark the run it belongs to was measured against, and
+    # a redo of M2 against a stream that has been rewritten must not leave the summary naming the superseded run's mark
+    # while the row beside it describes the new one (PR #65, round 6). The summary's own reading only fills the record
+    # in where no scenario has read it, and only when it found a mark - a summary written after M3's Unblock must not
+    # take the record away from the run M2 made.
+    $keep = $(if ($By -ne 'the summary') { $true } else { (-not $State.DownloadMark) -and ($reading.Way -ne 'none') })
+    if ($keep) {
+        $State.DownloadMark = [ordered]@{ Zone = $reading.Zone; Origin = $reading.Origin; Way = $reading.Way; Text = $reading.Text; By = $By; At = (& $Now) }
+        Save-State
+    }
+    return $reading
 }
 function Read-Json([string]$Path) { Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json }
 function Get-NewestJson([string]$Dir, [datetime]$After) {
@@ -342,6 +435,41 @@ function Get-MachineEnv([string]$Name) { return [Environment]::GetEnvironmentVar
 function Get-MachinePolicyExecutionPolicy {
     # Read in a new process, the way the launcher's PowerShell will see it.
     return ([string](& $PsExe -NoProfile -Command 'Get-ExecutionPolicy -Scope MachinePolicy')).Trim()
+}
+function Get-SignatureRefusal([string[]]$Lines, [string[]]$Paths) {
+    # Whether captured console output carries PowerShell's refusal to run an UNSIGNED script - the one thing M8 is for.
+    # The classification printed beside that message is not evidence of it: SecurityError and UnauthorizedAccess name a
+    # category - a security policy refused this script - and not which policy, so output recognized by those two words
+    # alone claims more than it read (backlog #25, whose example is an application-control rule; PowerShell documents
+    # the same classification for a Software Restriction Policy, and no machine this project has measured has yet seen
+    # AppLocker refuse the script at all - see docs/application-control.md and backlog #31). The message itself
+    # is localized, and $known is the display languages this campaign has met; on a machine in another one the answer
+    # is a miss that names the language, which is one line to add here and not a reason to accept the classification.
+    # Ordinal comparison, so that a message is found by its characters and a future entry needs no regex escaping.
+    $known = @(@{ Culture = 'en-US'; Text = 'is not digitally signed' }, @{ Culture = 'zh-TW'; Text = '未經數位簽署' })
+    $generic = @(@($Lines) | Where-Object { $_ -match 'UnauthorizedAccess|SecurityError' }).Count -gt 0
+    # $Paths is what PowerShell printed that is not its message: the path of the script it refused, which it names
+    # inside the error. An operator names -StateDir, and a folder called after the message itself would put the phrase
+    # on the same line as a refusal that has nothing to do with signing (PR #65, round 7). Those paths are taken out of
+    # the line before it is searched, case-insensitively because Windows paths are - the second time this predicate has
+    # been asked to read only PowerShell's own words and not the text the campaign put beside them; round 1 was the
+    # launcher's suggested action, in the console output this no longer reads at all.
+    $lines = @(@($Lines) | ForEach-Object {
+        $text = [string]$_
+        foreach ($drop in @($Paths)) { if ($drop) { $text = $text -replace [regex]::Escape([string]$drop), ' ' } }
+        $text
+    })
+    foreach ($k in $known) {
+        foreach ($line in $lines) {
+            if (([string]$line).IndexOf([string]$k.Text, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                return @{ Matched = $true; Culture = [string]$k.Culture; Generic = $generic; Detail = ('the signature refusal in ' + $k.Culture + ' ("' + $k.Text + '")') }
+            }
+        }
+    }
+    $read = (@($known | ForEach-Object { $_.Culture + ' "' + $_.Text + '"' }) -join ', ')
+    $what = $(if ($generic) { 'the security classification (SecurityError / UnauthorizedAccess) without the signature message itself - which says a security policy refused the script, not which policy' } else { 'neither the signature message nor any security classification' })
+    return @{ Matched = $false; Culture = ''; Generic = $generic
+              Detail = ($what + '; this driver reads ' + $read + ', and its own display language is ' + ([System.Globalization.CultureInfo]::CurrentUICulture.Name)) }
 }
 function Get-ReportsUnder([string]$Root, [string]$Lang, [datetime]$After) {
     @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter '*.json' -ErrorAction SilentlyContinue | Where-Object { $_.DirectoryName -match ('\\' + [regex]::Escape($Lang) + '\\Reports$') -and $_.LastWriteTime -gt $After } | Sort-Object LastWriteTime -Descending)
@@ -691,7 +819,31 @@ function Get-Plan {
            # Checked before the instruction is shown: without the Mark of the Web on the download there is no warning to
            # measure (PR #11 round 11) - an unblocked or stripped ZIP, or M3 run first through a subset. A ZIP copied from
            # another machine (drag-and-drop, a shared folder) never had the mark - the first campaign's was such a copy (PR #14).
-           Prerequisite = { $m = Get-ZoneId $State.OriginalZip; if (-not (Test-InternetMark $m)) { @{ Ok = $false; Detail = ('the download carries no Internet-zone Mark of the Web (' + $m + ': ' + $State.OriginalZip + ') - M2 cannot measure the warning; a ZIP copied from another machine never had one: download it with the browser of this machine to the same path, or run M2 before M3') } } else { @{ Ok = $true; Detail = ('the download is marked: ' + $m) } } }
+           # Both ways to a marked download are named (backlog #30). An asset taken out of a CI artifact carries the
+           # mark only where the artifact itself was downloaded here with a browser and unpacked with Explorer, which
+           # propagates it; fetched any other way - a command-line download, a copy from the host - it has none, and a
+           # campaign run from one would skip M2 for good. Writing the mark deliberately is the other way to the same
+           # file state, and the record says which way this run took rather than leaving a reader to assume a browser.
+           Prerequisite = { $m = Get-ZoneId $State.OriginalZip
+                            # A download that is not there cannot be answered by writing a mark on it. Measured on this
+                            # machine (2026-09-14): Set-Content -Stream against a path with no file there succeeds and
+                            # leaves a 0-byte file carrying a valid ZoneId=3 - so this prerequisite would pass on the
+                            # next invocation and M2 would ask someone to extract something that is not an archive.
+                            # What is needed is the release, so that is what is asked for (PR #65, round 9).
+                            if ($m -eq 'file missing') {
+                                @{ Ok = $false; Detail = ('there is no file at ' + $State.OriginalZip + ' - M2 measures the warning Windows shows for that download, so the download has to be there: put the release back at that path, or download it again with the browser of this machine. Writing a Mark of the Web would leave an empty file carrying a mark, not the release.') }
+                            }
+                            elseif (-not (Test-InternetMark $m)) {
+                                # The path is quoted the way PowerShell takes a literal: single quotes, with any
+                                # apostrophe in it doubled. Inside double quotes a path holding a dollar sign or a
+                                # backtick would be expanded or escaped when the line is pasted, and the stream would
+                                # be written somewhere else or nowhere (PR #65, round 6). The value keeps its double
+                                # quotes, because `r`n has to expand there.
+                                $quoted = "'" + ($State.OriginalZip -replace "'", "''") + "'"
+                                $apply = 'Set-Content -LiteralPath ' + $quoted + ' -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"'
+                                @{ Ok = $false; Detail = ('the download carries no Internet-zone Mark of the Web (' + $m + ': ' + $State.OriginalZip + ') - M2 cannot measure the warning; a ZIP copied from another machine never had one, and one taken out of a CI artifact has one only where that artifact was downloaded here with a browser and unpacked with Explorer. Two ways to a file that has: download it with the browser of this machine to the same path, or write the mark deliberately in PowerShell -   ' + $apply + '   - which the summary then records as a mark whose stream carries no origin, told apart from one a download left. (Or run M2 before M3.)') }
+                            }
+                            else { @{ Ok = $true; Detail = ('the download is marked: ' + (Get-MarkOrigin $State.OriginalZip).Text) } } }
            Instruction = @(('Right-click the downloaded ZIP > Extract All... into ' + $M2Dir + ' (do NOT Unblock it). The Extract All dialog proposes another folder - replace the destination with ' + $M2Dir + '. When the extraction has finished, answer done; the double-click comes next.'),
                            ('在下載的 ZIP 上按右鍵 > 全部解壓縮，解壓到 ' + $M2Dir + '（不要 Unblock）。對話框預設的是另一個資料夾——把目的地換成 ' + $M2Dir + '。解壓完成後輸入 done；下一步才雙擊。'))
            # The extraction is verified before the launcher is run: the first campaign extracted to the dialog's default, and
@@ -699,7 +851,8 @@ function Get-Plan {
            Precondition = { param($Ctx) Test-ExtractedPackage $M2Dir @('Start-English.cmd') $Ctx.Started }
            Action = { param($Ctx)
                $null = Read-Answer $Ctx.Id 'launched' @('Open the extracted folder and double-click Start-English.cmd. As soon as a Windows prompt appears - or the tool window, if nothing appeared - answer done: a screenshot is taken at that moment.', '打開解壓出來的資料夾，雙擊 Start-English.cmd。Windows 一跳出提示（或沒有提示、工具視窗出現時）就輸入 done：那一刻會截圖。') @('done') 'done'
-               $mark = Get-ZoneId $State.OriginalZip
+               $markOrigin = Update-DownloadMark $Ctx.Id   # the mark, which way the stream says it got there, and the state's memory of it (backlog #30)
+               $mark = $markOrigin.Zone
                $shot = Join-Path $Ctx.Dir 'M2_after_double-click.png'
                Save-Screenshot $shot
                $seen = Read-Answer $Ctx.Id 'windows-showed' @('What did Windows show? 1 = Open File - Security Warning, 2 = SmartScreen (Windows protected your PC), 3 = nothing, the tool ran, 4 = something else', 'Windows 顯示了什麼？1 = 開啟檔案－安全性警告，2 = SmartScreen（Windows 已保護您的電腦），3 = 沒有，工具直接跑了，4 = 其他') @('1', '2', '3', '4') '4'
@@ -716,7 +869,7 @@ function Get-Plan {
                } else { Copy-Item -LiteralPath $json.FullName -Destination $Ctx.Dir -Force }
                $launcherMark = $(if ($null -ne $launcher) { Get-ZoneId $launcher.FullName } else { 'n/a' })
                if (-not (Test-InternetMark $mark)) { $bad += ('the download carried no Internet-zone Mark of the Web at the time of the run (' + $mark + '): nothing about the warning was measured') }   # the moment that matters, whatever the prerequisite saw earlier
-               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('download mark: {0}; extracted launcher mark: {1}; Windows showed: {2}; report: {3}' -f $mark, $launcherMark, $seen, $(if ($null -ne $json) { $json.Name } else { 'none' }))); Evidence = @('M2_after_double-click.png') }
+               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('download mark: {0}; extracted launcher mark: {1}; Windows showed: {2}; report: {3}' -f $markOrigin.Text, $launcherMark, $seen, $(if ($null -ne $json) { $json.Name } else { 'none' }))); Evidence = @('M2_after_double-click.png') }
            } },
         @{ Id = 'M3'; Title = 'Unblock, extract, both root launchers, Open Report'; Kind = 'manual'; Session = 'admin'; NeedsGui = $true
            Instruction = @(('Right-click the downloaded ZIP > Properties > tick Unblock > OK. Then Extract All... into ' + $M3Dir + ' - the Extract All dialog proposes another folder: replace the destination with ' + $M3Dir + '. When the extraction has finished, answer done; the launchers come next.'),
@@ -836,13 +989,23 @@ function Get-Plan {
                if ($r.Reports.Count) { $bad += 'a report was written: the unsigned script ran' }
                if (-not $r.LauncherError) { $bad += 'no launcher error report' }
                # The refusal must be the signature refusal itself, not any failure the launcher maps to exit 1 (PR #11
-               # round 15): PowerShell's error carries UnauthorizedAccess / SecurityError whatever the language, and an
-               # environment report would mean the script started - a different policy, not this one.
-               $signatureRefusal = @($r.Output | Where-Object { $_ -match 'UnauthorizedAccess|SecurityError|not digitally signed|未經數位簽署' }).Count -gt 0
-               if (-not $signatureRefusal) { $bad += 'the captured output does not carry the signature refusal (UnauthorizedAccess / SecurityError / not digitally signed): the launcher failed for another reason' }
+               # round 15), and not PowerShell's classification of it either: SecurityError and UnauthorizedAccess say
+               # that a security policy refused the script, not which one, and what this scenario claims is the one it
+               # applied (backlog #25). An environment report would mean the script started - a different policy, not this one.
+               # Read from what PowerShell itself printed, which the launcher keeps in a file of its own, and never from
+               # the console text: the launcher's own suggested action names the signature refusal on every blocked run,
+               # so the console would carry the phrase whatever had refused the script (PR #65, round 1).
+               $refusal = Get-SignatureRefusal $r.PowerShellMessages @($r.Copy, $StateDir)
+               if (-not $refusal.Matched) { $bad += ('what PowerShell printed does not carry the signature refusal itself' + $(if ($r.PowerShellMessagesFile) { ' (' + $r.PowerShellMessagesFile + ', ' + $r.PowerShellMessagesNote + ')' } else { ' - ' + $r.PowerShellMessagesNote + ', so there is nothing to read it from' }) + ' - ' + $refusal.Detail) }
                if ($r.EnvironmentReports.Count) { $bad += ('an environment report was written ({0}): the script started, so it was not AllSigned that stopped it' -f $r.EnvironmentReports.Count) }
+               # The policy is read again after the run: the precondition saw it before, and what this scenario claims is
+               # that the refusal came from the policy in force while the launcher ran (backlog #25). A machine whose
+               # MachinePolicy changed under the run - a gpupdate, a second session putting it back - is refused here
+               # rather than recorded as a measurement of AllSigned.
+               $policyAfter = Get-MachinePolicyExecutionPolicy
+               if ($policyAfter -ne 'AllSigned') { $bad += ('MachinePolicy is ' + $policyAfter + ' after the run, and AllSigned before it: what refused the script cannot be tied to the policy') }
                $shown = @($r.Output | Where-Object { $_.Trim() -ne '' } | Select-Object -First 4) -join ' / '
-               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; what the user sees: {2}' -f $r.ExitCode, $r.EnvironmentReports.Count, $shown)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\PowerShellMessages_*.txt') }
+               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; refusal read from {2} ({3}): {4}; MachinePolicy after the run: {5}; what the user sees: {6}' -f $r.ExitCode, $r.EnvironmentReports.Count, $(if ($r.PowerShellMessagesFile) { $r.PowerShellMessagesFile } else { 'no messages file' }), $r.PowerShellMessagesNote, $refusal.Detail, $policyAfter, $shown)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\PowerShellMessages_*.txt', 'en-US\NetworkHealthCheck_PowerShellMessages_*.txt') }
            }
            # The revert restores what Prepare recorded, not a blank: a machine that had a policy before M8 gets it back, and the
            # verification compares with that, not with Undefined (Codex round 1 on PR #14). A scriptblock, evaluated at revert time.
@@ -1208,6 +1371,27 @@ function Write-CampaignSummary {
     $md += ''
     $md += ('- Machine: {0}; started {1} by {2}; this invocation {3} by {4}{5}' -f $State.Computer, $State.Created, $State.StartedBy, (& $Now), $env:USERNAME, $(if ($IsStandardUser) { ' (standard user)' } else { '' }))
     $md += ('- Asset: {0} (SHA256 {1}{2})' -f (Split-Path -Leaf $State.ZipCopy), $State.Digest, $(if ($State.ExpectedSha256) { ', matches the release notes' } else { ', not compared' }))
+    # What the download's Mark of the Web was, and how far its own stream accounted for it (backlog #30). M2 measures
+    # the warning that mark produces and skips without it, and an asset taken from a CI artifact arrives with none - so
+    # the record says which way the file on disk got there, instead of leaving a reader of a passing M2 to assume a
+    # browser put it there. The reading kept in the state is the one shown, because M3 asks for this download to be
+    # Unblocked and the summary is written after that; where the file no longer carries what was recorded, both are
+    # said and neither is explained away (PR #65, round 3).
+    $markKept = $State.DownloadMark
+    $markLine = $(if ($markKept) { '{0} (read by {1} at {2})' -f $markKept.Text, $markKept.By, $markKept.At } else { $script:MarkNow.Text })
+    # M3 is named only where it ran and the file now has no stream at all. A mark that CHANGED was not Unblocked, and a
+    # download that was deleted or moved reads as missing rather than unmarked - naming the Unblock for either would be
+    # an explanation the reading does not support, and so would naming it in a campaign where M3 never ran (PR #65,
+    # round 4). Where it is named, what is said is what M3 asks for and what an Unblock does, not what happened here.
+    $m3 = $(if ($State.Scenarios) { $State.Scenarios['M3'] } else { $null })
+    $unblockAsked = ($null -ne $m3) -and ((@('PASS', 'FAIL') -contains [string]$m3.Result) -or [bool]$m3.Attempted)
+    if ($markKept -and ($script:MarkNow.Way -eq 'unread')) { $markLine += ('; ' + $script:MarkNow.Text) }
+    elseif ($markKept -and ([string]$markKept.Text -ne [string]$script:MarkNow.Text)) {
+        # A download that is gone is said to be gone: "carries" is for a file that was read (self-audit before round 7).
+        if ($script:MarkNow.Zone -eq 'file missing') { $markLine += '; there is no file at that path now' }
+        else { $markLine += ('; the file carries {0} now{1}' -f $script:MarkNow.Text, $(if (($script:MarkNow.Zone -eq 'no mark') -and $unblockAsked) { ' - M3 asked for the Unblock that removes the stream' } else { '' })) }
+    }
+    $md += ('- Download mark: {0} - {1}' -f $markLine, $State.OriginalZip)
     $md += ('- Real windows: {0}; state: {1}' -f $(if ($State.SkipGui) { 'none (-SkipGui)' } else { 'yes' }), $StateDir)
     $ed = $State.Edition
     if ($null -ne $ed) { $md += ('- Edition: {0} (EditionID {1}, {2}, build {3}); gpedit.msc: {4}; secpol.msc: {5}' -f $ed.Caption, $ed.EditionId, $ed.DisplayVersion, $ed.Build, $(if ($ed.HasGpedit) { 'yes' } else { 'no' }), $(if ($ed.HasSecpol) { 'yes' } else { 'no' })) }
@@ -1227,7 +1411,15 @@ function Write-CampaignSummary {
     return $md
 }
 $summaryPath = Join-Path $StateDir 'campaign_summary.md'
-$zipOut = Join-Path $StateDir ('nhc-campaign_{0}_{1}_{2}.zip' -f $State.Computer, $Campaign, (Get-Date -Format 'yyyyMMdd_HHmmss'))
+# Read once for this invocation - the summary is written here and again if the bundle fails - and kept in the state if
+# it finds a mark, so that the Unblock M3 asks for cannot take the record of it away (backlog #30, PR #65 round 3).
+$script:MarkNow = Update-DownloadMark 'the summary'
+# The name carries the time to the millisecond and the process id, so that two invocations of the same campaign cannot
+# choose one path (backlog #25): a name good to the second collided whenever the second invocation started inside the
+# same second as the first - Compress-Archive refuses a destination that exists, which the record then keeps as a
+# bundle failure. The process id is what separates two invocations, the milliseconds what separates two runs of one
+# process id after it has been reused; a collision now needs both to repeat.
+$zipOut = Join-Path $StateDir ('nhc-campaign_{0}_{1}_{2}_p{3}.zip' -f $State.Computer, $Campaign, (Get-Date -Format 'yyyyMMdd_HHmmss_fff'), $PID)
 $script:BundleLine = (Split-Path -Leaf $zipOut) + ' (written at the end of this invocation; if it is missing, the bundle failed - see its row)'
 $md = Write-CampaignSummary
 Write-Host ''
@@ -1250,8 +1442,8 @@ try {
     }
     Compress-Archive -Path (Join-Path $bundle '*') -DestinationPath $zipOut
     Write-Host ('bundle {0} ({1} bytes)' -f $zipOut, (Get-Item -LiteralPath $zipOut).Length)
-    # Earlier bundles of this campaign go, best effort: the name carries the time, so one that cannot be removed is
-    # distinguishable from this invocation's and the summary names the current one (PR #11 round 15).
+    # Earlier bundles of this campaign go, best effort: the name carries the time and the process id, so one that cannot
+    # be removed is distinguishable from this invocation's and the summary names the current one (PR #11 round 15).
     Get-ChildItem -LiteralPath $StateDir -Filter ('nhc-campaign_{0}_{1}_*.zip' -f $State.Computer, $Campaign) -ErrorAction SilentlyContinue | Where-Object { $_.FullName -ne $zipOut } | ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop } catch { Write-Host ('  an earlier bundle could not be removed: ' + $_.Exception.Message) -ForegroundColor Yellow } }
 }
 catch {

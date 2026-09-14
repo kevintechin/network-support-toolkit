@@ -84,7 +84,7 @@ Assert-True '1. answers.log has the two gate answers (M4 was dropped by -SkipGui
 $summary1 = Get-Content -LiteralPath (Join-Path $r1.State 'campaign_summary.md') -Raw -Encoding UTF8
 Assert-True '1. campaign_summary.md ends with 0 passed, 0 failed, 3 skipped and the rest pending' ($summary1 -match 'Summary: 0 passed, 0 failed, 3 skipped, 8 pending') (($summary1 -split "`n")[-1])
 $bundle1 = @(Get-ChildItem -LiteralPath $r1.State -Filter 'nhc-campaign_*.zip')
-Assert-True '1. the campaign bundle was written under a time-stamped name, and the summary names it' ($bundle1.Count -eq 1 -and $bundle1[0].Name -match '^nhc-campaign_.+_\d{8}_\d{6}\.zip$' -and $summary1 -match ('- Bundle: ' + [regex]::Escape($bundle1[0].Name))) ('bundles: ' + (($bundle1 | ForEach-Object { $_.Name }) -join ', '))
+Assert-True '1. the campaign bundle was written under a time-stamped name, and the summary names it' ($bundle1.Count -eq 1 -and $bundle1[0].Name -match '^nhc-campaign_.+_\d{8}_\d{6}_\d{3}_p\d+\.zip$' -and $summary1 -match ('- Bundle: ' + [regex]::Escape($bundle1[0].Name))) ('bundles: ' + (($bundle1 | ForEach-Object { $_.Name }) -join ', '))
 
 # -------------------- 2. resume leaves the record alone --------------------
 Write-Output ''
@@ -357,8 +357,9 @@ Copy-Item -LiteralPath $top -Destination (Join-Path $desk21 'NHC-M2') -Recurse -
 Set-ExtractedLater (Join-Path $desk21 'NHC-M2')
 $r21 = Invoke-Campaign 'marked' @('-Zip', $zipMarked, '-Scenarios', 'M2', '-WorkRoot', $desk21) "M2=done`r`nM2/windows-showed=3`r`nM2/run-finished=done`r`n"
 $s21 = Read-State $r21.State
-Assert-True '21. M2 FAIL for the missing extraction and report, with the marks recorded' ($s21.Scenarios.M2.Result -eq 'FAIL' -and $s21.Scenarios.M2.Detail -like '*no en-US report*' -and $s21.Scenarios.M2.Detail -like '*download mark: ZoneId=3*') ($s21.Scenarios.M2.Result + ' / ' + $s21.Scenarios.M2.Detail)
+Assert-True '21. M2 FAIL for the missing extraction and report, with the marks recorded - the download''s carrying the way it got there (backlog #30: this copy was marked by hand, and the row says so)' ($s21.Scenarios.M2.Result -eq 'FAIL' -and $s21.Scenarios.M2.Detail -like '*no en-US report*' -and $s21.Scenarios.M2.Detail -like '*download mark: ZoneId=3, no origin recorded in the stream*') ($s21.Scenarios.M2.Result + ' / ' + $s21.Scenarios.M2.Detail)
 Assert-True '21. the screenshot was taken and the observation recorded' ((Test-Path -LiteralPath (Join-Path $r21.State 'M2\M2_after_double-click.png')) -and (@(Get-Content -LiteralPath (Join-Path $r21.State 'answers.log') | Where-Object { $_ -match ' M2/windows-showed = 3$' }).Count -eq 1)) 'screenshot or answer missing'
+Assert-True '21. the prerequisite that let it run said what the mark is and how far the stream accounts for it - the branch no skip reaches (backlog #30)' (@($r21.Output | Where-Object { $_ -match 'prerequisite met - the download is marked: ZoneId=3, no origin recorded in the stream' }).Count -eq 1) (($r21.Output | Where-Object { $_ -match 'prerequisite met' }) -join ' / ')
 Assert-True '21. exit code 1' ($r21.ExitCode -eq 1) ('exit code ' + $r21.ExitCode)
 
 # -------------------- 22. -SkipGui drops every desktop scenario --------------------
@@ -395,7 +396,7 @@ Assert-True '24. the summary on disk carries the bundle failure' ($summary24 -ma
 Assert-True '24. the summary line counts it' ($summary24 -match 'Summary: \d+ passed, 1 failed, ') (($summary24 -split "`n")[-1])
 Assert-True '24. the summary header says the bundle was NOT WRITTEN' ($summary24 -match '- Bundle: NOT WRITTEN - ') (($summary24 -split "`n" | Where-Object { $_ -like '- Bundle:*' }) -join ' / ')
 $bundlesAfter = @(Get-ChildItem -LiteralPath $r3.State -Filter 'nhc-campaign_*.zip' | ForEach-Object { $_.Name })
-Assert-True '24. no new bundle appeared, and the earlier ones are named by their own time' (@($bundlesAfter | Where-Object { $bundlesBefore -notcontains $_ }).Count -eq 0 -and @($bundlesAfter | Where-Object { $_ -notmatch '_\d{8}_\d{6}\.zip$' }).Count -eq 0) ($bundlesAfter -join ' / ')
+Assert-True '24. no new bundle appeared, and the earlier ones are named by their own time and process' (@($bundlesAfter | Where-Object { $bundlesBefore -notcontains $_ }).Count -eq 0 -and @($bundlesAfter | Where-Object { $_ -notmatch '_\d{8}_\d{6}_\d{3}_p\d+\.zip$' }).Count -eq 0) ($bundlesAfter -join ' / ')
 Assert-True '24. exit code 1' ($r24.ExitCode -eq 1) ('exit code ' + $r24.ExitCode)
 
 # -------------------- 25. the display size is measured live --------------------
@@ -677,6 +678,303 @@ $crafted34d.Scenarios.M8.Facts.RegEnableScriptsBefore = 'a\0b'; $crafted34d.Scen
 $r34d = Invoke-Campaign 'm8facts' @('-Resume', '-Scenarios', 'M8') "M8/revert=done`r`n"
 $out34d = $r34d.Output -join "`n"
 Assert-True '34. the data comes back as recorded, whatever it says, and a REG_MULTI_SZ comes back as one (Codex round 4)' (($out34d -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_SZ /d "absent" /f') -and ($out34d -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v EnableScripts /t REG_MULTI_SZ /d "a\\0b" /f')) (($r34d.Output | Where-Object { $_ -match 'reg add|reg delete' }) -join ' / ')
+
+# -------------------- 37. M8 is measured by the signature refusal itself, not by PowerShell's classification of it --------------------
+Write-Output ''
+Write-Output '37. what M8 may accept as the refusal: the signature message itself, in a display language the driver reads. The classification PowerShell prints beside that message - SecurityError, UnauthorizedAccess - says that a security policy refused the script and not which one, so output recognized by those two words alone claims more than it read (backlog #25). M8 cannot run in this self-test, since AllSigned is a machine policy and needs elevation, so the predicate is loaded out of the driver and run on captured output of each shape, and M8''s own use of it is asserted on the driver''s AST'
+$tokens37 = $null; $errors37 = $null
+$ast37 = [System.Management.Automation.Language.Parser]::ParseFile($driver, [ref]$tokens37, [ref]$errors37)
+$defs37 = @{}
+foreach ($f in $ast37.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    if (-not $defs37.ContainsKey($f.Name)) { $defs37[$f.Name] = @() }
+    $defs37[$f.Name] += $f
+}
+$loaded37 = @('Get-SignatureRefusal')   # what this case defines below; the guard after it is what keeps that list honest
+Assert-True '37. the driver defines Get-SignatureRefusal once, so this case runs that definition and no other' ($defs37.ContainsKey('Get-SignatureRefusal') -and $defs37['Get-SignatureRefusal'].Count -eq 1) ('definitions: ' + $(if ($defs37.ContainsKey('Get-SignatureRefusal')) { $defs37['Get-SignatureRefusal'].Count } else { 0 }))
+$needs37 = @()
+if ($defs37.ContainsKey('Get-SignatureRefusal') -and $defs37['Get-SignatureRefusal'].Count -eq 1) {
+    # A function of the driver that this one calls would be missing here, and the case would be measuring something the
+    # driver never runs - so it is named and the case fails, rather than the list of loaded functions being trusted.
+    $needs37 = @($defs37['Get-SignatureRefusal'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs37.ContainsKey($_) -and $loaded37 -notcontains $_ } | Sort-Object -Unique)
+    Invoke-Expression $defs37['Get-SignatureRefusal'][0].Extent.Text
+}
+Assert-True '37. it calls no function of the driver that this case has not loaded, so what runs here is what runs there' ($needs37.Count -eq 0) ('also needed: ' + ($needs37 -join ', '))
+function Get-FreeVariables($Function) {
+    # What the body reads without having taken it as a parameter, assigned it, or been given it by the loop it is in.
+    # A function that reads a variable of the driver behaves differently here, where that variable does not exist, and
+    # PowerShell says nothing about it - an unset variable is $null. Automatic variables and the environment are not
+    # the driver's state and are left out; a scope-qualified read ($script:x) is the driver's and is not.
+    $auto = @('_', 'PSItem', 'true', 'false', 'null', 'Matches', 'args', 'PSScriptRoot', 'PSCommandPath')
+    $declared = @()
+    if ($Function.Parameters) { $declared += @($Function.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) }
+    $declared += @($Function.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.Left.VariablePath.UserPath })
+    $declared += @($Function.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.ForEachStatementAst] }, $true) | ForEach-Object { $_.Variable.VariablePath.UserPath })
+    return @($Function.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { [string]$_.VariablePath.UserPath } | Where-Object { $_ -and ($declared -notcontains $_) -and ($auto -notcontains $_) -and ($_ -notlike 'env:*') } | Sort-Object -Unique)
+}
+$free37 = @()
+if ($defs37.ContainsKey('Get-SignatureRefusal') -and $defs37['Get-SignatureRefusal'].Count -eq 1) { $free37 = @(Get-FreeVariables $defs37['Get-SignatureRefusal'][0]) }
+Assert-True '37. and it reads no variable of the driver either, which would be $null here and say nothing about it' ($free37.Count -eq 0) ('free variables: ' + ($free37 -join ', '))
+# A check nobody has seen fire is a check nobody has tested: the same reading, on a function of the driver that does
+# read one of its variables, has to name that variable.
+$control37 = @()
+if ($defs37.ContainsKey('Get-MachinePolicyExecutionPolicy')) { $control37 = @(Get-FreeVariables $defs37['Get-MachinePolicyExecutionPolicy'][0]) }
+Assert-True '37. the reading is not vacuous: on Get-MachinePolicyExecutionPolicy, which reads the driver''s $PsExe, it names it' ($control37 -contains 'PsExe') ('free variables found there: ' + ($control37 -join ', '))
+# Round 8 of PR #65: which capture of PowerShell's messages belongs to this run is a decision of its own, so it is a
+# function of its own and is loaded the same way. A run that leaves such a file needs a policy that blocks the script,
+# which no self-test can impose, so it is given crafted candidates instead.
+$loaded37 += 'Select-CapturedMessages'
+Assert-True '37. the driver defines Select-CapturedMessages once as well' ($defs37.ContainsKey('Select-CapturedMessages') -and $defs37['Select-CapturedMessages'].Count -eq 1) ('definitions: ' + $(if ($defs37.ContainsKey('Select-CapturedMessages')) { $defs37['Select-CapturedMessages'].Count } else { 0 }))
+$needsSel37 = @(); $freeSel37 = @()
+if ($defs37.ContainsKey('Select-CapturedMessages') -and $defs37['Select-CapturedMessages'].Count -eq 1) {
+    $needsSel37 = @($defs37['Select-CapturedMessages'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs37.ContainsKey($_) -and $loaded37 -notcontains $_ } | Sort-Object -Unique)
+    $freeSel37 = @(Get-FreeVariables $defs37['Select-CapturedMessages'][0])
+    Invoke-Expression $defs37['Select-CapturedMessages'][0].Extent.Text
+}
+Assert-True '37. and it too calls and reads nothing of the driver that this case has not loaded' (($needsSel37.Count -eq 0) -and ($freeSel37.Count -eq 0)) ('also needed: ' + ($needsSel37 -join ', ') + '; free variables: ' + ($freeSel37 -join ', '))
+function New-Capture37([string]$Dir, [string]$Name, [datetime]$When) { [pscustomobject]@{ FullName = (Join-Path $Dir $Name); DirectoryName = $Dir; Name = $Name; LastWriteTime = $When } }
+$copy37 = 'C:\state\M8\en-US'
+$ours37 = New-Capture37 $copy37 'PowerShellMessages_20260914_010203.txt' (Get-Date)
+$foreign37 = New-Capture37 $env:TEMP 'NetworkHealthCheck_PowerShellMessages_20260914_010204.txt' ((Get-Date).AddSeconds(5))
+$namedIn37 = 'ERROR: Windows PowerShell could not run the program file.' + "`n" + 'What PowerShell said, kept in "' + $ours37.FullName + '":'
+$sel37a = Select-CapturedMessages @($ours37, $foreign37) $namedIn37 $copy37
+Assert-True '37. a capture another launcher left under this account, newer than this run''s own, does not answer for this run' ((([string]$sel37a.File.FullName) -eq $ours37.FullName) -and ($sel37a.Reason -like '*named by this run*')) ('picked: ' + [string]$sel37a.File.FullName + '; ' + $sel37a.Reason)
+$sel37b = Select-CapturedMessages @($foreign37) 'this launcher named no file at all' $copy37
+Assert-True '37. and where the launcher named none of them, none is read and the reason says how many there were' ((-not $sel37b.File) -and ($sel37b.Reason -like '*named none of them*')) ('picked: ' + [string]$sel37b.File + '; ' + $sel37b.Reason)
+$sel37c = Select-CapturedMessages @($ours37) 'this launcher named no file at all' $copy37
+Assert-True '37. a capture in this run''s own folder is this run''s, named or not - the folder is made for it' ((([string]$sel37c.File.FullName) -eq $ours37.FullName) -and ($sel37c.Reason -like '*own folder*')) ('picked: ' + [string]$sel37c.File.FullName + '; ' + $sel37c.Reason)
+$sel37d = Select-CapturedMessages @() '' $copy37
+Assert-True '37. and a run that left no capture says that, rather than reading something else' ((-not $sel37d.File) -and ($sel37d.Reason -like '*kept no messages file*')) ('picked: ' + [string]$sel37d.File + '; ' + $sel37d.Reason)
+$usesSel37 = @()
+if ($defs37.ContainsKey('Invoke-LauncherRun')) { $usesSel37 = @($defs37['Invoke-LauncherRun'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Select-CapturedMessages' }, $true)) }
+Assert-True '37. and Invoke-LauncherRun decides through it which capture is its own, instead of taking the newest one it can see' ($usesSel37.Count -eq 1) ('calls in Invoke-LauncherRun: ' + $usesSel37.Count)
+# The three shapes: a security refusal that is not about signing - PowerShell's documented wording for a Software
+# Restriction Policy, carrying the classification and no signature message - and the signature refusal in each language
+# the driver reads. The zh-TW message is built from its code points because this file is ASCII and carries no
+# byte-order mark - Windows PowerShell reads a script without one in the machine's ANSI code page, and the characters
+# would not survive being written here.
+$blocked37 = @('File C:\NHC\en-US\NetworkHealthCheck.ps1 cannot be loaded because it is blocked by software restriction policies, such as those created by using Group Policy.',
+               '    + CategoryInfo          : SecurityError: (:) [], PSSecurityException',
+               '    + FullyQualifiedErrorId : UnauthorizedAccess')
+$unsignedEn37 = @('File C:\NHC\en-US\NetworkHealthCheck.ps1 cannot be loaded. The file C:\NHC\en-US\NetworkHealthCheck.ps1 is not digitally signed. You cannot run this script on the current system.',
+                  '    + CategoryInfo          : SecurityError: (:) [], PSSecurityException',
+                  '    + FullyQualifiedErrorId : UnauthorizedAccess')
+$zh37 = -join @(0x672A, 0x7D93, 0x6578, 0x4F4D, 0x7C3D, 0x7F72 | ForEach-Object { [char]$_ })
+$unsignedZh37 = @(('C:\NHC\zh-TW\NetworkHealthCheck.ps1 ' + $zh37), '    + FullyQualifiedErrorId : UnauthorizedAccess')
+$r37a = Get-SignatureRefusal $blocked37
+Assert-True '37. a refusal that is not about signing, carrying the same classification, is not the signature refusal' ((-not $r37a.Matched) -and $r37a.Generic -and ($r37a.Detail -like '*SecurityError / UnauthorizedAccess*')) ('Matched: ' + $r37a.Matched + '; ' + $r37a.Detail)
+Assert-True '37. and the miss names every message the driver does read, so the answer is one line here and not a looser test' (($r37a.Detail -like '*en-US*') -and ($r37a.Detail.Contains($zh37))) $r37a.Detail
+$r37b = Get-SignatureRefusal $unsignedEn37
+Assert-True '37. the en-US signature message is the refusal, and the language it was read in is named' ($r37b.Matched -and $r37b.Culture -eq 'en-US') ('Matched: ' + $r37b.Matched + '; culture: ' + $r37b.Culture)
+$r37c = Get-SignatureRefusal $unsignedZh37
+Assert-True '37. the zh-TW signature message is the refusal, and the language it was read in is named' ($r37c.Matched -and $r37c.Culture -eq 'zh-TW') ('Matched: ' + $r37c.Matched + '; culture: ' + $r37c.Culture)
+$r37d = Get-SignatureRefusal @('The system cannot find the path specified.', '')
+Assert-True '37. output with neither the message nor the classification is a miss that says which it was' ((-not $r37d.Matched) -and (-not $r37d.Generic) -and ($r37d.Detail -like '*neither the signature message nor any security classification*')) ('Matched: ' + $r37d.Matched + '; ' + $r37d.Detail)
+$r37e = Get-SignatureRefusal @()
+Assert-True '37. a launcher that captured nothing is a miss, not a match' (-not $r37e.Matched) ('Matched: ' + $r37e.Matched + '; ' + $r37e.Detail)
+# PowerShell names the script it refused inside its error, and the operator names the folder that script was copied
+# into: a state directory called after the message would put the phrase on the line of a refusal that has nothing to do
+# with signing (PR #65, round 7). The paths are taken out of the line before it is searched. Asserted as a pair, so
+# that the trap is shown to be real rather than assumed: the same output matches when nothing is taken out.
+$trapDir37 = 'C:\nhc\is not digitally signed'
+$trap37 = @(('File ' + $trapDir37 + '\M8\en-US\NetworkHealthCheck.ps1 cannot be loaded because it is blocked by software restriction policies, such as those created by using Group Policy.'),
+            '    + CategoryInfo          : SecurityError: (:) [], PSSecurityException',
+            '    + FullyQualifiedErrorId : UnauthorizedAccess')
+$r37f = Get-SignatureRefusal $trap37 @($trapDir37)
+Assert-True '37. a folder named after the message is not the message' ((-not $r37f.Matched) -and $r37f.Generic) ('Matched: ' + $r37f.Matched + '; ' + $r37f.Detail)
+$r37g = Get-SignatureRefusal $trap37 @()
+Assert-True '37. and the trap is real: the same output, with no path taken out of it, does match' ($r37g.Matched) ('Matched: ' + $r37g.Matched + '; culture: ' + $r37g.Culture)
+# The predicate being right is half of it: M8 has to be the scenario that asks it, and it has to read the policy again
+# after the run - a correct predicate the scenario never calls would measure nothing.
+$m8Hash37 = @($ast37.FindAll({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] -and @($n.KeyValuePairs | Where-Object { ($_.Item1.Extent.Text.Trim("'", '"') -eq 'Id') -and ($_.Item2.Extent.Text.Trim("'", '"') -eq 'M8') }).Count -eq 1 }, $true))
+Assert-True '37. the driver has one M8 scenario, so the two assertions below are about that one' ($m8Hash37.Count -eq 1) ('M8 scenarios found: ' + $m8Hash37.Count)
+$m8Calls37 = @()
+if ($m8Hash37.Count -eq 1) {
+    $pair37 = @($m8Hash37[0].KeyValuePairs | Where-Object { $_.Item1.Extent.Text.Trim("'", '"') -eq 'Action' })
+    if ($pair37.Count -eq 1) { $m8Calls37 = @($pair37[0].Item2.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ } | Sort-Object -Unique) }
+}
+Assert-True '37. M8 decides on this predicate' ($m8Calls37 -contains 'Get-SignatureRefusal') ('M8 Action calls: ' + ($m8Calls37 -join ', '))
+Assert-True '37. and reads the machine policy again inside the action, so the refusal is tied to the policy in force and not only to the one the precondition saw' ($m8Calls37 -contains 'Get-MachinePolicyExecutionPolicy') ('M8 Action calls: ' + ($m8Calls37 -join ', '))
+# Round 1 of PR #65: the predicate was being fed the launcher's console output, and the launcher's own suggested action
+# names the signature refusal on every blocked run - so the phrase was in the console whatever had refused the script,
+# and a refusal that was not about signing would have passed as M8 again through a door the predicate never saw. What
+# it may read is the file the launcher keeps PowerShell's own messages in. Two assertions: the launchers do carry the
+# phrase (the reason), and the scenario passes the messages rather than the console (the fix). If a launcher's wording
+# ever stops carrying it, the first fails and someone reads this again instead of the hazard quietly leaving the record.
+$carry37 = @()
+foreach ($lang37 in @('en-US', 'zh-TW')) {
+    $path37 = Join-Path $root ('healthcheck\' + $lang37 + '\Start-NetworkCheck-Console.cmd')
+    $lines37 = @()
+    if (Test-Path -LiteralPath $path37) { $lines37 = @(Get-Content -LiteralPath $path37 -Encoding UTF8) }
+    if ((Get-SignatureRefusal $lines37).Matched) { $carry37 += $lang37 }
+}
+Assert-True '37. both shipped console launchers print the signature phrase in their own suggested action, which is why the console is not what the predicate may read' ($carry37.Count -eq 2) ('launchers whose own text carries it: ' + $(if ($carry37.Count) { $carry37 -join ', ' } else { 'none' }))
+$fed37 = ''
+if ($m8Hash37.Count -eq 1 -and $pair37.Count -eq 1) {
+    $calls37 = @($pair37[0].Item2.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-SignatureRefusal' }, $true))
+    if ($calls37.Count -eq 1 -and $calls37[0].CommandElements.Count -ge 2) { $fed37 = [string]$calls37[0].CommandElements[1].Extent.Text }
+}
+Assert-True '37. and M8 feeds it what PowerShell printed, not the console the launcher wrote that suggestion into' ($fed37 -eq '$r.PowerShellMessages') ('fed with: ' + $(if ($fed37) { $fed37 } else { 'nothing this case could read' }))
+$fedPaths37 = ''
+if ($calls37.Count -eq 1 -and $calls37[0].CommandElements.Count -ge 3) { $fedPaths37 = [string]$calls37[0].CommandElements[2].Extent.Text }
+Assert-True '37. and hands over the paths PowerShell prints inside its error, so the folder the script was copied into cannot answer for the message' (($fedPaths37 -match '\$r\.Copy') -and ($fedPaths37 -match '\$StateDir')) ('second argument: ' + $(if ($fedPaths37) { $fedPaths37 } else { 'none' }))
+# Round 2 of PR #65: the file was read without naming its encoding. The launchers run `chcp 65001` on their third line,
+# so what they and the PowerShell under them write is UTF-8 with no byte-order mark, and Get-Content without -Encoding
+# decodes a file without one in the machine's ANSI code page - on this machine, CP950, the zh-TW refusal comes back as
+# something the predicate cannot find. A rule rather than one call, and over the whole function, because every file
+# Invoke-LauncherRun reads was written by our own launcher under that same chcp: the Zone.Identifier stream elsewhere
+# in the driver is Windows's and is ASCII, and is not this rule's business.
+$unencoded37 = @()
+if ($defs37.ContainsKey('Invoke-LauncherRun')) {
+    $unencoded37 = @($defs37['Invoke-LauncherRun'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-Content' }, $true) |
+        Where-Object { @($_.CommandElements | Where-Object { ($_ -is [System.Management.Automation.Language.CommandParameterAst]) -and ($_.ParameterName -eq 'Encoding') }).Count -eq 0 } |
+        ForEach-Object { 'line ' + $_.Extent.StartLineNumber })
+}
+Assert-True '37. and every file Invoke-LauncherRun reads names its encoding, since the launcher writes UTF-8 and this runtime would read it in the machine''s ANSI code page' (($defs37.ContainsKey('Invoke-LauncherRun')) -and ($unencoded37.Count -eq 0)) ('reads without -Encoding: ' + $(if ($unencoded37.Count) { $unencoded37 -join ', ' } else { 'none' }) + '; function found: ' + $defs37.ContainsKey('Invoke-LauncherRun'))
+
+# -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
+Write-Output ''
+Write-Output '38. the bundle name carries the time to the millisecond and the process id (backlog #25). A name good to the second collided whenever a second invocation of the same campaign fell inside the same second as the first: Compress-Archive refuses a destination that exists, and the record kept that refusal as a bundle failure - twice on GitHub Actions, both times on a commit that touched nothing the step reads. The collision is reproduced here rather than waited for: every second-precision name the clock can produce in the next five minutes is occupied before the invocation runs'
+$r38a = Invoke-Campaign 'bundlename' @('-Zip', $zip, '-Scenarios', 'A3', '-SkipGui') "A3=done`r`n"
+$s38a = Read-State $r38a.State
+$prefix38 = 'nhc-campaign_' + $s38a.Computer + '_selftest-bundlename_'
+$bundle38a = @(Get-ChildItem -LiteralPath $r38a.State -Filter 'nhc-campaign_*.zip')
+Assert-True '38. the bundle carries the millisecond and the process id, under the name this campaign builds' ($bundle38a.Count -eq 1 -and $bundle38a[0].Name.StartsWith($prefix38) -and $bundle38a[0].Name -match '_\d{8}_\d{6}_\d{3}_p\d+\.zip$') ('bundles: ' + (($bundle38a | ForEach-Object { $_.Name }) -join ', ') + '; prefix ' + $prefix38)
+# An empty file is enough to reproduce it: what failed was Compress-Archive refusing a destination that exists, which
+# it decides on the path alone (measured on this machine, 2026-09-14).
+$windowSeconds38 = 300
+$start38 = Get-Date
+$occupied38 = @{}
+for ($i = 0; $i -le $windowSeconds38; $i++) {
+    $stamp38 = $start38.AddSeconds($i).ToString('yyyyMMdd_HHmmss')
+    $occupied38[$stamp38] = $true
+    [IO.File]::WriteAllText((Join-Path $r38a.State ($prefix38 + $stamp38 + '.zip')), '')
+}
+$r38b = Invoke-Campaign 'bundlename' @('-Resume', '-Scenarios', 'A4', '-SkipGui') "A4=done`r`n"
+$bundle38b = @(Get-ChildItem -LiteralPath $r38a.State -Filter 'nhc-campaign_*.zip')
+$named38 = ''
+if ($bundle38b.Count -eq 1 -and $bundle38b[0].Name -match '_(\d{8}_\d{6})_\d{3}_p\d+\.zip$') { $named38 = $Matches[1] }
+Assert-True '38. the second invocation named its bundle for a second whose second-precision name was already taken - so the old name would have collided, and this case is not measuring an idle clock' (($named38 -ne '') -and $occupied38.ContainsKey($named38)) ('bundle: ' + (($bundle38b | ForEach-Object { $_.Name }) -join ', ') + '; window ' + $start38.ToString('yyyyMMdd_HHmmss') + ' + ' + $windowSeconds38 + ' s')
+$summary38 = Get-Content -LiteralPath (Join-Path $r38a.State 'campaign_summary.md') -Raw -Encoding UTF8
+Assert-True '38. nothing was recorded as a bundle failure, and the summary names the bundle that was written' (($summary38 -notmatch '\| bundle \| the campaign bundle \| FAIL \|') -and ($summary38 -notmatch '- Bundle: NOT WRITTEN') -and ($bundle38b.Count -eq 1) -and ($summary38 -match ('- Bundle: ' + [regex]::Escape($bundle38b[0].Name)))) (($summary38 -split "`n" | Where-Object { $_ -like '- Bundle:*' }) -join ' / ')
+Assert-True '38. the occupied names went the way earlier bundles of a campaign go, leaving this invocation''s alone' ($bundle38b.Count -eq 1) ('bundles left: ' + $bundle38b.Count + ' of ' + ($windowSeconds38 + 2) + ' files that matched the campaign''s pattern')
+Assert-True '38. exit code 0' ($r38b.ExitCode -eq 0) ('exit code ' + $r38b.ExitCode)
+
+# -------------------- 39. the mark M2 needs: both ways to it, and which way this run took --------------------
+Write-Output ''
+Write-Output '39. M2 measures the warning a Mark of the Web produces, and an asset taken from a CI artifact carries none - the campaign that met this wrote the mark by hand and said so in the record by hand (backlog #30). The prerequisite names both ways to a marked download now, and every invocation''s summary says which way the file on disk got its mark, as far as its own stream accounts for it'
+$r39a = Invoke-Campaign 'markways' @('-Zip', $zip, '-Scenarios', 'M2') "M2=done`r`n"
+$s39a = Read-State $r39a.State
+$detail39 = [string]$s39a.Scenarios.M2.Detail
+Assert-True '39. the skip names both ways: the browser of this machine, and the command that writes the mark - applied to this campaign''s own download' (($detail39 -like '*download it with the browser of this machine*') -and ($detail39 -like '*Set-Content -LiteralPath*-Stream Zone.Identifier*ZoneId=3*') -and $detail39.Contains($zip)) $detail39
+$summary39a = Get-Content -LiteralPath (Join-Path $r39a.State 'campaign_summary.md') -Raw -Encoding UTF8
+Assert-True '39. and the summary of a run whose download has no mark says that, beside the file it read' (($summary39a -match '- Download mark: no Internet-zone mark \(no mark\)') -and ($summary39a -split "`n" | Where-Object { $_ -like '- Download mark:*' } | ForEach-Object { $_.Contains($zip) })) (($summary39a -split "`n" | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+$zipApplied39 = Join-Path $WorkDir ('NetworkHealthCheck-' + $version + '-applied.zip')
+Copy-Item -LiteralPath $zip -Destination $zipApplied39 -Force
+Set-Content -LiteralPath $zipApplied39 -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
+$r39b = Invoke-Campaign 'markapplied' @('-Zip', $zipApplied39, '-Scenarios', 'M2', '-SkipGui') "M2=done`r`n"
+$summary39b = Get-Content -LiteralPath (Join-Path $r39b.State 'campaign_summary.md') -Raw -Encoding UTF8
+Assert-True '39. a mark whose stream records no origin is reported as applied - and the line says what else leaves that stream, rather than calling the file hand-marked' (($summary39b -match '- Download mark: ZoneId=3, no origin recorded in the stream') -and ($summary39b -match 'a mark written by hand leaves') -and ($summary39b -match 'a browser that records no origin leaves too')) (($summary39b -split "`n" | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+$zipDownloaded39 = Join-Path $WorkDir ('NetworkHealthCheck-' + $version + '-downloaded.zip')
+Copy-Item -LiteralPath $zip -Destination $zipDownloaded39 -Force
+Set-Content -LiteralPath $zipDownloaded39 -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3`r`nReferrerUrl=https://example.invalid/releases`r`nHostUrl=https://example.invalid/NetworkHealthCheck.zip"
+$r39c = Invoke-Campaign 'markdownloaded' @('-Zip', $zipDownloaded39, '-Scenarios', 'M2', '-SkipGui') "M2=done`r`n"
+$summary39c = Get-Content -LiteralPath (Join-Path $r39c.State 'campaign_summary.md') -Raw -Encoding UTF8
+Assert-True '39. a mark whose stream records where the file came from is reported as downloaded, and the origin is quoted' (($summary39c -match '- Download mark: ZoneId=3, the stream records where it came from') -and ($summary39c -match 'HostUrl=https://example\.invalid/NetworkHealthCheck\.zip') -and ($summary39c -match 'ReferrerUrl=https://example\.invalid/releases')) (($summary39c -split "`n" | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+Assert-True '39. none of the three invocations failed for the mark it was given' (($r39a.ExitCode -eq 0) -and ($r39b.ExitCode -eq 0) -and ($r39c.ExitCode -eq 0)) ('exit codes: ' + $r39a.ExitCode + ' / ' + $r39b.ExitCode + ' / ' + $r39c.ExitCode)
+# Round 3 of PR #65: M3 asks for this very download to be Unblocked, and the summary is written after that - so a
+# summary that only re-reads the file reports "no mark" for every campaign that got as far as M3, losing the one thing
+# this item asked it to record. The reading that saw the mark is kept in the state instead. The Unblock is made here by
+# removing the stream, which is what the tick in Explorer's Properties dialog does.
+Remove-Item -LiteralPath $zipApplied39 -Stream Zone.Identifier
+$r39d = Invoke-Campaign 'markapplied' @('-Resume', '-Scenarios', 'A3', '-SkipGui') "A3=done`r`n"
+$summary39d = Get-Content -LiteralPath (Join-Path $r39d.State 'campaign_summary.md') -Raw -Encoding UTF8
+Assert-True '39. the mark this campaign ran against survives that Unblock: the summary still names it, says who read it, and says what the file carries now' (($summary39d -match '- Download mark: ZoneId=3, no origin recorded in the stream') -and ($summary39d -match 'read by the summary at ') -and ($summary39d -match 'the file carries no Internet-zone mark \(no mark\) now')) ((($summary39d -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+$s39d = Read-State $r39d.State
+Assert-True '39. and the state keeps the reading that saw a mark, not the one that found none' (([string]$s39d.DownloadMark.Zone -eq 'ZoneId=3') -and ([string]$s39d.DownloadMark.Way -eq 'no-origin') -and ([string]$s39d.DownloadMark.By -eq 'the summary')) ('DownloadMark: ' + ($s39d.DownloadMark | ConvertTo-Json -Compress))
+# And the other half of that rule: a scenario's reading is the moment the warning was measured, so it replaces one the
+# summary made first. M2 is not selected in the first invocation, so it has a run of its own to make in the second.
+$zipTakeover39 = Join-Path $WorkDir ('NetworkHealthCheck-' + $version + '-takeover.zip')
+Copy-Item -LiteralPath $zip -Destination $zipTakeover39 -Force
+Set-Content -LiteralPath $zipTakeover39 -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
+$desk39 = Join-Path $WorkDir 'desk39'
+New-Item -ItemType Directory -Force -Path (Join-Path $desk39 'NHC-M2') | Out-Null
+Copy-Item -LiteralPath $top -Destination (Join-Path $desk39 'NHC-M2') -Recurse -Force
+Set-ExtractedLater (Join-Path $desk39 'NHC-M2')
+# Without -SkipGui, because the flag is kept in the state and every resume of this campaign would then drop M2 before
+# it could read anything - which is what the first attempt at this case measured instead of what it meant to.
+$r39e = Invoke-Campaign 'marktakeover' @('-Zip', $zipTakeover39, '-Scenarios', 'A3', '-WorkRoot', $desk39) "A3=done`r`n"
+$s39e = Read-State $r39e.State
+Assert-True '39. a campaign whose summary saw the mark first records it as the summary''s reading' ([string]$s39e.DownloadMark.By -eq 'the summary') ('DownloadMark: ' + ($s39e.DownloadMark | ConvertTo-Json -Compress))
+$r39f = Invoke-Campaign 'marktakeover' @('-Resume', '-Scenarios', 'M2') "M2=done`r`nM2/windows-showed=3`r`nM2/run-finished=done`r`n"
+$s39f = Read-State $r39e.State
+Assert-True '39. and M2, which measures the warning that mark produces, takes the record over when it runs' (([string]$s39f.DownloadMark.By -eq 'M2') -and ([string]$s39f.DownloadMark.Zone -eq 'ZoneId=3')) ('DownloadMark: ' + ($s39f.DownloadMark | ConvertTo-Json -Compress) + '; M2: ' + $s39f.Scenarios.M2.Result)
+# The reading, not the whole summary: M3's own title in the scenario table is "Unblock, extract, ..." and would
+# answer a search over the file for that word.
+$markLine39d = ((($summary39d -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+Assert-True '39. and the Unblock is not named on that line, because M3 never ran in that campaign' ($markLine39d -notmatch 'Unblock') $markLine39d
+# Where M3 IS on record and the file now has no stream, the step that asks for the Unblock is named - and what is said
+# is what M3 asks for and what an Unblock does, not what happened here (PR #65, round 4). M3's result is crafted: the
+# scenario itself needs an extraction and two launcher runs, and none of that is what this assertion is about.
+$stateFile39 = Join-Path $r39d.State 'campaign.json'
+$crafted39 = Get-Content -LiteralPath $stateFile39 -Raw -Encoding UTF8 | ConvertFrom-Json
+$crafted39.Scenarios.M3.Result = 'PASS'; $crafted39.Scenarios.M3.Detail = 'crafted by the self-test'
+[IO.File]::WriteAllText($stateFile39, ($crafted39 | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+$r39h = Invoke-Campaign 'markapplied' @('-Resume', '-Scenarios', 'A4', '-SkipGui') "A4=done`r`n"
+$summary39h = Get-Content -LiteralPath (Join-Path $r39h.State 'campaign_summary.md') -Raw -Encoding UTF8
+Assert-True '39. with M3 on record and the stream gone, the line names the step that asks for that Unblock' (($summary39h -match 'the file carries no Internet-zone mark \(no mark\) now - M3 asked for the Unblock that removes the stream')) ((($summary39h -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+# And a download that is gone rather than unmarked reads as missing, which no Unblock accounts for.
+Remove-Item -LiteralPath $zipApplied39 -Force
+$r39i = Invoke-Campaign 'markapplied' @('-Resume', '-Scenarios', 'A3', '-SkipGui') "A3=done`r`n"
+$summary39i = Get-Content -LiteralPath (Join-Path $r39i.State 'campaign_summary.md') -Raw -Encoding UTF8
+$markLine39i = ((($summary39i -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+Assert-True '39. a download that is gone is reported as missing, with no Unblock named on that line although M3 is on record' (($markLine39i -match 'there is no file at that path now') -and ($markLine39i -notmatch 'Unblock')) $markLine39i
+# The standard-user session does not go looking for the download at all (PR #65, round 5): it runs from C:\Users\Public
+# because that account cannot reach the administrator's profile, where the download usually sits, and a read from there
+# answers 'file missing' whether the file is gone or merely out of reach - the two raise the same exception, measured.
+# This self-test runs in one session, so the guard is read off the driver's AST: it has to be the function's FIRST
+# statement, before anything reads the file, or the reading it is meant to prevent has already happened.
+$guard39 = $false; $guardWhy39 = 'Update-DownloadMark not found'
+if ($defs37.ContainsKey('Update-DownloadMark') -and $defs37['Update-DownloadMark'].Count -eq 1) {
+    $body39 = @($defs37['Update-DownloadMark'][0].Body.EndBlock.Statements)
+    $reads39 = @($defs37['Update-DownloadMark'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-MarkOrigin' }, $true))
+    $first39 = $(if ($body39.Count) { $body39[0] } else { $null })
+    $isGuard39 = ($null -ne $first39) -and ($first39 -is [System.Management.Automation.Language.IfStatementAst]) -and ($first39.Extent.Text -match '\$IsStandardUser') -and ($first39.Extent.Text -match 'return')
+    $guard39 = $isGuard39 -and ($reads39.Count -ge 1) -and ($reads39[0].Extent.StartOffset -gt $first39.Extent.EndOffset)
+    $guardWhy39 = 'first statement is ' + $(if ($null -ne $first39) { $first39.GetType().Name } else { 'nothing' }) + ', guards the standard user: ' + $isGuard39 + ', reads of the file after it: ' + $reads39.Count
+}
+Assert-True '39. and the standard-user session says it did not look, before anything reads the download' $guard39 $guardWhy39
+# A mark that CHANGED was not Unblocked either, so the line says both readings and names no reason for the difference:
+# an explanation is not something a reading can supply.
+Set-Content -LiteralPath $zipTakeover39 -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3`r`nHostUrl=https://example.invalid/again.zip"
+$r39g = Invoke-Campaign 'marktakeover' @('-Resume', '-Scenarios', 'A4') "A4=done`r`n"
+$summary39g = Get-Content -LiteralPath (Join-Path $r39g.State 'campaign_summary.md') -Raw -Encoding UTF8
+Assert-True '39. a mark that changed rather than went is reported as both readings, with no Unblock named for it' (($summary39g -match '- Download mark: ZoneId=3, no origin recorded in the stream') -and ($summary39g -match 'the file carries ZoneId=3, the stream records where it came from[^;]*now') -and ($summary39g -notmatch 'now, which is what M3')) ((($summary39g -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+# And a redo of M2 replaces M2's own earlier reading: the stream was rewritten above, so the run on record now was
+# measured against the new mark, and a summary still naming the superseded one would contradict the row beside it
+# (PR #65, round 6). The extraction this scenario needs is stamped ahead of the clock, so the redo passes it too.
+$atBefore39 = [string]$s39f.DownloadMark.At
+$r39j = Invoke-Campaign 'marktakeover' @('-Resume', '-Redo', 'M2', '-Scenarios', 'M2') "M2=done`r`nM2/windows-showed=3`r`nM2/run-finished=done`r`n"
+$s39j = Read-State $r39e.State
+Assert-True '39. and a redo of M2 takes the record over from M2''s own earlier reading, which the rewritten stream superseded' (([string]$s39j.DownloadMark.Way -eq 'origin-recorded') -and ([string]$s39j.DownloadMark.By -eq 'M2') -and ([string]$s39j.DownloadMark.At -ne $atBefore39)) ('was ' + $atBefore39 + '; now ' + ($s39j.DownloadMark | ConvertTo-Json -Compress))
+# The line the prerequisite offers has to survive being pasted. A path with a dollar sign or an apostrophe in it is
+# the case: inside double quotes PowerShell would expand or escape part of it, and the stream would go somewhere else
+# or nowhere, leaving M2 skipped for a fix that looked right (PR #65, round 6).
+$oddZip39 = Join-Path $WorkDir ('NetworkHealthCheck-' + $version + "-`$odd's copy.zip")
+Copy-Item -LiteralPath $zip -Destination $oddZip39 -Force
+$r39k = Invoke-Campaign 'markoddpath' @('-Zip', $oddZip39, '-Scenarios', 'M2') "M2=done`r`n"
+$s39k = Read-State $r39k.State
+$detail39k = [string]$s39k.Scenarios.M2.Detail
+$wantQuoted39 = "-LiteralPath '" + ($oddZip39 -replace "'", "''") + "'"
+Assert-True '39. the command it offers quotes the path as a literal, apostrophes doubled, so a path with a dollar sign in it survives being pasted' ($detail39k.Contains($wantQuoted39) -and ($detail39k -notmatch '-LiteralPath "')) ('wanted ' + $wantQuoted39 + ' in: ' + $detail39k)
+# Round 9 of PR #65: a download that is not there cannot be answered by writing a mark on it. Measured on this machine:
+# Set-Content -Stream against a path with no file there succeeds and leaves a 0-byte file carrying a valid ZoneId=3, so
+# the prerequisite would pass on the next invocation and M2 would ask someone to extract something that is not an
+# archive. The campaign above is redone with its download deleted, which is the state a resume can find.
+Remove-Item -LiteralPath $oddZip39 -Force
+$r39l = Invoke-Campaign 'markoddpath' @('-Resume', '-Redo', 'M2', '-Scenarios', 'M2') "M2=done`r`n"
+$s39l = Read-State $r39l.State
+$detail39l = [string]$s39l.Scenarios.M2.Detail
+Assert-True '39. and where the download is not there at all, it asks for the release back instead of offering to write a mark on nothing' (($detail39l -like '*there is no file at*') -and ($detail39l -notlike '*Set-Content*') -and ($detail39l -like '*download it again with the browser of this machine*')) $detail39l
 
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {
