@@ -909,6 +909,152 @@ foreach ($id40 in @('M7', 'M8', 'M9')) {
 }
 Assert-True '40. and each of M7, M8 and M9 reports how its count was arrived at, because the count is what each of them decides on' ($missing40.Count -eq 0) ('without the note: ' + ($missing40 -join ', '))
 
+# -------------------- 41. the elevated helper refuses what the campaign did not write --------------------
+# Backlog #29: the policy scenarios change the machine themselves now, and the campaign stays unelevated - A1 measures
+# what an ordinary user gets - so the change is made by tests\policy_helper.cmd, started elevated for one step at a
+# time. It runs elevated, so what it agrees to run matters: only a commands file carrying the campaign's own marker,
+# and only after it has proved it is elevated. Both refusals are machine-independent and are asserted here; whether
+# this machine's session is elevated is not, so the third case runs a harmless command and asserts that the result
+# says which of the two happened - and that the command ran only in the elevated one.
+Write-Output ''
+Write-Output '41. the elevated helper: what it refuses to run, and what it says about being elevated'
+$helper41 = Join-Path $tests 'policy_helper.cmd'
+Assert-True '41. the helper ships in tests\' (Test-Path -LiteralPath $helper41) $helper41
+$dir41 = Join-Path $WorkDir 'case41'
+New-Item -ItemType Directory -Force -Path $dir41 | Out-Null
+$result41 = Join-Path $dir41 'result.txt'
+function Invoke-Helper41([string]$Commands) {
+    if (Test-Path -LiteralPath $result41) { Remove-Item -LiteralPath $result41 -Force }
+    $ErrorActionPreference = 'Continue'
+    $null = & $helper41 $Commands $result41 2>&1
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    $lines = @()
+    if (Test-Path -LiteralPath $result41) { $lines = @(Get-Content -LiteralPath $result41 | ForEach-Object { [string]$_ }) }
+    return @{ ExitCode = $code; Lines = $lines; Text = ($lines -join ' | ') }
+}
+$missing41 = Join-Path $dir41 'not-here.cmd'
+$r41a = Invoke-Helper41 $missing41
+Assert-True '41. a commands file that is not there is refused, and the reason names the path it looked for' (($r41a.ExitCode -eq 2) -and ($r41a.Text -like '*no commands file*') -and ($r41a.Text -like '*result=FAILED*')) ('exit ' + $r41a.ExitCode + '; ' + $r41a.Text)
+$plain41 = Join-Path $dir41 'plain.cmd'
+Set-Content -LiteralPath $plain41 -Encoding Ascii -Value @('@echo off', 'echo this file is not the campaign''s', 'exit /b 0')
+$r41b = Invoke-Helper41 $plain41
+Assert-True '41. a commands file without the campaign''s marker is refused before anything is asked about elevation' (($r41b.ExitCode -eq 3) -and ($r41b.Text -like '*marker*') -and ($r41b.Text -like '*result=FAILED*')) ('exit ' + $r41b.ExitCode + '; ' + $r41b.Text)
+$ours41 = Join-Path $dir41 'ours.cmd'
+Set-Content -LiteralPath $ours41 -Encoding Ascii -Value @('@echo off', 'rem NHC-POLICY-STEP SELFTEST harmless', 'set NHCFAIL=0', 'ver', 'echo step=1 rc=%ERRORLEVEL%', 'if errorlevel 1 set NHCFAIL=1', 'exit /b %NHCFAIL%')
+$r41c = Invoke-Helper41 $ours41
+$said41 = @($r41c.Lines | Where-Object { $_ -like 'elevated=*' })
+$ranIt41 = ($r41c.Text -like '*step=1 rc=0*')
+$unelevated41 = (($r41c.ExitCode -eq 5) -and ($r41c.Text -like '*elevated=no*') -and ($r41c.Text -like '*result=FAILED*') -and (-not $ranIt41))
+$elevated41 = (($r41c.ExitCode -eq 0) -and ($r41c.Text -like '*elevated=yes*') -and ($r41c.Text -like '*result=OK*') -and $ranIt41)
+Assert-True '41. and a file it does accept says whether it was elevated: unelevated it refuses and runs nothing, elevated it runs it and says OK' (($said41.Count -eq 1) -and ($unelevated41 -or $elevated41)) ('exit ' + $r41c.ExitCode + '; ' + $r41c.Text)
+
+# -------------------- 42. the shape of one step's commands file --------------------
+# The file the campaign writes for the helper: the marker the helper insists on, every command followed by its own
+# exit code before the next command can replace it, and the number of commands that failed as the file's own exit
+# code. A step that fails halfway has to say so even where a later command succeeds, which is the case a single
+# trailing errorlevel would get wrong - so the counter is asserted against a file whose first command fails.
+Write-Output ''
+Write-Output '42. the commands file one step is made of: the marker, an exit code per command, and a count of the failures'
+$tokens42 = $null; $errors42 = $null
+$ast42 = [System.Management.Automation.Language.Parser]::ParseFile($driver, [ref]$tokens42, [ref]$errors42)
+$defs42 = @{}
+foreach ($f in $ast42.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    if (-not $defs42.ContainsKey($f.Name)) { $defs42[$f.Name] = @() }
+    $defs42[$f.Name] += $f
+}
+Assert-True '42. the driver defines New-PolicyStepFile once, so this case runs that definition and no other' ($defs42.ContainsKey('New-PolicyStepFile') -and $defs42['New-PolicyStepFile'].Count -eq 1) ('definitions: ' + $(if ($defs42.ContainsKey('New-PolicyStepFile')) { $defs42['New-PolicyStepFile'].Count } else { 0 }))
+$needs42 = @(); $free42 = @()
+if ($defs42.ContainsKey('New-PolicyStepFile') -and $defs42['New-PolicyStepFile'].Count -eq 1) {
+    $needs42 = @($defs42['New-PolicyStepFile'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) } | Sort-Object -Unique)
+    $free42 = @(Get-FreeVariables $defs42['New-PolicyStepFile'][0])
+    Invoke-Expression $defs42['New-PolicyStepFile'][0].Extent.Text
+}
+Assert-True '42. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs42.Count -eq 0) -and ($free42.Count -eq 0)) ('also needed: ' + ($needs42 -join ', ') + '; free variables: ' + ($free42 -join ', '))
+$dir42 = Join-Path $WorkDir 'case42'
+New-Item -ItemType Directory -Force -Path $dir42 | Out-Null
+$file42 = New-PolicyStepFile 'SELFTEST' 'twosteps' @('cmd /c exit 1', 'ver') $dir42
+$body42 = @(Get-Content -LiteralPath $file42 | ForEach-Object { [string]$_ })
+Assert-True '42. the marker the helper insists on is on its second line, where the helper looks for it' (($body42.Count -gt 2) -and ($body42[1] -like 'rem NHC-POLICY-STEP SELFTEST twosteps*')) ('line 2: ' + $(if ($body42.Count -gt 1) { $body42[1] } else { '(none)' }))
+Assert-True '42. every command is followed by its own exit code, before the next command can replace it' ((@($body42 | Where-Object { $_ -like 'echo step=1 rc=*' }).Count -eq 1) -and (@($body42 | Where-Object { $_ -like 'echo step=2 rc=*' }).Count -eq 1)) ($body42 -join ' / ')
+$ErrorActionPreference = 'Continue'
+$out42 = @(& $env:ComSpec '/c' $file42 2>&1 | ForEach-Object { [string]$_ })
+$code42 = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+Assert-True '42. a step whose first command failed exits non-zero although the second succeeded - the count, not the last command' (($code42 -ne 0) -and (@($out42 | Where-Object { $_ -like 'step=1 rc=1*' }).Count -eq 1) -and (@($out42 | Where-Object { $_ -like 'step=2 rc=0*' }).Count -eq 1)) ('exit ' + $code42 + '; ' + ($out42 -join ' | '))
+$file42b = New-PolicyStepFile 'SELFTEST' 'clean' @('ver') $dir42
+$ErrorActionPreference = 'Continue'
+$null = & $env:ComSpec '/c' $file42b 2>&1
+$code42b = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+Assert-True '42. and the reading is not vacuous: the same file with nothing failing exits 0' ($code42b -eq 0) ('exit ' + $code42b)
+
+# -------------------- 43. the way back is built from what was recorded, not from what is there now --------------------
+# M8's and M9's reverts are the lines RECOVER.txt gives a person, generated from the facts the scenario recorded
+# before it changed anything. The helper runs those same lines, so what they say is what the machine gets back.
+Write-Output ''
+Write-Output '43. the lines that put the machine back, generated from the recorded facts'
+$loaded43 = @('Get-M9RevertLines', 'Get-M8RegistryLines')
+$missingDefs43 = @($loaded43 | Where-Object { -not ($defs42.ContainsKey($_) -and $defs42[$_].Count -eq 1) })
+Assert-True '43. the driver defines the two line builders once each' ($missingDefs43.Count -eq 0) ('not defined once: ' + ($missingDefs43 -join ', '))
+$free43 = @()
+if ($missingDefs43.Count -eq 0) {
+    foreach ($name in $loaded43) {
+        $free43 += @(Get-FreeVariables $defs42[$name][0])
+        Invoke-Expression $defs42[$name][0].Extent.Text
+    }
+}
+Assert-True '43. neither reads a variable of the driver, which would be $null here and say nothing about it' ($free43.Count -eq 0) ('free variables: ' + ($free43 -join ', '))
+$auto43 = Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppLockerPolicyBefore = 'C:\state\M9\applocker-before.xml' } }
+Assert-True '43. a service that was Automatic and running comes back as auto, with the registry value for the case where sc config is refused, and is not stopped' ((@($auto43 | Where-Object { $_ -like 'sc config AppIDSvc start= auto*' }).Count -eq 1) -and (@($auto43 | Where-Object { $_ -like '*Services\AppIDSvc*/d 2 /f*' }).Count -eq 1) -and (@($auto43 | Where-Object { $_ -like 'net stop*' }).Count -eq 0)) ($auto43 -join ' / ')
+Assert-True '43. the local policy is removed at the registry, which needs neither PowerShell nor the AppLocker module, and the machine''s own policy is put back after it' ((@($auto43)[0] -like 'reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2"*') -and (@($auto43 | Where-Object { $_ -like '*Set-AppLockerPolicy -XmlPolicy*applocker-before.xml*' }).Count -eq 1) -and (@($auto43)[-1] -eq 'gpupdate /force')) ($auto43 -join ' / ')
+$manual43 = Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Manual'; AppIDSvcStatus = 'Stopped' } }
+Assert-True '43. a service that was Manual and stopped comes back as demand and is stopped again, and no policy is restored where none was saved' ((@($manual43 | Where-Object { $_ -like 'sc config AppIDSvc start= demand*' }).Count -eq 1) -and (@($manual43 | Where-Object { $_ -like '*/d 3 /f*' }).Count -eq 1) -and (@($manual43 | Where-Object { $_ -eq 'net stop AppIDSvc' }).Count -eq 1) -and (@($manual43 | Where-Object { $_ -like '*Set-AppLockerPolicy*' }).Count -eq 0)) ($manual43 -join ' / ')
+$none43 = Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'n/a'; AppIDSvcStatus = 'n/a' } }
+Assert-True '43. and where the service was never recorded, nothing is said about it - the policy is still removed and the machine still told to reload' ((@($none43 | Where-Object { $_ -like 'sc config*' }).Count -eq 0) -and (@($none43)[0] -like 'reg delete*SrpV2*') -and (@($none43)[-1] -eq 'gpupdate /force')) ($none43 -join ' / ')
+$m8lines43 = @(Get-M8RegistryLines)
+$m8text43 = [IO.File]::ReadAllText($driver)
+$m8start43 = $m8text43.IndexOf("@{ Id = 'M8'")
+$m8block43 = $(if ($m8start43 -ge 0) { $m8text43.Substring($m8start43, [Math]::Min(4000, $m8text43.Length - $m8start43)) } else { '' })
+$m8missing43 = @($m8lines43 | Where-Object { $m8block43.IndexOf([string]$_, [System.StringComparison]::Ordinal) -lt 0 })
+Assert-True '43. the two lines M8 applies are the two its instruction shows a person, so the instruction and the change cannot drift apart' (($m8lines43.Count -eq 2) -and ($m8missing43.Count -eq 0)) ('not in M8''s block: ' + ($m8missing43 -join ' / '))
+
+# -------------------- 44. what the hooks may and may not decide --------------------
+# The automation replaces the typing, not the checking: the precondition still says whether the machine is in the
+# state the scenario needs, and the revert is still believed only after the scenario's own check reads the machine.
+# Asserted on the driver's AST, because the policy scenarios need elevation and cannot run in this self-test.
+Write-Output ''
+Write-Output '44. the automated policy path: which scenarios have it, when it is taken, and what still decides'
+$plan44 = $m8text43
+$withHooks44 = @()
+foreach ($id44 in @('A1', 'M1', 'M2', 'M3', 'M4', 'M7', 'M8', 'M9', 'A2', 'A3', 'A4')) {
+    $start44 = $plan44.IndexOf("@{ Id = '" + $id44 + "'")
+    if ($start44 -lt 0) { continue }
+    $next44 = $plan44.IndexOf("@{ Id = '", $start44 + 10)
+    $block44 = $(if ($next44 -gt $start44) { $plan44.Substring($start44, $next44 - $start44) } else { $plan44.Substring($start44) })
+    if (($block44 -match '(?m)^\s+Apply = \{') -and ($block44 -match '(?m)^\s+Revert = \{')) { $withHooks44 += $id44 }
+}
+Assert-True '44. the three policy scenarios carry both hooks, and no other scenario carries either' ((($withHooks44 -join ',') -eq 'M7,M8,M9')) ('with both hooks: ' + ($withHooks44 -join ', '))
+$fnScenario44 = @($ast42.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Scenario' }, $true))
+$fnCleanup44 = @($ast42.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Complete-Cleanup' }, $true))
+Assert-True '44. Invoke-Scenario and Complete-Cleanup are each defined once' (($fnScenario44.Count -eq 1) -and ($fnCleanup44.Count -eq 1)) ('Invoke-Scenario: ' + $fnScenario44.Count + ', Complete-Cleanup: ' + $fnCleanup44.Count)
+$applyIf44 = ''
+if ($fnScenario44.Count -eq 1) {
+    $applyIf44 = @($fnScenario44[0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Extent.Text -like '*$S.Apply*' }, $true) | ForEach-Object { $_.Clauses[0].Item1.Extent.Text })[0]
+}
+Assert-True '44. the apply is taken only where the scenario has one, -ManualPolicy was not given, and nobody is replaying answers' (($applyIf44 -like '*$S.Apply*') -and ($applyIf44 -like '*ManualPolicy*') -and ($applyIf44 -like '*AnswersTable*')) ('the condition: ' + $applyIf44)
+$afterApply44 = ''
+if ($fnScenario44.Count -eq 1) { $afterApply44 = [string]$fnScenario44[0].Extent.Text }
+Assert-True '44. and what says the machine is in the state the scenario needs is still the precondition, run after the helper has been' (($afterApply44 -like '*$S.Precondition $ctx*') -and ($afterApply44.IndexOf('$ap = & $S.Apply') -lt $afterApply44.IndexOf('$autoApplied = $true'))) 'the precondition is not run between the apply and the flag'
+$cleanupText44 = ''
+if ($fnCleanup44.Count -eq 1) { $cleanupText44 = [string]$fnCleanup44[0].Extent.Text }
+$revertAt44 = $cleanupText44.IndexOf('& $S.Revert $ctx')
+$verifyAt44 = $cleanupText44.IndexOf('$v0 = & $S.Cleanup.Verify $ctx')
+$attemptAt44 = $afterApply44.IndexOf('$rec.Attempted = $true; Save-State')
+Assert-True '44. the attempt is recorded before the helper is asked, because a step can fail with the machine half changed and the revert has to run anyway' (($attemptAt44 -ge 0) -and ($attemptAt44 -lt $afterApply44.IndexOf('$ap = & $S.Apply'))) ('attempt at ' + $attemptAt44 + ', apply at ' + $afterApply44.IndexOf('$ap = & $S.Apply'))
+Assert-True '44. the revert is believed only after the scenario''s own check has read the machine, never on the helper''s exit code' (($revertAt44 -ge 0) -and ($verifyAt44 -gt $revertAt44) -and ($cleanupText44 -like '*if ($v0.Ok)*')) ('revert at ' + $revertAt44 + ', verify at ' + $verifyAt44)
+Assert-True '44. and a helper that could not put the machine back falls through to the prompt that asks a person, which is what the campaign did before' ($cleanupText44 -like '*did not put the machine back*') 'no fallback message in Complete-Cleanup'
+
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
 Write-Output '38. the bundle name carries the time to the millisecond and the process id (backlog #25). A name good to the second collided whenever a second invocation of the same campaign fell inside the same second as the first: Compress-Archive refuses a destination that exists, and the record kept that refusal as a bundle failure - twice on GitHub Actions, both times on a commit that touched nothing the step reads. The collision is reproduced here rather than waited for: every second-precision name the clock can produce in the next five minutes is occupied before the invocation runs'
