@@ -44,6 +44,8 @@ Leave the desktop alone while it runs (about ten minutes: four real windows, two
 
 ## B. What only a person can see
 
+**M7, M8 and M9 are made by the campaign itself** (backlog #29): an elevated helper applies the change and puts it back, one consent prompt per step, running the lines written below. They are what a person does where `-ManualPolicy` is given, where the consent prompt is refused or the helper cannot run, or where the machine does not show the change afterwards - the campaign says which way each step went, in the record and on the screen.
+
 | # | Steps | Expected | Observed | Evidence |
 |---|---|---|---|---|
 | M1 | Double-click the downloaded ZIP, open `en-US\`, double-click `Start-NetworkCheck.cmd` **without extracting** | Stock Windows extracts only the file clicked into a temporary view folder (`%TEMP%\Temp1_<zip>\…` on Windows 10, `%TEMP%\<guid>_<zip>.<n>\…` on Windows 11), so the launcher finds no `NetworkHealthCheck.ps1` beside itself and stops with its own message ("The program file NetworkHealthCheck.ps1 is missing. Keep all files in the same folder."), writes `LauncherError_<stamp>.txt` next to itself in that folder and pauses; no report. Where an archiver extracts the whole folder, the tool runs and its report must carry the compressed-folder warning row (backlog #18) — the reports then land in the view folder and disappear with it. Either is the package behaving as designed; the launcher stopped for any other reason is not | | screenshot + `LauncherError_<stamp>.txt` and a listing of the view folder, copied out while the launcher's message is still on screen - Windows 11 may delete the view folder the moment the launcher exits (or the report, where the tool ran) |

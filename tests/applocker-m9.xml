@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- NetworkHealthCheck acceptance campaign, scenario M9 (backlog #29): the policy the campaign applies instead of
+     asking a person to click through secpol.msc. It is AppLocker's own default script rules with one deliberate
+     omission - there is no rule for BUILTIN\Administrators, which the manual instruction told the person to delete,
+     because an account the rules exempt runs the script normally and the scenario measures nothing (PR #11 round 6).
+     What is left allows scripts under %WINDIR% and %PROGRAMFILES% for Everyone, so the package under test, which the
+     campaign keeps under C:\Users\Public, is denied by default - and the helper's own way back, staged in
+     %WINDIR%\Temp before this is applied, is not. Enforcement is on for scripts and for nothing else: the other rule
+     collections are absent, so they stay not configured. -->
+<AppLockerPolicy Version="1">
+  <RuleCollection Type="Script" EnforcementMode="Enabled">
+    <FilePathRule Id="06dce67b-934c-454f-a263-2515c8796a5d" Name="(Default Rule) All scripts located in the Program Files folder" Description="Allows members of the Everyone group to run scripts that are located in the Program Files folder." UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions>
+        <FilePathCondition Path="%PROGRAMFILES%\*" />
+      </Conditions>
+    </FilePathRule>
+    <FilePathRule Id="9428c672-5fc3-47f4-808a-a0011f36dd2c" Name="(Default Rule) All scripts located in the Windows folder" Description="Allows members of the Everyone group to run scripts that are located in the Windows folder." UserOrGroupSid="S-1-1-0" Action="Allow">
+      <Conditions>
+        <FilePathCondition Path="%WINDIR%\*" />
+      </Conditions>
+    </FilePathRule>
+  </RuleCollection>
+</AppLockerPolicy>

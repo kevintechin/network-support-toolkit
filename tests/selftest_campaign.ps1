@@ -661,7 +661,7 @@ $r34b = Invoke-Campaign 'm8facts' @('-Resume', '-Scenarios', 'M8') "M8/revert=do
 $out34b = $r34b.Output -join "`n"
 Assert-True '34. the revert instruction re-creates the values as they were, kinds included' (($out34b -match 'Put it back as it was \(MachinePolicy was RemoteSigned before M8\)') -and ($out34b -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_EXPAND_SZ /d "RemoteSigned" /f') -and ($out34b -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v EnableScripts /t REG_SZ /d "1" /f')) (($r34b.Output | Where-Object { $_ -match 'Put it back|reg add' }) -join ' / ')
 $s34b = Read-State $r34.State
-Assert-True '34. the verification compares with what was there, not with Undefined' ($s34b.Scenarios.M8.Result -eq 'PENDING' -and $s34b.Scenarios.M8.Reverted -like 'NOT VERIFIED - MachinePolicy is *; it was RemoteSigned before M8' -and $r34b.ExitCode -eq 1) ($s34b.Scenarios.M8.Result + ' / ' + $s34b.Scenarios.M8.Reverted + ' / exit ' + $r34b.ExitCode)
+Assert-True '34. the verification compares with what was there, value by value, and names what differs' ($s34b.Scenarios.M8.Result -eq 'PENDING' -and $s34b.Scenarios.M8.Reverted -like 'NOT VERIFIED - *before M8*' -and $s34b.Scenarios.M8.Reverted -like '*ExecutionPolicy*' -and $r34b.ExitCode -eq 1) ($s34b.Scenarios.M8.Result + ' / ' + $s34b.Scenarios.M8.Reverted + ' / exit ' + $r34b.ExitCode)
 
 $crafted34c = Get-Content -LiteralPath $stateFile34 -Raw -Encoding UTF8 | ConvertFrom-Json
 $crafted34c.Scenarios.M8.Facts.RegExecutionPolicyBefore = ''; $crafted34c.Scenarios.M8.Facts.RegExecutionPolicyKindBefore = 'String'
@@ -830,6 +830,941 @@ if ($defs37.ContainsKey('Invoke-LauncherRun')) {
         ForEach-Object { 'line ' + $_.Extent.StartLineNumber })
 }
 Assert-True '37. and every file Invoke-LauncherRun reads names its encoding, since the launcher writes UTF-8 and this runtime would read it in the machine''s ANSI code page' (($defs37.ContainsKey('Invoke-LauncherRun')) -and ($unencoded37.Count -eq 0)) ('reads without -Encoding: ' + $(if ($unencoded37.Count) { $unencoded37 -join ', ' } else { 'none' }) + '; function found: ' + $defs37.ContainsKey('Invoke-LauncherRun'))
+
+# -------------------- 40. which environment report belongs to this run --------------------
+# Backlog #29, and the defect PR #65 round 8 named and left in place: Invoke-LauncherRun collected every
+# NetworkHealthCheck_ENVIRONMENT_*.txt written under %TEMP% since the run started, and all three policy scenarios
+# decide on that count - M7 wants exactly one, M8 wants none, M9 reads one as the guard having fired. A second
+# launcher started under the same account during the run leaves a file that looks just as fresh, and the launcher
+# names the environment report by a wildcard alone, so round 8's correlation - the launcher naming the file it wrote -
+# cannot reach it. What can is the report's own text: the guard states the folder of the script that wrote it, and a
+# scenario's script is a staged copy made for that run alone. A run that writes such a report needs a policy no
+# self-test can impose, so the reports are crafted here and the predicate is loaded out of the driver.
+Write-Output ''
+Write-Output '40. the environment reports of this run, told apart from the ones another run left under the same %TEMP%'
+$tokens40 = $null; $errors40 = $null
+$ast40 = [System.Management.Automation.Language.Parser]::ParseFile($driver, [ref]$tokens40, [ref]$errors40)
+$defs40 = @{}
+foreach ($f in $ast40.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    if (-not $defs40.ContainsKey($f.Name)) { $defs40[$f.Name] = @() }
+    $defs40[$f.Name] += $f
+}
+$loaded40 = @('Select-EnvironmentReports')
+Assert-True '40. the driver defines Select-EnvironmentReports once, so this case runs that definition and no other' ($defs40.ContainsKey('Select-EnvironmentReports') -and $defs40['Select-EnvironmentReports'].Count -eq 1) ('definitions: ' + $(if ($defs40.ContainsKey('Select-EnvironmentReports')) { $defs40['Select-EnvironmentReports'].Count } else { 0 }))
+$needs40 = @(); $free40 = @()
+if ($defs40.ContainsKey('Select-EnvironmentReports') -and $defs40['Select-EnvironmentReports'].Count -eq 1) {
+    $needs40 = @($defs40['Select-EnvironmentReports'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs40.ContainsKey($_) -and $loaded40 -notcontains $_ } | Sort-Object -Unique)
+    $free40 = @(Get-FreeVariables $defs40['Select-EnvironmentReports'][0])
+    Invoke-Expression $defs40['Select-EnvironmentReports'][0].Extent.Text
+}
+Assert-True '40. it calls and reads nothing of the driver this case has not loaded, so what runs here is what runs there' (($needs40.Count -eq 0) -and ($free40.Count -eq 0)) ('also needed: ' + ($needs40 -join ', ') + '; free variables: ' + ($free40 -join ', '))
+# The crafted reports. The guard writes the file with Set-Content -Encoding UTF8 and states the script's folder on a
+# line whose label is in the display language - so the zh-TW report here carries the Chinese label, built from code
+# points because this file is ASCII, and the path is the only part both languages share.
+$case40 = Join-Path $WorkDir 'case40'
+$copy40 = Join-Path $case40 'M7\en-US'
+$other40 = Join-Path $case40 'M7-of-another-run\en-US'
+$temp40 = Join-Path $case40 'temp'
+New-Item -ItemType Directory -Force -Path $copy40, $other40, $temp40 | Out-Null
+$zhLabel40 = [string]([char]0x8173 + [char]0x672C + [char]0x8CC7 + [char]0x6599 + [char]0x593E + [char]0xFF1A)
+function New-EnvReport40([string]$Dir, [string]$Name, [string]$Label, [string]$Folder) {
+    $path = Join-Path $Dir $Name
+    Set-Content -LiteralPath $path -Encoding UTF8 -Value @('Network Health Check - environment report',
+                                                           'Reason: PowerShell is restricted to ConstrainedLanguage language mode by an application-control policy.',
+                                                           'Tool version: 1.2.14',
+                                                           ($Label + $Folder))
+    return (Get-Item -LiteralPath $path)
+}
+$beside40 = New-EnvReport40 $copy40 'NetworkHealthCheck_ENVIRONMENT_20260914_120000.txt' 'Script folder: ' $other40
+$mine40 = New-EnvReport40 $temp40 'NetworkHealthCheck_ENVIRONMENT_20260914_120001.txt' 'Script folder: ' $copy40
+$zh40 = New-EnvReport40 $temp40 'NetworkHealthCheck_ENVIRONMENT_20260914_120002.txt' $zhLabel40 $copy40
+$foreign40 = New-EnvReport40 $temp40 'NetworkHealthCheck_ENVIRONMENT_20260914_120003.txt' 'Script folder: ' $other40
+$empty40 = Join-Path $temp40 'NetworkHealthCheck_ENVIRONMENT_20260914_120004.txt'
+Set-Content -LiteralPath $empty40 -Value '' -NoNewline
+$empty40 = Get-Item -LiteralPath $empty40
+$sel40a = Select-EnvironmentReports @() @($mine40, $foreign40) $copy40
+Assert-True '40. a report another launcher left under this account during the run does not count as this run''s; the one naming this run''s folder does' ((@($sel40a.Files).Count -eq 1) -and (@($sel40a.Files)[0].FullName -eq $mine40.FullName)) ('counted: ' + (@($sel40a.Files | ForEach-Object { $_.Name }) -join ', ') + '; ' + $sel40a.Note)
+Assert-True '40. and the reason the other one was refused travels with the count, so the row can say how it decided' (($sel40a.Note -like '*refused*') -and ($sel40a.Note -like ('*' + $foreign40.Name + '*'))) ('note: ' + $sel40a.Note)
+$sel40b = Select-EnvironmentReports @() @($foreign40) $copy40
+Assert-True '40. the reading is not vacuous: with only the other run''s report, this run has none' (@($sel40b.Files).Count -eq 0) ('counted: ' + (@($sel40b.Files | ForEach-Object { $_.Name }) -join ', ') + '; ' + $sel40b.Note)
+$sel40c = Select-EnvironmentReports @() @($zh40) $copy40
+Assert-True '40. a report whose folder line is in Chinese is read by its path, which is the part every language shares' (@($sel40c.Files).Count -eq 1) ('counted: ' + (@($sel40c.Files | ForEach-Object { $_.Name }) -join ', ') + '; ' + $sel40c.Note)
+$sel40d = Select-EnvironmentReports @() @($empty40) $copy40
+Assert-True '40. a file that says nothing is refused with that as the reason, rather than counted or ignored in silence' ((@($sel40d.Files).Count -eq 0) -and ($sel40d.Note -like '*nothing could be read*')) ('counted: ' + (@($sel40d.Files | ForEach-Object { $_.Name }) -join ', ') + '; ' + $sel40d.Note)
+$sel40e = Select-EnvironmentReports @($beside40) @($foreign40) $copy40
+Assert-True '40. a report in the scenario''s own folder is this run''s whatever it says - that folder is made for this run and emptied first' ((@($sel40e.Files).Count -eq 1) -and (@($sel40e.Files)[0].FullName -eq $beside40.FullName)) ('counted: ' + (@($sel40e.Files | ForEach-Object { $_.Name }) -join ', ') + '; ' + $sel40e.Note)
+$usesSel40 = @()
+if ($defs40.ContainsKey('Invoke-LauncherRun')) { $usesSel40 = @($defs40['Invoke-LauncherRun'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Select-EnvironmentReports' }, $true)) }
+Assert-True '40. and Invoke-LauncherRun decides through it which reports are its own, instead of taking every fresh file it can see' ($usesSel40.Count -eq 1) ('calls in Invoke-LauncherRun: ' + $usesSel40.Count)
+# The count is what M7, M8 and M9 each decide on, so each of them says how the count was arrived at - a run that
+# refused a report of another run reads differently from one that never saw it, and the row is where that shows.
+$text40 = [IO.File]::ReadAllText($driver)
+$missing40 = @()
+foreach ($id40 in @('M7', 'M8', 'M9')) {
+    $start40 = $text40.IndexOf("@{ Id = '" + $id40 + "'")
+    if ($start40 -lt 0) { $missing40 += ($id40 + ' (no scenario block)'); continue }
+    $next40 = $text40.IndexOf("@{ Id = '", $start40 + 10)
+    $block40 = $(if ($next40 -gt $start40) { $text40.Substring($start40, $next40 - $start40) } else { $text40.Substring($start40) })
+    if ($block40 -notmatch 'EnvironmentReportsNote') { $missing40 += $id40 }
+}
+Assert-True '40. and each of M7, M8 and M9 reports how its count was arrived at, because the count is what each of them decides on' ($missing40.Count -eq 0) ('without the note: ' + ($missing40 -join ', '))
+
+# -------------------- 41. the elevated helper refuses what the campaign did not write --------------------
+# Backlog #29: the policy scenarios change the machine themselves now, and the campaign stays unelevated - A1 measures
+# what an ordinary user gets - so the change is made by tests\policy_helper.cmd, started elevated for one step at a
+# time. It runs elevated, so what it agrees to run matters: only a commands file carrying the campaign's own marker,
+# and only after it has proved it is elevated. Both refusals are machine-independent and are asserted here; whether
+# this machine's session is elevated is not, so the third case runs a harmless command and asserts that the result
+# says which of the two happened - and that the command ran only in the elevated one.
+Write-Output ''
+Write-Output '41. the elevated helper: what it refuses to run, and what it says about being elevated'
+$helper41 = Join-Path $tests 'policy_helper.cmd'
+Assert-True '41. the helper ships in tests\' (Test-Path -LiteralPath $helper41) $helper41
+$dir41 = Join-Path $WorkDir 'case41'
+New-Item -ItemType Directory -Force -Path $dir41 | Out-Null
+$result41 = Join-Path $dir41 'result.txt'
+function Invoke-Helper41([string]$Commands, [string]$Digest) {
+    if (-not $Digest) {
+        # What the campaign passes: the digest of the file as it wrote it. The helper checks it before it elevates
+        # anything and again on the copy it runs, so a file swapped in between fails rather than running (PR #67).
+        $Digest = $(if (Test-Path -LiteralPath $Commands) { [string](Get-FileHash -LiteralPath $Commands -Algorithm SHA256).Hash } else { ('0' * 64) })
+    }
+    if (Test-Path -LiteralPath $result41) { Remove-Item -LiteralPath $result41 -Force }
+    $ErrorActionPreference = 'Continue'
+    $null = & $helper41 $Commands $result41 $Digest 2>&1
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    $lines = @()
+    if (Test-Path -LiteralPath $result41) { $lines = @(Get-Content -LiteralPath $result41 | ForEach-Object { [string]$_ }) }
+    return @{ ExitCode = $code; Lines = $lines; Text = ($lines -join ' | ') }
+}
+$missing41 = Join-Path $dir41 'not-here.cmd'
+$r41a = Invoke-Helper41 $missing41
+Assert-True '41. a commands file that is not there is refused, and the reason names the path it looked for' (($r41a.ExitCode -eq 2) -and ($r41a.Text -like '*no commands file*') -and ($r41a.Text -like '*result=FAILED*')) ('exit ' + $r41a.ExitCode + '; ' + $r41a.Text)
+$plain41 = Join-Path $dir41 'plain.cmd'
+Set-Content -LiteralPath $plain41 -Encoding Ascii -Value @('@echo off', 'echo this file is not the campaign''s', 'exit /b 0')
+$r41b = Invoke-Helper41 $plain41
+Assert-True '41. a commands file without the campaign''s marker is refused before anything is asked about elevation' (($r41b.ExitCode -eq 3) -and ($r41b.Text -like '*marker*') -and ($r41b.Text -like '*result=FAILED*')) ('exit ' + $r41b.ExitCode + '; ' + $r41b.Text)
+$ours41 = Join-Path $dir41 'ours.cmd'
+Set-Content -LiteralPath $ours41 -Encoding Ascii -Value @('@echo off', 'rem NHC-POLICY-STEP SELFTEST harmless', 'set NHCFAIL=0', 'ver', 'echo step=1 rc=%ERRORLEVEL%', 'if errorlevel 1 set NHCFAIL=1', 'exit /b %NHCFAIL%')
+$r41c = Invoke-Helper41 $ours41
+$said41 = @($r41c.Lines | Where-Object { $_ -like 'elevated=*' })
+$ranIt41 = ($r41c.Text -like '*step=1 rc=0*')
+$unelevated41 = (($r41c.ExitCode -eq 5) -and ($r41c.Text -like '*elevated=no*') -and ($r41c.Text -like '*result=FAILED*') -and (-not $ranIt41))
+$elevated41 = (($r41c.ExitCode -eq 0) -and ($r41c.Text -like '*elevated=yes*') -and ($r41c.Text -like '*result=OK*') -and $ranIt41)
+Assert-True '41. and a file it does accept says whether it was elevated: unelevated it refuses and runs nothing, elevated it runs it and says OK' (($said41.Count -eq 1) -and ($unelevated41 -or $elevated41)) ('exit ' + $r41c.ExitCode + '; ' + $r41c.Text)
+
+$wrong41 = Join-Path $dir41 'ours-but-swapped.cmd'
+Set-Content -LiteralPath $wrong41 -Encoding Ascii -Value @('@echo off', 'rem NHC-POLICY-STEP SELFTEST harmless', 'exit /b 0')
+$r41d = Invoke-Helper41 $wrong41 ('0' * 64)
+Assert-True '41. a commands file whose digest is not the one the campaign hashed is refused, and before anything is elevated - the marker says what shape a file has, the digest says it is the file the campaign wrote' (($r41d.ExitCode -eq 4) -and ($r41d.Text -like '*not the one the campaign hashed*') -and ($r41d.Text -like '*elevated=not asked*')) ('exit ' + $r41d.ExitCode + '; ' + $r41d.Text)
+# -------------------- 42. the shape of one step's commands file --------------------
+# The file the campaign writes for the helper: the marker the helper insists on, every command followed by its own
+# exit code before the next command can replace it, and the number of commands that failed as the file's own exit
+# code. A step that fails halfway has to say so even where a later command succeeds, which is the case a single
+# trailing errorlevel would get wrong - so the counter is asserted against a file whose first command fails.
+Write-Output ''
+Write-Output '42. the commands file one step is made of: the marker, an exit code per command, and a count of the failures'
+$tokens42 = $null; $errors42 = $null
+$ast42 = [System.Management.Automation.Language.Parser]::ParseFile($driver, [ref]$tokens42, [ref]$errors42)
+$defs42 = @{}
+foreach ($f in $ast42.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    if (-not $defs42.ContainsKey($f.Name)) { $defs42[$f.Name] = @() }
+    $defs42[$f.Name] += $f
+}
+Assert-True '42. the driver defines New-PolicyStepFile once, so this case runs that definition and no other' ($defs42.ContainsKey('New-PolicyStepFile') -and $defs42['New-PolicyStepFile'].Count -eq 1) ('definitions: ' + $(if ($defs42.ContainsKey('New-PolicyStepFile')) { $defs42['New-PolicyStepFile'].Count } else { 0 }))
+$needs42 = @(); $free42 = @()
+if ($defs42.ContainsKey('New-PolicyStepFile') -and $defs42['New-PolicyStepFile'].Count -eq 1) {
+    $needs42 = @($defs42['New-PolicyStepFile'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) } | Sort-Object -Unique)
+    $free42 = @(Get-FreeVariables $defs42['New-PolicyStepFile'][0])
+    Invoke-Expression $defs42['New-PolicyStepFile'][0].Extent.Text
+}
+Assert-True '42. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs42.Count -eq 0) -and ($free42.Count -eq 0)) ('also needed: ' + ($needs42 -join ', ') + '; free variables: ' + ($free42 -join ', '))
+$dir42 = Join-Path $WorkDir 'case42'
+New-Item -ItemType Directory -Force -Path $dir42 | Out-Null
+$file42 = New-PolicyStepFile 'SELFTEST' 'twosteps' @('cmd /c exit 1', 'ver') $dir42
+$body42 = @(Get-Content -LiteralPath $file42 | ForEach-Object { [string]$_ })
+Assert-True '42. the marker the helper insists on is on its second line, where the helper looks for it' (($body42.Count -gt 2) -and ($body42[1] -like 'rem NHC-POLICY-STEP SELFTEST twosteps*')) ('line 2: ' + $(if ($body42.Count -gt 1) { $body42[1] } else { '(none)' }))
+Assert-True '42. every command is followed by its own exit code, before the next command can replace it' ((@($body42 | Where-Object { $_ -like 'echo step=1 rc=*' }).Count -eq 1) -and (@($body42 | Where-Object { $_ -like 'echo step=2 rc=*' }).Count -eq 1)) ($body42 -join ' / ')
+$ErrorActionPreference = 'Continue'
+$out42 = @(& $env:ComSpec '/c' $file42 2>&1 | ForEach-Object { [string]$_ })
+$code42 = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+Assert-True '42. a step whose first command failed exits non-zero although the second succeeded - the count, not the last command' (($code42 -ne 0) -and (@($out42 | Where-Object { $_ -like 'step=1 rc=1*' }).Count -eq 1) -and (@($out42 | Where-Object { $_ -like 'step=2 rc=0*' }).Count -eq 1)) ('exit ' + $code42 + '; ' + ($out42 -join ' | '))
+$file42b = New-PolicyStepFile 'SELFTEST' 'clean' @('ver') $dir42
+$ErrorActionPreference = 'Continue'
+$null = & $env:ComSpec '/c' $file42b 2>&1
+$code42b = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+Assert-True '42. and the reading is not vacuous: the same file with nothing failing exits 0' ($code42b -eq 0) ('exit ' + $code42b)
+
+# -------------------- 43. the way back is built from what was recorded, not from what is there now --------------------
+# M8's and M9's reverts are the lines RECOVER.txt gives a person, generated from the facts the scenario recorded
+# before it changed anything. The helper runs those same lines, so what they say is what the machine gets back.
+Write-Output ''
+Write-Output '43. the lines that put the machine back, generated from the recorded facts'
+$loaded43 = @('Get-M9RevertLines', 'Get-M8RegistryLines')
+$missingDefs43 = @($loaded43 | Where-Object { -not ($defs42.ContainsKey($_) -and $defs42[$_].Count -eq 1) })
+Assert-True '43. the driver defines the two line builders once each' ($missingDefs43.Count -eq 0) ('not defined once: ' + ($missingDefs43 -join ', '))
+$free43 = @()
+if ($missingDefs43.Count -eq 0) {
+    foreach ($name in $loaded43) {
+        $free43 += @(Get-FreeVariables $defs42[$name][0])
+        Invoke-Expression $defs42[$name][0].Extent.Text
+    }
+}
+Assert-True '43. neither reads a variable of the driver, which would be $null here and say nothing about it' ($free43.Count -eq 0) ('free variables: ' + ($free43 -join ', '))
+$auto43 = Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppLockerPolicyBefore = 'C:\state\M9\applocker-before.xml' } }
+Assert-True '43. a service that was Automatic and running comes back as auto, with the registry value for the case where sc config is refused, and is not stopped' ((@($auto43 | Where-Object { $_ -like 'sc config AppIDSvc start= auto*' }).Count -eq 1) -and (@($auto43 | Where-Object { $_ -like '*Services\AppIDSvc*/d 2 /f*' }).Count -eq 1) -and (@($auto43 | Where-Object { $_ -like 'net stop*' }).Count -eq 0)) ($auto43 -join ' / ')
+Assert-True '43. the local policy is removed at the registry, which needs neither PowerShell nor the AppLocker module, and the machine''s own policy is put back after it' ((@($auto43)[0] -like 'reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2"*') -and (@($auto43 | Where-Object { $_ -like '*Set-AppLockerPolicy -XmlPolicy*applocker-before.xml*' }).Count -eq 1) -and (@($auto43)[-1] -eq 'gpupdate /force')) ($auto43 -join ' / ')
+$manual43 = Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Manual'; AppIDSvcStatus = 'Stopped' } }
+Assert-True '43. a service that was Manual and stopped comes back as demand and is stopped again, and no policy is restored where none was saved' ((@($manual43 | Where-Object { $_ -like 'sc config AppIDSvc start= demand*' }).Count -eq 1) -and (@($manual43 | Where-Object { $_ -like '*/d 3 /f*' }).Count -eq 1) -and (@($manual43 | Where-Object { $_ -eq 'net stop AppIDSvc' }).Count -eq 1) -and (@($manual43 | Where-Object { $_ -like '*Set-AppLockerPolicy*' }).Count -eq 0)) ($manual43 -join ' / ')
+$none43 = Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'n/a'; AppIDSvcStatus = 'n/a' } }
+Assert-True '43. and where the service was never recorded, nothing is said about it - the policy is still removed and the machine still told to reload' ((@($none43 | Where-Object { $_ -like 'sc config*' }).Count -eq 0) -and (@($none43)[0] -like 'reg delete*SrpV2*') -and (@($none43)[-1] -eq 'gpupdate /force')) ($none43 -join ' / ')
+$m8lines43 = @(Get-M8RegistryLines)
+$m8text43 = [IO.File]::ReadAllText($driver)
+$m8start43 = $m8text43.IndexOf("@{ Id = 'M8'")
+$m8block43 = $(if ($m8start43 -ge 0) { $m8text43.Substring($m8start43, [Math]::Min(4000, $m8text43.Length - $m8start43)) } else { '' })
+$m8missing43 = @($m8lines43 | Where-Object { $m8block43.IndexOf([string]$_, [System.StringComparison]::Ordinal) -lt 0 })
+Assert-True '43. the two lines M8 applies are the two its instruction shows a person, so the instruction and the change cannot drift apart' (($m8lines43.Count -eq 2) -and ($m8missing43.Count -eq 0)) ('not in M8''s block: ' + ($m8missing43 -join ' / '))
+
+# -------------------- 44. what the hooks may and may not decide --------------------
+# The automation replaces the typing, not the checking: the precondition still says whether the machine is in the
+# state the scenario needs, and the revert is still believed only after the scenario's own check reads the machine.
+# Asserted on the driver's AST, because the policy scenarios need elevation and cannot run in this self-test.
+Write-Output ''
+Write-Output '44. the automated policy path: which scenarios have it, when it is taken, and what still decides'
+$plan44 = $m8text43
+$withHooks44 = @()
+foreach ($id44 in @('A1', 'M1', 'M2', 'M3', 'M4', 'M7', 'M8', 'M9', 'A2', 'A3', 'A4')) {
+    $start44 = $plan44.IndexOf("@{ Id = '" + $id44 + "'")
+    if ($start44 -lt 0) { continue }
+    $next44 = $plan44.IndexOf("@{ Id = '", $start44 + 10)
+    $block44 = $(if ($next44 -gt $start44) { $plan44.Substring($start44, $next44 - $start44) } else { $plan44.Substring($start44) })
+    if (($block44 -match '(?m)^\s+Apply = \{') -and ($block44 -match '(?m)^\s+Revert = \{')) { $withHooks44 += $id44 }
+}
+Assert-True '44. the three policy scenarios carry both hooks, and no other scenario carries either' ((($withHooks44 -join ',') -eq 'M7,M8,M9')) ('with both hooks: ' + ($withHooks44 -join ', '))
+$fnScenario44 = @($ast42.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-Scenario' }, $true))
+$fnCleanup44 = @($ast42.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Complete-Cleanup' }, $true))
+Assert-True '44. Invoke-Scenario and Complete-Cleanup are each defined once' (($fnScenario44.Count -eq 1) -and ($fnCleanup44.Count -eq 1)) ('Invoke-Scenario: ' + $fnScenario44.Count + ', Complete-Cleanup: ' + $fnCleanup44.Count)
+$applyIf44 = ''
+if ($fnScenario44.Count -eq 1) {
+    $applyIf44 = @($fnScenario44[0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Extent.Text -like '*$S.Apply*' }, $true) | ForEach-Object { $_.Clauses[0].Item1.Extent.Text })[0]
+}
+Assert-True '44. the apply is taken only where the scenario has one, -ManualPolicy was not given, and nobody is replaying answers' (($applyIf44 -like '*$S.Apply*') -and ($applyIf44 -like '*ManualPolicy*') -and ($applyIf44 -like '*AnswersTable*')) ('the condition: ' + $applyIf44)
+$afterApply44 = ''
+if ($fnScenario44.Count -eq 1) { $afterApply44 = [string]$fnScenario44[0].Extent.Text }
+Assert-True '44. and what says the machine is in the state the scenario needs is still the precondition, run after the helper has been' (($afterApply44 -like '*$S.Precondition $ctx*') -and ($afterApply44.IndexOf('$ap = & $S.Apply') -lt $afterApply44.IndexOf('$autoApplied = $true'))) 'the precondition is not run between the apply and the flag'
+$cleanupText44 = ''
+if ($fnCleanup44.Count -eq 1) { $cleanupText44 = [string]$fnCleanup44[0].Extent.Text }
+$revertAt44 = $cleanupText44.IndexOf('& $S.Revert $ctx')
+$verifyAt44 = $cleanupText44.IndexOf('$v0 = & $S.Cleanup.Verify $ctx')
+$attemptAt44 = $afterApply44.IndexOf('$rec.Attempted = $true; Save-State')
+Assert-True '44. the attempt is recorded before the helper is asked, because a step can fail with the machine half changed and the revert has to run anyway' (($attemptAt44 -ge 0) -and ($attemptAt44 -lt $afterApply44.IndexOf('$ap = & $S.Apply'))) ('attempt at ' + $attemptAt44 + ', apply at ' + $afterApply44.IndexOf('$ap = & $S.Apply'))
+Assert-True '44. the revert is believed only after the scenario''s own check has read the machine, never on the helper''s exit code' (($revertAt44 -ge 0) -and ($verifyAt44 -gt $revertAt44) -and ($cleanupText44 -like '*if ($v0.Ok)*')) ('revert at ' + $revertAt44 + ', verify at ' + $verifyAt44)
+Assert-True '44. and a helper that could not put the machine back falls through to the prompt that asks a person, which is what the campaign did before' ($cleanupText44 -like '*did not put the machine back*') 'no fallback message in Complete-Cleanup'
+
+# -------------------- 45. M9 is put back to what was there, not to a blank --------------------
+# PR #67 round 1: the revert restores a Script policy the machine had of its own, and the check that certifies the
+# revert demanded an empty, unenforced collection - so on such a machine the revert could never finish, and the
+# instruction it fell back to told the person to delete the rules that had just been restored. Both the check and the
+# instruction read what the scenario recorded before it changed anything now, the way M8's already did.
+Write-Output ''
+Write-Output '45. M9''s revert is verified against the Script policy the machine had, and its instruction says which way back'
+$m9text45 = [IO.File]::ReadAllText($driver)
+# From M9's own block onwards: M8's cleanup instruction is a scriptblock as well and comes first in the file,
+# and evaluating that one would call a function of the driver this case has not loaded.
+$m9at45 = $m9text45.IndexOf("@{ Id = 'M9'")
+$i45 = $(if ($m9at45 -ge 0) { $m9text45.IndexOf('Cleanup = @{ Instruction = { param($Ctx)', $m9at45) } else { -1 })
+$j45 = $(if ($i45 -ge 0) { $m9text45.IndexOf('Verify = { param($Ctx)', $i45) } else { -1 })
+Assert-True '45. M9''s cleanup instruction is built from the recorded state, not a fixed sentence' (($i45 -ge 0) -and ($j45 -gt $i45)) ('instruction at ' + $i45 + ', verify at ' + $j45)
+# The instruction reads which copy of the machine's own policy this campaign has (PR #67 round 7), so that function is
+# loaded here as well - the block evaluated below calls it, and a self-test that left it out would be running code the
+# driver does not have.
+Assert-True '45. the driver defines Get-M9OwnPolicy once, and this case loads it because the instruction calls it' ($defs42.ContainsKey('Get-M9OwnPolicy') -and $defs42['Get-M9OwnPolicy'].Count -eq 1) ('definitions: ' + $(if ($defs42.ContainsKey('Get-M9OwnPolicy')) { $defs42['Get-M9OwnPolicy'].Count } else { 0 }))
+if ($defs42.ContainsKey('Get-M9OwnPolicy') -and $defs42['Get-M9OwnPolicy'].Count -eq 1) { Invoke-Expression $defs42['Get-M9OwnPolicy'][0].Extent.Text }
+$sb45 = $null
+if (($i45 -ge 0) -and ($j45 -gt $i45)) {
+    $block45 = $m9text45.Substring($i45, $j45 - $i45)
+    $from45 = $block45.IndexOf('{ param($Ctx)')
+    $to45 = $block45.LastIndexOf('}')
+    Invoke-Expression ('$sb45 = ' + $block45.Substring($from45, $to45 - $from45 + 1))
+}
+$blank45 = @()
+$own45 = @()
+if ($null -ne $sb45) {
+    $blank45 = @(& $sb45 @{ Facts = @{ ScriptEnforcementBefore = 'none'; ScriptRuleCountBefore = '0' } })
+    $own45 = @(& $sb45 @{ Facts = @{ ScriptEnforcementBefore = 'Enabled'; ScriptRuleCountBefore = '3'; AppLockerPolicyBefore = 'C:\state\M9\applocker-before.xml' } })
+}
+Assert-True '45. where the machine had no Script policy of its own, the instruction is the one it has always been' ((@($blank45).Count -eq 2) -and (@($blank45)[0] -like 'AppLocker > Configure rule enforcement*delete the Script rules*')) ('lines: ' + (@($blank45) -join ' // '))
+Assert-True '45. where it had one, the person is told to put THAT back, the saved copy is named, and nothing says delete the rules' ((@($own45).Count -eq 2) -and (@($own45)[0] -like '*put THAT back*') -and (@($own45)[0] -like '*applocker-before.xml*') -and (@($own45)[0] -notlike '*delete the Script rules*')) ('lines: ' + (@($own45) -join ' // '))
+# To the end of M9's block, not a fixed number of characters: this window has been too small twice now, and a
+# reading that falls short reports the code as not doing what it does (PR #67 rounds 4 and 5).
+$verifyEnd45 = $(if ($j45 -gt 0) { $m9text45.IndexOf("@{ Id = '", $j45) } else { -1 })
+$verify45 = $(if ($j45 -gt 0) { $(if ($verifyEnd45 -gt $j45) { $m9text45.Substring($j45, $verifyEnd45 - $j45) } else { $m9text45.Substring($j45) }) } else { '' })
+Assert-True '45. and the check that certifies the revert reads the policy that was saved before the change, rather than demanding an empty collection' (($verify45 -like '*AppLockerPolicyBefore*') -and ($verify45 -like '*Get-AppLockerPolicyShape*') -and ($verify45 -notlike '*the revert asks for them deleted*')) 'the verify still demands a blank'
+$stepText45 = ''
+$fnStep45 = @($ast42.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-PolicyStepFile' }, $true))
+if ($fnStep45.Count -eq 1) { $stepText45 = [string]$fnStep45[0].Extent.Text }
+Assert-True '45. the step hands the helper the digest of the file it just hashed, so the consent given is for those commands' (($stepText45 -like '*Get-FileHash*') -and ($stepText45 -like '*$digest*') -and ($stepText45.IndexOf('Get-FileHash') -lt $stepText45.IndexOf('Start-Process'))) 'the digest is not computed before the helper is started'
+
+# -------------------- 46. what a revert of M9 has to put back --------------------
+# PR #67 round 2, three findings and all three about M9's own footing: Set-AppLockerPolicy without -Merge replaces the
+# whole local policy, so a revert owes the exe, dll, msi and packaged-app collections as much as the script one; a
+# mode and a rule count would certify M9's own two rules as the machine's own two; and the export that saves the
+# machine's policy has to succeed before the policy is replaced, or there is nothing to put back from.
+Write-Output ''
+Write-Output '46. the policy a revert has to put back: every collection, by the ids of its rules'
+# The shape is built by a canonicaliser of its own since PR #67 round 6 - one node as what it says rather than as it
+# was written - so both definitions are loaded here, and neither may reach anything else of the driver's.
+$loaded46 = @('Get-AppLockerPolicyShape', 'ConvertTo-XmlShape')
+$defined46 = @($loaded46 | Where-Object { $defs42.ContainsKey($_) -and $defs42[$_].Count -eq 1 })
+Assert-True '46. the driver defines Get-AppLockerPolicyShape and the canonicaliser it calls once each, so this case runs those definitions and no others' ($defined46.Count -eq $loaded46.Count) ('defined once: ' + ($defined46 -join ', ') + ' of ' + ($loaded46 -join ', '))
+$needs46 = @(); $free46 = @()
+if ($defined46.Count -eq $loaded46.Count) {
+    foreach ($fn46 in $loaded46) {
+        $needs46 += @($defs42[$fn46][0].Body.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) -and $loaded46 -notcontains $_ })
+        $free46 += @(Get-FreeVariables $defs42[$fn46][0])
+        Invoke-Expression $defs42[$fn46][0].Extent.Text
+    }
+    $needs46 = @($needs46 | Sort-Object -Unique)
+    $free46 = @($free46 | Sort-Object -Unique)
+}
+Assert-True '46. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs46.Count -eq 0) -and ($free46.Count -eq 0)) ('also needed: ' + ($needs46 -join ', ') + '; free variables: ' + ($free46 -join ', '))
+$saved46 = '<AppLockerPolicy Version="1"><RuleCollection Type="Script" EnforcementMode="Enabled"><FilePathRule Id="AAA" /><FilePathRule Id="BBB" /></RuleCollection><RuleCollection Type="Exe" EnforcementMode="Enabled"><FilePathRule Id="CCC" /></RuleCollection></AppLockerPolicy>'
+$m9own46 = '<AppLockerPolicy Version="1"><RuleCollection Type="Script" EnforcementMode="Enabled"><FilePathRule Id="111" /><FilePathRule Id="222" /></RuleCollection></AppLockerPolicy>'
+$lostExe46 = '<AppLockerPolicy Version="1"><RuleCollection Type="Script" EnforcementMode="Enabled"><FilePathRule Id="BBB" /><FilePathRule Id="AAA" /></RuleCollection></AppLockerPolicy>'
+$restored46 = '<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="Enabled"><FilePathRule Id="ccc" /></RuleCollection><RuleCollection Type="Script" EnforcementMode="Enabled"><FilePathRule Id="bbb" /><FilePathRule Id="aaa" /></RuleCollection></AppLockerPolicy>'
+$empty46 = '<AppLockerPolicy Version="1"><RuleCollection Type="Script" EnforcementMode="NotConfigured" /><RuleCollection Type="Exe" EnforcementMode="NotConfigured" /></AppLockerPolicy>'
+$shapeSaved46 = Get-AppLockerPolicyShape $saved46
+Assert-True '46. a policy put back exactly - the same rules in the same collections, whatever their order and case - reads as the one that was saved' ((Get-AppLockerPolicyShape $restored46) -eq $shapeSaved46) ('restored: ' + (Get-AppLockerPolicyShape $restored46) + ' / saved: ' + $shapeSaved46)
+Assert-True '46. M9''s own two rules do not read as the machine''s own two, which a mode and a count could not tell apart' ((Get-AppLockerPolicyShape $m9own46) -ne $shapeSaved46) ('m9: ' + (Get-AppLockerPolicyShape $m9own46) + ' / saved: ' + $shapeSaved46)
+Assert-True '46. and a collection the revert lost is a difference too, although the script rules came back' ((Get-AppLockerPolicyShape $lostExe46) -ne $shapeSaved46) ('without the exe collection: ' + (Get-AppLockerPolicyShape $lostExe46))
+Assert-True '46. nothing is nothing however it is spelled: collections with no rules and no enforcement drop out' ((Get-AppLockerPolicyShape $empty46) -eq '') ('empty policy reads as: [' + (Get-AppLockerPolicyShape $empty46) + ']')
+Assert-True '46. and a saved file that is not a policy says so rather than reading as nothing, which would certify any machine' ((Get-AppLockerPolicyShape 'not a policy <<<') -eq 'unreadable') ('reads as: ' + (Get-AppLockerPolicyShape 'not a policy <<<'))
+# The export is a prerequisite for the replacement, not a step that may fail quietly: a step file runs every line and
+# counts the failures, so the apply has to stop itself between the two.
+# M9's whole block, to its end: a window of a few thousand characters does not reach the hooks, because the
+# instruction and the prerequisite that come before them are longer than that (this case's own first reading).
+$m9apply46 = ''
+$applyAt46 = $m9text45.IndexOf("@{ Id = 'M9'")
+if ($applyAt46 -ge 0) {
+    $endAt46 = $m9text45.IndexOf("@{ Id = '", $applyAt46 + 10)
+    $m9apply46 = $(if ($endAt46 -gt $applyAt46) { $m9text45.Substring($applyAt46, $endAt46 - $applyAt46) } else { $m9text45.Substring($applyAt46) })
+}
+# The apply hook alone. M9's block holds Prepare as well, and since PR #67 round 6 Prepare reads the local policy too,
+# so a search over the whole block for the export finds the wrong one - the same trap as round 5's fixed-size windows,
+# and it is answered the same way: the slice ends where the next hook begins.
+$m9hook46 = ''
+$hookAt46 = $m9apply46.IndexOf('Apply = {')
+if ($hookAt46 -ge 0) {
+    $hookEnd46 = $m9apply46.IndexOf('Revert = {', $hookAt46)
+    $m9hook46 = $(if ($hookEnd46 -gt $hookAt46) { $m9apply46.Substring($hookAt46, $hookEnd46 - $hookAt46) } else { $m9apply46.Substring($hookAt46) })
+}
+$exportAt46 = $m9hook46.IndexOf('Get-AppLockerPolicy -Local -Xml')
+$guardAt46 = $m9hook46.IndexOf('exit /b 1', [Math]::Max(0, $m9hook46.IndexOf('Get-AppLockerPolicy -Local -Xml')))
+$setAt46 = $m9hook46.IndexOf('Set-AppLockerPolicy -XmlPolicy')
+Assert-True '46. the apply stops between saving the machine''s policy and replacing it, where the save wrote nothing' (($exportAt46 -ge 0) -and ($guardAt46 -gt $exportAt46) -and ($setAt46 -gt $guardAt46) -and ($m9apply46 -like '*if %%~zA EQU 0 exit /b 1*')) ('export at ' + $exportAt46 + ', guard at ' + $guardAt46 + ', replace at ' + $setAt46)
+Assert-True '46. and the staged way back is checked against the digest recorded when it was staged, not against itself' (($m9apply46 -like '*RevertDigest*') -and ($m9apply46 -like "*Invoke-PolicyStepFile `$Ctx.Id 'revert' `$stagedRevert `$stagedHelper `$Ctx.Dir (*RevertDigest*")) 'the revert does not pass the recorded digest'
+# And the helper's own footing: %SystemRoot%\Temp is writable by ordinary users, so a folder already there may carry
+# an explicit write entry icacls /grant:r would leave in place - it is refused where it is a reparse point, removed,
+# and made again by the elevated process before anything is copied into it.
+$helperText46 = [IO.File]::ReadAllText($helper41)
+$reparseAt46 = $helperText46.IndexOf('fsutil reparsepoint query')
+$rdAt46 = $helperText46.IndexOf('rd /s /q')
+$mdAt46 = $helperText46.IndexOf('md "%NHCSAFE%"')
+$icaclsAt46 = $helperText46.IndexOf('icacls "%NHCSAFE%"')
+$copyAt46 = $helperText46.IndexOf('copy /y "%~1" "%NHCSTEP%"')
+Assert-True '46. the helper refuses a reparse point where its folder should be, makes the folder fresh, locks it, and only then copies into it' ((($reparseAt46 -ge 0) -and ($rdAt46 -gt $reparseAt46) -and ($mdAt46 -gt $rdAt46) -and ($icaclsAt46 -gt $mdAt46) -and ($copyAt46 -gt $icaclsAt46))) ('reparse ' + $reparseAt46 + ', rd ' + $rdAt46 + ', md ' + $mdAt46 + ', icacls ' + $icaclsAt46 + ', copy ' + $copyAt46)
+
+# -------------------- 47. what M9 owes a machine whose own policy it replaced --------------------
+# PR #67 round 3, four findings, all about the same file: applocker-before.xml is what the revert installs and what
+# the check reads as its expected value, so where it lives and what it is decide whether either means anything. It is
+# saved into the folder the helper locks now, a file already at that name is removed before the export, a document
+# that is not a policy is not an empty policy, whether the machine had a policy of its own is read from that file
+# rather than from the Script collection alone, and RECOVER.txt names the way back for a session that dies while the
+# rules are enforced - where the campaign cannot start at all, because it lives in what the policy denies.
+Write-Output ''
+Write-Output '47. the policy M9 saves: where it is kept, what counts as one, and what a crash leaves the person'
+Assert-True '47. a well-formed document that is not a policy reads as unreadable, not as an empty policy - the reading that would certify a machine whose policy was deleted and never put back' ((Get-AppLockerPolicyShape '<foo/>') -eq 'unreadable') ('reads as: [' + (Get-AppLockerPolicyShape '<foo/>') + ']')
+Assert-True '47. and a policy with only an exe collection still reads as a policy, which is the case a Script-only reading missed' ((Get-AppLockerPolicyShape '<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="Enabled"><FilePathRule Id="CCC" /></RuleCollection></AppLockerPolicy>') -like 'Exe:Enabled:*FilePathRule*CCC*') ('reads as: ' + (Get-AppLockerPolicyShape '<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="Enabled"><FilePathRule Id="CCC" /></RuleCollection></AppLockerPolicy>'))
+# The notes ask Get-M9OwnPolicy which copy of the machine's own policy this campaign has (PR #67 round 7), so both
+# definitions are loaded here and neither may reach anything else of the driver's.
+$loaded47 = @('Get-M9RecoveryLines', 'Get-M9OwnPolicy')
+$defined47 = @($loaded47 | Where-Object { $defs42.ContainsKey($_) -and $defs42[$_].Count -eq 1 })
+Assert-True '47. the driver defines the notes and the function they ask once each, so this case runs those definitions and no others' ($defined47.Count -eq $loaded47.Count) ('defined once: ' + ($defined47 -join ', ') + ' of ' + ($loaded47 -join ', '))
+$needs47 = @(); $free47 = @()
+if ($defined47.Count -eq $loaded47.Count) {
+    foreach ($fn47 in $loaded47) {
+        $needs47 += @($defs42[$fn47][0].Body.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) -and $loaded47 -notcontains $_ })
+        $free47 += @(Get-FreeVariables $defs42[$fn47][0])
+        Invoke-Expression $defs42[$fn47][0].Extent.Text
+    }
+    $needs47 = @($needs47 | Sort-Object -Unique)
+    $free47 = @($free47 | Sort-Object -Unique)
+}
+Assert-True '47. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs47.Count -eq 0) -and ($free47.Count -eq 0)) ('also needed: ' + ($needs47 -join ', ') + '; free variables: ' + ($free47 -join ', '))
+$plain47 = @(Get-M9RecoveryLines @{})
+Assert-True '47. with nothing recorded, the notes say what they have always said' ((($plain47 -join ' ') -like '*secpol.msc*delete the Script rules*') -and (($plain47 -join ' ') -notlike '*Set-AppLockerPolicy*')) ($plain47 -join ' / ')
+$crash47 = @(Get-M9RecoveryLines @{ StagedRevert = 'C:\Windows\Temp\nhc-policy\nhc-policy-revert.cmd'; AppLockerPolicyBefore = 'C:\Windows\Temp\nhc-policy\applocker-before.xml'; AppIDSvcStartType = 'Manual'; AppIDSvcStatus = 'Stopped' })
+$crashText47 = ($crash47 -join ' ')
+Assert-True '47. where the apply staged the way back, the notes name that file first and say it needs no PowerShell - which is what a session that cannot start the campaign again has' (($crashText47 -like '*nhc-policy-revert.cmd*') -and ($crashText47 -like '*needs no PowerShell*')) $crashText47
+Assert-True '47. and where this machine had a policy of its own, they say NOT to delete the rules and name the saved copy, instead of the sentence that would take that policy away' (($crashText47 -like '*Do NOT simply delete*') -and ($crashText47 -like '*Set-AppLockerPolicy -XmlPolicy "C:\Windows\Temp\nhc-policy\applocker-before.xml"*') -and ($crashText47 -notlike '*delete the Script rules; then*')) $crashText47
+Assert-True '47. the service the scenario recorded is still put back by the same notes' (($crashText47 -like '*sc config AppIDSvc start= demand*') -and ($crashText47 -like '*net stop AppIDSvc*')) $crashText47
+# The instruction reads the saved policy, not the Script collection alone: a machine with exe rules and no script
+# rules had a policy of its own too, and the apply replaced all of it.
+$dir47 = Join-Path $WorkDir 'case47'
+New-Item -ItemType Directory -Force -Path $dir47 | Out-Null
+$exeOnly47 = Join-Path $dir47 'applocker-before.xml'
+Set-Content -LiteralPath $exeOnly47 -Encoding UTF8 -Value '<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="Enabled"><FilePathRule Id="CCC" /></RuleCollection></AppLockerPolicy>'
+$exeFacts47 = @{ ScriptEnforcementBefore = 'none'; ScriptRuleCountBefore = '0'; AppLockerPolicyBefore = $exeOnly47 }
+$exeLines47 = @()
+if ($null -ne $sb45) { $exeLines47 = @(& $sb45 @{ Facts = $exeFacts47 }) }
+Assert-True '47. a machine with exe rules and no script rules is a machine with a policy of its own, and the instruction says put THAT back' ((@($exeLines47).Count -eq 2) -and (@($exeLines47)[0] -like '*put THAT back*') -and (@($exeLines47)[0] -like '*applocker-before.xml*')) ('lines: ' + (@($exeLines47) -join ' // '))
+# And the apply's own order: the old target removed, the export, its two guards, the copy into the locked folder and
+# its guard, and only then the policy replaced - with the notes written before any of it runs.
+$delAt47 = $m9hook46.IndexOf('del /f /q')
+$exportAt47 = $m9hook46.IndexOf('Get-AppLockerPolicy -Local -Xml')
+$copyAt47 = $m9hook46.IndexOf('copy /y "'' + $before + ''" "'' + $beforeCopy + ''"')
+$setAt47 = $m9hook46.IndexOf('Set-AppLockerPolicy -XmlPolicy')
+$notesAt47 = $m9hook46.IndexOf('Write-RecoveryNotes')
+Assert-True '47. the export writes over nothing and into the locked folder: the old file is removed first, the copy out to the campaign''s own folder is evidence, and only then is the policy replaced' ((($delAt47 -ge 0) -and ($delAt47 -lt $exportAt47) -and ($copyAt47 -gt $exportAt47) -and ($setAt47 -gt $copyAt47))) ('del ' + $delAt47 + ', export ' + $exportAt47 + ', copy ' + $copyAt47 + ', replace ' + $setAt47)
+Assert-True '47. and the notes are rewritten before the step runs, so a session that dies under the enforced rules finds the staged way back named in them' (($notesAt47 -ge 0) -and ($notesAt47 -lt $m9hook46.IndexOf('Invoke-PolicyChange'))) ('notes at ' + $notesAt47 + ', the step at ' + $m9hook46.IndexOf('Invoke-PolicyChange'))
+Assert-True '47. what the revert installs and what the check reads is the copy in the locked folder, not the one in the campaign''s own' (($m9apply46 -like '*$before = Join-Path $staged ''applocker-before.xml''*') -and ($m9apply46 -like '*AppLockerPolicyBeforeCopy*')) 'the saved policy is not staged'
+
+# -------------------- 48. the policy M9 applies, and what recorded data may do inside a command line --------------------
+# The self-audit the working method asks for, run over the whole change after round 3 - looking for the family the
+# reviewer had been finding three times: something read as trustworthy that is not. Two more of it. The policy M9
+# applies is read from the campaign's own folder, which the account the campaign runs as can write to, and it is
+# applied elevated - the same thing the commands file was before round 1, and it was not hashed. And the lines a
+# revert is built from carry recorded state straight into a command line: M8's two registry values as the machine had
+# them, M9's service startup type. A value with a quote in it ends the argument it sits in, and what follows is more
+# command - and the state is a file under C:\Users\Public, not only the registry.
+Write-Output ''
+Write-Output '48. the policy applied elevated is the one this campaign read, and no recorded value can end its own command'
+$loaded48 = @('Test-PolicyLineData')
+Assert-True '48. the driver defines Test-PolicyLineData once, so this case runs that definition and no other' ($defs42.ContainsKey('Test-PolicyLineData') -and $defs42['Test-PolicyLineData'].Count -eq 1) ('definitions: ' + $(if ($defs42.ContainsKey('Test-PolicyLineData')) { $defs42['Test-PolicyLineData'].Count } else { 0 }))
+$needs48 = @(); $free48 = @()
+if ($defs42.ContainsKey('Test-PolicyLineData') -and $defs42['Test-PolicyLineData'].Count -eq 1) {
+    $needs48 = @($defs42['Test-PolicyLineData'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) -and $loaded48 -notcontains $_ } | Sort-Object -Unique)
+    $free48 = @(Get-FreeVariables $defs42['Test-PolicyLineData'][0])
+    Invoke-Expression $defs42['Test-PolicyLineData'][0].Extent.Text
+}
+Assert-True '48. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs48.Count -eq 0) -and ($free48.Count -eq 0)) ('also needed: ' + ($needs48 -join ', ') + '; free variables: ' + ($free48 -join ', '))
+Assert-True '48. the values a machine really has pass: AllSigned, 1, an empty value, nothing recorded at all' ((Test-PolicyLineData 'AllSigned') -and (Test-PolicyLineData '1') -and (Test-PolicyLineData '') -and (Test-PolicyLineData $null)) 'a plain value was refused'
+Assert-True '48. a value carrying a quote does not travel, because it would end the argument it sits in and the rest would be command' (-not (Test-PolicyLineData ('x' + [char]34 + ' & calc & ' + [char]34 + 'y'))) 'a quoted break-out was accepted'
+Assert-True '48. nor do the characters cmd reads as syntax, nor a control character' ((-not (Test-PolicyLineData 'a&b')) -and (-not (Test-PolicyLineData 'a|b')) -and (-not (Test-PolicyLineData 'a>b')) -and (-not (Test-PolicyLineData ('a' + [char]10 + 'b')))) 'a value with cmd syntax in it was accepted'
+$m8revert48 = ''
+$m8at48 = $m9text45.IndexOf("@{ Id = 'M8'")
+if ($m8at48 -ge 0) {
+    $m8end48 = $m9text45.IndexOf("@{ Id = '", $m8at48 + 10)
+    $m8revert48 = $(if ($m8end48 -gt $m8at48) { $m9text45.Substring($m8at48, $m8end48 - $m8at48) } else { $m9text45.Substring($m8at48) })
+}
+Assert-True '48. and M8''s revert asks that question of the two values it carries before it asks the helper for anything' (($m8revert48 -like '*Test-PolicyLineData*') -and ($m8revert48 -like '*RegExecutionPolicyBefore*') -and ($m8revert48 -like '*RegEnableScriptsBefore*')) 'M8''s revert does not check the values it carries'
+$weird48 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = ('Weird' + [char]38 + ' calc'); AppIDSvcStatus = 'Running' } })
+Assert-True '48. a service startup type Windows does not have produces no command at all, rather than one built around it' ((@($weird48 | Where-Object { $_ -like 'sc config*' }).Count -eq 0) -and (@($weird48)[0] -like 'reg delete*') -and (@($weird48)[-1] -eq 'gpupdate /force')) ($weird48 -join ' / ')
+$known48 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running' } })
+Assert-True '48. and the reading is not vacuous: a startup type it does have still produces its line' (@($known48 | Where-Object { $_ -like 'sc config AppIDSvc start= auto*' }).Count -eq 1) ($known48 -join ' / ')
+$xmlCopyAt48 = $m9apply46.IndexOf('copy /y "'' + $xml + ''" "'' + $stagedXml + ''"')
+$xmlHashAt48 = $m9apply46.IndexOf('certutil -hashfile "'' + $stagedXml + ''" SHA256')
+$setStagedAt48 = $m9apply46.IndexOf('Set-AppLockerPolicy -XmlPolicy ''''' + "'" + ' + $stagedXml')
+Assert-True '48. the policy is copied into the locked folder, checked there against the digest this campaign took, and applied from that copy' ((($xmlCopyAt48 -ge 0) -and ($xmlHashAt48 -gt $xmlCopyAt48) -and ($m9apply46 -like '*$xmlDigest*'))) ('copy ' + $xmlCopyAt48 + ', hash ' + $xmlHashAt48 + ', digest named: ' + ($m9apply46 -like '*$xmlDigest*'))
+Assert-True '48. and what is applied is the staged copy, not the one in the campaign''s own folder' (($m9apply46 -like '*Set-AppLockerPolicy -XmlPolicy*$stagedXml*') -and ($m9apply46 -notlike '*Set-AppLockerPolicy -XmlPolicy*'' + $xml + ''*')) 'the policy applied is not the staged copy'
+
+# -------------------- 49. what round 4 asked of the three scenarios --------------------
+# PR #67 round 4: the program that checks a digest is not itself checked; a backup that travels through a writable
+# path is a backup that can be swapped one step later; M7 deleted a value the machine may have had of its own; M9
+# changed a service whose state it had failed to read; a rule is not its id; and a revert of M8 that half succeeded
+# read as done, because only the policy the two values add up to was compared.
+Write-Output ''
+Write-Output '49. the helper checked before it is elevated, the values put back as they were, and a rule read as a rule'
+$helperDigest49 = [string](Get-FileHash -LiteralPath $helper41 -Algorithm SHA256).Hash
+$driverText49 = [IO.File]::ReadAllText($driver)
+$constAt49 = $driverText49.IndexOf('$PolicyHelperDigest = ')
+$const49 = ''
+if ($constAt49 -ge 0) {
+    $quote49 = $driverText49.IndexOf("'", $constAt49)
+    $end49 = $driverText49.IndexOf("'", $quote49 + 1)
+    $const49 = $driverText49.Substring($quote49 + 1, $end49 - $quote49 - 1)
+}
+Assert-True '49. the digest the driver carries for the helper is the digest of the helper it ships with, so the constant cannot go stale unnoticed' ($const49 -eq $helperDigest49) ('driver: ' + $const49 + '; file: ' + $helperDigest49)
+$stepText49 = ''
+$fnStep49 = @($ast42.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-PolicyStepFile' }, $true))
+if ($fnStep49.Count -eq 1) { $stepText49 = [string]$fnStep49[0].Extent.Text }
+Assert-True '49. and the step compares it before it elevates anything - hashing the commands says nothing about the program that reads them' (($stepText49 -like '*PolicyHelperDigest*') -and ($stepText49.IndexOf('PolicyHelperDigest') -lt $stepText49.IndexOf('Start-Process'))) 'the helper is not checked before it is started'
+# M7 puts back the value the machine had, where it had one.
+$m7block49 = ''
+$m7at49 = $driverText49.IndexOf("@{ Id = 'M7'")
+if ($m7at49 -ge 0) {
+    $m7end49 = $driverText49.IndexOf("@{ Id = '", $m7at49 + 10)
+    $m7block49 = $(if ($m7end49 -gt $m7at49) { $driverText49.Substring($m7at49, $m7end49 - $m7at49) } else { $driverText49.Substring($m7at49) })
+}
+Assert-True '49. M7 records what __PSLockdownPolicy was before it changed it, and records whether it was there apart from what it said' (($m7block49 -like '*Prepare = {*') -and ($m7block49 -like '*LockdownExisted*') -and ($m7block49 -like '*LockdownValue*') -and ($m7block49 -like '*Get-MachineEnvRaw ''__PSLockdownPolicy''*')) 'M7 records nothing about the value it overwrites'
+Assert-True '49. its revert puts that value back where there was one and deletes only where there was none, and its check compares existence and data with what was recorded' (($m7block49 -like '*setx /M __PSLockdownPolicy*$was*') -and ($m7block49 -like '*reg delete*__PSLockdownPolicy /f*') -and ($m7block49 -like '*before M7 it was*') -and ($m7block49 -like '*LockdownExisted*')) 'M7 still deletes whatever it finds'
+# M9 does not change a service it could not read.
+$m9prep49 = $m9apply46.IndexOf('Prepare = {')
+$m9throw49 = $m9apply46.IndexOf('cannot be read (')
+Assert-True '49. M9 refuses the scenario where the service state could not be read, rather than changing what nothing could put back' (($m9prep49 -ge 0) -and ($m9throw49 -gt $m9prep49) -and ($m9apply46 -like '*throw (*Application Identity service cannot be read*')) 'M9 still records n/a and goes on'
+# A rule is its definition.
+$sameIds49a = '<AppLockerPolicy Version="1"><RuleCollection Type="Script" EnforcementMode="Enabled"><FilePathRule Id="AAA" Action="Allow" UserOrGroupSid="S-1-1-0" /></RuleCollection></AppLockerPolicy>'
+$sameIds49b = '<AppLockerPolicy Version="1"><RuleCollection Type="Script" EnforcementMode="Enabled"><FilePathRule Id="AAA" Action="Deny" UserOrGroupSid="S-1-1-0" /></RuleCollection></AppLockerPolicy>'
+Assert-True '49. the same rule id with another action is another rule, which a shape built from ids read as the same one' ((Get-AppLockerPolicyShape $sameIds49a) -ne (Get-AppLockerPolicyShape $sameIds49b)) ('allow: ' + (Get-AppLockerPolicyShape $sameIds49a) + ' / deny: ' + (Get-AppLockerPolicyShape $sameIds49b))
+Assert-True '49. and the reading is not vacuous: the same rule written the same way twice is the same shape' ((Get-AppLockerPolicyShape $sameIds49a) -eq (Get-AppLockerPolicyShape ($sameIds49a -replace '><', ">`r`n<"))) ('one: ' + (Get-AppLockerPolicyShape $sameIds49a))
+# M8 is put back value by value.
+$m8verify49 = ''
+$m8at49b = $driverText49.IndexOf("@{ Id = 'M8'")
+if ($m8at49b -ge 0) {
+    $m8end49b = $driverText49.IndexOf("@{ Id = '", $m8at49b + 10)
+    $m8verify49 = $(if ($m8end49b -gt $m8at49b) { $driverText49.Substring($m8at49b, $m8end49b - $m8at49b) } else { $driverText49.Substring($m8at49b) })
+}
+Assert-True '49. M8''s check reads both values back - whether each is there, its kind and its data - before the policy they add up to' (($m8verify49 -like '*GetValueKind*') -and ($m8verify49 -like '*RegExecutionPolicyKindBefore*') -and ($m8verify49 -like '*RegEnableScriptsKindBefore*') -and ($m8verify49 -like '*the revert did not put the key back as it was*')) 'M8 still certifies on the derived policy alone'
+
+# -------------------- 50. what round 6 asked of putting the machine back --------------------
+# PR #67 round 6, five findings and every one of them about the way back. A recorded __PSLockdownPolicy value that
+# cannot be carried in a command line was still answered with a delete, and the delete is how it would be lost. A path
+# recorded before the export ran was read as a policy that had been exported, so a consent prompt refused - which
+# changes nothing on the machine - failed the revert. The shape a policy is compared by collapsed whitespace over the
+# whole document, inside attribute values as well, where it is not formatting but the path a rule matches. The manual
+# path was compared on a mode and a count although the whole policy could have been saved before the two paths part.
+# And M8's data was compared with -ne, which folds case. Beside them, one the self-audit found: Write-RecoveryNotes is
+# called at the driver's top level and calls Test-PolicyLineData, which was defined three lines below that call - and
+# -and short-circuits, so the call is made only where the state says M7 recorded a value, which is every resume after
+# M7 prepared, the one moment those two files matter. Measured on this runtime: the script ends with
+# CommandNotFoundException there. M7's half of RECOVER.txt and undo-M7.cmd is a function of the recorded facts now, so
+# the three cases are run here and not read.
+Write-Output ''
+Write-Output '50. the three cases of M7''s way back, a policy compared as it is written, and no top-level call that outruns its own definitions'
+$loaded50 = @('Test-PolicyLineData', 'Get-M7RecoveryLines', 'Get-M7UndoCommand', 'Get-M7UndoLines')
+$defined50 = @($loaded50 | Where-Object { $defs42.ContainsKey($_) -and $defs42[$_].Count -eq 1 })
+Assert-True '50. the driver defines each of M7''s way-back functions once, so this case runs those definitions and no others' ($defined50.Count -eq $loaded50.Count) ('defined once: ' + ($defined50 -join ', ') + ' of ' + ($loaded50 -join ', '))
+$needs50 = @(); $free50 = @()
+if ($defined50.Count -eq $loaded50.Count) {
+    foreach ($fn50 in $loaded50) {
+        $needs50 += @($defs42[$fn50][0].Body.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) -and $loaded50 -notcontains $_ })
+        $free50 += @(Get-FreeVariables $defs42[$fn50][0])
+        Invoke-Expression $defs42[$fn50][0].Extent.Text
+    }
+}
+Assert-True '50. they call and read nothing else of the driver, so what runs here is what runs there' ((@($needs50).Count -eq 0) -and (@($free50).Count -eq 0)) ('also needed: ' + (@($needs50 | Sort-Object -Unique) -join ', ') + '; free variables: ' + (@($free50 | Sort-Object -Unique) -join ', '))
+$none50 = @{ LockdownExisted = 'no'; LockdownValue = '' }
+$safe50 = @{ LockdownExisted = 'yes'; LockdownValue = '4' }
+$unsafe50 = @{ LockdownExisted = 'yes'; LockdownValue = ('x' + [char]34 + ' & calc & ' + [char]34 + 'y') }
+Assert-True '50. the value used for the third case is one the driver''s own reading refuses, and the second one it accepts - so these are its three cases and not three of mine' ((-not (Test-PolicyLineData ([string]$unsafe50.LockdownValue))) -and (Test-PolicyLineData ([string]$safe50.LockdownValue))) 'the crafted values are not the two kinds they stand for'
+$notesNone50 = (@(Get-M7RecoveryLines $none50) -join "`n")
+$undoNone50 = (@(Get-M7UndoLines $none50) -join "`n")
+Assert-True '50. a machine that had no value is told to remove it, in the notes and in the file it names' (($notesNone50 -match 'reg delete .*__PSLockdownPolicy /f') -and ($undoNone50 -match 'reg delete .*__PSLockdownPolicy /f') -and ($undoNone50 -like '@echo off*') -and ($notesNone50 -match 'removing it is putting it back')) ($notesNone50 -replace "`n", ' / ')
+$notesSafe50 = (@(Get-M7RecoveryLines $safe50) -join "`n")
+$undoSafe50 = (@(Get-M7UndoLines $safe50) -join "`n")
+Assert-True '50. a value that can be carried is put back by the line that carries it, and neither file offers a delete' (($notesSafe50 -match 'setx /M __PSLockdownPolicy "4"') -and ($undoSafe50 -match 'setx /M __PSLockdownPolicy "4"') -and ($notesSafe50 -notmatch 'reg delete') -and ($undoSafe50 -notmatch 'reg delete')) (($notesSafe50 + ' // ' + $undoSafe50) -replace "`n", ' / ')
+$notesUnsafe50 = (@(Get-M7RecoveryLines $unsafe50) -join "`n")
+$undoUnsafe50 = (@(Get-M7UndoLines $unsafe50) -join "`n")
+Assert-True '50. a value that cannot be carried is answered with neither a delete nor a command line built around it, and neither file repeats the value a person would paste - both name where the machine''s own is kept instead' (($notesUnsafe50 -notmatch 'reg delete') -and ($undoUnsafe50 -notmatch 'reg delete') -and ($notesUnsafe50 -notmatch 'setx /M __PSLockdownPolicy') -and ($undoUnsafe50 -notmatch 'setx /M __PSLockdownPolicy') -and (-not $notesUnsafe50.Contains([string]$unsafe50.LockdownValue)) -and (-not $undoUnsafe50.Contains([string]$unsafe50.LockdownValue)) -and ($notesUnsafe50 -match 'Scenarios\.M7\.Facts\.LockdownValue') -and ($undoUnsafe50 -match 'Scenarios\.M7\.Facts\.LockdownValue')) (($notesUnsafe50 + ' // ' + $undoUnsafe50) -replace "`n", ' / ')
+$actsUnsafe50 = @(@(Get-M7UndoLines $unsafe50) | Where-Object { $_ -notmatch '^(@echo off$|rem |echo |pause$|exit /b 1$)' })
+Assert-True '50. and that file changes nothing and ends saying so: every line of it is a comment, an echo, a pause or its own exit code' (($actsUnsafe50.Count -eq 0) -and ((@(Get-M7UndoLines $unsafe50))[-1] -eq 'exit /b 1')) ('lines that act: ' + ($actsUnsafe50 -join ' / '))
+$actsSafe50 = @(@(Get-M7UndoLines $safe50) | Where-Object { $_ -notmatch '^(@echo off$|rem |echo |pause$|exit /b 1$)' })
+Assert-True '50. the reading is not vacuous: the file written for a value that can be carried does carry the command that puts it back' ($actsSafe50 -contains 'setx /M __PSLockdownPolicy "4"') ('lines that act: ' + ($actsSafe50 -join ' / '))
+$notesFn50 = ''
+if ($defs42.ContainsKey('Write-RecoveryNotes') -and $defs42['Write-RecoveryNotes'].Count -eq 1) { $notesFn50 = [string]$defs42['Write-RecoveryNotes'][0].Extent.Text }
+Assert-True '50. and both files are written from these functions, with no second copy of the lines left inline - what this case drives is what a person reads' (($notesFn50 -like '*Get-M7RecoveryLines $m7Facts*') -and ($notesFn50 -like '*Get-M7UndoLines $m7Facts*') -and ($notesFn50 -notlike '*__PSLockdownPolicy*')) ('Write-RecoveryNotes still spells M7''s lines itself: ' + ($notesFn50 -like '*__PSLockdownPolicy*'))
+# The shape a policy is compared by: what a rule says, not how the document was written.
+$spaced50a = '<AppLockerPolicy Version="1"><RuleCollection Type="Script" EnforcementMode="Enabled"><FilePathRule Id="AAA" Action="Allow"><Conditions><FilePathCondition Path="C:\Data  Set\*" /></Conditions></FilePathRule></RuleCollection></AppLockerPolicy>'
+$spaced50b = $spaced50a.Replace('C:\Data  Set\*', 'C:\Data Set\*')
+Assert-True '50. two path rules that differ only by a doubled space inside the path are two rules, because those two paths are two folders' ((Get-AppLockerPolicyShape $spaced50a) -ne (Get-AppLockerPolicyShape $spaced50b)) ('two spaces: ' + (Get-AppLockerPolicyShape $spaced50a) + ' / one: ' + (Get-AppLockerPolicyShape $spaced50b))
+$reformatted50 = ($spaced50a -replace '><', ">`r`n    <").Replace('Id="AAA" Action="Allow"', 'Action="Allow"  Id="AAA"')
+Assert-True '50. and the reading is not vacuous: the same policy written out with newlines, indentation and its attributes in another order is the same policy' ((Get-AppLockerPolicyShape $reformatted50) -eq (Get-AppLockerPolicyShape $spaced50a)) ('reformatted: ' + (Get-AppLockerPolicyShape $reformatted50) + ' / as written: ' + (Get-AppLockerPolicyShape $spaced50a))
+$said50a = '<AppLockerPolicy Version="1"><RuleCollection Type="Script" EnforcementMode="Enabled"><FilePathRule Id="AAA"><Description>two  spaces</Description></FilePathRule></RuleCollection></AppLockerPolicy>'
+$said50b = $said50a.Replace('two  spaces', 'two spaces')
+Assert-True '50. what a rule says in its own text is part of it as well, read the same way - and the whitespace between elements still is not' ((((Get-AppLockerPolicyShape $said50a) -ne (Get-AppLockerPolicyShape $said50b))) -and ((Get-AppLockerPolicyShape $said50a) -eq (Get-AppLockerPolicyShape ($said50a -replace '><', ">`r`n  <")))) ('said: ' + (Get-AppLockerPolicyShape $said50a) + ' / ' + (Get-AppLockerPolicyShape $said50b))
+# What M9 saves before it changes anything, and what a missing file means.
+$m9block50 = ''
+$m9at50 = $m9text45.IndexOf("@{ Id = 'M9'")
+if ($m9at50 -ge 0) {
+    $m9end50 = $m9text45.IndexOf("@{ Id = '", $m9at50 + 10)
+    $m9block50 = $(if ($m9end50 -gt $m9at50) { $m9text45.Substring($m9at50, $m9end50 - $m9at50) } else { $m9text45.Substring($m9at50) })
+}
+$preparedAt50 = $m9block50.IndexOf('applocker-before-prepare.xml')
+$recordAt50 = $m9block50.IndexOf('AppLockerPolicyPrepared')
+$readAt50 = $m9block50.LastIndexOf('AppLockerPolicyPrepared')
+Assert-True '50. M9 saves the machine''s whole policy in Prepare, where both paths still run, and the check reads that copy - a mode and a count would take M9''s own two rules for the machine''s own two on the manual path as well' (($preparedAt50 -ge 0) -and ($recordAt50 -gt $preparedAt50) -and ($readAt50 -gt $recordAt50) -and ($m9block50 -like '*Prepare = {*') -and ($preparedAt50 -gt $m9block50.IndexOf('Prepare = {'))) ('prepare copy at ' + $preparedAt50 + ', recorded at ' + $recordAt50 + ', read at ' + $readAt50)
+$missingAt50 = $m9block50.IndexOf('if ($savedPath -and -not $savedXml) {')
+$applyByAt50 = $m9block50.IndexOf('applyBy')
+Assert-True '50. a recorded path with no file behind it is a refusal only where the step reported the helper made the change; where nothing was applied it is no saved policy, not a failed revert' (($missingAt50 -ge 0) -and ($applyByAt50 -gt $missingAt50) -and ($applyByAt50 -lt $readAt50) -and ($m9block50 -like '*nothing here can say the machine was put back*')) ('the missing-file branch at ' + $missingAt50 + ', what applied it read at ' + $applyByAt50)
+Assert-True '50. and the row says which of the two copies the machine was compared against, as the weaker comparison has said what it compared since round 5' (($m9block50 -like '*compared against {2}*') -and ($m9block50 -like '*the policy the step exported before it applied its own*') -and ($m9block50 -like '*the copy taken before the scenario started*')) 'the check does not say what it compared the machine with'
+Assert-True '50. and the weaker comparison is still there for a machine that saved nothing at all, saying so in the row it writes' ($m9block50 -like '*no policy was saved, so only the Script collection is compared*') 'the manual path no longer says what it compared'
+$ownNo50 = @{ AppLockerPolicyBefore = 'C:\state\applocker-before.xml'; OwnPolicyBefore = 'no'; StagedRevert = ''; AppIDSvcStartType = 'n/a' }
+$ownYes50 = @{ AppLockerPolicyBefore = 'C:\state\applocker-before.xml'; OwnPolicyBefore = 'yes'; StagedRevert = ''; AppIDSvcStartType = 'n/a' }
+$ownOld50 = @{ AppLockerPolicyBefore = 'C:\state\applocker-before.xml'; StagedRevert = ''; AppIDSvcStartType = 'n/a' }
+$notesNo50 = (@(Get-M9RecoveryLines $ownNo50) -join "`n")
+$notesYes50 = (@(Get-M9RecoveryLines $ownYes50) -join "`n")
+$notesOld50 = (@(Get-M9RecoveryLines $ownOld50) -join "`n")
+Assert-True '50. a machine the campaign read as having no AppLocker policy of its own is told to delete M9''s rules, and is not told it had a policy to preserve - the saved path is recorded whether or not the machine had one' (($notesNo50 -match 'no AppLocker policy of its own') -and ($notesNo50 -match 'secpol\.msc') -and ($notesNo50 -notmatch 'Do NOT simply delete')) ($notesNo50 -replace "`n", ' / ')
+Assert-True '50. and the reading is not vacuous: a machine that had one still gets the careful branch with the saved copy named, and so does a record made before this was recorded at all' (($notesYes50 -match 'had an AppLocker policy of its own') -and ($notesYes50 -match 'Do NOT simply delete') -and ($notesOld50 -match 'Do NOT simply delete') -and ($notesOld50 -match 'could not be read before M9')) (($notesYes50 + ' // ' + $notesOld50) -replace "`n", ' / ')
+Assert-True '50. and M9 reads that fact where the policy in force is still the machine''s own, from the policy itself rather than from a path' (($m9block50 -like '*OwnPolicyBefore*') -and ($m9block50.IndexOf('OwnPolicyBefore') -gt $m9block50.IndexOf('Prepare = {')) -and ($m9block50 -like '*Get-AppLockerPolicyShape $localXml*')) 'M9 does not record whether the machine had a policy of its own'
+# M8's data, as it is written.
+$m8block50 = ''
+$m8at50 = $m9text45.IndexOf("@{ Id = 'M8'")
+if ($m8at50 -ge 0) {
+    $m8end50 = $m9text45.IndexOf("@{ Id = '", $m8at50 + 10)
+    $m8block50 = $(if ($m8end50 -gt $m8at50) { $m9text45.Substring($m8at50, $m8end50 - $m8at50) } else { $m9text45.Substring($m8at50) })
+}
+Assert-True '50. M8 compares the data it reads back with the data it recorded case for case' (($m8block50 -like '*-cne*') -and ($m8block50 -like '*before M8 it was*')) 'M8 still compares its data with an operator that folds case'
+$m7block50 = ''
+$m7at50 = $m9text45.IndexOf("@{ Id = 'M7'")
+if ($m7at50 -ge 0) {
+    $m7end50 = $m9text45.IndexOf("@{ Id = '", $m7at50 + 10)
+    $m7block50 = $(if ($m7end50 -gt $m7at50) { $m9text45.Substring($m7at50, $m7end50 - $m7at50) } else { $m9text45.Substring($m7at50) })
+}
+Assert-True '50. M7 compares the value it reads back the same way, since the finding is about the operator and not about that one scenario' (($m7block50 -like '*-cne $was*') -and ($m7block50 -like '*before M7 it was*')) 'M7 still compares its value with an operator that folds case'
+Assert-True '50. the reading is not vacuous: PowerShell''s own -ne reads those two as the same value, and the registry does not' ((-not ('AllSigned' -ne 'allsigned')) -and ('AllSigned' -cne 'allsigned')) 'this runtime does not behave as the finding says'
+# Which programs the helper's two checks are made with. This is not a supposition: the run of this very file that
+# found it was started from a shell carrying GNU tools, cmd took their find.exe for the marker search, and every
+# commands file the campaign had written came back refused as 'not the campaign's'. The helper sets PATH to Windows'
+# own directories before it checks anything, and the commands files carry the same line because RECOVER.txt has a
+# person run M9's staged way back by hand, where the PATH is the person's.
+$shadow50 = Join-Path $WorkDir 'case50-shadow'
+New-Item -ItemType Directory -Force -Path $shadow50 | Out-Null
+foreach ($prog50 in @('find', 'certutil')) { Set-Content -LiteralPath (Join-Path $shadow50 ($prog50 + '.cmd')) -Encoding Ascii -Value @('@echo off', 'exit /b 1') }
+$ours50 = Join-Path $shadow50 'ours.cmd'
+Set-Content -LiteralPath $ours50 -Encoding Ascii -Value @('@echo off', 'rem NHC-POLICY-STEP SELFTEST harmless', 'ver', 'echo step=1 rc=%ERRORLEVEL%', 'exit /b 0')
+$digest50 = [string](Get-FileHash -LiteralPath $ours50 -Algorithm SHA256).Hash
+$result50 = Join-Path $shadow50 'result.txt'
+$pathWas50 = $env:PATH
+$code50 = -1
+$bareFind50 = -1
+$shadowWorks50 = $false
+try {
+    $env:PATH = $shadow50 + ';' + $pathWas50
+    $ErrorActionPreference = 'Continue'
+    $null = & $env:ComSpec '/c' ('find /i "NHC-POLICY-STEP" "' + $ours50 + '"') 2>&1
+    $bareFind50 = $LASTEXITCODE
+    $shadowWorks50 = ($bareFind50 -eq 1)
+    $null = & $helper41 $ours50 $result50 $digest50 2>&1
+    $code50 = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+}
+finally { $env:PATH = $pathWas50; $ErrorActionPreference = 'Stop' }
+$text50 = $(if (Test-Path -LiteralPath $result50) { (@(Get-Content -LiteralPath $result50 | ForEach-Object { [string]$_ }) -join ' | ') } else { '(no result file)' })
+Assert-True '50. the reading is not vacuous: with that directory in front of PATH, a bare find is the other one and answers 1' $shadowWorks50 ('a bare find answered ' + $bareFind50 + ' with ' + $shadow50 + ' in front, where Windows'' own would have found the marker and answered 0')
+Assert-True '50. and the helper''s checks are made with Windows'' own programs whatever PATH the campaign was started with: the campaign''s own file is still recognised, and its digest still checked' (($code50 -ne 3) -and ($code50 -ne 4) -and ($text50 -notlike '*marker*') -and ($text50 -notlike '*not the one the campaign hashed*')) ('exit ' + $code50 + '; ' + $text50)
+$helperText50 = [IO.File]::ReadAllText($helper41)
+$setAt50 = $helperText50.IndexOf('set "PATH=%SystemRoot%\System32;')
+$findAt50 = $helperText50.IndexOf('find /i "NHC-POLICY-STEP"')
+Assert-True '50. the helper sets it before it reads anything, so the marker search and the digest are both made with them' (($setAt50 -ge 0) -and ($findAt50 -gt $setAt50)) ('PATH set at ' + $setAt50 + ', the marker search at ' + $findAt50)
+$stepPath50 = New-PolicyStepFile 'SELFTEST' 'pathline' @('ver') $shadow50
+$stepBody50 = @(Get-Content -LiteralPath $stepPath50 | ForEach-Object { [string]$_ })
+Assert-True '50. and a commands file carries the same line after its marker, for the one a person runs by hand from RECOVER.txt' (($stepBody50.Count -gt 3) -and ($stepBody50[1] -like 'rem NHC-POLICY-STEP*') -and ($stepBody50[2] -like 'set "PATH=%SystemRoot%\System32;*')) ($stepBody50 -join ' / ')
+# A call at the top level is made with the definitions the file has made by then.
+function Get-CallsBeforeDefined($ScriptAst) {
+    # Every call a script makes at its top level, against what it had defined by then. PowerShell defines a function
+    # when the statement defining it runs - there is no hoisting - so a top-level call that reaches a function defined
+    # below it is a call to nothing, and short-circuiting can keep that hidden until the day the state says otherwise.
+    $defs = @{}
+    $callsOf = @{}
+    foreach ($f in $ScriptAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+        if ((-not $defs.ContainsKey($f.Name)) -or ($f.Extent.EndOffset -lt $defs[$f.Name])) { $defs[$f.Name] = $f.Extent.EndOffset }
+    }
+    foreach ($f in $ScriptAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+        if (-not $callsOf.ContainsKey($f.Name)) { $callsOf[$f.Name] = @() }
+        $callsOf[$f.Name] += @($f.Body.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs.ContainsKey($_) })
+    }
+    $out = @()
+    foreach ($c in @($ScriptAst.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.PipelineAst] } | ForEach-Object { $_.PipelineElements } | Where-Object { $_ -is [System.Management.Automation.Language.CommandAst] })) {
+        $name = $c.GetCommandName()
+        if ((-not $name) -or (-not $defs.ContainsKey($name))) { continue }
+        $reach = @($name)
+        $i = 0
+        while ($i -lt $reach.Count) {
+            foreach ($k in @($callsOf[$reach[$i]])) { if ($k -and ($reach -notcontains $k)) { $reach += $k } }
+            $i++
+        }
+        foreach ($r in $reach) { if ($defs[$r] -gt $c.Extent.StartOffset) { $out += ($name + ' at line ' + $c.Extent.StartLineNumber + ' reaches ' + $r + ', which is defined below it') } }
+    }
+    return @($out)
+}
+$late50 = @(Get-CallsBeforeDefined $ast42)
+Assert-True '50. nothing the driver calls at its top level reaches a function defined below that call' ($late50.Count -eq 0) ($late50 -join '; ')
+$tokens50 = $null; $errors50 = $null
+$crafted50 = [System.Management.Automation.Language.Parser]::ParseInput("function Outer(`$had) { `$safe = (`$had -and (Inner 'x')); return `$safe }`r`nOuter `$false`r`nfunction Inner([string]`$d) { return `$true }", [ref]$tokens50, [ref]$errors50)
+$lateCrafted50 = @(Get-CallsBeforeDefined $crafted50)
+Assert-True '50. and the reading is not vacuous: on a script shaped like the one this found - a top-level call whose function reaches a later definition behind an -and - it says so' (($lateCrafted50.Count -eq 1) -and ($lateCrafted50[0] -like '*Inner*')) ('found: ' + ($lateCrafted50 -join '; '))
+
+# -------------------- 51. what round 7 asked: the copy the manual path has, and the line a person is shown --------------------
+# PR #67 round 7, three findings. Two of them are round 1 and round 3 again, in the place round 6 left them: with
+# -ManualPolicy the apply never runs, so AppLockerPolicyBefore is never set, and both the recovery notes and the
+# cleanup instruction read that path alone - a person driving M9 by hand on a machine with an AppLocker policy of its
+# own was told to delete the Script rules, which takes that policy with them, while the copy Prepare had saved sat
+# unused beside them. And M7's cleanup instruction still interpolated a recorded value into an elevated setx line
+# although the revert refuses to build that line for exactly those values. The third - that the undo file's
+# '& pause & exit /b 1' runs whatever the condition - is measured below and is not what this cmd does; the
+# parenthesised form is written anyway, because it cannot be read the other way by any cmd.
+Write-Output ''
+Write-Output '51. the copy the manual path has, the value that may not be put on a line, and what cmd does with an ungrouped if'
+$loaded51 = @('Get-M9OwnPolicy')
+Assert-True '51. the driver defines Get-M9OwnPolicy once, so this case runs that definition and no other' ($defs42.ContainsKey('Get-M9OwnPolicy') -and $defs42['Get-M9OwnPolicy'].Count -eq 1) ('definitions: ' + $(if ($defs42.ContainsKey('Get-M9OwnPolicy')) { $defs42['Get-M9OwnPolicy'].Count } else { 0 }))
+$needs51 = @(); $free51 = @()
+if ($defs42.ContainsKey('Get-M9OwnPolicy') -and $defs42['Get-M9OwnPolicy'].Count -eq 1) {
+    $needs51 = @($defs42['Get-M9OwnPolicy'][0].Body.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) -and $loaded51 -notcontains $_ } | Sort-Object -Unique)
+    $free51 = @(Get-FreeVariables $defs42['Get-M9OwnPolicy'][0])
+}
+Assert-True '51. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs51.Count -eq 0) -and ($free51.Count -eq 0)) ('also needed: ' + ($needs51 -join ', ') + '; free variables: ' + ($free51 -join ', '))
+# The notes, on the three ways a campaign can stand when it dies.
+$manual51 = @{ AppLockerPolicyPrepared = 'C:\state\M9\applocker-before-prepare.xml'; OwnPolicyBefore = 'yes'; AppIDSvcStartType = 'n/a' }
+$auto51 = @{ AppLockerPolicyBefore = 'C:\Windows\Temp\nhc-policy\applocker-before.xml'; AppLockerPolicyPrepared = 'C:\state\M9\applocker-before-prepare.xml'; OwnPolicyBefore = 'yes'; AppIDSvcStartType = 'n/a' }
+$nothing51 = @{ OwnPolicyBefore = 'yes'; AppIDSvcStartType = 'n/a' }
+$notesManual51 = (@(Get-M9RecoveryLines $manual51) -join "`n")
+$notesAuto51 = (@(Get-M9RecoveryLines $auto51) -join "`n")
+$notesNothing51 = (@(Get-M9RecoveryLines $nothing51) -join "`n")
+Assert-True '51. a manual run that saved no export is put back from the copy Prepare took, which it names - not sent to delete the Script rules it would lose its own policy with' (($notesManual51 -match 'Do NOT simply delete') -and ($notesManual51 -match 'applocker-before-prepare\.xml') -and ($notesManual51 -match 'the copy taken before the scenario started') -and ($notesManual51 -notmatch 'delete the Script rules; then')) ($notesManual51 -replace "`n", ' / ')
+Assert-True '51. and the reading is not vacuous: where the step did export one, that is the copy named and the notes say so' (($notesAuto51 -match 'applocker-before\.xml') -and ($notesAuto51 -match 'the policy the step exported') -and ($notesAuto51 -notmatch 'applocker-before-prepare\.xml')) ($notesAuto51 -replace "`n", ' / ')
+Assert-True '51. a machine that had a policy of its own and no copy of it saved is told that, and still not to delete what it cannot restore' (($notesNothing51 -match 'Do NOT simply delete') -and ($notesNothing51 -match 'No copy of it was saved') -and ($notesNothing51 -notmatch 'saved before M9 replaced it') -and ($notesNothing51 -notmatch 'Set-AppLockerPolicy -XmlPolicy')) ($notesNothing51 -replace "`n", ' / ')
+$unknown51 = @{ OwnPolicyBefore = 'unknown'; AppIDSvcStartType = 'n/a' }
+$notesUnknown51 = (@(Get-M9RecoveryLines $unknown51) -join "`n")
+Assert-True '51. a machine whose own policy could not be read at all is not told to delete anything either - that instruction is the one that cannot be taken back' (($notesUnknown51 -match 'could not be read before M9') -and ($notesUnknown51 -match 'No copy of it was saved') -and ($notesUnknown51 -notmatch 'delete the Script rules; then')) ($notesUnknown51 -replace "`n", ' / ')
+# And the cleanup instruction, which is what a person driving the scenario by hand is actually given.
+$instrManual51 = @()
+if ($null -ne $sb45) { $instrManual51 = @(& $sb45 @{ Facts = @{ ScriptEnforcementBefore = 'none'; ScriptRuleCountBefore = '0'; AppLockerPolicyPrepared = 'C:\state\M9\applocker-before-prepare.xml'; OwnPolicyBefore = 'yes' } }) }
+Assert-True '51. the cleanup instruction reads the same two copies in the same order, so the manual path is told to put THAT back and where from' ((@($instrManual51).Count -eq 2) -and (@($instrManual51)[0] -like '*put THAT back*') -and (@($instrManual51)[0] -like '*applocker-before-prepare.xml*') -and (@($instrManual51)[0] -notlike '*delete the Script rules*')) ('lines: ' + (@($instrManual51) -join ' // '))
+# M7's cleanup instruction, driven the same way as M9's.
+$m7at51 = $m9text45.IndexOf("@{ Id = 'M7'")
+$i51 = $(if ($m7at51 -ge 0) { $m9text45.IndexOf('Cleanup = @{ Instruction = { param($Ctx)', $m7at51) } else { -1 })
+$j51 = $(if ($i51 -ge 0) { $m9text45.IndexOf('Verify = { param($Ctx)', $i51) } else { -1 })
+Assert-True '51. M7''s cleanup instruction is a scriptblock of the recorded facts, and this case runs it' (($i51 -ge 0) -and ($j51 -gt $i51)) ('instruction at ' + $i51 + ', verify at ' + $j51)
+$sb51 = $null
+if (($i51 -ge 0) -and ($j51 -gt $i51)) {
+    $block51 = $m9text45.Substring($i51, $j51 - $i51)
+    $from51 = $block51.IndexOf('{ param($Ctx)')
+    $to51 = $block51.LastIndexOf('}')
+    Invoke-Expression ('$sb51 = ' + $block51.Substring($from51, $to51 - $from51 + 1))
+}
+$badValue51 = ('x' + [char]34 + ' & calc & ' + [char]34 + 'y')
+$m7unsafe51 = @(); $m7safe51 = @(); $m7none51 = @()
+if ($null -ne $sb51) {
+    $m7unsafe51 = @(& $sb51 @{ Facts = @{ LockdownExisted = 'yes'; LockdownValue = $badValue51 } })
+    $m7safe51 = @(& $sb51 @{ Facts = @{ LockdownExisted = 'yes'; LockdownValue = '4' } })
+    $m7none51 = @(& $sb51 @{ Facts = @{ LockdownExisted = 'no'; LockdownValue = '' } })
+}
+$unsafeText51 = (@($m7unsafe51) -join ' // ')
+Assert-True '51. a recorded value the revert refuses to put on a command line is not put on one here either - the line a person copies into an elevated prompt' ((@($m7unsafe51).Count -eq 2) -and ($unsafeText51 -notlike '*setx*') -and (-not $unsafeText51.Contains($badValue51)) -and ($unsafeText51 -like '*Scenarios.M7.Facts.LockdownValue*') -and ($unsafeText51 -like '*Environment Variables*')) ('lines: ' + $unsafeText51)
+Assert-True '51. and the reading is not vacuous: a value that can be carried is still shown as the line that carries it, and a machine that had none is still told to remove it' ((@($m7safe51).Count -eq 2) -and ((@($m7safe51) -join ' // ') -like '*setx /M __PSLockdownPolicy "4"*') -and (@($m7none51).Count -eq 2) -and ((@($m7none51) -join ' // ') -like '*reg delete*__PSLockdownPolicy /f*')) ('safe: ' + (@($m7safe51) -join ' // ') + '; none: ' + (@($m7none51) -join ' // '))
+# What cmd does with an if and an ampersand - measured, because a claim about it decided one of this round's findings.
+$dir51 = Join-Path $WorkDir 'case51'
+New-Item -ItemType Directory -Force -Path $dir51 | Out-Null
+function Invoke-Shape51([string]$Name, [string]$First, [string]$Line) {
+    # A file shaped like undo-M7.cmd - a command, then the line that answers its exit code, then the success message -
+    # with echo in place of pause, so that the case measures the parse rather than waiting for a key.
+    $f = Join-Path $dir51 ($Name + '.cmd')
+    Set-Content -LiteralPath $f -Encoding Ascii -Value @('@echo off', $First, $Line, 'echo REACHED-THE-END', 'exit /b 0')
+    $ErrorActionPreference = 'Continue'
+    $out = @(& $env:ComSpec '/c' $f 2>&1 | ForEach-Object { [string]$_ })
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    return @{ ExitCode = $code; Text = ($out -join ' | ') }
+}
+$undo51 = @(Get-M7UndoLines @{ LockdownExisted = 'yes'; LockdownValue = '4' })
+$fail51 = @($undo51 | Where-Object { $_ -like 'if errorlevel 1*' })
+Assert-True '51. undo-M7.cmd keeps the commands that answer a failure inside the condition, where a reader can see they are' ((@($fail51).Count -eq 1) -and (@($fail51)[0] -like 'if errorlevel 1 (*)') -and (@($fail51)[0] -like '*pause*') -and (@($fail51)[0] -like '*exit /b 1*')) ('the line: ' + (@($fail51) -join ' / '))
+$grouped51 = Invoke-Shape51 'grouped-ok' 'ver >nul' 'if errorlevel 1 ( echo FAILED & echo WOULD-PAUSE & exit /b 1 )'
+$groupedBad51 = Invoke-Shape51 'grouped-failing' 'cmd /c exit 1' 'if errorlevel 1 ( echo FAILED & echo WOULD-PAUSE & exit /b 1 )'
+Assert-True '51. and that form does what it says: the run whose command succeeded reaches the success message and exits 0, the one whose command failed says so and exits 1' (($grouped51.ExitCode -eq 0) -and ($grouped51.Text -like '*REACHED-THE-END*') -and ($grouped51.Text -notlike '*WOULD-PAUSE*') -and ($groupedBad51.ExitCode -eq 1) -and ($groupedBad51.Text -like '*FAILED*') -and ($groupedBad51.Text -like '*WOULD-PAUSE*')) ('ok: exit ' + $grouped51.ExitCode + ' ' + $grouped51.Text + '; failing: exit ' + $groupedBad51.ExitCode + ' ' + $groupedBad51.Text)
+$ungrouped51 = Invoke-Shape51 'ungrouped-ok' 'ver >nul' 'if errorlevel 1 echo FAILED & echo WOULD-PAUSE & exit /b 1'
+Assert-True '51. the reading that an ungrouped tail runs whatever the condition is not what this cmd does - the claim was rejected on this measurement, and the parentheses were written for the reader' (($ungrouped51.ExitCode -eq 0) -and ($ungrouped51.Text -like '*REACHED-THE-END*') -and ($ungrouped51.Text -notlike '*WOULD-PAUSE*')) ('cmd ' + (Get-Item (Join-Path $env:SystemRoot 'System32\cmd.exe')).VersionInfo.ProductVersion + ': exit ' + $ungrouped51.ExitCode + ' ' + $ungrouped51.Text)
+
+# -------------------- 52. what round 8 asked: the line a person copies, and a start type with no name --------------------
+# PR #67 round 8, two findings, both about a machine that cannot be put back from what the campaign wrote down. M8's
+# way back interpolated the recorded data into reg add commands - and those commands are the only manual route the
+# campaign advertises, printed in RECOVER.txt and in M8's own cleanup instruction. A REG_EXPAND_SZ value holding
+# %SystemRoot% expands as it is typed, a quote ends the argument and what follows is more command: the automated
+# revert has refused such a value since the audit after round 3, and the line a person reads refuses it now too. And
+# .NET has one name, Automatic, for both automatic and automatic-delayed start (ServiceStartMode has no member for
+# the second), so a machine whose Application Identity service was delayed was recorded as Automatic, put back with
+# 'sc config start= auto', and certified by a check that compares the same one name - the setting gone and nothing
+# saying so. DelayedAutostart beside Start in the service's own key is what decides it, and it is recorded, put back
+# and checked on its own now.
+Write-Output ''
+Write-Output '52. the way back as a line a person copies, and the delayed start Get-Service does not distinguish'
+$loaded52 = @('Get-M8WayBack', 'Get-ServiceDelayedAuto', 'Test-DelayedAutoAgainst', 'Test-PolicyLineData')
+$defined52 = @($loaded52 | Where-Object { $defs42.ContainsKey($_) -and $defs42[$_].Count -eq 1 })
+Assert-True '52. the driver defines each of the four once, so this case runs those definitions and no others' ($defined52.Count -eq $loaded52.Count) ('defined once: ' + ($defined52 -join ', ') + ' of ' + ($loaded52 -join ', '))
+$needs52 = @(); $free52 = @()
+if ($defined52.Count -eq $loaded52.Count) {
+    foreach ($fn52 in $loaded52) {
+        $needs52 += @($defs42[$fn52][0].Body.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) -and $loaded52 -notcontains $_ })
+        $free52 += @(Get-FreeVariables $defs42[$fn52][0])
+        Invoke-Expression $defs42[$fn52][0].Extent.Text
+    }
+    $needs52 = @($needs52 | Sort-Object -Unique)
+    $free52 = @($free52 | Sort-Object -Unique)
+}
+Assert-True '52. they call and read nothing of the driver beyond each other, so what runs here is what runs there' (($needs52.Count -eq 0) -and ($free52.Count -eq 0)) ('also needed: ' + ($needs52 -join ', ') + '; free variables: ' + ($free52 -join ', '))
+# M8's way back, on data that cannot be carried and on data that can.
+$expand52 = @(Get-M8WayBack @{ RegExecutionPolicyBefore = '%SystemRoot%\policy'; RegExecutionPolicyKindBefore = 'ExpandString'; RegEnableScriptsBefore = '1'; RegEnableScriptsKindBefore = 'DWord' })
+$quote52 = @(Get-M8WayBack @{ RegExecutionPolicyBefore = ('All' + [char]34 + ' & calc & ' + [char]34 + 'Signed'); RegExecutionPolicyKindBefore = 'String'; RegEnableScriptsBefore = '1'; RegEnableScriptsKindBefore = 'DWord' })
+$plain52 = @(Get-M8WayBack @{ RegExecutionPolicyBefore = 'AllSigned'; RegExecutionPolicyKindBefore = 'String'; RegEnableScriptsBefore = '1'; RegEnableScriptsKindBefore = 'DWord' })
+Assert-True '52. a recorded value holding a per-cent sign gets no reg add line - typing it would expand it, and the machine would come back with other data' ((@($expand52)[0] -notlike 'reg add*') -and (@($expand52)[0] -like '*cannot be put in a command line*') -and (@($expand52)[0] -like '*Scenarios.M8.Facts.RegExecutionPolicyBefore*') -and (-not (@($expand52)[0]).Contains('%SystemRoot%'))) ('lines: ' + ($expand52 -join ' / '))
+Assert-True '52. nor does one holding a quote, which would end the argument it sits in and leave the rest as command' ((@($quote52)[0] -notlike 'reg add*') -and (@($quote52)[0] -like '*regedit*')) ('lines: ' + ($quote52 -join ' / '))
+Assert-True '52. and the reading is not vacuous: ordinary data is still put back by the line that carries it, and the other value is unaffected either way' ((@($plain52)[0] -like 'reg add*ExecutionPolicy*AllSigned*') -and (@($plain52)[1] -like 'reg add*EnableScripts*') -and (@($expand52)[1] -like 'reg add*EnableScripts*')) ('plain: ' + ($plain52 -join ' / '))
+$m8instr52 = ''
+$m8at52 = $m9text45.IndexOf("@{ Id = 'M8'")
+if ($m8at52 -ge 0) {
+    $m8end52 = $m9text45.IndexOf("@{ Id = '", $m8at52 + 10)
+    $m8instr52 = $(if ($m8end52 -gt $m8at52) { $m9text45.Substring($m8at52, $m8end52 - $m8at52) } else { $m9text45.Substring($m8at52) })
+}
+Assert-True '52. and both places a person reads those lines build them with that function, so neither can drift from it' (($m8instr52 -like '*Cleanup = @{ Instruction*') -and ($m8instr52 -like '*Get-M8WayBack $Ctx.Facts*') -and ($m9text45 -like '*$m8Back = @(Get-M8WayBack*')) 'the instruction or RECOVER.txt spells M8''s way back itself'
+# The delayed start, read where Windows keeps it.
+Assert-True '52. a service that is not there reads as unknown, so nothing is claimed about a machine that could not be read' ((Get-ServiceDelayedAuto 'NoSuchServiceNhcSelftest') -eq 'unknown') ('reads as: ' + (Get-ServiceDelayedAuto 'NoSuchServiceNhcSelftest'))
+$live52 = Get-ServiceDelayedAuto 'AppIDSvc'
+Assert-True '52. and the reading is not vacuous: the Application Identity service of this machine answers yes or no, from its own key' (@('yes', 'no') -contains $live52) ('AppIDSvc reads as: ' + $live52)
+# The lines that put it back, and the check that reads it.
+$delayed52 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppIDSvcDelayedAuto = 'yes' } })
+$plainAuto52 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppIDSvcDelayedAuto = 'no' } })
+$unknown52 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppIDSvcDelayedAuto = 'unknown' } })
+Assert-True '52. a service that started delayed is put back delayed - by the word sc config has for it, and by the value it reads where sc config is refused' ((@($delayed52 | Where-Object { $_ -eq 'sc config AppIDSvc start= delayed-auto' }).Count -eq 1) -and (@($delayed52 | Where-Object { $_ -like '*DelayedAutostart*/d 1 /f' }).Count -eq 1)) ($delayed52 -join ' / ')
+Assert-True '52. one that started plain automatic is put back plain, and the flag is written as 0 rather than left as it is' ((@($plainAuto52 | Where-Object { $_ -eq 'sc config AppIDSvc start= auto' }).Count -eq 1) -and (@($plainAuto52 | Where-Object { $_ -like '*DelayedAutostart*/d 0 /f' }).Count -eq 1)) ($plainAuto52 -join ' / ')
+Assert-True '52. and where the flag could not be read, nothing is written for it - a campaign that does not know does not set' ((@($unknown52 | Where-Object { $_ -eq 'sc config AppIDSvc start= auto' }).Count -eq 1) -and (@($unknown52 | Where-Object { $_ -like '*DelayedAutostart*' }).Count -eq 0)) ($unknown52 -join ' / ')
+$notesDelayed52 = (@(Get-M9RecoveryLines @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppIDSvcDelayedAuto = 'yes' }) -join "`n")
+Assert-True '52. RECOVER.txt says the same, in the words a person types: the delayed start named, and the value beside Start' (($notesDelayed52 -match 'delayed start') -and ($notesDelayed52 -match 'sc config AppIDSvc start= delayed-auto') -and ($notesDelayed52 -match 'DelayedAutostart')) ($notesDelayed52 -replace "`n", ' / ')
+$wantOther52 = $(if ($live52 -eq 'yes') { 'no' } else { 'yes' })
+$says52 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = $wantOther52 } $live52
+$quiet52 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = $live52 } $live52
+$notAuto52 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Manual'; AppIDSvcDelayedAuto = $wantOther52 } $live52
+$unread52 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = 'unknown' } $live52
+Assert-True '52. the check refuses a machine whose flag is not the one M9 found, and names the command that puts it back' (($null -ne $says52) -and ($says52.Ok -eq $false) -and ([string]$says52.Detail -like '*sc config AppIDSvc start= *')) ('says: ' + $(if ($null -eq $says52) { '(nothing)' } else { $says52.Detail }))
+Assert-True '52. and it says nothing where there is nothing to say: the flag as this machine has it, a service that was not automatic, and a flag that was never read' (($null -eq $quiet52) -and ($null -eq $notAuto52) -and ($null -eq $unread52)) ('same: ' + $(if ($null -eq $quiet52) { 'quiet' } else { $quiet52.Detail }) + '; not automatic: ' + $(if ($null -eq $notAuto52) { 'quiet' } else { $notAuto52.Detail }) + '; unread: ' + $(if ($null -eq $unread52) { 'quiet' } else { $unread52.Detail }))
+$m9block52 = ''
+$m9at52 = $m9text45.IndexOf("@{ Id = 'M9'")
+if ($m9at52 -ge 0) {
+    $m9end52 = $m9text45.IndexOf("@{ Id = '", $m9at52 + 10)
+    $m9block52 = $(if ($m9end52 -gt $m9at52) { $m9text45.Substring($m9at52, $m9end52 - $m9at52) } else { $m9text45.Substring($m9at52) })
+}
+Assert-True '52. M9 records the flag where it records the rest of the service, and both of its checks read it - the weaker comparison included, since that is the one a manual campaign gets' (($m9block52 -like '*$delayedNow = Get-ServiceDelayedAuto ''AppIDSvc''*') -and ($m9block52 -like '*AppIDSvcDelayedAuto = $delayedNow*') -and (@([regex]::Matches($m9block52, 'Test-DelayedAutoAgainst \$Ctx\.Facts \(Get-ServiceDelayedAuto')).Count -ge 2)) ('recorded: ' + ($m9block52 -like '*AppIDSvcDelayedAuto = $delayedNow*') + '; checked ' + @([regex]::Matches($m9block52, 'Test-DelayedAutoAgainst')).Count + ' time(s)')
+
+# -------------------- 53. what round 9 asked: the value as the registry holds it, and the two answers a check owes --------------------
+# PR #67 round 9, three findings. M7 read __PSLockdownPolicy through [Environment]::GetEnvironmentVariable(..., 'Machine'),
+# which expands a REG_EXPAND_SZ value and says nothing about its kind - so a machine whose value was '%SystemRoot%\x'
+# was recorded as the path it expands to, put back with setx as a REG_SZ holding that text, and certified by a check
+# that read the same expansion: the indirection gone and the kind gone, with every row saying the machine was as
+# before. The delayed-start check returned $null where the service key could not be read NOW, and its callers read
+# $null as 'nothing to object to' - a revert that left the key unreadable was certified. And setx crops an assignment
+# at 1 024 characters, so a longer value passed the command-line reading, came back truncated, failed M7's own check,
+# and every advertised way back repeated the same crop.
+Write-Output ''
+Write-Output '53. the registry''s own data and kind, the command that cannot carry them, and a flag that cannot be read now'
+$loaded53 = @('Get-MachineEnvRaw')
+Assert-True '53. the driver defines Get-MachineEnvRaw once, so this case runs that definition and no other' ($defs42.ContainsKey('Get-MachineEnvRaw') -and $defs42['Get-MachineEnvRaw'].Count -eq 1) ('definitions: ' + $(if ($defs42.ContainsKey('Get-MachineEnvRaw')) { $defs42['Get-MachineEnvRaw'].Count } else { 0 }))
+$needs53 = @(); $free53 = @()
+if ($defs42.ContainsKey('Get-MachineEnvRaw') -and $defs42['Get-MachineEnvRaw'].Count -eq 1) {
+    $needs53 = @($defs42['Get-MachineEnvRaw'][0].Body.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) -and $loaded53 -notcontains $_ } | Sort-Object -Unique)
+    $free53 = @(Get-FreeVariables $defs42['Get-MachineEnvRaw'][0])
+    Invoke-Expression $defs42['Get-MachineEnvRaw'][0].Extent.Text
+}
+Assert-True '53. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs53.Count -eq 0) -and ($free53.Count -eq 0)) ('also needed: ' + ($needs53 -join ', ') + '; free variables: ' + ($free53 -join ', '))
+# The defect itself, on this machine's own environment block: which names read differently raw and expanded.
+$envKey53 = Get-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -ErrorAction SilentlyContinue
+$names53 = @()
+if ($null -ne $envKey53) { $names53 = @($envKey53.GetValueNames() | Where-Object { [string]$envKey53.GetValue($_, $null, 'DoNotExpandEnvironmentNames') -cne [string][Environment]::GetEnvironmentVariable($_, 'Machine') }) }
+Assert-True '53. this machine has machine variables whose stored data is not what [Environment] returns - the reading M7 used to record with' ($names53.Count -ge 1) ('names: ' + ($names53 -join ', ') + ' of ' + $(if ($null -ne $envKey53) { @($envKey53.GetValueNames()).Count } else { 0 }))
+if ($names53.Count -ge 1) {
+    $one53 = @($names53)[0]
+    $raw53 = Get-MachineEnvRaw $one53
+    Assert-True '53. and the raw read gives the data the key holds and the kind beside it, where the expanded read gives neither' (([string]$raw53.Value -ceq [string]$envKey53.GetValue($one53, $null, 'DoNotExpandEnvironmentNames')) -and ([string]$raw53.Value -cne [string][Environment]::GetEnvironmentVariable($one53, 'Machine')) -and ([string]$raw53.Kind -eq 'ExpandString') -and ([bool]$raw53.Existed)) ($one53 + ': raw "' + $raw53.Value + '" (' + $raw53.Kind + ') / expanded "' + [string][Environment]::GetEnvironmentVariable($one53, 'Machine') + '"')
+}
+else {
+    Assert-True '53. and the raw read gives the data the key holds and the kind beside it, where the expanded read gives neither' $false 'this machine has no expandable machine variable to read'
+}
+$absent53 = Get-MachineEnvRaw 'NhcSelftestNoSuchMachineVariable'
+Assert-True '53. a name that is not there reads as not there, rather than as an empty value - the difference M7 records as two facts' ((-not [bool]$absent53.Existed) -and ([string]$absent53.Value -eq '') -and ([string]$absent53.Kind -eq '')) ('existed=' + $absent53.Existed + ' value="' + $absent53.Value + '" kind=' + $absent53.Kind)
+# The one command, by kind and by length.
+$plain53 = Get-M7UndoCommand @{ LockdownExisted = 'yes'; LockdownValue = '4'; LockdownKind = 'String' }
+$expand53 = Get-M7UndoCommand @{ LockdownExisted = 'yes'; LockdownValue = 'SystemRootPolicy'; LockdownKind = 'ExpandString' }
+$percent53 = Get-M7UndoCommand @{ LockdownExisted = 'yes'; LockdownValue = '%SystemRoot%\policy'; LockdownKind = 'ExpandString' }
+$atLimit53 = Get-M7UndoCommand @{ LockdownExisted = 'yes'; LockdownValue = ('a' * 1024); LockdownKind = 'String' }
+$overLimit53 = Get-M7UndoCommand @{ LockdownExisted = 'yes'; LockdownValue = ('a' * 1025); LockdownKind = 'String' }
+$multi53 = Get-M7UndoCommand @{ LockdownExisted = 'yes'; LockdownValue = 'x'; LockdownKind = 'MultiString' }
+$legacy53 = Get-M7UndoCommand @{ LockdownExisted = 'yes'; LockdownValue = '4' }
+$none53 = Get-M7UndoCommand @{ LockdownExisted = 'no'; LockdownValue = '' }
+Assert-True '53. an expandable value comes back as one - reg add writes the kind, and setx would have written a plain string holding the same characters' (($expand53 -like 'reg add *') -and ($expand53 -like '*/t REG_EXPAND_SZ*') -and ($expand53 -like '*SystemRootPolicy*') -and ($plain53 -eq 'setx /M __PSLockdownPolicy "4"')) ('expandable: ' + $expand53)
+Assert-True '53. a value longer than setx will carry has no line at all, rather than one that crops it - 1 024 characters is the documented limit, and the campaign would have failed its own check on the truncation' (($atLimit53 -like 'setx /M *') -and ($overLimit53 -eq '')) ('at the limit: ' + $(if ($atLimit53) { 'a line' } else { 'none' }) + '; one over: ' + $(if ($overLimit53) { 'a line' } else { 'none' }))
+Assert-True '53. nor has a kind these commands cannot write, nor data cmd would read as syntax - and a record from before the kind was recorded is still given the line it always had' (($multi53 -eq '') -and ($percent53 -eq '') -and ($legacy53 -eq 'setx /M __PSLockdownPolicy "4"') -and ($none53 -like 'reg delete *')) ('multi: [' + $multi53 + ']; per-cent: [' + $percent53 + ']; legacy: ' + $legacy53)
+# What the four readers do with that answer.
+$notesOver53 = (@(Get-M7RecoveryLines @{ LockdownExisted = 'yes'; LockdownValue = ('a' * 1025); LockdownKind = 'String' }) -join "`n")
+$undoOver53 = (@(Get-M7UndoLines @{ LockdownExisted = 'yes'; LockdownValue = ('a' * 1025); LockdownKind = 'String' }) -join "`n")
+$notesExpand53 = (@(Get-M7RecoveryLines @{ LockdownExisted = 'yes'; LockdownValue = 'SystemRootPolicy'; LockdownKind = 'ExpandString' }) -join "`n")
+Assert-True '53. a value too long for the command is answered the way an unsafe one is: no line in either file, the kind named beside the value, and nothing deleted' (($notesOver53 -match 'no command line can put back') -and ($notesOver53 -notmatch 'setx') -and ($undoOver53 -notmatch 'setx') -and ($undoOver53 -notmatch 'reg add') -and ($notesOver53 -match 'LockdownKind')) ($notesOver53 -replace "`n", ' / ')
+Assert-True '53. and the reading is not vacuous: an expandable value that CAN be carried is put in both files as the reg add line that writes its kind' (($notesExpand53 -match 'REG_EXPAND_SZ') -and ((@(Get-M7UndoLines @{ LockdownExisted = 'yes'; LockdownValue = 'SystemRootPolicy'; LockdownKind = 'ExpandString' }) -join "`n") -match 'REG_EXPAND_SZ')) ($notesExpand53 -replace "`n", ' / ')
+$m7block53 = ''
+$m7at53 = $m9text45.IndexOf("@{ Id = 'M7'")
+if ($m7at53 -ge 0) {
+    $m7end53 = $m9text45.IndexOf("@{ Id = '", $m7at53 + 10)
+    $m7block53 = $(if ($m7end53 -gt $m7at53) { $m9text45.Substring($m7at53, $m7end53 - $m7at53) } else { $m9text45.Substring($m7at53) })
+}
+Assert-True '53. M7 records the kind where it records the value, its revert asks the same function for its line, and its check compares the kind as well as the data' (($m7block53 -like '*Get-MachineEnvRaw ''__PSLockdownPolicy''*') -and ($m7block53 -like '*LockdownKind*') -and ($m7block53 -like '*Get-M7UndoCommand $Ctx.Facts*') -and ($m7block53 -like '*before M7 it was of kind*')) 'M7 still records or compares the expanded value alone'
+Assert-True '53. and both readings of it are the registry''s: the check reads the raw value too, not what [Environment] would expand it to' (($m7block53 -notlike '*Get-MachineEnv ''__PSLockdownPolicy''*') -or (@([regex]::Matches($m7block53, 'Get-MachineEnvRaw')).Count -ge 2)) ('raw reads: ' + @([regex]::Matches($m7block53, 'Get-MachineEnvRaw')).Count + '; expanded reads: ' + @([regex]::Matches($m7block53, 'Get-MachineEnv ')).Count)
+# A flag that cannot be read now is not a flag that agrees.
+$unreadable53 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = 'yes' } 'unknown'
+$agrees53 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = 'yes' } 'yes'
+$differs53 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = 'yes' } 'no'
+$neverRead53 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = 'unknown' } 'unknown'
+Assert-True '53. where M9 recorded the flag and the machine cannot be read now, the check refuses instead of staying quiet - its callers read quiet as nothing to object to' (($null -ne $unreadable53) -and ($unreadable53.Ok -eq $false) -and ([string]$unreadable53.Detail -like '*cannot be read now*')) ('says: ' + $(if ($null -eq $unreadable53) { '(nothing)' } else { $unreadable53.Detail }))
+Assert-True '53. and it is quiet in the two standings that mean nothing to compare: a flag that agrees, and one that was never read when the rest was recorded' (($null -eq $agrees53) -and ($null -eq $neverRead53) -and ($null -ne $differs53)) ('agrees: ' + $(if ($null -eq $agrees53) { 'quiet' } else { 'says something' }) + '; never read: ' + $(if ($null -eq $neverRead53) { 'quiet' } else { 'says something' }) + '; differs: ' + $(if ($null -eq $differs53) { 'quiet' } else { 'says something' }))
+
+# -------------------- 54. what round 10 asked: not readable is not absent --------------------
+# PR #67 round 10, two findings of one shape - a state the campaign could not READ was treated as a state it knew,
+# and the scenario changed the machine anyway. Get-MachineEnvRaw reported a key it could not open exactly as it
+# reported a value that is not there, so M7 would have recorded 'none', overwritten a value it never saw, put 'none'
+# back by deleting it, and certified that deletion through the same reading. And M9 recorded an automatic service
+# whose delayed-start flag could not be read, then ran sc config start= auto - which takes a delayed setting off -
+# with nothing to reconstruct it from and a check that had nothing to compare. Both refuse now, the way the service's
+# startup type has since round 4: a scenario that cannot read what it is about to change is not attempted at all.
+Write-Output ''
+Write-Output '54. a key that cannot be read is not a key with nothing in it, and a scenario that cannot read does not change'
+$readable54 = Get-MachineEnvRaw 'ComSpec'
+$absent54 = Get-MachineEnvRaw 'NhcSelftestNoSuchMachineVariable'
+$unreadable54 = Get-MachineEnvRaw 'ComSpec' 'HKLM:\SOFTWARE\NhcSelftestNoSuchKeyAtAll'
+Assert-True '54. the read tells the three apart: a value that is there, a value that is not, and a key this session cannot open' (([bool]$readable54.Readable -and [bool]$readable54.Existed) -and ([bool]$absent54.Readable -and -not [bool]$absent54.Existed) -and (-not [bool]$unreadable54.Readable -and -not [bool]$unreadable54.Existed)) ('there: readable=' + $readable54.Readable + '/existed=' + $readable54.Existed + '; absent: readable=' + $absent54.Readable + '/existed=' + $absent54.Existed + '; unreadable: readable=' + $unreadable54.Readable + '/existed=' + $unreadable54.Existed)
+# M7's check, driven against each of those readings - the driver's own block, with the reading it is given controlled.
+$m7at54 = $m9text45.IndexOf("@{ Id = 'M7'")
+$vAt54 = $(if ($m7at54 -ge 0) { $m9text45.IndexOf('Verify = { param($Ctx)', $m7at54) } else { -1 })
+$vEnd54 = $(if ($vAt54 -ge 0) { $m9text45.IndexOf("@{ Id = 'M8'", $vAt54) } else { -1 })
+$sb54 = $null
+if (($vAt54 -ge 0) -and ($vEnd54 -gt $vAt54)) {
+    $block54 = $m9text45.Substring($vAt54, $vEnd54 - $vAt54)
+    $from54 = $block54.IndexOf('{ param($Ctx)')
+    $to54 = $block54.LastIndexOf('} } },')
+    if ($to54 -gt $from54) { Invoke-Expression ('$sb54 = ' + $block54.Substring($from54, $to54 - $from54 + 1)) }
+}
+Assert-True '54. M7''s check is a scriptblock this case can run, sliced where the next scenario begins' ($null -ne $sb54) ('verify at ' + $vAt54 + ', M8 at ' + $vEnd54)
+$facts54 = @{ Facts = @{ LockdownExisted = 'yes'; LockdownValue = '4'; LockdownKind = 'String' } }
+$cannotRead54 = $null; $asBefore54 = $null; $otherKind54 = $null; $gone54 = $null
+if ($null -ne $sb54) {
+    # Each reading is given to the driver's own check in a scope of its own, so the function it calls answers what this
+    # case decided and the real one is untouched for every other case in this file.
+    $cannotRead54 = & { function Get-MachineEnvRaw([string]$Name, [string]$KeyPath = '') { return @{ Readable = $false; Existed = $false; Value = ''; Kind = '' } } & $sb54 $facts54 }
+    $asBefore54 = & { function Get-MachineEnvRaw([string]$Name, [string]$KeyPath = '') { return @{ Readable = $true; Existed = $true; Value = '4'; Kind = 'String' } } & $sb54 $facts54 }
+    $otherKind54 = & { function Get-MachineEnvRaw([string]$Name, [string]$KeyPath = '') { return @{ Readable = $true; Existed = $true; Value = '4'; Kind = 'ExpandString' } } & $sb54 $facts54 }
+    $gone54 = & { function Get-MachineEnvRaw([string]$Name, [string]$KeyPath = '') { return @{ Readable = $true; Existed = $false; Value = ''; Kind = '' } } & $sb54 $facts54 }
+}
+Assert-True '54. a key it cannot read now is refused, not read as a value that is gone - that reading is how a deletion nobody saw gets certified' (($null -ne $cannotRead54) -and ($cannotRead54.Ok -eq $false) -and ([string]$cannotRead54.Detail -like '*cannot be read now*')) ('says: ' + $(if ($null -eq $cannotRead54) { '(nothing)' } else { $cannotRead54.Detail }))
+Assert-True '54. and the reading is not vacuous: the same block passes the machine that is as it was, and refuses one whose value is gone or whose kind is another' (($asBefore54.Ok -eq $true) -and ($gone54.Ok -eq $false) -and ($otherKind54.Ok -eq $false) -and ([string]$otherKind54.Detail -like '*of kind*')) ('as before: ' + $asBefore54.Ok + '; gone: ' + $gone54.Ok + '; other kind: ' + [string]$otherKind54.Detail)
+# And the two scenarios refusing to start on what they cannot read.
+$m7block54 = ''
+if ($m7at54 -ge 0) {
+    $m7end54 = $m9text45.IndexOf("@{ Id = '", $m7at54 + 10)
+    $m7block54 = $(if ($m7end54 -gt $m7at54) { $m9text45.Substring($m7at54, $m7end54 - $m7at54) } else { $m9text45.Substring($m7at54) })
+}
+$prepAt54 = $m7block54.IndexOf('Prepare = {')
+$throwAt54 = $m7block54.IndexOf('the machine environment key cannot be read (')
+$recordAt54 = $m7block54.IndexOf('LockdownExisted = $(if')
+Assert-True '54. M7 refuses the scenario where that key cannot be read, before it records anything or changes the machine' (($prepAt54 -ge 0) -and ($throwAt54 -gt $prepAt54) -and ($recordAt54 -gt $throwAt54) -and ($m7block54 -like '*throw (*machine environment key cannot be read*')) ('prepare at ' + $prepAt54 + ', refusal at ' + $throwAt54 + ', record at ' + $recordAt54)
+Assert-True '54. and its precondition says the key could not be read rather than that the value is not set - the two are not the same sentence' (($m7block54 -like '*Precondition = { $raw = Get-MachineEnvRaw*') -and ($m7block54 -like '*cannot be read, so whether __PSLockdownPolicy is 4 cannot be said*')) 'M7''s precondition still reads an unreadable key as "not set"'
+$m9prep54 = ''
+$m9at54 = $m9text45.IndexOf("@{ Id = 'M9'")
+if ($m9at54 -ge 0) {
+    $m9end54 = $m9text45.IndexOf("@{ Id = '", $m9at54 + 10)
+    $m9prep54 = $(if ($m9end54 -gt $m9at54) { $m9text45.Substring($m9at54, $m9end54 - $m9at54) } else { $m9text45.Substring($m9at54) })
+}
+$delayedThrow54 = $m9prep54.IndexOf('delayed-start flag cannot be read')
+$applyAt54 = $m9prep54.IndexOf('Apply = {')
+Assert-True '54. M9 refuses an automatic service whose delayed-start flag it could not read, rather than setting start= auto over a setting it cannot put back' (($delayedThrow54 -ge 0) -and ($applyAt54 -gt $delayedThrow54) -and ($m9prep54 -like '*StartType -eq ''Automatic'') -and ($delayedNow -eq ''unknown'')*')) ('refusal at ' + $delayedThrow54 + ', apply at ' + $applyAt54)
 
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
