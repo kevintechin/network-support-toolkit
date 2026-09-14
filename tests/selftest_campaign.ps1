@@ -357,9 +357,9 @@ Copy-Item -LiteralPath $top -Destination (Join-Path $desk21 'NHC-M2') -Recurse -
 Set-ExtractedLater (Join-Path $desk21 'NHC-M2')
 $r21 = Invoke-Campaign 'marked' @('-Zip', $zipMarked, '-Scenarios', 'M2', '-WorkRoot', $desk21) "M2=done`r`nM2/windows-showed=3`r`nM2/run-finished=done`r`n"
 $s21 = Read-State $r21.State
-Assert-True '21. M2 FAIL for the missing extraction and report, with the marks recorded - the download''s carrying the way it got there (backlog #30: this copy was marked by hand, and the row says so)' ($s21.Scenarios.M2.Result -eq 'FAIL' -and $s21.Scenarios.M2.Detail -like '*no en-US report*' -and $s21.Scenarios.M2.Detail -like '*download mark: ZoneId=3, applied deliberately*') ($s21.Scenarios.M2.Result + ' / ' + $s21.Scenarios.M2.Detail)
+Assert-True '21. M2 FAIL for the missing extraction and report, with the marks recorded - the download''s carrying the way it got there (backlog #30: this copy was marked by hand, and the row says so)' ($s21.Scenarios.M2.Result -eq 'FAIL' -and $s21.Scenarios.M2.Detail -like '*no en-US report*' -and $s21.Scenarios.M2.Detail -like '*download mark: ZoneId=3, no origin recorded in the stream*') ($s21.Scenarios.M2.Result + ' / ' + $s21.Scenarios.M2.Detail)
 Assert-True '21. the screenshot was taken and the observation recorded' ((Test-Path -LiteralPath (Join-Path $r21.State 'M2\M2_after_double-click.png')) -and (@(Get-Content -LiteralPath (Join-Path $r21.State 'answers.log') | Where-Object { $_ -match ' M2/windows-showed = 3$' }).Count -eq 1)) 'screenshot or answer missing'
-Assert-True '21. the prerequisite that let it run said what the mark is and how far the stream accounts for it - the branch no skip reaches (backlog #30)' (@($r21.Output | Where-Object { $_ -match 'prerequisite met - the download is marked: ZoneId=3, applied deliberately' }).Count -eq 1) (($r21.Output | Where-Object { $_ -match 'prerequisite met' }) -join ' / ')
+Assert-True '21. the prerequisite that let it run said what the mark is and how far the stream accounts for it - the branch no skip reaches (backlog #30)' (@($r21.Output | Where-Object { $_ -match 'prerequisite met - the download is marked: ZoneId=3, no origin recorded in the stream' }).Count -eq 1) (($r21.Output | Where-Object { $_ -match 'prerequisite met' }) -join ' / ')
 Assert-True '21. exit code 1' ($r21.ExitCode -eq 1) ('exit code ' + $r21.ExitCode)
 
 # -------------------- 22. -SkipGui drops every desktop scenario --------------------
@@ -830,13 +830,13 @@ Copy-Item -LiteralPath $zip -Destination $zipApplied39 -Force
 Set-Content -LiteralPath $zipApplied39 -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
 $r39b = Invoke-Campaign 'markapplied' @('-Zip', $zipApplied39, '-Scenarios', 'M2', '-SkipGui') "M2=done`r`n"
 $summary39b = Get-Content -LiteralPath (Join-Path $r39b.State 'campaign_summary.md') -Raw -Encoding UTF8
-Assert-True '39. a mark whose stream records no origin is reported as applied - and the line says what else leaves that stream, rather than calling the file hand-marked' (($summary39b -match '- Download mark: ZoneId=3, applied deliberately') -and ($summary39b -match 'no HostUrl and no ReferrerUrl') -and ($summary39b -match 'browser that records no origin')) (($summary39b -split "`n" | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+Assert-True '39. a mark whose stream records no origin is reported as applied - and the line says what else leaves that stream, rather than calling the file hand-marked' (($summary39b -match '- Download mark: ZoneId=3, no origin recorded in the stream') -and ($summary39b -match 'a mark written by hand leaves') -and ($summary39b -match 'a browser that records no origin leaves too')) (($summary39b -split "`n" | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
 $zipDownloaded39 = Join-Path $WorkDir ('NetworkHealthCheck-' + $version + '-downloaded.zip')
 Copy-Item -LiteralPath $zip -Destination $zipDownloaded39 -Force
 Set-Content -LiteralPath $zipDownloaded39 -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3`r`nReferrerUrl=https://example.invalid/releases`r`nHostUrl=https://example.invalid/NetworkHealthCheck.zip"
 $r39c = Invoke-Campaign 'markdownloaded' @('-Zip', $zipDownloaded39, '-Scenarios', 'M2', '-SkipGui') "M2=done`r`n"
 $summary39c = Get-Content -LiteralPath (Join-Path $r39c.State 'campaign_summary.md') -Raw -Encoding UTF8
-Assert-True '39. a mark whose stream records where the file came from is reported as downloaded, and the origin is quoted' (($summary39c -match '- Download mark: ZoneId=3, downloaded on this machine') -and ($summary39c -match 'HostUrl=https://example\.invalid/NetworkHealthCheck\.zip') -and ($summary39c -match 'ReferrerUrl=https://example\.invalid/releases')) (($summary39c -split "`n" | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+Assert-True '39. a mark whose stream records where the file came from is reported as downloaded, and the origin is quoted' (($summary39c -match '- Download mark: ZoneId=3, the stream records where it came from') -and ($summary39c -match 'HostUrl=https://example\.invalid/NetworkHealthCheck\.zip') -and ($summary39c -match 'ReferrerUrl=https://example\.invalid/releases')) (($summary39c -split "`n" | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
 Assert-True '39. none of the three invocations failed for the mark it was given' (($r39a.ExitCode -eq 0) -and ($r39b.ExitCode -eq 0) -and ($r39c.ExitCode -eq 0)) ('exit codes: ' + $r39a.ExitCode + ' / ' + $r39b.ExitCode + ' / ' + $r39c.ExitCode)
 # Round 3 of PR #65: M3 asks for this very download to be Unblocked, and the summary is written after that - so a
 # summary that only re-reads the file reports "no mark" for every campaign that got as far as M3, losing the one thing
@@ -845,9 +845,9 @@ Assert-True '39. none of the three invocations failed for the mark it was given'
 Remove-Item -LiteralPath $zipApplied39 -Stream Zone.Identifier
 $r39d = Invoke-Campaign 'markapplied' @('-Resume', '-Scenarios', 'A3', '-SkipGui') "A3=done`r`n"
 $summary39d = Get-Content -LiteralPath (Join-Path $r39d.State 'campaign_summary.md') -Raw -Encoding UTF8
-Assert-True '39. the mark this campaign ran against survives that Unblock: the summary still names it, says who read it, and says what the file carries now' (($summary39d -match '- Download mark: ZoneId=3, applied deliberately') -and ($summary39d -match 'read by the summary at ') -and ($summary39d -match 'the file carries no Internet-zone mark \(no mark\) now')) ((($summary39d -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+Assert-True '39. the mark this campaign ran against survives that Unblock: the summary still names it, says who read it, and says what the file carries now' (($summary39d -match '- Download mark: ZoneId=3, no origin recorded in the stream') -and ($summary39d -match 'read by the summary at ') -and ($summary39d -match 'the file carries no Internet-zone mark \(no mark\) now')) ((($summary39d -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
 $s39d = Read-State $r39d.State
-Assert-True '39. and the state keeps the reading that saw a mark, not the one that found none' (([string]$s39d.DownloadMark.Zone -eq 'ZoneId=3') -and ([string]$s39d.DownloadMark.Way -eq 'applied') -and ([string]$s39d.DownloadMark.By -eq 'the summary')) ('DownloadMark: ' + ($s39d.DownloadMark | ConvertTo-Json -Compress))
+Assert-True '39. and the state keeps the reading that saw a mark, not the one that found none' (([string]$s39d.DownloadMark.Zone -eq 'ZoneId=3') -and ([string]$s39d.DownloadMark.Way -eq 'no-origin') -and ([string]$s39d.DownloadMark.By -eq 'the summary')) ('DownloadMark: ' + ($s39d.DownloadMark | ConvertTo-Json -Compress))
 # And the other half of that rule: a scenario's reading is the moment the warning was measured, so it replaces one the
 # summary made first. M2 is not selected in the first invocation, so it has a run of its own to make in the second.
 $zipTakeover39 = Join-Path $WorkDir ('NetworkHealthCheck-' + $version + '-takeover.zip')
@@ -885,12 +885,27 @@ $r39i = Invoke-Campaign 'markapplied' @('-Resume', '-Scenarios', 'A3', '-SkipGui
 $summary39i = Get-Content -LiteralPath (Join-Path $r39i.State 'campaign_summary.md') -Raw -Encoding UTF8
 $markLine39i = ((($summary39i -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
 Assert-True '39. a download that is gone is reported as missing, with no Unblock named on that line although M3 is on record' (($markLine39i -match 'the file carries no Internet-zone mark \(file missing\) now') -and ($markLine39i -notmatch 'Unblock')) $markLine39i
+# The standard-user session does not go looking for the download at all (PR #65, round 5): it runs from C:\Users\Public
+# because that account cannot reach the administrator's profile, where the download usually sits, and a read from there
+# answers 'file missing' whether the file is gone or merely out of reach - the two raise the same exception, measured.
+# This self-test runs in one session, so the guard is read off the driver's AST: it has to be the function's FIRST
+# statement, before anything reads the file, or the reading it is meant to prevent has already happened.
+$guard39 = $false; $guardWhy39 = 'Update-DownloadMark not found'
+if ($defs37.ContainsKey('Update-DownloadMark') -and $defs37['Update-DownloadMark'].Count -eq 1) {
+    $body39 = @($defs37['Update-DownloadMark'][0].Body.EndBlock.Statements)
+    $reads39 = @($defs37['Update-DownloadMark'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-MarkOrigin' }, $true))
+    $first39 = $(if ($body39.Count) { $body39[0] } else { $null })
+    $isGuard39 = ($null -ne $first39) -and ($first39 -is [System.Management.Automation.Language.IfStatementAst]) -and ($first39.Extent.Text -match '\$IsStandardUser') -and ($first39.Extent.Text -match 'return')
+    $guard39 = $isGuard39 -and ($reads39.Count -ge 1) -and ($reads39[0].Extent.StartOffset -gt $first39.Extent.EndOffset)
+    $guardWhy39 = 'first statement is ' + $(if ($null -ne $first39) { $first39.GetType().Name } else { 'nothing' }) + ', guards the standard user: ' + $isGuard39 + ', reads of the file after it: ' + $reads39.Count
+}
+Assert-True '39. and the standard-user session says it did not look, before anything reads the download' $guard39 $guardWhy39
 # A mark that CHANGED was not Unblocked either, so the line says both readings and names no reason for the difference:
 # an explanation is not something a reading can supply.
 Set-Content -LiteralPath $zipTakeover39 -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3`r`nHostUrl=https://example.invalid/again.zip"
 $r39g = Invoke-Campaign 'marktakeover' @('-Resume', '-Scenarios', 'A4') "A4=done`r`n"
 $summary39g = Get-Content -LiteralPath (Join-Path $r39g.State 'campaign_summary.md') -Raw -Encoding UTF8
-Assert-True '39. a mark that changed rather than went is reported as both readings, with no Unblock named for it' (($summary39g -match '- Download mark: ZoneId=3, applied deliberately') -and ($summary39g -match 'the file carries ZoneId=3, downloaded on this machine[^;]*now') -and ($summary39g -notmatch 'now, which is what M3')) ((($summary39g -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
+Assert-True '39. a mark that changed rather than went is reported as both readings, with no Unblock named for it' (($summary39g -match '- Download mark: ZoneId=3, no origin recorded in the stream') -and ($summary39g -match 'the file carries ZoneId=3, the stream records where it came from[^;]*now') -and ($summary39g -notmatch 'now, which is what M3')) ((($summary39g -split "`n") | Where-Object { $_ -like '- Download mark:*' }) -join ' / ')
 
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {

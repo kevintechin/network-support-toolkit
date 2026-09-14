@@ -307,8 +307,11 @@ function Get-MarkOrigin([string]$Path) {
     $zone = Get-ZoneId $Path
     if (-not (Test-InternetMark $zone)) { return @{ Zone = $zone; Origin = ''; Way = 'none'; Text = ('no Internet-zone mark (' + $zone + ')') } }
     $origin = @(Get-Content -LiteralPath $Path -Stream Zone.Identifier -ErrorAction SilentlyContinue | Where-Object { $_ -match '^(HostUrl|ReferrerUrl)=.' })
-    if ($origin.Count) { return @{ Zone = $zone; Origin = ($origin -join '; '); Way = 'downloaded'; Text = ($zone + ', downloaded on this machine - the stream records where from: ' + ($origin -join '; ')) } }
-    return @{ Zone = $zone; Origin = ''; Way = 'applied'; Text = ($zone + ', applied deliberately - or downloaded by a browser that records no origin: the stream carries no HostUrl and no ReferrerUrl') }
+    # What is named is what the stream holds, and never where or how it was written: a copy made by something that
+    # preserves alternate data streams carries these fields from another machine, and a stream can be written by hand
+    # with them in it, so 'downloaded on this machine' would be a claim the reading cannot support (PR #65, round 5).
+    if ($origin.Count) { return @{ Zone = $zone; Origin = ($origin -join '; '); Way = 'origin-recorded'; Text = ($zone + ', the stream records where it came from: ' + ($origin -join '; ') + ' - what a browser download writes, and what a copy that preserves alternate data streams carries across from another machine') } }
+    return @{ Zone = $zone; Origin = ''; Way = 'no-origin'; Text = ($zone + ', no origin recorded in the stream - what a mark written by hand leaves, and what a browser that records no origin leaves too') }
 }
 function Update-DownloadMark([string]$By) {
     # The mark as it is now, and the state's memory of the reading that saw one. M3 asks for this very download to be
@@ -318,6 +321,14 @@ function Update-DownloadMark([string]$By) {
     # that finds none never overwrites it, and the summary shows both. A reading by a scenario replaces one the summary
     # made, because the scenario's is the moment the warning was measured; nothing else replaces anything, so a mark
     # seen once is the mark this campaign is on record as having run against.
+    # The standard-user session does not go looking for the download. The campaign put the asset, the extracted package
+    # and tests\ under C:\Users\Public exactly because that account cannot reach the administrator's profile, where the
+    # download usually sits (this script's own example is $env:USERPROFILE\Downloads), and a read from there answers
+    # 'file missing' whether the file is gone or merely out of reach: measured on this machine, opening a file inside a
+    # folder that denies traversal raises FileNotFoundException, the same exception a genuinely missing file raises, so
+    # the two cannot be told apart. This session says it did not look, rather than reporting the download as gone
+    # (PR #65, round 5; Test-Path itself returns false there and raises nothing, measured under -ErrorAction Stop).
+    if ($IsStandardUser) { return @{ Zone = 'not read'; Origin = ''; Way = 'unread'; Text = ('not read in this session - the standard-user run works from ' + $StateDir + ', not from the download') } }
     $reading = Get-MarkOrigin $State.OriginalZip
     if ($reading.Way -ne 'none') {
         $kept = $State.DownloadMark
@@ -1319,7 +1330,8 @@ function Write-CampaignSummary {
     # round 4). Where it is named, what is said is what M3 asks for and what an Unblock does, not what happened here.
     $m3 = $(if ($State.Scenarios) { $State.Scenarios['M3'] } else { $null })
     $unblockAsked = ($null -ne $m3) -and ((@('PASS', 'FAIL') -contains [string]$m3.Result) -or [bool]$m3.Attempted)
-    if ($markKept -and ([string]$markKept.Text -ne [string]$script:MarkNow.Text)) {
+    if ($markKept -and ($script:MarkNow.Way -eq 'unread')) { $markLine += ('; ' + $script:MarkNow.Text) }
+    elseif ($markKept -and ([string]$markKept.Text -ne [string]$script:MarkNow.Text)) {
         $markLine += ('; the file carries {0} now{1}' -f $script:MarkNow.Text, $(if (($script:MarkNow.Zone -eq 'no mark') -and $unblockAsked) { ' - M3 asked for the Unblock that removes the stream' } else { '' }))
     }
     $md += ('- Download mark: {0} - {1}' -f $markLine, $State.OriginalZip)
