@@ -324,7 +324,7 @@ python tools\validate_release.py .
 
 **要向使用者要什麼**，使用手冊第 6 節逐列寫了；環境報告、`LauncherError_<時間>.txt` 和 `PowerShellMessages_<時間>.txt` 就是為這個交接而寫的。1.2.14 起每次執行各寫各的檔案，第三次不會再蓋掉第一次：檔名裡的數字是那台電腦印日期時間的數字，在那台電腦上能依時間排序，跨電腦則不行。錯誤報告的「日期時間：」那一行照抄 shell 自己的日期，旁邊註明它是哪一種短日期格式——`08/09/2026` 少了格式就無法判讀，而顯示語言英文、地區格式英國的電腦印出來的正是這種——格式讀自 `HKCU\Control Panel\International\sShortDate`，讀不到就省略；不做任何轉換。可靠的時間戳是檔案本身的修改時間，你的檔案總管會用你的格式顯示，這個版本之前寫出的檔案也一樣。檔案在啟動器旁邊，那個資料夾無法寫入時改寫在 `%TEMP%` 的 `NetworkHealthCheck_LauncherError_<時間>.txt` 和 `NetworkHealthCheck_PowerShellMessages_<時間>.txt`，內容相同。
 
-**放行工具。** 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：`SHA256SUMS.txt` 給出每支 `NetworkHealthCheck.ps1` 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.14/docs/application-control.md>（英文），最新版本在 `main` 分支。
+**放行工具。** 兩支腳本沒有簽章，所以依發行者放行的政策沒有東西可比對；IT 現在手上有的是雜湊值：`SHA256SUMS.txt` 給出每支 `NetworkHealthCheck.ps1` 的摘要，WDAC 或 AppLocker 規則可以放行這個雜湊。新版本就是新雜湊。這條規則回答的只有應用程式控制：*AllSigned* 執行原則問的是另一個問題——腳本上有沒有這台電腦信任的發行者簽章——兩者是各自獨立的兩道關卡，所以在兩者都生效的電腦上放行雜湊，上表「群組原則設定的執行原則」那一列仍然原封不動；能滿足那一列的是簽章，條件見下一段。哪些 Windows 組建與版本會強制執行 AppLocker、什麼已經觀察到、什麼還沒有，變得比這個套件快：repo 保有一頁專門記錄，本手冊所屬版本的那一頁在 <https://github.com/kevintechin/network-support-toolkit/blob/v1.2.14/docs/application-control.md>（英文），最新版本在 `main` 分支。
 
 **簽章。** 用你自己的憑證授權單位做 Authenticode 簽章，要在簽署憑證也受這台電腦信任時（憑證鏈受信任，且憑證在「受信任的發行者」存放區）才滿足 *AllSigned* 原則：發行者尚未被歸為信任時，PowerShell 會先詢問使用者才執行腳本（問題會出現在啟動器的視窗裡），無法詢問的工作階段就不執行。簽章也讓應用程式控制規則能依發行者放行。簽章會在腳本後面附加一段簽章區塊，所以簽過的檔案不再符合 `SHA256SUMS.txt`；請自己記下簽過檔案的摘要。
 
