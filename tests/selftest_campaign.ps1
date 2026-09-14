@@ -1299,7 +1299,7 @@ if ($m7at49 -ge 0) {
     $m7end49 = $driverText49.IndexOf("@{ Id = '", $m7at49 + 10)
     $m7block49 = $(if ($m7end49 -gt $m7at49) { $driverText49.Substring($m7at49, $m7end49 - $m7at49) } else { $driverText49.Substring($m7at49) })
 }
-Assert-True '49. M7 records what __PSLockdownPolicy was before it changed it, and records whether it was there apart from what it said' (($m7block49 -like '*Prepare = {*') -and ($m7block49 -like '*LockdownExisted*') -and ($m7block49 -like '*LockdownValue*') -and ($m7block49 -like '*Get-MachineEnv ''__PSLockdownPolicy''*')) 'M7 records nothing about the value it overwrites'
+Assert-True '49. M7 records what __PSLockdownPolicy was before it changed it, and records whether it was there apart from what it said' (($m7block49 -like '*Prepare = {*') -and ($m7block49 -like '*LockdownExisted*') -and ($m7block49 -like '*LockdownValue*') -and ($m7block49 -like '*Get-MachineEnvRaw ''__PSLockdownPolicy''*')) 'M7 records nothing about the value it overwrites'
 Assert-True '49. its revert puts that value back where there was one and deletes only where there was none, and its check compares existence and data with what was recorded' (($m7block49 -like '*setx /M __PSLockdownPolicy*$was*') -and ($m7block49 -like '*reg delete*__PSLockdownPolicy /f*') -and ($m7block49 -like '*before M7 it was*') -and ($m7block49 -like '*LockdownExisted*')) 'M7 still deletes whatever it finds'
 # M9 does not change a service it could not read.
 $m9prep49 = $m9apply46.IndexOf('Prepare = {')
@@ -1636,7 +1636,7 @@ if ($m9at52 -ge 0) {
     $m9end52 = $m9text45.IndexOf("@{ Id = '", $m9at52 + 10)
     $m9block52 = $(if ($m9end52 -gt $m9at52) { $m9text45.Substring($m9at52, $m9end52 - $m9at52) } else { $m9text45.Substring($m9at52) })
 }
-Assert-True '52. M9 records the flag where it records the rest of the service, and both of its checks read it - the weaker comparison included, since that is the one a manual campaign gets' (($m9block52 -like '*AppIDSvcDelayedAuto = (Get-ServiceDelayedAuto*') -and (@([regex]::Matches($m9block52, 'Test-DelayedAutoAgainst \$Ctx\.Facts \(Get-ServiceDelayedAuto')).Count -ge 2)) ('recorded: ' + ($m9block52 -like '*AppIDSvcDelayedAuto = (Get-ServiceDelayedAuto*') + '; checked ' + @([regex]::Matches($m9block52, 'Test-DelayedAutoAgainst')).Count + ' time(s)')
+Assert-True '52. M9 records the flag where it records the rest of the service, and both of its checks read it - the weaker comparison included, since that is the one a manual campaign gets' (($m9block52 -like '*$delayedNow = Get-ServiceDelayedAuto ''AppIDSvc''*') -and ($m9block52 -like '*AppIDSvcDelayedAuto = $delayedNow*') -and (@([regex]::Matches($m9block52, 'Test-DelayedAutoAgainst \$Ctx\.Facts \(Get-ServiceDelayedAuto')).Count -ge 2)) ('recorded: ' + ($m9block52 -like '*AppIDSvcDelayedAuto = $delayedNow*') + '; checked ' + @([regex]::Matches($m9block52, 'Test-DelayedAutoAgainst')).Count + ' time(s)')
 
 # -------------------- 53. what round 9 asked: the value as the registry holds it, and the two answers a check owes --------------------
 # PR #67 round 9, three findings. M7 read __PSLockdownPolicy through [Environment]::GetEnvironmentVariable(..., 'Machine'),
@@ -1697,7 +1697,7 @@ if ($m7at53 -ge 0) {
     $m7end53 = $m9text45.IndexOf("@{ Id = '", $m7at53 + 10)
     $m7block53 = $(if ($m7end53 -gt $m7at53) { $m9text45.Substring($m7at53, $m7end53 - $m7at53) } else { $m9text45.Substring($m7at53) })
 }
-Assert-True '53. M7 records the kind where it records the value, its revert asks the same function for its line, and its check compares the kind as well as the data' (($m7block53 -like '*Get-MachineEnvRaw ''__PSLockdownPolicy''*') -and ($m7block53 -like '*LockdownKind*') -and ($m7block53 -like '*Get-M7UndoCommand $Ctx.Facts*') -and ($m7block53 -like '*before M7 it was a*')) 'M7 still records or compares the expanded value alone'
+Assert-True '53. M7 records the kind where it records the value, its revert asks the same function for its line, and its check compares the kind as well as the data' (($m7block53 -like '*Get-MachineEnvRaw ''__PSLockdownPolicy''*') -and ($m7block53 -like '*LockdownKind*') -and ($m7block53 -like '*Get-M7UndoCommand $Ctx.Facts*') -and ($m7block53 -like '*before M7 it was of kind*')) 'M7 still records or compares the expanded value alone'
 Assert-True '53. and both readings of it are the registry''s: the check reads the raw value too, not what [Environment] would expand it to' (($m7block53 -notlike '*Get-MachineEnv ''__PSLockdownPolicy''*') -or (@([regex]::Matches($m7block53, 'Get-MachineEnvRaw')).Count -ge 2)) ('raw reads: ' + @([regex]::Matches($m7block53, 'Get-MachineEnvRaw')).Count + '; expanded reads: ' + @([regex]::Matches($m7block53, 'Get-MachineEnv ')).Count)
 # A flag that cannot be read now is not a flag that agrees.
 $unreadable53 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = 'yes' } 'unknown'
@@ -1706,6 +1706,65 @@ $differs53 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSv
 $neverRead53 = Test-DelayedAutoAgainst @{ AppIDSvcStartType = 'Automatic'; AppIDSvcDelayedAuto = 'unknown' } 'unknown'
 Assert-True '53. where M9 recorded the flag and the machine cannot be read now, the check refuses instead of staying quiet - its callers read quiet as nothing to object to' (($null -ne $unreadable53) -and ($unreadable53.Ok -eq $false) -and ([string]$unreadable53.Detail -like '*cannot be read now*')) ('says: ' + $(if ($null -eq $unreadable53) { '(nothing)' } else { $unreadable53.Detail }))
 Assert-True '53. and it is quiet in the two standings that mean nothing to compare: a flag that agrees, and one that was never read when the rest was recorded' (($null -eq $agrees53) -and ($null -eq $neverRead53) -and ($null -ne $differs53)) ('agrees: ' + $(if ($null -eq $agrees53) { 'quiet' } else { 'says something' }) + '; never read: ' + $(if ($null -eq $neverRead53) { 'quiet' } else { 'says something' }) + '; differs: ' + $(if ($null -eq $differs53) { 'quiet' } else { 'says something' }))
+
+# -------------------- 54. what round 10 asked: not readable is not absent --------------------
+# PR #67 round 10, two findings of one shape - a state the campaign could not READ was treated as a state it knew,
+# and the scenario changed the machine anyway. Get-MachineEnvRaw reported a key it could not open exactly as it
+# reported a value that is not there, so M7 would have recorded 'none', overwritten a value it never saw, put 'none'
+# back by deleting it, and certified that deletion through the same reading. And M9 recorded an automatic service
+# whose delayed-start flag could not be read, then ran sc config start= auto - which takes a delayed setting off -
+# with nothing to reconstruct it from and a check that had nothing to compare. Both refuse now, the way the service's
+# startup type has since round 4: a scenario that cannot read what it is about to change is not attempted at all.
+Write-Output ''
+Write-Output '54. a key that cannot be read is not a key with nothing in it, and a scenario that cannot read does not change'
+$readable54 = Get-MachineEnvRaw 'ComSpec'
+$absent54 = Get-MachineEnvRaw 'NhcSelftestNoSuchMachineVariable'
+$unreadable54 = Get-MachineEnvRaw 'ComSpec' 'HKLM:\SOFTWARE\NhcSelftestNoSuchKeyAtAll'
+Assert-True '54. the read tells the three apart: a value that is there, a value that is not, and a key this session cannot open' (([bool]$readable54.Readable -and [bool]$readable54.Existed) -and ([bool]$absent54.Readable -and -not [bool]$absent54.Existed) -and (-not [bool]$unreadable54.Readable -and -not [bool]$unreadable54.Existed)) ('there: readable=' + $readable54.Readable + '/existed=' + $readable54.Existed + '; absent: readable=' + $absent54.Readable + '/existed=' + $absent54.Existed + '; unreadable: readable=' + $unreadable54.Readable + '/existed=' + $unreadable54.Existed)
+# M7's check, driven against each of those readings - the driver's own block, with the reading it is given controlled.
+$m7at54 = $m9text45.IndexOf("@{ Id = 'M7'")
+$vAt54 = $(if ($m7at54 -ge 0) { $m9text45.IndexOf('Verify = { param($Ctx)', $m7at54) } else { -1 })
+$vEnd54 = $(if ($vAt54 -ge 0) { $m9text45.IndexOf("@{ Id = 'M8'", $vAt54) } else { -1 })
+$sb54 = $null
+if (($vAt54 -ge 0) -and ($vEnd54 -gt $vAt54)) {
+    $block54 = $m9text45.Substring($vAt54, $vEnd54 - $vAt54)
+    $from54 = $block54.IndexOf('{ param($Ctx)')
+    $to54 = $block54.LastIndexOf('} } },')
+    if ($to54 -gt $from54) { Invoke-Expression ('$sb54 = ' + $block54.Substring($from54, $to54 - $from54 + 1)) }
+}
+Assert-True '54. M7''s check is a scriptblock this case can run, sliced where the next scenario begins' ($null -ne $sb54) ('verify at ' + $vAt54 + ', M8 at ' + $vEnd54)
+$facts54 = @{ Facts = @{ LockdownExisted = 'yes'; LockdownValue = '4'; LockdownKind = 'String' } }
+$cannotRead54 = $null; $asBefore54 = $null; $otherKind54 = $null; $gone54 = $null
+if ($null -ne $sb54) {
+    # Each reading is given to the driver's own check in a scope of its own, so the function it calls answers what this
+    # case decided and the real one is untouched for every other case in this file.
+    $cannotRead54 = & { function Get-MachineEnvRaw([string]$Name, [string]$KeyPath = '') { return @{ Readable = $false; Existed = $false; Value = ''; Kind = '' } } & $sb54 $facts54 }
+    $asBefore54 = & { function Get-MachineEnvRaw([string]$Name, [string]$KeyPath = '') { return @{ Readable = $true; Existed = $true; Value = '4'; Kind = 'String' } } & $sb54 $facts54 }
+    $otherKind54 = & { function Get-MachineEnvRaw([string]$Name, [string]$KeyPath = '') { return @{ Readable = $true; Existed = $true; Value = '4'; Kind = 'ExpandString' } } & $sb54 $facts54 }
+    $gone54 = & { function Get-MachineEnvRaw([string]$Name, [string]$KeyPath = '') { return @{ Readable = $true; Existed = $false; Value = ''; Kind = '' } } & $sb54 $facts54 }
+}
+Assert-True '54. a key it cannot read now is refused, not read as a value that is gone - that reading is how a deletion nobody saw gets certified' (($null -ne $cannotRead54) -and ($cannotRead54.Ok -eq $false) -and ([string]$cannotRead54.Detail -like '*cannot be read now*')) ('says: ' + $(if ($null -eq $cannotRead54) { '(nothing)' } else { $cannotRead54.Detail }))
+Assert-True '54. and the reading is not vacuous: the same block passes the machine that is as it was, and refuses one whose value is gone or whose kind is another' (($asBefore54.Ok -eq $true) -and ($gone54.Ok -eq $false) -and ($otherKind54.Ok -eq $false) -and ([string]$otherKind54.Detail -like '*of kind*')) ('as before: ' + $asBefore54.Ok + '; gone: ' + $gone54.Ok + '; other kind: ' + [string]$otherKind54.Detail)
+# And the two scenarios refusing to start on what they cannot read.
+$m7block54 = ''
+if ($m7at54 -ge 0) {
+    $m7end54 = $m9text45.IndexOf("@{ Id = '", $m7at54 + 10)
+    $m7block54 = $(if ($m7end54 -gt $m7at54) { $m9text45.Substring($m7at54, $m7end54 - $m7at54) } else { $m9text45.Substring($m7at54) })
+}
+$prepAt54 = $m7block54.IndexOf('Prepare = {')
+$throwAt54 = $m7block54.IndexOf('the machine environment key cannot be read (')
+$recordAt54 = $m7block54.IndexOf('LockdownExisted = $(if')
+Assert-True '54. M7 refuses the scenario where that key cannot be read, before it records anything or changes the machine' (($prepAt54 -ge 0) -and ($throwAt54 -gt $prepAt54) -and ($recordAt54 -gt $throwAt54) -and ($m7block54 -like '*throw (*machine environment key cannot be read*')) ('prepare at ' + $prepAt54 + ', refusal at ' + $throwAt54 + ', record at ' + $recordAt54)
+Assert-True '54. and its precondition says the key could not be read rather than that the value is not set - the two are not the same sentence' (($m7block54 -like '*Precondition = { $raw = Get-MachineEnvRaw*') -and ($m7block54 -like '*cannot be read, so whether __PSLockdownPolicy is 4 cannot be said*')) 'M7''s precondition still reads an unreadable key as "not set"'
+$m9prep54 = ''
+$m9at54 = $m9text45.IndexOf("@{ Id = 'M9'")
+if ($m9at54 -ge 0) {
+    $m9end54 = $m9text45.IndexOf("@{ Id = '", $m9at54 + 10)
+    $m9prep54 = $(if ($m9end54 -gt $m9at54) { $m9text45.Substring($m9at54, $m9end54 - $m9at54) } else { $m9text45.Substring($m9at54) })
+}
+$delayedThrow54 = $m9prep54.IndexOf('delayed-start flag cannot be read')
+$applyAt54 = $m9prep54.IndexOf('Apply = {')
+Assert-True '54. M9 refuses an automatic service whose delayed-start flag it could not read, rather than setting start= auto over a setting it cannot put back' (($delayedThrow54 -ge 0) -and ($applyAt54 -gt $delayedThrow54) -and ($m9prep54 -like '*StartType -eq ''Automatic'') -and ($delayedNow -eq ''unknown'')*')) ('refusal at ' + $delayedThrow54 + ', apply at ' + $applyAt54)
 
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''

@@ -810,21 +810,26 @@ function Test-PolicyLineData([string]$Data) {
     foreach ($ch in $s.ToCharArray()) { if ([int][char]$ch -lt 32) { return $false } }
     return $true
 }
-function Get-MachineEnvRaw([string]$Name) {
+function Get-MachineEnvRaw([string]$Name, [string]$KeyPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment') {
     # A machine environment variable as the registry holds it: the data unexpanded, and the kind beside it.
     # [Environment]::GetEnvironmentVariable(..., 'Machine') expands a REG_EXPAND_SZ value before anyone sees it, so a
     # value of '%SystemRoot%\policy' was recorded as the path it expands to, put back with setx as a REG_SZ holding
     # that text, and certified by a check that read the same expansion - the machine losing both its kind and its
     # indirection, and nothing saying so (PR #67 round 9). Existence, data and kind are three facts, which is what
     # M8's values have been since PR #14.
+    # And a fourth: whether the key could be read at all. A campaign that cannot open it - an ACL that admits only an
+    # elevated administrator, say, while the elevated helper still writes there - would otherwise record 'there is no
+    # value', overwrite one, put 'none' back by deleting, and certify the deletion through the same reading. Not
+    # readable is not absent; the scenario refuses instead (PR #67 round 10, the rule round 4 gave the service).
     $key = $null
-    try { $key = Get-Item -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -ErrorAction SilentlyContinue } catch { $key = $null }
-    if ($null -eq $key) { return @{ Existed = $false; Value = ''; Kind = '' } }
-    $raw = $key.GetValue($Name, $null, 'DoNotExpandEnvironmentNames')
-    if ($null -eq $raw) { return @{ Existed = $false; Value = ''; Kind = '' } }
+    try { $key = Get-Item -Path $KeyPath -ErrorAction SilentlyContinue } catch { $key = $null }
+    if ($null -eq $key) { return @{ Readable = $false; Existed = $false; Value = ''; Kind = '' } }
+    $raw = $null
+    try { $raw = $key.GetValue($Name, $null, 'DoNotExpandEnvironmentNames') } catch { return @{ Readable = $false; Existed = $false; Value = ''; Kind = '' } }
+    if ($null -eq $raw) { return @{ Readable = $true; Existed = $false; Value = ''; Kind = '' } }
     $kind = ''
     try { $kind = [string]$key.GetValueKind($Name) } catch { $kind = '' }
-    return @{ Existed = $true; Value = [string]$raw; Kind = $kind }
+    return @{ Readable = $true; Existed = $true; Value = [string]$raw; Kind = $kind }
 }
 function Get-ServiceDelayedAuto([string]$Name) {
     # Whether a service is set to start automatically DELAYED. Get-Service says 'Automatic' for both that and plain
@@ -1390,7 +1395,7 @@ function Get-Plan {
         @{ Id = 'M7'; Title = 'Every new PowerShell in ConstrainedLanguage (__PSLockdownPolicy = 4)'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('In an ELEVATED command prompt run:   setx /M __PSLockdownPolicy 4   - then answer done. This puts every new PowerShell on this machine into ConstrainedLanguage until it is removed; you will be asked to remove it afterwards.',
                            '在「以系統管理員身分執行」的命令提示字元執行：setx /M __PSLockdownPolicy 4，然後輸入 done。移除之前，這台機器每個新的 PowerShell 都會是 ConstrainedLanguage；之後會提示你移除。') + $recoverLines
-           Precondition = { $v = Get-MachineEnv '__PSLockdownPolicy'; if ($v -eq '4') { @{ Ok = $true; Detail = '__PSLockdownPolicy=4 in the machine environment' } } else { @{ Ok = $false; Detail = ('__PSLockdownPolicy is ' + $(if ($v) { $v } else { 'not set' }) + ' in the machine environment') } } }
+           Precondition = { $raw = Get-MachineEnvRaw '__PSLockdownPolicy'; if (-not $raw.Readable) { @{ Ok = $false; Detail = 'the machine environment key cannot be read, so whether __PSLockdownPolicy is 4 cannot be said' } } elseif ([string]$raw.Value -eq '4') { @{ Ok = $true; Detail = '__PSLockdownPolicy=4 in the machine environment' } } else { @{ Ok = $false; Detail = ('__PSLockdownPolicy is ' + $(if ($raw.Existed) { '"' + [string]$raw.Value + '"' } else { 'not set' }) + ' in the machine environment') } } }
            Action = { param($Ctx)
                $env:__PSLockdownPolicy = '4'   # what a double-click inherits from Explorer after the broadcast; PowerShell reads the machine value itself
                try { $r = Invoke-LauncherRun $Ctx.Id 'en-US' } finally { Remove-Item -LiteralPath Env:\__PSLockdownPolicy -ErrorAction SilentlyContinue }
@@ -1412,6 +1417,10 @@ function Get-Plan {
                # Read from the registry rather than through [Environment], which expands a REG_EXPAND_SZ value and
                # drops its kind: what is recorded is what the key holds (PR #67 round 9).
                $raw = Get-MachineEnvRaw '__PSLockdownPolicy'
+               # A key this session cannot read is not a key with nothing in it. The scenario is not attempted at all
+               # rather than overwriting a value it never saw and then deleting it as 'what was there' - the rule the
+               # service got in round 4 (PR #67 round 10).
+               if (-not $raw.Readable) { throw ('the machine environment key cannot be read (HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment), so nothing here could put __PSLockdownPolicy back after M7 changed it') }
                return @{ LockdownExisted = $(if ($raw.Existed) { 'yes' } else { 'no' }); LockdownValue = [string]$raw.Value; LockdownKind = [string]$raw.Kind }
            }
            Apply = { param($Ctx) Invoke-PolicyChange $Ctx.Id $Ctx 'apply' @('setx /M __PSLockdownPolicy 4') }
@@ -1449,14 +1458,17 @@ function Get-Plan {
                             $wasThere = ([string]$Ctx.Facts['LockdownExisted'] -eq 'yes')
                             $was = [string]$Ctx.Facts['LockdownValue']
                             $wasKind = [string]$Ctx.Facts['LockdownKind']
-                            if ($isThere -ne $wasThere) { @{ Ok = $false; Detail = ('__PSLockdownPolicy is ' + $(if ($isThere) { 'there ("' + $v + '")' } else { 'not there' }) + '; before M7 it was ' + $(if ($wasThere) { 'there ("' + $was + '")' } else { 'not there' })) } }
+                            # A key that cannot be read says nothing about the value in it, and reading that silence as
+                            # 'not there' is how a machine gets certified for a deletion nobody saw (PR #67 round 10).
+                            if (-not $raw.Readable) { @{ Ok = $false; Detail = 'the machine environment key cannot be read now, so nothing here can say __PSLockdownPolicy is as it was before M7' } }
+                            elseif ($isThere -ne $wasThere) { @{ Ok = $false; Detail = ('__PSLockdownPolicy is ' + $(if ($isThere) { 'there ("' + $v + '")' } else { 'not there' }) + '; before M7 it was ' + $(if ($wasThere) { 'there ("' + $was + '")' } else { 'not there' })) } }
                             elseif (-not $isThere) { @{ Ok = $true; Detail = 'removed, as it was not there before M7' } }
                             # -cne, not -ne, for the same reason as M8's data: -ne folds case, and a value put back as
                             # another case is another value in the environment block (PR #67 round 6).
                             elseif ($v -cne $was) { @{ Ok = $false; Detail = ('__PSLockdownPolicy is "' + $v + '"; before M7 it was "' + $was + '"') } }
                             # And the kind, where it was recorded: a REG_EXPAND_SZ value put back as a REG_SZ holding
                             # the same characters is not the value the machine had - it no longer follows what it names.
-                            elseif ($wasKind -and ([string]$raw.Kind -ne $wasKind)) { @{ Ok = $false; Detail = ('__PSLockdownPolicy is a ' + $(if ($raw.Kind) { $raw.Kind } else { 'value of unreadable kind' }) + '; before M7 it was a ' + $wasKind) } }
+                            elseif ($wasKind -and ([string]$raw.Kind -ne $wasKind)) { @{ Ok = $false; Detail = ('__PSLockdownPolicy is of kind ' + $(if ($raw.Kind) { $raw.Kind } else { '(unreadable)' }) + '; before M7 it was of kind ' + $wasKind) } }
                             else { @{ Ok = $true; Detail = ('__PSLockdownPolicy="' + $was + '"' + $(if ($wasKind) { ' (' + $wasKind + ')' } else { '' }) + ', as before M7') } } } } },
         @{ Id = 'M8'; Title = 'Group Policy execution policy: allow only signed scripts'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('Two ways to the same MachinePolicy - PowerShell reads HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell either way:',
@@ -1641,7 +1653,13 @@ function Get-Plan {
                try { $svc = Get-Service -Name AppIDSvc -ErrorAction Stop } catch { throw ('the Application Identity service cannot be read (' + $_.Exception.Message + '), so nothing here could put it back after M9 changed it') }
                # And whether that automatic start is the delayed one, which Get-Service does not distinguish: the apply
                # sets start= auto, so a machine configured delayed would come back plain automatic (PR #67 round 8).
-               return ($before + @{ AppIDSvcStartType = [string]$svc.StartType; AppIDSvcStatus = [string]$svc.Status; AppIDSvcDelayedAuto = (Get-ServiceDelayedAuto 'AppIDSvc') })
+               $delayedNow = Get-ServiceDelayedAuto 'AppIDSvc'
+               # A service that is automatic and whose delayed-start flag could not be read is one this scenario must
+               # not touch: 'sc config start= auto' takes a delayed setting off, the revert would have nothing to put
+               # back, and the check has nothing to compare - the same rule as the startup type itself in round 4, and
+               # the reason the check's silence was read as a pass before round 9 (PR #67 round 10).
+               if (([string]$svc.StartType -eq 'Automatic') -and ($delayedNow -eq 'unknown')) { throw ('the Application Identity service is automatic and its delayed-start flag cannot be read (HKLM\SYSTEM\CurrentControlSet\Services\AppIDSvc\DelayedAutostart), so nothing here could put it back after M9 changed it') }
+               return ($before + @{ AppIDSvcStartType = [string]$svc.StartType; AppIDSvcStatus = [string]$svc.Status; AppIDSvcDelayedAuto = $delayedNow })
            }
            Apply = { param($Ctx)
                # What the campaign applies is a policy file in tests\, not a sequence of clicks: AppLocker's default
