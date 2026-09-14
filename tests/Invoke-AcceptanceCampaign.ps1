@@ -748,14 +748,24 @@ function Write-RecoveryNotes {
     $m9 = $State.Scenarios['M9']
     $m9Facts = $(if ($null -ne $m9 -and $null -ne $m9.Facts) { $m9.Facts } else { @{} })
     $m9Lines = @(Get-M9RecoveryLines $m9Facts)
+    # M7's way back is the value the machine had, where it had one: the file below and the lines above are what a
+    # person has when the campaign cannot run at all, and deleting is not putting back (PR #67 round 5).
+    $m7 = $State.Scenarios['M7']
+    $m7Facts = $(if ($null -ne $m7 -and $null -ne $m7.Facts) { $m7.Facts } else { @{} })
+    $m7Had = ([string]$m7Facts['LockdownExisted'] -eq 'yes')
+    $m7Value = [string]$m7Facts['LockdownValue']
+    $m7Safe = ($m7Had -and (Test-PolicyLineData $m7Value))
+    $m7Back = $(if ($m7Safe) { 'setx /M __PSLockdownPolicy "' + $m7Value + '"' } else { 'reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f' })
+    $m7Note = $(if ($m7Had -and -not $m7Safe) { '    This machine had __PSLockdownPolicy set to a value that cannot be typed on one line; campaign.json holds it under Scenarios.M7.Facts.LockdownValue - set it back with setx /M.' } elseif ($m7Had) { ('    This machine had __PSLockdownPolicy set to "' + $m7Value + '" before M7: put THAT back, do not delete it.') } else { '    It was not set on this machine before M7, so removing it is putting it back.' })
     $lines = @(
         ('NetworkHealthCheck acceptance campaign "' + $Campaign + '" - how to put the machine back WITHOUT PowerShell'),
         ('Written ' + (& $Now) + '. For a policy scenario interrupted before its revert: under M7 every new PowerShell is'),
         'ConstrainedLanguage and the campaign cannot resume; under M8 the unsigned campaign script does not start at all.',
         '',
         'M7  __PSLockdownPolicy (every new PowerShell in ConstrainedLanguage)',
+        $m7Note,
         '    right-click undo-M7.cmd in this folder > Run as administrator; or, in an elevated command prompt:',
-        '    reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f',
+        ('    ' + $m7Back),
         '',
         ('M8  Group Policy execution policy (AllSigned) - MachinePolicy was ' + $m8Before + ' before M8'),
         '    with gpedit.msc: Computer Configuration > Administrative Templates > Windows Components > Windows PowerShell',
@@ -773,10 +783,10 @@ function Write-RecoveryNotes {
     Set-Content -LiteralPath $RecoveryNotes -Value $lines -Encoding UTF8
     $cmd = @(
         '@echo off',
-        'rem Undo M7 of the NetworkHealthCheck acceptance campaign: remove the machine-wide __PSLockdownPolicy. Run as administrator.',
-        'reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f',
-        'if errorlevel 1 echo Could not delete the value - is this prompt running as administrator? & pause & exit /b 1',
-        'echo __PSLockdownPolicy removed: new PowerShell windows are FullLanguage again. Resume the campaign to record the revert.',
+        ('rem Undo M7 of the NetworkHealthCheck acceptance campaign: put __PSLockdownPolicy back as this machine had it (' + $(if ($m7Safe) { 'set to "' + $m7Value + '"' } else { 'not set' }) + '). Run as administrator.'),
+        $m7Back,
+        'if errorlevel 1 echo Could not put the value back - is this prompt running as administrator? & pause & exit /b 1',
+        ('echo __PSLockdownPolicy is ' + $(if ($m7Safe) { 'back to what this machine had' } else { 'removed' }) + ': new PowerShell windows are FullLanguage again. Resume the campaign to record the revert.'),
         'pause'
     )
     [IO.File]::WriteAllLines((Join-Path $StateDir 'undo-M7.cmd'), [string[]]$cmd, [Text.Encoding]::ASCII)
@@ -892,10 +902,21 @@ function Invoke-PolicyStepFile([string]$Id, [string]$What, [string]$CmdFile, [st
     # What is about to run elevated is this file, and hashing the commands it will read says nothing about the program
     # that reads them: the helper is checked against the digest this driver carries before anything is elevated
     # (PR #67 round 4).
+    # The bytes that are hashed have to be the bytes that run. Hashing the path and then starting the path leaves the
+    # file replaceable in between (PR #67 round 5), so the file is opened first - sharing reads, denying writes - the
+    # digest is taken from that open stream, and the handle is held until the elevated process has finished with it.
+    $helperStream = $null
     $helperDigest = ''
-    try { $helperDigest = [string](Get-FileHash -LiteralPath $Helper -Algorithm SHA256 -ErrorAction Stop).Hash } catch { $helperDigest = '' }
-    if (-not $helperDigest) { return @{ Ok = $false; Detail = ('the elevated helper could not be hashed: ' + $Helper); Lines = @(); CommandsFile = $CmdFile } }
-    if ($helperDigest -ne $PolicyHelperDigest) { return @{ Ok = $false; Detail = ('the elevated helper is not the one this campaign was written with (' + $Helper + ' is ' + $helperDigest + ', expected ' + $PolicyHelperDigest + ')'); Lines = @(); CommandsFile = $CmdFile } }
+    try {
+        $helperStream = [IO.File]::Open($Helper, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $helperDigest = (($sha.ComputeHash($helperStream) | ForEach-Object { $_.ToString('x2') }) -join '').ToUpperInvariant() } finally { $sha.Dispose() }
+    }
+    catch { if ($null -ne $helperStream) { $helperStream.Dispose() }; return @{ Ok = $false; Detail = ('the elevated helper could not be read and held: ' + $_.Exception.Message); Lines = @(); CommandsFile = $CmdFile } }
+    if ($helperDigest -ne $PolicyHelperDigest) {
+        $helperStream.Dispose()
+        return @{ Ok = $false; Detail = ('the elevated helper is not the one this campaign was written with (' + $Helper + ' is ' + $helperDigest + ', expected ' + $PolicyHelperDigest + ')'); Lines = @(); CommandsFile = $CmdFile }
+    }
     if (-not (Test-Path -LiteralPath $CmdFile)) { return @{ Ok = $false; Detail = ('no commands file at ' + $CmdFile); Lines = @(); CommandsFile = $CmdFile } }
     # The digest of the file as it is now, which the helper checks before it elevates anything and again on the copy it
     # runs from a folder only administrators may write to: the consent the person is about to give is for these
@@ -914,6 +935,7 @@ function Invoke-PolicyStepFile([string]$Id, [string]$What, [string]$CmdFile, [st
     $proc = $null
     try { $proc = Start-Process -FilePath $Helper -ArgumentList @(('"' + $CmdFile + '"'), ('"' + $resultFile + '"'), $digest) -Verb RunAs -Wait -PassThru -ErrorAction Stop }
     catch { return @{ Ok = $false; Detail = ('the elevated helper did not start (' + $_.Exception.Message + ')'); Lines = @(); CommandsFile = $CmdFile } }
+    finally { if ($null -ne $helperStream) { $helperStream.Dispose() } }
     $out = @()
     if (Test-Path -LiteralPath $resultFile) { $out = @(Get-Content -LiteralPath $resultFile -ErrorAction SilentlyContinue | ForEach-Object { [string]$_ }) }
     $ok = (($null -ne $proc) -and ($proc.ExitCode -eq 0) -and (@($out | Where-Object { $_ -eq 'result=OK' }).Count -eq 1))
@@ -1172,19 +1194,22 @@ function Get-Plan {
                # What the machine had, so that the revert puts that back instead of deleting it: a machine where
                # __PSLockdownPolicy was already set to something else is changed permanently by a revert that only
                # deletes, and the automated path made that the default one (PR #67 round 4).
+               # Existence and data are two facts, not one string: a machine whose value is literally 'absent', or is
+               # an empty string, would otherwise be recorded as having none and the revert would delete it - the
+               # mistake M8's kinds were split out to avoid in PR #14 (PR #67 round 5).
                $v = Get-MachineEnv '__PSLockdownPolicy'
-               return @{ LockdownBefore = $(if ($null -eq $v -or [string]$v -eq '') { 'absent' } else { [string]$v }) }
+               return @{ LockdownExisted = $(if ($null -eq $v) { 'no' } else { 'yes' }); LockdownValue = [string]$v }
            }
            Apply = { param($Ctx) Invoke-PolicyChange $Ctx.Id $Ctx 'apply' @('setx /M __PSLockdownPolicy 4') }
            Revert = { param($Ctx)
-               $was = [string]$Ctx.Facts['LockdownBefore']
-               if (-not $was -or $was -eq 'absent') { return (Invoke-PolicyChange $Ctx.Id $Ctx 'revert' @('reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f')) }
+               if ([string]$Ctx.Facts['LockdownExisted'] -ne 'yes') { return (Invoke-PolicyChange $Ctx.Id $Ctx 'revert' @('reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f')) }
+               $was = [string]$Ctx.Facts['LockdownValue']
                if (-not (Test-PolicyLineData $was)) { return @{ Ok = $false; Detail = ('the value this machine had cannot be carried in a command line; RECOVER.txt has the line to type') } }
                return (Invoke-PolicyChange $Ctx.Id $Ctx 'revert' @('setx /M __PSLockdownPolicy "' + $was + '"'))
            }
            Cleanup = @{ Instruction = { param($Ctx)
-                            $was = [string]$Ctx.Facts['LockdownBefore']
-                            if ($was -and $was -ne 'absent') {
+                            $was = [string]$Ctx.Facts['LockdownValue']
+                            if ([string]$Ctx.Facts['LockdownExisted'] -eq 'yes') {
                                 return @(('This machine had __PSLockdownPolicy set to ' + $was + ' before M7: put THAT back, do not delete it - in an ELEVATED command prompt:   setx /M __PSLockdownPolicy "' + $was + '"   Then answer done.'),
                                          ('這台機器在 M7 之前 __PSLockdownPolicy 就是 ' + $was + '：請改回那個值，不要刪除——在「以系統管理員身分執行」的命令提示字元執行：setx /M __PSLockdownPolicy "' + $was + '"，然後輸入 done。'))
                             }
@@ -1194,11 +1219,13 @@ function Get-Plan {
                             # Against what the machine had: a machine where the value was already set to
                             # something else is put back to that, and 'gone' would certify the loss of it.
                             $v = Get-MachineEnv '__PSLockdownPolicy'
-                            $now = $(if ($null -eq $v -or [string]$v -eq '') { 'absent' } else { [string]$v })
-                            $was = [string]$Ctx.Facts['LockdownBefore']
-                            if (-not $was) { $was = 'absent' }
-                            if ($now -eq $was) { @{ Ok = $true; Detail = $(if ($was -eq 'absent') { 'removed' } else { '__PSLockdownPolicy=' + $now + ', as before M7' }) } }
-                            else { @{ Ok = $false; Detail = ('__PSLockdownPolicy is ' + $now + '; before M7 it was ' + $was) } } } } },
+                            $isThere = ($null -ne $v)
+                            $wasThere = ([string]$Ctx.Facts['LockdownExisted'] -eq 'yes')
+                            $was = [string]$Ctx.Facts['LockdownValue']
+                            if ($isThere -ne $wasThere) { @{ Ok = $false; Detail = ('__PSLockdownPolicy is ' + $(if ($isThere) { 'there ("' + [string]$v + '")' } else { 'not there' }) + '; before M7 it was ' + $(if ($wasThere) { 'there ("' + $was + '")' } else { 'not there' })) } }
+                            elseif (-not $isThere) { @{ Ok = $true; Detail = 'removed, as it was not there before M7' } }
+                            elseif ([string]$v -ne $was) { @{ Ok = $false; Detail = ('__PSLockdownPolicy is "' + [string]$v + '"; before M7 it was "' + $was + '"') } }
+                            else { @{ Ok = $true; Detail = ('__PSLockdownPolicy="' + $was + '", as before M7') } } } } },
         @{ Id = 'M8'; Title = 'Group Policy execution policy: allow only signed scripts'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('Two ways to the same MachinePolicy - PowerShell reads HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell either way:',
                            '  with gpedit.msc: Computer Configuration > Administrative Templates > Windows Components > Windows PowerShell > Turn on Script Execution > Enabled, "Allow only signed scripts" > OK; then in a command prompt:   gpupdate /force',
@@ -1398,6 +1425,11 @@ function Get-Plan {
                # The notes are rewritten before the policy goes on, so that a session that dies under the enforced
                # rules - where the campaign cannot start at all, because it lives in what the policy denies - finds
                # the staged way back and this machine's own policy named in them (PR #67 round 3).
+               # Saved before the step runs, not after it returns: a campaign that dies while the elevated step is in
+               # flight would otherwise resume with none of these facts, and the check would read the machine's own
+               # policy as nothing (PR #67 round 5).
+               if ($null -ne $State.Scenarios[$Ctx.Id]) { $State.Scenarios[$Ctx.Id].Facts = $Ctx.Facts }
+               Save-State
                Write-RecoveryNotes
                # The export of the machine's own policy is a prerequisite for replacing it, not a step that may fail
                # quietly: a step file runs every line and counts the failures, so the two lines after the export refuse
@@ -1405,6 +1437,8 @@ function Get-Plan {
                # have nothing to be put back from (PR #67 round 2).
                $lines = @(('copy /y "' + (Join-Path $State.TestsCopy 'policy_helper.cmd') + '" "' + (Join-Path $staged 'nhc-policy_helper.cmd') + '"'),
                           ('copy /y "' + $revertFile + '" "' + (Join-Path $staged 'nhc-policy-revert.cmd') + '"'),
+                          ('certutil -hashfile "' + (Join-Path $staged 'nhc-policy-revert.cmd') + '" SHA256 | find /i "' + [string]$Ctx.Facts['RevertDigest'] + '" >nul'),
+                          ('if errorlevel 1 exit /b 1'),
                           ('del /f /q "' + $before + '" 2>nul'),
                           ('powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-AppLockerPolicy -Local -Xml | Set-Content -LiteralPath ''' + $before + ''' -Encoding UTF8"'),
                           ('if not exist "' + $before + '" exit /b 1'),
@@ -1506,6 +1540,25 @@ function Get-Plan {
                                 $savedXml = ''
                                 if ($savedPath -and (Test-Path -LiteralPath $savedPath)) { try { $savedXml = [string](Get-Content -LiteralPath $savedPath -Raw -Encoding UTF8 -ErrorAction Stop) } catch { $savedXml = '' } }
                                 if ($savedPath -and -not $savedXml) { return @{ Ok = $false; Detail = ('the policy saved before M9 cannot be read (' + $savedPath + '), so nothing here can say the machine was put back') } }
+                                # No saved policy at all means the scenario was done by hand - only the automated apply
+                                # exports one, and it needs elevation this session does not have. Then the comparison is
+                                # the one the campaign has always made, on the Script collection the facts recorded; it
+                                # is weaker, and saying so is better than reading 'nothing was saved' as 'there was
+                                # nothing', which would refuse a correct restoration and accept a machine stripped of
+                                # its own rules (PR #67 round 5).
+                                if (-not $savedPath) {
+                                    $nowMode = $(if ($null -ne $s) { [string]$s.EnforcementMode } else { 'none' })
+                                    $nowCount = $(if ($null -ne $s) { [int]$s.Count } else { 0 })
+                                    $wasMode = [string]$Ctx.Facts.ScriptEnforcementBefore
+                                    if (-not $wasMode) { $wasMode = 'none' }
+                                    $wasCount = 0
+                                    [void][int]::TryParse([string]$Ctx.Facts.ScriptRuleCountBefore, [ref]$wasCount)
+                                    if ($nowMode -ne $wasMode -or $nowCount -ne $wasCount) { return @{ Ok = $false; Detail = ('Script rules are {0} with {1} rule(s); before M9 they were {2} with {3} - no policy was saved, so only the Script collection is compared' -f $nowMode, $nowCount, $wasMode, $wasCount) } }
+                                    $svc0 = Get-Service -Name AppIDSvc -ErrorAction Stop
+                                    $wantType0 = [string]$Ctx.Facts.AppIDSvcStartType; $wantStatus0 = [string]$Ctx.Facts.AppIDSvcStatus
+                                    if ($wantType0 -ne 'n/a' -and ([string]$svc0.StartType -ne $wantType0 -or [string]$svc0.Status -ne $wantStatus0)) { return @{ Ok = $false; Detail = ('Script rules as before M9, but AppIDSvc is {0} ({1}); it was {2} ({3})' -f $svc0.StartType, $svc0.Status, $wantType0, $wantStatus0) } }
+                                    return @{ Ok = $true; Detail = ('Script rules {0} with {1} rule(s) as before M9, and AppIDSvc as before - no policy was saved, so the other collections are not compared' -f $nowMode, $nowCount) }
+                                }
                                 $nowXml = [string](Get-AppLockerPolicy -Local -Xml -ErrorAction Stop)
                                 $wantShape = Get-AppLockerPolicyShape $savedXml
                                 $nowShape = Get-AppLockerPolicyShape $nowXml

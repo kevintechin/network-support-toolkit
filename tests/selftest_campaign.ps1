@@ -1093,7 +1093,10 @@ if ($null -ne $sb45) {
 }
 Assert-True '45. where the machine had no Script policy of its own, the instruction is the one it has always been' ((@($blank45).Count -eq 2) -and (@($blank45)[0] -like 'AppLocker > Configure rule enforcement*delete the Script rules*')) ('lines: ' + (@($blank45) -join ' // '))
 Assert-True '45. where it had one, the person is told to put THAT back, the saved copy is named, and nothing says delete the rules' ((@($own45).Count -eq 2) -and (@($own45)[0] -like '*put THAT back*') -and (@($own45)[0] -like '*applocker-before.xml*') -and (@($own45)[0] -notlike '*delete the Script rules*')) ('lines: ' + (@($own45) -join ' // '))
-$verify45 = $(if ($j45 -gt 0) { $m9text45.Substring($j45, [Math]::Min(2500, $m9text45.Length - $j45)) } else { '' })
+# To the end of M9's block, not a fixed number of characters: this window has been too small twice now, and a
+# reading that falls short reports the code as not doing what it does (PR #67 rounds 4 and 5).
+$verifyEnd45 = $(if ($j45 -gt 0) { $m9text45.IndexOf("@{ Id = '", $j45) } else { -1 })
+$verify45 = $(if ($j45 -gt 0) { $(if ($verifyEnd45 -gt $j45) { $m9text45.Substring($j45, $verifyEnd45 - $j45) } else { $m9text45.Substring($j45) }) } else { '' })
 Assert-True '45. and the check that certifies the revert reads the policy that was saved before the change, rather than demanding an empty collection' (($verify45 -like '*AppLockerPolicyBefore*') -and ($verify45 -like '*Get-AppLockerPolicyShape*') -and ($verify45 -notlike '*the revert asks for them deleted*')) 'the verify still demands a blank'
 $stepText45 = ''
 $fnStep45 = @($ast42.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-PolicyStepFile' }, $true))
@@ -1138,7 +1141,7 @@ if ($applyAt46 -ge 0) {
     $m9apply46 = $(if ($endAt46 -gt $applyAt46) { $m9text45.Substring($applyAt46, $endAt46 - $applyAt46) } else { $m9text45.Substring($applyAt46) })
 }
 $exportAt46 = $m9apply46.IndexOf('Get-AppLockerPolicy -Local -Xml')
-$guardAt46 = $m9apply46.IndexOf('exit /b 1')
+$guardAt46 = $m9apply46.IndexOf('exit /b 1', [Math]::Max(0, $m9apply46.IndexOf('Get-AppLockerPolicy -Local -Xml')))
 $setAt46 = $m9apply46.IndexOf('Set-AppLockerPolicy -XmlPolicy')
 Assert-True '46. the apply stops between saving the machine''s policy and replacing it, where the save wrote nothing' (($exportAt46 -ge 0) -and ($guardAt46 -gt $exportAt46) -and ($setAt46 -gt $guardAt46) -and ($m9apply46 -like '*if %%~zA EQU 0 exit /b 1*')) ('export at ' + $exportAt46 + ', guard at ' + $guardAt46 + ', replace at ' + $setAt46)
 Assert-True '46. and the staged way back is checked against the digest recorded when it was staged, not against itself' (($m9apply46 -like '*RevertDigest*') -and ($m9apply46 -like "*Invoke-PolicyStepFile `$Ctx.Id 'revert' `$stagedRevert `$stagedHelper `$Ctx.Dir (*RevertDigest*")) 'the revert does not pass the recorded digest'
@@ -1268,8 +1271,8 @@ if ($m7at49 -ge 0) {
     $m7end49 = $driverText49.IndexOf("@{ Id = '", $m7at49 + 10)
     $m7block49 = $(if ($m7end49 -gt $m7at49) { $driverText49.Substring($m7at49, $m7end49 - $m7at49) } else { $driverText49.Substring($m7at49) })
 }
-Assert-True '49. M7 records what __PSLockdownPolicy was before it changed it' (($m7block49 -like '*Prepare = {*') -and ($m7block49 -like '*LockdownBefore*') -and ($m7block49 -like '*Get-MachineEnv ''__PSLockdownPolicy''*')) 'M7 records nothing about the value it overwrites'
-Assert-True '49. its revert puts that value back where there was one and deletes only where there was none, and its check compares with what was recorded' (($m7block49 -like '*setx /M __PSLockdownPolicy*$was*') -and ($m7block49 -like '*reg delete*__PSLockdownPolicy /f*') -and ($m7block49 -like '*before M7 it was*')) 'M7 still deletes whatever it finds'
+Assert-True '49. M7 records what __PSLockdownPolicy was before it changed it, and records whether it was there apart from what it said' (($m7block49 -like '*Prepare = {*') -and ($m7block49 -like '*LockdownExisted*') -and ($m7block49 -like '*LockdownValue*') -and ($m7block49 -like '*Get-MachineEnv ''__PSLockdownPolicy''*')) 'M7 records nothing about the value it overwrites'
+Assert-True '49. its revert puts that value back where there was one and deletes only where there was none, and its check compares existence and data with what was recorded' (($m7block49 -like '*setx /M __PSLockdownPolicy*$was*') -and ($m7block49 -like '*reg delete*__PSLockdownPolicy /f*') -and ($m7block49 -like '*before M7 it was*') -and ($m7block49 -like '*LockdownExisted*')) 'M7 still deletes whatever it finds'
 # M9 does not change a service it could not read.
 $m9prep49 = $m9apply46.IndexOf('Prepare = {')
 $m9throw49 = $m9apply46.IndexOf('cannot be read (')
