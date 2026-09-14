@@ -966,6 +966,15 @@ $s39k = Read-State $r39k.State
 $detail39k = [string]$s39k.Scenarios.M2.Detail
 $wantQuoted39 = "-LiteralPath '" + ($oddZip39 -replace "'", "''") + "'"
 Assert-True '39. the command it offers quotes the path as a literal, apostrophes doubled, so a path with a dollar sign in it survives being pasted' ($detail39k.Contains($wantQuoted39) -and ($detail39k -notmatch '-LiteralPath "')) ('wanted ' + $wantQuoted39 + ' in: ' + $detail39k)
+# Round 9 of PR #65: a download that is not there cannot be answered by writing a mark on it. Measured on this machine:
+# Set-Content -Stream against a path with no file there succeeds and leaves a 0-byte file carrying a valid ZoneId=3, so
+# the prerequisite would pass on the next invocation and M2 would ask someone to extract something that is not an
+# archive. The campaign above is redone with its download deleted, which is the state a resume can find.
+Remove-Item -LiteralPath $oddZip39 -Force
+$r39l = Invoke-Campaign 'markoddpath' @('-Resume', '-Redo', 'M2', '-Scenarios', 'M2') "M2=done`r`n"
+$s39l = Read-State $r39l.State
+$detail39l = [string]$s39l.Scenarios.M2.Detail
+Assert-True '39. and where the download is not there at all, it asks for the release back instead of offering to write a mark on nothing' (($detail39l -like '*there is no file at*') -and ($detail39l -notlike '*Set-Content*') -and ($detail39l -like '*download it again with the browser of this machine*')) $detail39l
 
 # -------------------- 6. the baseline for real --------------------
 if ($Full) {

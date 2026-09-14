@@ -825,7 +825,15 @@ function Get-Plan {
            # campaign run from one would skip M2 for good. Writing the mark deliberately is the other way to the same
            # file state, and the record says which way this run took rather than leaving a reader to assume a browser.
            Prerequisite = { $m = Get-ZoneId $State.OriginalZip
-                            if (-not (Test-InternetMark $m)) {
+                            # A download that is not there cannot be answered by writing a mark on it. Measured on this
+                            # machine (2026-09-14): Set-Content -Stream against a path with no file there succeeds and
+                            # leaves a 0-byte file carrying a valid ZoneId=3 - so this prerequisite would pass on the
+                            # next invocation and M2 would ask someone to extract something that is not an archive.
+                            # What is needed is the release, so that is what is asked for (PR #65, round 9).
+                            if ($m -eq 'file missing') {
+                                @{ Ok = $false; Detail = ('there is no file at ' + $State.OriginalZip + ' - M2 measures the warning Windows shows for that download, so the download has to be there: put the release back at that path, or download it again with the browser of this machine. Writing a Mark of the Web would leave an empty file carrying a mark, not the release.') }
+                            }
+                            elseif (-not (Test-InternetMark $m)) {
                                 # The path is quoted the way PowerShell takes a literal: single quotes, with any
                                 # apostrophe in it doubled. Inside double quotes a path holding a dollar sign or a
                                 # backtick would be expanded or escaped when the line is pasted, and the stream would
