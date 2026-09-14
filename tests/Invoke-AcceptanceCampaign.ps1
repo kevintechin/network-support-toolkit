@@ -675,6 +675,60 @@ function Get-M8WayBack($Facts) {
     }
     return $lines
 }
+function Get-M9RecoveryLines($Facts) {
+    # The M9 section of RECOVER.txt. Under enforced Script rules the campaign cannot start at all - it lives under
+    # C:\Users\Public, which is what the policy denies - so these lines are what a person has when the session dies
+    # between the apply and the revert. Two things decide what they say: whether the apply got as far as staging the
+    # way back in the protected folder, which needs no PowerShell and puts the service back as well, and whether this
+    # machine had an AppLocker policy of its own, where deleting the Script rules is exactly what must not be done
+    # (PR #67 round 3).
+    $staged = [string]$Facts['StagedRevert']
+    $saved = [string]$Facts['AppLockerPolicyBefore']
+    $lines = @('M9  AppLocker Script rules')
+    if ($staged) {
+        $lines += ('    The way back was staged before the policy was applied, and needs no PowerShell. If this file is')
+        $lines += ('    there, right-click it > Run as administrator - it puts the policy and the service back together:')
+        $lines += ('    ' + $staged)
+        $lines += '    If it is not there, or it cannot be run, the lines below do the same by hand.'
+    }
+    if ($saved) {
+        $lines += ('    This machine had an AppLocker policy of its own, saved before M9 replaced it. Do NOT simply delete')
+        $lines += ('    the Script rules: that would take the machine''s own policy with them. In an ELEVATED PowerShell:')
+        $lines += ('    Set-AppLockerPolicy -XmlPolicy "' + $saved + '"')
+        $lines += '    and then, in a command prompt:'
+        $lines += '    gpupdate /force'
+        $lines += '    (If that file is gone, the local policy is at HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2 and'
+        $lines += '    removing that key removes every rule collection, this machine''s own included.)'
+    }
+    else {
+        $lines += '    secpol.msc > Application Control Policies > AppLocker > Configure rule enforcement > Script rules: Not configured;'
+        $lines += '    delete the Script rules; then   gpupdate /force.'
+    }
+    $map = @{ Automatic = 'auto'; Manual = 'demand'; Disabled = 'disabled' }
+    $mapNumber = @{ Automatic = '2'; Manual = '3'; Disabled = '4' }
+    $t = [string]$Facts['AppIDSvcStartType']
+    $svcStatus = [string]$Facts['AppIDSvcStatus']
+    if ($t -and $t -ne 'n/a') {
+        $lines += ('    The Application Identity service was ' + $t + ', ' + $svcStatus + ' before M9. Put it back with the')
+        $lines += '    command(s) below, each on its own line and nothing else on the line:'
+        $lines += ('    sc config AppIDSvc start= ' + $(if ($map.ContainsKey($t)) { $map[$t] } else { $t.ToLowerInvariant() }))
+        if ($svcStatus -eq 'Stopped') { $lines += '    net stop AppIDSvc' }
+        $lines += '    If sc config answers "Access is denied" - Windows protects the service configuration once the rules'
+        $lines += '    are gone, although the same command is accepted while they are in force - set the value it reads:'
+        if ($mapNumber.ContainsKey($t)) {
+            $lines += ('    (' + $mapNumber[$t] + ' = ' + $t + ')')
+            $lines += ('    reg add "HKLM\SYSTEM\CurrentControlSet\Services\AppIDSvc" /v Start /t REG_DWORD /d ' + $mapNumber[$t] + ' /f')
+        }
+        else {
+            $lines += ('    HKLM\SYSTEM\CurrentControlSet\Services\AppIDSvc\Start = ' + $t + ' (2 = Automatic, 3 = Manual, 4 = Disabled)')
+        }
+    }
+    else {
+        $lines += '    Then put the Application Identity service back as it was before M9: campaign.json records its startup'
+        $lines += '    type and state under Scenarios.M9.Facts once M9 has started, and this file names the commands from then on.'
+    }
+    return $lines
+}
 function Write-RecoveryNotes {
     # RECOVER.txt and undo-M7.cmd in the state folder: how to put the machine back WITHOUT PowerShell, for a policy
     # scenario interrupted before its revert - under M7 every new PowerShell is ConstrainedLanguage and this script's
@@ -686,36 +740,8 @@ function Write-RecoveryNotes {
     $m8Back = @(Get-M8WayBack $(if ($null -ne $m8Facts) { $m8Facts } else { @{ RegExecutionPolicyBefore = 'absent'; RegEnableScriptsBefore = 'absent' } }))
     $m8Gp = $(if ($null -ne $m8Facts -and [string]$m8Facts.MachinePolicyBefore -ne 'Undefined') { 'back to the setting that gave MachinePolicy ' + $m8Facts.MachinePolicyBefore } else { 'Not Configured' })
     $m9 = $State.Scenarios['M9']
-    # M9's way back, built as whole lines: this file exists to be copied from, so a command line carries the command
-    # and nothing else. A note after it on the same line is not a comment to sc.exe or reg.exe, it is more arguments,
-    # and the command fails (Codex round 1 on PR #16). Every note therefore goes on its own line, above.
-    # The registry line is here because sc config is refused once the Script rules are gone: measured on a Windows 10
-    # Pro VM (campaign win10-zhTW, 2026-09-06), "sc config AppIDSvc start= demand" answered "Access is denied" although
-    # the same command had been accepted while the rules were in force, and net stop still worked.
-    $m9Service = @()
-    if ($null -ne $m9 -and $null -ne $m9.Facts -and $m9.Facts.AppIDSvcStartType -and [string]$m9.Facts.AppIDSvcStartType -ne 'n/a') {
-        $map = @{ Automatic = 'auto'; Manual = 'demand'; Disabled = 'disabled' }
-        $mapNumber = @{ Automatic = '2'; Manual = '3'; Disabled = '4' }
-        $t = [string]$m9.Facts.AppIDSvcStartType
-        $svcStatus = [string]$m9.Facts.AppIDSvcStatus
-        $m9Service += ('    The Application Identity service was ' + $t + ', ' + $svcStatus + ' before M9. Put it back with the')
-        $m9Service += '    command(s) below, each on its own line and nothing else on the line:'
-        $m9Service += ('    sc config AppIDSvc start= ' + $(if ($map.ContainsKey($t)) { $map[$t] } else { $t.ToLowerInvariant() }))
-        if ($svcStatus -eq 'Stopped') { $m9Service += '    net stop AppIDSvc' }
-        $m9Service += '    If sc config answers "Access is denied" - Windows protects the service configuration once the rules'
-        $m9Service += '    are gone, although the same command is accepted while they are in force - set the value it reads:'
-        if ($mapNumber.ContainsKey($t)) {
-            $m9Service += ('    (' + $mapNumber[$t] + ' = ' + $t + ')')
-            $m9Service += ('    reg add "HKLM\SYSTEM\CurrentControlSet\Services\AppIDSvc" /v Start /t REG_DWORD /d ' + $mapNumber[$t] + ' /f')
-        }
-        else {
-            $m9Service += ('    HKLM\SYSTEM\CurrentControlSet\Services\AppIDSvc\Start = ' + $t + ' (2 = Automatic, 3 = Manual, 4 = Disabled)')
-        }
-    }
-    else {
-        $m9Service += '    Then put the Application Identity service back as it was before M9: campaign.json records its startup'
-        $m9Service += '    type and state under Scenarios.M9.Facts once M9 has started, and this file names the commands from then on.'
-    }
+    $m9Facts = $(if ($null -ne $m9 -and $null -ne $m9.Facts) { $m9.Facts } else { @{} })
+    $m9Lines = @(Get-M9RecoveryLines $m9Facts)
     $lines = @(
         ('NetworkHealthCheck acceptance campaign "' + $Campaign + '" - how to put the machine back WITHOUT PowerShell'),
         ('Written ' + (& $Now) + '. For a policy scenario interrupted before its revert: under M7 every new PowerShell is'),
@@ -732,11 +758,8 @@ function Write-RecoveryNotes {
         '    without gpedit.msc (Home), in an elevated command prompt - the values as they were before M8:',
         ('    ' + $m8Back[0]),
         ('    ' + $m8Back[1]),
-        '',
-        'M9  AppLocker Script rules',
-        '    secpol.msc > Application Control Policies > AppLocker > Configure rule enforcement > Script rules: Not configured;',
-        '    delete the Script rules; then   gpupdate /force.'
-    ) + $m9Service + @(
+        ''
+    ) + $m9Lines + @(
         '',
         'Then run the campaign again, so that the revert is recorded:',
         ('    ' + $ResumeCommand)
@@ -771,6 +794,9 @@ function Get-AppLockerPolicyShape([string]$Xml) {
     if (-not $Xml) { return '' }
     $doc = $null
     try { $doc = [xml]$Xml } catch { return 'unreadable' }
+    # A well-formed document that is not a policy is not an empty policy: <foo/> has no rule collections, and reading
+    # it as 'nothing' would certify a machine whose policy was deleted and never restored (PR #67 round 3).
+    if ($null -eq $doc.DocumentElement -or [string]$doc.DocumentElement.Name -ne 'AppLockerPolicy') { return 'unreadable' }
     $parts = @()
     foreach ($c in @($doc.AppLockerPolicy.RuleCollection)) {
         if ($null -eq $c) { continue }
@@ -1242,8 +1268,17 @@ function Get-Plan {
                # person to delete because an exempt account measures nothing (backlog #29).
                $xml = Join-Path $State.TestsCopy 'applocker-m9.xml'
                if (-not (Test-Path -LiteralPath $xml)) { return @{ Ok = $false; Detail = ('no policy file at ' + $xml) } }
-               $before = Join-Path $Ctx.Dir 'applocker-before.xml'
+               # Where the machine's own policy is saved, and where the revert and the check read it from: the folder
+               # the helper locks, not the campaign's own, which the account the campaign runs as can write to. A file
+               # already at that name would otherwise pass the guards below as this run's export, and one replaced
+               # after the export would be installed by the revert and certified by the check as the original, since
+               # both read the same file (PR #67 round 3). The campaign keeps a copy of its own as evidence.
+               $staged = Join-Path (Join-Path $env:SystemRoot 'Temp') 'nhc-policy'
+               $beforeCopy = Join-Path $Ctx.Dir 'applocker-before.xml'
+               $before = Join-Path $staged 'applocker-before.xml'
                $Ctx.Facts['AppLockerPolicyBefore'] = $before
+               $Ctx.Facts['AppLockerPolicyBeforeCopy'] = $beforeCopy
+               $Ctx.Facts['StagedRevert'] = Join-Path $staged 'nhc-policy-revert.cmd'
                # The way back is written and staged BEFORE the policy is in force: once Script rules are enforced, a
                # .cmd under C:\Users\Public is denied - the campaign's own folder is what this policy denies - and
                # both the helper and its commands file would be denied with it. The staging folder is the helper's own
@@ -1254,16 +1289,22 @@ function Get-Plan {
                # The digest of the way back as the campaign wrote it, kept for the revert: the staged copy is hashed
                # against this and not against itself, so a file changed after it was staged fails (PR #67 round 2).
                try { $Ctx.Facts['RevertDigest'] = [string](Get-FileHash -LiteralPath $revertFile -Algorithm SHA256 -ErrorAction Stop).Hash } catch { $Ctx.Facts['RevertDigest'] = '' }
-               $staged = Join-Path (Join-Path $env:SystemRoot 'Temp') 'nhc-policy'
+               # The notes are rewritten before the policy goes on, so that a session that dies under the enforced
+               # rules - where the campaign cannot start at all, because it lives in what the policy denies - finds
+               # the staged way back and this machine's own policy named in them (PR #67 round 3).
+               Write-RecoveryNotes
                # The export of the machine's own policy is a prerequisite for replacing it, not a step that may fail
                # quietly: a step file runs every line and counts the failures, so the two lines after the export refuse
                # to go on where it wrote nothing - a machine whose policy was replaced with no copy of it saved would
                # have nothing to be put back from (PR #67 round 2).
                $lines = @(('copy /y "' + (Join-Path $State.TestsCopy 'policy_helper.cmd') + '" "' + (Join-Path $staged 'nhc-policy_helper.cmd') + '"'),
                           ('copy /y "' + $revertFile + '" "' + (Join-Path $staged 'nhc-policy-revert.cmd') + '"'),
-                          ('powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-AppLockerPolicy -Local -Xml | Set-Content -LiteralPath ''' + $before + ''' -Encoding UTF8"'),
+                          ('del /f /q "' + $beforeCopy + '" 2>nul'),
+                          ('powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-AppLockerPolicy -Local -Xml | Set-Content -LiteralPath ''' + $beforeCopy + ''' -Encoding UTF8"'),
+                          ('if not exist "' + $beforeCopy + '" exit /b 1'),
+                          ('for %%A in ("' + $beforeCopy + '") do if %%~zA EQU 0 exit /b 1'),
+                          ('copy /y "' + $beforeCopy + '" "' + $before + '"'),
                           ('if not exist "' + $before + '" exit /b 1'),
-                          ('for %%A in ("' + $before + '") do if %%~zA EQU 0 exit /b 1'),
                           ('powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-AppLockerPolicy -XmlPolicy ''' + $xml + '''"'),
                           'sc config AppIDSvc start= auto',
                           'net start AppIDSvc',
@@ -1325,11 +1366,18 @@ function Get-Plan {
                             $wasMode = [string]$Ctx.Facts.ScriptEnforcementBefore
                             $wasCount = [string]$Ctx.Facts.ScriptRuleCountBefore
                             $saved = [string]$Ctx.Facts.AppLockerPolicyBefore
-                            $hadOwn = ((($wasMode) -and ($wasMode -ne 'none') -and ($wasMode -ne 'NotConfigured')) -or (($wasCount) -and ($wasCount -ne '0')))
+                            # Whether this machine had a policy of its own is read from the policy that was saved, not
+                            # from the Script collection alone: a machine with exe, dll, msi or packaged-app rules and
+                            # no script rules had one too, and the apply replaced all of it (PR #67 round 3).
+                            $savedShape = ''
+                            if ($saved -and (Test-Path -LiteralPath $saved)) {
+                                try { $savedShape = Get-AppLockerPolicyShape ([string](Get-Content -LiteralPath $saved -Raw -Encoding UTF8 -ErrorAction Stop)) } catch { $savedShape = '' }
+                            }
+                            $hadOwn = (($savedShape -and $savedShape -ne 'unreadable') -or (($wasMode) -and ($wasMode -ne 'none') -and ($wasMode -ne 'NotConfigured')) -or (($wasCount) -and ($wasCount -ne '0')))
                             $head = 'AppLocker > Configure rule enforcement > Script rules: Not configured; delete the Script rules; gpupdate /force.'
                             $headZh = 'AppLocker > 設定規則強制執行 > 指令碼規則：尚未設定；刪除指令碼規則；gpupdate /force。'
                             if ($hadOwn) {
-                                $head = ('This machine had a Script policy of its own before M9 (' + $wasMode + ', ' + $wasCount + ' rule(s)): put THAT back rather than deleting the rules' + $(if ($saved) { ' - the campaign saved it, and an ELEVATED PowerShell restores it with:   Set-AppLockerPolicy -XmlPolicy "' + $saved + '"' } else { '' }) + '; then gpupdate /force.')
+                                $head = ('This machine had an AppLocker policy of its own before M9 (' + $(if ($savedShape -and $savedShape -ne 'unreadable') { $savedShape } else { $wasMode + ', ' + $wasCount + ' rule(s)' }) + '): put THAT back rather than deleting the rules' + $(if ($saved) { ' - the campaign saved it, and an ELEVATED PowerShell restores it with:   Set-AppLockerPolicy -XmlPolicy "' + $saved + '"' } else { '' }) + '; then gpupdate /force.')
                                 $headZh = ('這台機器在 M9 之前就有自己的 Script 政策（' + $wasMode + '，' + $wasCount + ' 條）：請把那個放回去，不要刪除規則' + $(if ($saved) { '；campaign 已經存下來了，在「以系統管理員身分執行」的 PowerShell 執行：  Set-AppLockerPolicy -XmlPolicy "' + $saved + '"' } else { '' }) + '；再 gpupdate /force。')
                             }
                             return @(($head + ' Then put the Application Identity service back as it was before this scenario: the campaign recorded its startup type and state and checks them, and RECOVER.txt in the state folder holds the two commands with this machine''s values already filled in - copy them from there into an ELEVATED command prompt rather than typing them. If sc config answers "Access is denied", RECOVER.txt also names the registry value to set instead. Then answer done.'), ($headZh + '然後把 Application Identity 服務改回這個情境之前的狀態：campaign 有記錄啟動類型與狀態並會檢查，state 資料夾的 RECOVER.txt 已經把兩行指令連同這台機器的值填好，請從那裡複製到「以系統管理員身分執行」的命令提示字元，不要自己打。若 sc config 回「存取被拒」，RECOVER.txt 也寫了改用哪個登錄檔值。完成後輸入 done。'))

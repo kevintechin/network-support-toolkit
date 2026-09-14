@@ -1153,6 +1153,54 @@ $icaclsAt46 = $helperText46.IndexOf('icacls "%NHCSAFE%"')
 $copyAt46 = $helperText46.IndexOf('copy /y "%~1" "%NHCSTEP%"')
 Assert-True '46. the helper refuses a reparse point where its folder should be, makes the folder fresh, locks it, and only then copies into it' ((($reparseAt46 -ge 0) -and ($rdAt46 -gt $reparseAt46) -and ($mdAt46 -gt $rdAt46) -and ($icaclsAt46 -gt $mdAt46) -and ($copyAt46 -gt $icaclsAt46))) ('reparse ' + $reparseAt46 + ', rd ' + $rdAt46 + ', md ' + $mdAt46 + ', icacls ' + $icaclsAt46 + ', copy ' + $copyAt46)
 
+# -------------------- 47. what M9 owes a machine whose own policy it replaced --------------------
+# PR #67 round 3, four findings, all about the same file: applocker-before.xml is what the revert installs and what
+# the check reads as its expected value, so where it lives and what it is decide whether either means anything. It is
+# saved into the folder the helper locks now, a file already at that name is removed before the export, a document
+# that is not a policy is not an empty policy, whether the machine had a policy of its own is read from that file
+# rather than from the Script collection alone, and RECOVER.txt names the way back for a session that dies while the
+# rules are enforced - where the campaign cannot start at all, because it lives in what the policy denies.
+Write-Output ''
+Write-Output '47. the policy M9 saves: where it is kept, what counts as one, and what a crash leaves the person'
+Assert-True '47. a well-formed document that is not a policy reads as unreadable, not as an empty policy - the reading that would certify a machine whose policy was deleted and never put back' ((Get-AppLockerPolicyShape '<foo/>') -eq 'unreadable') ('reads as: [' + (Get-AppLockerPolicyShape '<foo/>') + ']')
+Assert-True '47. and a policy with only an exe collection still reads as a policy, which is the case a Script-only reading missed' ((Get-AppLockerPolicyShape '<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="Enabled"><FilePathRule Id="CCC" /></RuleCollection></AppLockerPolicy>') -eq 'Exe:Enabled:ccc') ('reads as: ' + (Get-AppLockerPolicyShape '<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="Enabled"><FilePathRule Id="CCC" /></RuleCollection></AppLockerPolicy>'))
+$loaded47 = @('Get-M9RecoveryLines')
+Assert-True '47. the driver defines Get-M9RecoveryLines once, so this case runs that definition and no other' ($defs42.ContainsKey('Get-M9RecoveryLines') -and $defs42['Get-M9RecoveryLines'].Count -eq 1) ('definitions: ' + $(if ($defs42.ContainsKey('Get-M9RecoveryLines')) { $defs42['Get-M9RecoveryLines'].Count } else { 0 }))
+$needs47 = @(); $free47 = @()
+if ($defs42.ContainsKey('Get-M9RecoveryLines') -and $defs42['Get-M9RecoveryLines'].Count -eq 1) {
+    $needs47 = @($defs42['Get-M9RecoveryLines'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) -and $loaded47 -notcontains $_ } | Sort-Object -Unique)
+    $free47 = @(Get-FreeVariables $defs42['Get-M9RecoveryLines'][0])
+    Invoke-Expression $defs42['Get-M9RecoveryLines'][0].Extent.Text
+}
+Assert-True '47. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs47.Count -eq 0) -and ($free47.Count -eq 0)) ('also needed: ' + ($needs47 -join ', ') + '; free variables: ' + ($free47 -join ', '))
+$plain47 = @(Get-M9RecoveryLines @{})
+Assert-True '47. with nothing recorded, the notes say what they have always said' ((($plain47 -join ' ') -like '*secpol.msc*delete the Script rules*') -and (($plain47 -join ' ') -notlike '*Set-AppLockerPolicy*')) ($plain47 -join ' / ')
+$crash47 = @(Get-M9RecoveryLines @{ StagedRevert = 'C:\Windows\Temp\nhc-policy\nhc-policy-revert.cmd'; AppLockerPolicyBefore = 'C:\Windows\Temp\nhc-policy\applocker-before.xml'; AppIDSvcStartType = 'Manual'; AppIDSvcStatus = 'Stopped' })
+$crashText47 = ($crash47 -join ' ')
+Assert-True '47. where the apply staged the way back, the notes name that file first and say it needs no PowerShell - which is what a session that cannot start the campaign again has' (($crashText47 -like '*nhc-policy-revert.cmd*') -and ($crashText47 -like '*needs no PowerShell*')) $crashText47
+Assert-True '47. and where this machine had a policy of its own, they say NOT to delete the rules and name the saved copy, instead of the sentence that would take that policy away' (($crashText47 -like '*Do NOT simply delete*') -and ($crashText47 -like '*Set-AppLockerPolicy -XmlPolicy "C:\Windows\Temp\nhc-policy\applocker-before.xml"*') -and ($crashText47 -notlike '*delete the Script rules; then*')) $crashText47
+Assert-True '47. the service the scenario recorded is still put back by the same notes' (($crashText47 -like '*sc config AppIDSvc start= demand*') -and ($crashText47 -like '*net stop AppIDSvc*')) $crashText47
+# The instruction reads the saved policy, not the Script collection alone: a machine with exe rules and no script
+# rules had a policy of its own too, and the apply replaced all of it.
+$dir47 = Join-Path $WorkDir 'case47'
+New-Item -ItemType Directory -Force -Path $dir47 | Out-Null
+$exeOnly47 = Join-Path $dir47 'applocker-before.xml'
+Set-Content -LiteralPath $exeOnly47 -Encoding UTF8 -Value '<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="Enabled"><FilePathRule Id="CCC" /></RuleCollection></AppLockerPolicy>'
+$exeFacts47 = @{ ScriptEnforcementBefore = 'none'; ScriptRuleCountBefore = '0'; AppLockerPolicyBefore = $exeOnly47 }
+$exeLines47 = @()
+if ($null -ne $sb45) { $exeLines47 = @(& $sb45 @{ Facts = $exeFacts47 }) }
+Assert-True '47. a machine with exe rules and no script rules is a machine with a policy of its own, and the instruction says put THAT back' ((@($exeLines47).Count -eq 2) -and (@($exeLines47)[0] -like '*put THAT back*') -and (@($exeLines47)[0] -like '*applocker-before.xml*')) ('lines: ' + (@($exeLines47) -join ' // '))
+# And the apply's own order: the old target removed, the export, its two guards, the copy into the locked folder and
+# its guard, and only then the policy replaced - with the notes written before any of it runs.
+$delAt47 = $m9apply46.IndexOf('del /f /q')
+$exportAt47 = $m9apply46.IndexOf('Get-AppLockerPolicy -Local -Xml')
+$copyAt47 = $m9apply46.IndexOf('copy /y "'' + $beforeCopy + ''" "'' + $before + ''"')
+$setAt47 = $m9apply46.IndexOf('Set-AppLockerPolicy -XmlPolicy')
+$notesAt47 = $m9apply46.IndexOf('Write-RecoveryNotes')
+Assert-True '47. the export writes over nothing: the old file is removed first, the copy into the locked folder is checked, and only then is the policy replaced' ((($delAt47 -ge 0) -and ($delAt47 -lt $exportAt47) -and ($copyAt47 -gt $exportAt47) -and ($setAt47 -gt $copyAt47))) ('del ' + $delAt47 + ', export ' + $exportAt47 + ', copy ' + $copyAt47 + ', replace ' + $setAt47)
+Assert-True '47. and the notes are rewritten before the step runs, so a session that dies under the enforced rules finds the staged way back named in them' (($notesAt47 -ge 0) -and ($notesAt47 -lt $m9apply46.IndexOf('Invoke-PolicyChange'))) ('notes at ' + $notesAt47 + ', the step at ' + $m9apply46.IndexOf('Invoke-PolicyChange'))
+Assert-True '47. what the revert installs and what the check reads is the copy in the locked folder, not the one in the campaign''s own' (($m9apply46 -like '*$before = Join-Path $staged ''applocker-before.xml''*') -and ($m9apply46 -like '*AppLockerPolicyBeforeCopy*')) 'the saved policy is not staged'
+
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
 Write-Output '38. the bundle name carries the time to the millisecond and the process id (backlog #25). A name good to the second collided whenever a second invocation of the same campaign fell inside the same second as the first: Compress-Archive refuses a destination that exists, and the record kept that refusal as a bundle failure - twice on GitHub Actions, both times on a commit that touched nothing the step reads. The collision is reproduced here rather than waited for: every second-precision name the clock can produce in the next five minutes is occupied before the invocation runs'
