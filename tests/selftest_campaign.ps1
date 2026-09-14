@@ -831,6 +831,84 @@ if ($defs37.ContainsKey('Invoke-LauncherRun')) {
 }
 Assert-True '37. and every file Invoke-LauncherRun reads names its encoding, since the launcher writes UTF-8 and this runtime would read it in the machine''s ANSI code page' (($defs37.ContainsKey('Invoke-LauncherRun')) -and ($unencoded37.Count -eq 0)) ('reads without -Encoding: ' + $(if ($unencoded37.Count) { $unencoded37 -join ', ' } else { 'none' }) + '; function found: ' + $defs37.ContainsKey('Invoke-LauncherRun'))
 
+# -------------------- 40. which environment report belongs to this run --------------------
+# Backlog #29, and the defect PR #65 round 8 named and left in place: Invoke-LauncherRun collected every
+# NetworkHealthCheck_ENVIRONMENT_*.txt written under %TEMP% since the run started, and all three policy scenarios
+# decide on that count - M7 wants exactly one, M8 wants none, M9 reads one as the guard having fired. A second
+# launcher started under the same account during the run leaves a file that looks just as fresh, and the launcher
+# names the environment report by a wildcard alone, so round 8's correlation - the launcher naming the file it wrote -
+# cannot reach it. What can is the report's own text: the guard states the folder of the script that wrote it, and a
+# scenario's script is a staged copy made for that run alone. A run that writes such a report needs a policy no
+# self-test can impose, so the reports are crafted here and the predicate is loaded out of the driver.
+Write-Output ''
+Write-Output '40. the environment reports of this run, told apart from the ones another run left under the same %TEMP%'
+$tokens40 = $null; $errors40 = $null
+$ast40 = [System.Management.Automation.Language.Parser]::ParseFile($driver, [ref]$tokens40, [ref]$errors40)
+$defs40 = @{}
+foreach ($f in $ast40.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    if (-not $defs40.ContainsKey($f.Name)) { $defs40[$f.Name] = @() }
+    $defs40[$f.Name] += $f
+}
+$loaded40 = @('Select-EnvironmentReports')
+Assert-True '40. the driver defines Select-EnvironmentReports once, so this case runs that definition and no other' ($defs40.ContainsKey('Select-EnvironmentReports') -and $defs40['Select-EnvironmentReports'].Count -eq 1) ('definitions: ' + $(if ($defs40.ContainsKey('Select-EnvironmentReports')) { $defs40['Select-EnvironmentReports'].Count } else { 0 }))
+$needs40 = @(); $free40 = @()
+if ($defs40.ContainsKey('Select-EnvironmentReports') -and $defs40['Select-EnvironmentReports'].Count -eq 1) {
+    $needs40 = @($defs40['Select-EnvironmentReports'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs40.ContainsKey($_) -and $loaded40 -notcontains $_ } | Sort-Object -Unique)
+    $free40 = @(Get-FreeVariables $defs40['Select-EnvironmentReports'][0])
+    Invoke-Expression $defs40['Select-EnvironmentReports'][0].Extent.Text
+}
+Assert-True '40. it calls and reads nothing of the driver this case has not loaded, so what runs here is what runs there' (($needs40.Count -eq 0) -and ($free40.Count -eq 0)) ('also needed: ' + ($needs40 -join ', ') + '; free variables: ' + ($free40 -join ', '))
+# The crafted reports. The guard writes the file with Set-Content -Encoding UTF8 and states the script's folder on a
+# line whose label is in the display language - so the zh-TW report here carries the Chinese label, built from code
+# points because this file is ASCII, and the path is the only part both languages share.
+$case40 = Join-Path $WorkDir 'case40'
+$copy40 = Join-Path $case40 'M7\en-US'
+$other40 = Join-Path $case40 'M7-of-another-run\en-US'
+$temp40 = Join-Path $case40 'temp'
+New-Item -ItemType Directory -Force -Path $copy40, $other40, $temp40 | Out-Null
+$zhLabel40 = [string]([char]0x8173 + [char]0x672C + [char]0x8CC7 + [char]0x6599 + [char]0x593E + [char]0xFF1A)
+function New-EnvReport40([string]$Dir, [string]$Name, [string]$Label, [string]$Folder) {
+    $path = Join-Path $Dir $Name
+    Set-Content -LiteralPath $path -Encoding UTF8 -Value @('Network Health Check - environment report',
+                                                           'Reason: PowerShell is restricted to ConstrainedLanguage language mode by an application-control policy.',
+                                                           'Tool version: 1.2.14',
+                                                           ($Label + $Folder))
+    return (Get-Item -LiteralPath $path)
+}
+$beside40 = New-EnvReport40 $copy40 'NetworkHealthCheck_ENVIRONMENT_20260914_120000.txt' 'Script folder: ' $other40
+$mine40 = New-EnvReport40 $temp40 'NetworkHealthCheck_ENVIRONMENT_20260914_120001.txt' 'Script folder: ' $copy40
+$zh40 = New-EnvReport40 $temp40 'NetworkHealthCheck_ENVIRONMENT_20260914_120002.txt' $zhLabel40 $copy40
+$foreign40 = New-EnvReport40 $temp40 'NetworkHealthCheck_ENVIRONMENT_20260914_120003.txt' 'Script folder: ' $other40
+$empty40 = Join-Path $temp40 'NetworkHealthCheck_ENVIRONMENT_20260914_120004.txt'
+Set-Content -LiteralPath $empty40 -Value '' -NoNewline
+$empty40 = Get-Item -LiteralPath $empty40
+$sel40a = Select-EnvironmentReports @() @($mine40, $foreign40) $copy40
+Assert-True '40. a report another launcher left under this account during the run does not count as this run''s; the one naming this run''s folder does' ((@($sel40a.Files).Count -eq 1) -and (@($sel40a.Files)[0].FullName -eq $mine40.FullName)) ('counted: ' + (@($sel40a.Files | ForEach-Object { $_.Name }) -join ', ') + '; ' + $sel40a.Note)
+Assert-True '40. and the reason the other one was refused travels with the count, so the row can say how it decided' (($sel40a.Note -like '*refused*') -and ($sel40a.Note -like ('*' + $foreign40.Name + '*'))) ('note: ' + $sel40a.Note)
+$sel40b = Select-EnvironmentReports @() @($foreign40) $copy40
+Assert-True '40. the reading is not vacuous: with only the other run''s report, this run has none' (@($sel40b.Files).Count -eq 0) ('counted: ' + (@($sel40b.Files | ForEach-Object { $_.Name }) -join ', ') + '; ' + $sel40b.Note)
+$sel40c = Select-EnvironmentReports @() @($zh40) $copy40
+Assert-True '40. a report whose folder line is in Chinese is read by its path, which is the part every language shares' (@($sel40c.Files).Count -eq 1) ('counted: ' + (@($sel40c.Files | ForEach-Object { $_.Name }) -join ', ') + '; ' + $sel40c.Note)
+$sel40d = Select-EnvironmentReports @() @($empty40) $copy40
+Assert-True '40. a file that says nothing is refused with that as the reason, rather than counted or ignored in silence' ((@($sel40d.Files).Count -eq 0) -and ($sel40d.Note -like '*nothing could be read*')) ('counted: ' + (@($sel40d.Files | ForEach-Object { $_.Name }) -join ', ') + '; ' + $sel40d.Note)
+$sel40e = Select-EnvironmentReports @($beside40) @($foreign40) $copy40
+Assert-True '40. a report in the scenario''s own folder is this run''s whatever it says - that folder is made for this run and emptied first' ((@($sel40e.Files).Count -eq 1) -and (@($sel40e.Files)[0].FullName -eq $beside40.FullName)) ('counted: ' + (@($sel40e.Files | ForEach-Object { $_.Name }) -join ', ') + '; ' + $sel40e.Note)
+$usesSel40 = @()
+if ($defs40.ContainsKey('Invoke-LauncherRun')) { $usesSel40 = @($defs40['Invoke-LauncherRun'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Select-EnvironmentReports' }, $true)) }
+Assert-True '40. and Invoke-LauncherRun decides through it which reports are its own, instead of taking every fresh file it can see' ($usesSel40.Count -eq 1) ('calls in Invoke-LauncherRun: ' + $usesSel40.Count)
+# The count is what M7, M8 and M9 each decide on, so each of them says how the count was arrived at - a run that
+# refused a report of another run reads differently from one that never saw it, and the row is where that shows.
+$text40 = [IO.File]::ReadAllText($driver)
+$missing40 = @()
+foreach ($id40 in @('M7', 'M8', 'M9')) {
+    $start40 = $text40.IndexOf("@{ Id = '" + $id40 + "'")
+    if ($start40 -lt 0) { $missing40 += ($id40 + ' (no scenario block)'); continue }
+    $next40 = $text40.IndexOf("@{ Id = '", $start40 + 10)
+    $block40 = $(if ($next40 -gt $start40) { $text40.Substring($start40, $next40 - $start40) } else { $text40.Substring($start40) })
+    if ($block40 -notmatch 'EnvironmentReportsNote') { $missing40 += $id40 }
+}
+Assert-True '40. and each of M7, M8 and M9 reports how its count was arrived at, because the count is what each of them decides on' ($missing40.Count -eq 0) ('without the note: ' + ($missing40 -join ', '))
+
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
 Write-Output '38. the bundle name carries the time to the millisecond and the process id (backlog #25). A name good to the second collided whenever a second invocation of the same campaign fell inside the same second as the first: Compress-Archive refuses a destination that exists, and the record kept that refusal as a bundle failure - twice on GitHub Actions, both times on a commit that touched nothing the step reads. The collision is reproduced here rather than waited for: every second-precision name the clock can produce in the next five minutes is occupied before the invocation runs'

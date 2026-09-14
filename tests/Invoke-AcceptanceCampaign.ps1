@@ -239,6 +239,38 @@ function Select-CapturedMessages($Candidates, [string]$NamedIn, [string]$Copy) {
     if ($here.Count -gt 1) { return @{ File = $null; Reason = ('{0} captures in this run''s own folder, and the launcher named none of them' -f $here.Count) } }
     return @{ File = $null; Reason = ('{0} capture(s) were written under this account while this run went on, and the launcher named none of them - none can be read as this run''s' -f $list.Count) }
 }
+function Select-EnvironmentReports($Here, $Elsewhere, [string]$Copy) {
+    # Which environment reports belong to THIS run. The script's guard writes one beside the script and falls back to
+    # %TEMP% where that folder cannot be written - and the fallback name carries no run identity, so another launcher
+    # started under the same account while this one runs leaves a file that looks just as fresh. Collecting every fresh
+    # file in %TEMP% let another run's report answer for this one, and M7, M8 and M9 all decide on the count: M7 wants
+    # exactly one, M8 wants none, and M9 reads one as the guard having fired (PR #65 round 8 named this and left it;
+    # backlog #29).
+    # What ties a report to this run is its own text: the guard states the folder of the script that wrote it, and this
+    # run's script is a staged copy made for this run alone. The label is in the display language and the path is not,
+    # so the path is what is searched for - the rule the captured messages above already follow. A report in the
+    # scenario's own folder is this run's by construction: that folder is made for this run and emptied first.
+    # Plain arrays on purpose: @() around a System.Collections.Generic.List throws "Argument types do not match" on
+    # Windows PowerShell 5.1 - measured here, and with $ErrorActionPreference = 'Stop' that ends the run.
+    $mine = @()
+    foreach ($f in @($Here)) { if ($f) { $mine += $f } }
+    $refused = @()
+    $named = 0
+    foreach ($f in @($Elsewhere)) {
+        if (-not $f) { continue }
+        # UTF-8 by name: the guard writes the file with Set-Content -Encoding UTF8, and a file read without -Encoding
+        # is decoded in the machine's ANSI code page (the reason the captures above name theirs).
+        $text = ''
+        try { $text = [string](Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 -ErrorAction Stop) } catch { $text = '' }
+        if (-not $text) { $refused += ([string]$f.Name + ' (nothing could be read from it)'); continue }
+        if ($text.IndexOf([string]$Copy, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $mine += $f; $named++ }
+        else { $refused += ([string]$f.Name + ' (written by a script in another folder)') }
+    }
+    $note = ('{0} beside the copy' -f @($Here).Count)
+    if (@($Elsewhere).Count) { $note += ('; {0} of {1} under %TEMP% name this run''s folder' -f $named, @($Elsewhere).Count) }
+    if (@($refused).Count) { $note += ('; refused: ' + (@($refused) -join ', ')) }
+    return @{ Files = @($mine); Note = [string]$note }
+}
 function Invoke-LauncherRun([string]$Id, [string]$Lang) {
     # The shipped console launcher of one language, started the way a double-click starts it (cmd.exe; stdin from NUL
     # so that its pause returns), from a fresh copy under the scenario's folder. The console launcher rather than the
@@ -250,7 +282,13 @@ function Invoke-LauncherRun([string]$Id, [string]$Lang) {
     $started = Get-Date
     $r = Invoke-Native $CmdExe @('/s', '/c', ('"' + (Join-Path $copy 'Start-NetworkCheck-Console.cmd') + '" <nul')) (Join-Path $copy 'launcher-output.log')
     $launcherError = @(Get-ChildItem -LiteralPath $copy -Filter 'LauncherError_*.txt' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
-    $envReports = @(Get-ChildItem -LiteralPath $copy -Filter 'NetworkHealthCheck_ENVIRONMENT_*.txt' -ErrorAction SilentlyContinue) + @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'NetworkHealthCheck_ENVIRONMENT_*.txt' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $started })
+    # The environment reports of this run, and only this run's: the ones beside the copy, plus the ones under %TEMP%
+    # whose own text names this run's script folder. Everything else is refused rather than counted, and the reason
+    # travels with the result so the row can say how it decided (backlog #29).
+    $envHere = @(Get-ChildItem -LiteralPath $copy -Filter 'NetworkHealthCheck_ENVIRONMENT_*.txt' -File -ErrorAction SilentlyContinue)
+    $envElsewhere = @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'NetworkHealthCheck_ENVIRONMENT_*.txt' -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $started })
+    $pickedEnv = Select-EnvironmentReports $envHere $envElsewhere $copy
+    $envReports = @($pickedEnv.Files)
     foreach ($e in $envReports) { if ($e.DirectoryName -ne $copy) { Copy-Item -LiteralPath $e.FullName -Destination $copy -Force } }
     $reports = @(Get-ChildItem -LiteralPath (Join-Path $copy 'Reports') -Filter '*.json' -ErrorAction SilentlyContinue)
     # What PowerShell itself said, as the launcher kept it: PowerShellMessages_<stamp>.txt beside the copy, or
@@ -281,7 +319,8 @@ function Invoke-LauncherRun([string]$Id, [string]$Lang) {
         PowerShellMessages = @($(if ($messageFile.Count) { Get-Content -LiteralPath $messageFile[0].FullName -Encoding UTF8 -ErrorAction SilentlyContinue } else { @() }))
         PowerShellMessagesFile = $(if ($messageFile.Count) { $messageFile[0].Name } else { '' })
         PowerShellMessagesNote = [string]$picked.Reason
-        EnvironmentReports = @($envReports | ForEach-Object { $_.FullName }); Reports = @($reports | ForEach-Object { $_.FullName })
+        EnvironmentReports = @($envReports | ForEach-Object { $_.FullName }); EnvironmentReportsNote = [string]$pickedEnv.Note
+        Reports = @($reports | ForEach-Object { $_.FullName })
     }
 }
 function Save-Screenshot([string]$Path) {
@@ -943,10 +982,10 @@ function Get-Plan {
                $bad = @()
                if ($r.ExitCode -ne 1) { $bad += ('launcher exit code {0}, expected 1' -f $r.ExitCode) }
                if ($r.LauncherError -notmatch 'exit code 3') { $bad += 'the launcher''s error report does not name exit code 3' }
-               if ($r.EnvironmentReports.Count -ne 1) { $bad += ('{0} environment report(s), expected exactly 1' -f $r.EnvironmentReports.Count) }
+               if ($r.EnvironmentReports.Count -ne 1) { $bad += ('{0} environment report(s), expected exactly 1 ({1})' -f $r.EnvironmentReports.Count, $r.EnvironmentReportsNote) }
                elseif ((Get-Content -LiteralPath $r.EnvironmentReports[0] -Raw) -notmatch 'ConstrainedLanguage') { $bad += 'the environment report does not name ConstrainedLanguage' }
                if ($r.Reports.Count) { $bad += 'a report was written although the guard should have stopped the run' }
-               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; reports: {2}' -f $r.ExitCode, $r.EnvironmentReports.Count, $r.Reports.Count)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\NetworkHealthCheck_ENVIRONMENT_*.txt') }
+               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1} ({2}); reports: {3}' -f $r.ExitCode, $r.EnvironmentReports.Count, $r.EnvironmentReportsNote, $r.Reports.Count)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\NetworkHealthCheck_ENVIRONMENT_*.txt') }
            }
            Cleanup = @{ Instruction = @('Remove it - in an ELEVATED command prompt:   reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f   - then answer done.', '移除它——在「以系統管理員身分執行」的命令提示字元執行：reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f，然後輸入 done。')
                         Verify = { $v = Get-MachineEnv '__PSLockdownPolicy'; if ($null -eq $v -or $v -eq '') { @{ Ok = $true; Detail = 'removed' } } else { @{ Ok = $false; Detail = ('__PSLockdownPolicy is still ' + $v) } } } } },
@@ -997,7 +1036,7 @@ function Get-Plan {
                # so the console would carry the phrase whatever had refused the script (PR #65, round 1).
                $refusal = Get-SignatureRefusal $r.PowerShellMessages @($r.Copy, $StateDir)
                if (-not $refusal.Matched) { $bad += ('what PowerShell printed does not carry the signature refusal itself' + $(if ($r.PowerShellMessagesFile) { ' (' + $r.PowerShellMessagesFile + ', ' + $r.PowerShellMessagesNote + ')' } else { ' - ' + $r.PowerShellMessagesNote + ', so there is nothing to read it from' }) + ' - ' + $refusal.Detail) }
-               if ($r.EnvironmentReports.Count) { $bad += ('an environment report was written ({0}): the script started, so it was not AllSigned that stopped it' -f $r.EnvironmentReports.Count) }
+               if ($r.EnvironmentReports.Count) { $bad += ('an environment report was written ({0}, {1}): the script started, so it was not AllSigned that stopped it' -f $r.EnvironmentReports.Count, $r.EnvironmentReportsNote) }
                # The policy is read again after the run: the precondition saw it before, and what this scenario claims is
                # that the refusal came from the policy in force while the launcher ran (backlog #25). A machine whose
                # MachinePolicy changed under the run - a gpupdate, a second session putting it back - is refused here
@@ -1005,7 +1044,7 @@ function Get-Plan {
                $policyAfter = Get-MachinePolicyExecutionPolicy
                if ($policyAfter -ne 'AllSigned') { $bad += ('MachinePolicy is ' + $policyAfter + ' after the run, and AllSigned before it: what refused the script cannot be tied to the policy') }
                $shown = @($r.Output | Where-Object { $_.Trim() -ne '' } | Select-Object -First 4) -join ' / '
-               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; refusal read from {2} ({3}): {4}; MachinePolicy after the run: {5}; what the user sees: {6}' -f $r.ExitCode, $r.EnvironmentReports.Count, $(if ($r.PowerShellMessagesFile) { $r.PowerShellMessagesFile } else { 'no messages file' }), $r.PowerShellMessagesNote, $refusal.Detail, $policyAfter, $shown)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\PowerShellMessages_*.txt', 'en-US\NetworkHealthCheck_PowerShellMessages_*.txt') }
+               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1} ({7}); refusal read from {2} ({3}): {4}; MachinePolicy after the run: {5}; what the user sees: {6}' -f $r.ExitCode, $r.EnvironmentReports.Count, $(if ($r.PowerShellMessagesFile) { $r.PowerShellMessagesFile } else { 'no messages file' }), $r.PowerShellMessagesNote, $refusal.Detail, $policyAfter, $shown, $r.EnvironmentReportsNote)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\PowerShellMessages_*.txt', 'en-US\NetworkHealthCheck_PowerShellMessages_*.txt') }
            }
            # The revert restores what Prepare recorded, not a blank: a machine that had a policy before M8 gets it back, and the
            # verification compares with that, not with Undefined (Codex round 1 on PR #14). A scriptblock, evaluated at revert time.
@@ -1085,7 +1124,7 @@ function Get-Plan {
                elseif ($r.Reports.Count -gt 0) { $what = 'the script ran unrestricted although the Script rules are enforced and AppLocker itself answers DeniedByDefault for this account - the policy is on record but nothing acted on it. Since Windows 10 2004 with KB 5024351 every edition enforces, so this is the machine to investigate (build, update level, whether the policy reaches this account), not an edition rule' }
                else { $what = 'no report, no launcher error, exit code 0 - unexplained' }
                $shown = @($r.Output | Where-Object { $_.Trim() -ne '' } | Select-Object -First 4) -join ' / '
-               @{ Passed = $passed; Detail = ('{0}; launcher exit {1}; environment report(s): {2}; reports: {3}; what the user sees: {4}' -f $what, $r.ExitCode, $r.EnvironmentReports.Count, $r.Reports.Count, $shown); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\NetworkHealthCheck_ENVIRONMENT_*.txt') }
+               @{ Passed = $passed; Detail = ('{0}; launcher exit {1}; environment report(s): {2} ({5}); reports: {3}; what the user sees: {4}' -f $what, $r.ExitCode, $r.EnvironmentReports.Count, $r.Reports.Count, $shown, $r.EnvironmentReportsNote); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\NetworkHealthCheck_ENVIRONMENT_*.txt') }
            }
            # The commands are not spelled with a placeholder here: RECOVER.txt holds them with this machine's recorded
            # values filled in, and a person typing the placeholder itself is what happened on the Windows 10 Pro VM
