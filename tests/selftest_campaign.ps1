@@ -1201,6 +1201,45 @@ Assert-True '47. the export writes over nothing: the old file is removed first, 
 Assert-True '47. and the notes are rewritten before the step runs, so a session that dies under the enforced rules finds the staged way back named in them' (($notesAt47 -ge 0) -and ($notesAt47 -lt $m9apply46.IndexOf('Invoke-PolicyChange'))) ('notes at ' + $notesAt47 + ', the step at ' + $m9apply46.IndexOf('Invoke-PolicyChange'))
 Assert-True '47. what the revert installs and what the check reads is the copy in the locked folder, not the one in the campaign''s own' (($m9apply46 -like '*$before = Join-Path $staged ''applocker-before.xml''*') -and ($m9apply46 -like '*AppLockerPolicyBeforeCopy*')) 'the saved policy is not staged'
 
+# -------------------- 48. the policy M9 applies, and what recorded data may do inside a command line --------------------
+# The self-audit the working method asks for, run over the whole change after round 3 - looking for the family the
+# reviewer had been finding three times: something read as trustworthy that is not. Two more of it. The policy M9
+# applies is read from the campaign's own folder, which the account the campaign runs as can write to, and it is
+# applied elevated - the same thing the commands file was before round 1, and it was not hashed. And the lines a
+# revert is built from carry recorded state straight into a command line: M8's two registry values as the machine had
+# them, M9's service startup type. A value with a quote in it ends the argument it sits in, and what follows is more
+# command - and the state is a file under C:\Users\Public, not only the registry.
+Write-Output ''
+Write-Output '48. the policy applied elevated is the one this campaign read, and no recorded value can end its own command'
+$loaded48 = @('Test-PolicyLineData')
+Assert-True '48. the driver defines Test-PolicyLineData once, so this case runs that definition and no other' ($defs42.ContainsKey('Test-PolicyLineData') -and $defs42['Test-PolicyLineData'].Count -eq 1) ('definitions: ' + $(if ($defs42.ContainsKey('Test-PolicyLineData')) { $defs42['Test-PolicyLineData'].Count } else { 0 }))
+$needs48 = @(); $free48 = @()
+if ($defs42.ContainsKey('Test-PolicyLineData') -and $defs42['Test-PolicyLineData'].Count -eq 1) {
+    $needs48 = @($defs42['Test-PolicyLineData'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) -and $loaded48 -notcontains $_ } | Sort-Object -Unique)
+    $free48 = @(Get-FreeVariables $defs42['Test-PolicyLineData'][0])
+    Invoke-Expression $defs42['Test-PolicyLineData'][0].Extent.Text
+}
+Assert-True '48. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs48.Count -eq 0) -and ($free48.Count -eq 0)) ('also needed: ' + ($needs48 -join ', ') + '; free variables: ' + ($free48 -join ', '))
+Assert-True '48. the values a machine really has pass: AllSigned, 1, an empty value, nothing recorded at all' ((Test-PolicyLineData 'AllSigned') -and (Test-PolicyLineData '1') -and (Test-PolicyLineData '') -and (Test-PolicyLineData $null)) 'a plain value was refused'
+Assert-True '48. a value carrying a quote does not travel, because it would end the argument it sits in and the rest would be command' (-not (Test-PolicyLineData ('x' + [char]34 + ' & calc & ' + [char]34 + 'y'))) 'a quoted break-out was accepted'
+Assert-True '48. nor do the characters cmd reads as syntax, nor a control character' ((-not (Test-PolicyLineData 'a&b')) -and (-not (Test-PolicyLineData 'a|b')) -and (-not (Test-PolicyLineData 'a>b')) -and (-not (Test-PolicyLineData ('a' + [char]10 + 'b')))) 'a value with cmd syntax in it was accepted'
+$m8revert48 = ''
+$m8at48 = $m9text45.IndexOf("@{ Id = 'M8'")
+if ($m8at48 -ge 0) {
+    $m8end48 = $m9text45.IndexOf("@{ Id = '", $m8at48 + 10)
+    $m8revert48 = $(if ($m8end48 -gt $m8at48) { $m9text45.Substring($m8at48, $m8end48 - $m8at48) } else { $m9text45.Substring($m8at48) })
+}
+Assert-True '48. and M8''s revert asks that question of the two values it carries before it asks the helper for anything' (($m8revert48 -like '*Test-PolicyLineData*') -and ($m8revert48 -like '*RegExecutionPolicyBefore*') -and ($m8revert48 -like '*RegEnableScriptsBefore*')) 'M8''s revert does not check the values it carries'
+$weird48 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = ('Weird' + [char]38 + ' calc'); AppIDSvcStatus = 'Running' } })
+Assert-True '48. a service startup type Windows does not have produces no command at all, rather than one built around it' ((@($weird48 | Where-Object { $_ -like 'sc config*' }).Count -eq 0) -and (@($weird48)[0] -like 'reg delete*') -and (@($weird48)[-1] -eq 'gpupdate /force')) ($weird48 -join ' / ')
+$known48 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running' } })
+Assert-True '48. and the reading is not vacuous: a startup type it does have still produces its line' (@($known48 | Where-Object { $_ -like 'sc config AppIDSvc start= auto*' }).Count -eq 1) ($known48 -join ' / ')
+$xmlCopyAt48 = $m9apply46.IndexOf('copy /y "'' + $xml + ''" "'' + $stagedXml + ''"')
+$xmlHashAt48 = $m9apply46.IndexOf('certutil -hashfile "'' + $stagedXml + ''" SHA256')
+$setStagedAt48 = $m9apply46.IndexOf('Set-AppLockerPolicy -XmlPolicy ''''' + "'" + ' + $stagedXml')
+Assert-True '48. the policy is copied into the locked folder, checked there against the digest this campaign took, and applied from that copy' ((($xmlCopyAt48 -ge 0) -and ($xmlHashAt48 -gt $xmlCopyAt48) -and ($m9apply46 -like '*$xmlDigest*'))) ('copy ' + $xmlCopyAt48 + ', hash ' + $xmlHashAt48 + ', digest named: ' + ($m9apply46 -like '*$xmlDigest*'))
+Assert-True '48. and what is applied is the staged copy, not the one in the campaign''s own folder' (($m9apply46 -like '*Set-AppLockerPolicy -XmlPolicy*$stagedXml*') -and ($m9apply46 -notlike '*Set-AppLockerPolicy -XmlPolicy*'' + $xml + ''*')) 'the policy applied is not the staged copy'
+
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
 Write-Output '38. the bundle name carries the time to the millisecond and the process id (backlog #25). A name good to the second collided whenever a second invocation of the same campaign fell inside the same second as the first: Compress-Archive refuses a destination that exists, and the record kept that refusal as a bundle failure - twice on GitHub Actions, both times on a commit that touched nothing the step reads. The collision is reproduced here rather than waited for: every second-precision name the clock can produce in the next five minutes is occupied before the invocation runs'

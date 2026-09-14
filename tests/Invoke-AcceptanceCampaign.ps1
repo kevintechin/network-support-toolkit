@@ -777,6 +777,20 @@ function Write-RecoveryNotes {
 }
 Write-RecoveryNotes
 
+function Test-PolicyLineData([string]$Data) {
+    # Whether a piece of recorded state can be put inside a command line the elevated helper will run. The revert's
+    # lines carry what the machine had - M8's two registry values, M9's service startup type - and a value holding a
+    # quote ends the argument it sits in, so what follows is more command. The campaign's state is a file under
+    # C:\Users\Public that the account it runs as can write, so this is not a hypothesis about the registry alone.
+    # Where a value cannot be carried safely the helper is not asked for it and the person is, with the line in
+    # RECOVER.txt as it always was (self-audit after PR #67 round 3).
+    if ($null -eq $Data) { return $true }
+    $s = [string]$Data
+    if ($s.IndexOf('"') -ge 0) { return $false }
+    foreach ($c in @('&', '|', '<', '>', '^', '%', '`')) { if ($s.IndexOf($c) -ge 0) { return $false } }
+    foreach ($ch in $s.ToCharArray()) { if ([int][char]$ch -lt 32) { return $false } }
+    return $true
+}
 function Get-M8RegistryLines {
     # The two values PowerShell reads as a MachinePolicy of AllSigned, as the lines a person would type. One source for
     # the instruction, for the automated apply and for the record, so that the three cannot drift apart (backlog #29).
@@ -820,8 +834,10 @@ function Get-M9RevertLines($Ctx) {
     $map = @{ Automatic = 'auto'; Manual = 'demand'; Disabled = 'disabled' }
     $mapNumber = @{ Automatic = '2'; Manual = '3'; Disabled = '4' }
     $t = [string]$Ctx.Facts['AppIDSvcStartType']
-    if ($t -and $t -ne 'n/a') {
-        $lines += ('sc config AppIDSvc start= ' + $(if ($map.ContainsKey($t)) { $map[$t] } else { $t.ToLowerInvariant() }))
+    # Only the three startup types Windows has: the value is recorded state, and anything else would be carried into
+    # the command line as it stands. An unknown one is left to the person, whom RECOVER.txt already tells what to do.
+    if ($t -and $map.ContainsKey($t)) {
+        $lines += ('sc config AppIDSvc start= ' + $map[$t])
         # Measured on the Windows 10 Pro VM (campaign win10-zhTW, 2026-09-06): sc config is refused once the rules are
         # gone, although the same command was accepted while they were in force - so the value it reads is set as well.
         if ($mapNumber.ContainsKey($t)) { $lines += ('reg add "HKLM\SYSTEM\CurrentControlSet\Services\AppIDSvc" /v Start /t REG_DWORD /d ' + $mapNumber[$t] + ' /f') }
@@ -1205,6 +1221,10 @@ function Get-Plan {
                $back = @(Get-M8WayBack $Ctx.Facts)
                $notCommands = @($back | Where-Object { ([string]$_).StartsWith('(') })
                if ($notCommands.Count) { return @{ Ok = $false; Detail = ('the way back is not a command line here: ' + ($notCommands -join '; ')) } }
+               # And the data those lines carry is the machine's, recorded in a file the account the campaign runs as
+               # can write: a value with a quote in it would end its own argument and the rest would be command.
+               $unsafe = @(@('RegExecutionPolicyBefore', 'RegEnableScriptsBefore') | Where-Object { -not (Test-PolicyLineData ([string]$Ctx.Facts[$_])) })
+               if ($unsafe.Count) { return @{ Ok = $false; Detail = ('a recorded value cannot be carried in a command line (' + ($unsafe -join ', ') + '); RECOVER.txt has the lines to type') } }
                Invoke-PolicyChange $Ctx.Id $Ctx 'revert' $back }
            Cleanup = @{ Instruction = { param($Ctx)
                             $before = [string]$Ctx.Facts.MachinePolicyBefore; if (-not $before) { $before = 'Undefined' }
@@ -1268,6 +1288,13 @@ function Get-Plan {
                # person to delete because an exempt account measures nothing (backlog #29).
                $xml = Join-Path $State.TestsCopy 'applocker-m9.xml'
                if (-not (Test-Path -LiteralPath $xml)) { return @{ Ok = $false; Detail = ('no policy file at ' + $xml) } }
+               # The policy is applied elevated, and it is read from the campaign's own folder, which the account the
+               # campaign runs as can write to - the same thing the commands file was before round 1. It is copied into
+               # the folder the helper locks and checked there against the digest taken here, so what is applied is the
+               # file this campaign read and not whatever is at that path when the step runs (self-audit after round 3).
+               $xmlDigest = ''
+               try { $xmlDigest = [string](Get-FileHash -LiteralPath $xml -Algorithm SHA256 -ErrorAction Stop).Hash } catch { $xmlDigest = '' }
+               if (-not $xmlDigest) { return @{ Ok = $false; Detail = ('the policy file could not be hashed: ' + $xml) } }
                # Where the machine's own policy is saved, and where the revert and the check read it from: the folder
                # the helper locks, not the campaign's own, which the account the campaign runs as can write to. A file
                # already at that name would otherwise pass the guards below as this run's export, and one replaced
@@ -1279,6 +1306,7 @@ function Get-Plan {
                $Ctx.Facts['AppLockerPolicyBefore'] = $before
                $Ctx.Facts['AppLockerPolicyBeforeCopy'] = $beforeCopy
                $Ctx.Facts['StagedRevert'] = Join-Path $staged 'nhc-policy-revert.cmd'
+               $stagedXml = Join-Path $staged 'applocker-m9.xml'
                # The way back is written and staged BEFORE the policy is in force: once Script rules are enforced, a
                # .cmd under C:\Users\Public is denied - the campaign's own folder is what this policy denies - and
                # both the helper and its commands file would be denied with it. The staging folder is the helper's own
@@ -1305,7 +1333,10 @@ function Get-Plan {
                           ('for %%A in ("' + $beforeCopy + '") do if %%~zA EQU 0 exit /b 1'),
                           ('copy /y "' + $beforeCopy + '" "' + $before + '"'),
                           ('if not exist "' + $before + '" exit /b 1'),
-                          ('powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-AppLockerPolicy -XmlPolicy ''' + $xml + '''"'),
+                          ('copy /y "' + $xml + '" "' + $stagedXml + '"'),
+                          ('certutil -hashfile "' + $stagedXml + '" SHA256 | find /i "' + $xmlDigest + '" >nul'),
+                          ('if errorlevel 1 exit /b 1'),
+                          ('powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-AppLockerPolicy -XmlPolicy ''' + $stagedXml + '''"'),
                           'sc config AppIDSvc start= auto',
                           'net start AppIDSvc',
                           'gpupdate /force')
