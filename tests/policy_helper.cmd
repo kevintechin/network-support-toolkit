@@ -26,7 +26,9 @@ rem campaign wrote it.
 rem
 rem What this is not: a security boundary. An account that can already rewrite the campaign's own driver decides what
 rem the campaign asks for in the first place, and the acceptance machines are virtual machines the operator controls.
-rem What it closes is the step between writing a commands file and running it.
+rem What it closes is the step between writing a commands file and running it: accident and drift - a stale copy of
+rem tests\, a half-written file, a helper edited between two steps - which this project has been bitten by. That is
+rem the owner's decision of 2026-09-14, in backlog #29's second Status of that day and in the record beside it.
 setlocal
 if "%~3"=="" goto :usage
 if not exist "%~1" goto :nocommands

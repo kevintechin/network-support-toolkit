@@ -102,7 +102,7 @@ if ([string]$ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
 # so it is checked against this before it is started (PR #67 round 4). The anchor is this file: an account that can
 # rewrite the driver decides what the campaign asks for anyway, and the campaign is what a person deliberately
 # runs. The self-test checks this constant against the file it names, so it cannot go stale unnoticed.
-$PolicyHelperDigest = 'BB917EDB4E34280FFADA3307BA2320AED567BB1B36FAADF912DD819F90BAB7C9'
+$PolicyHelperDigest = '2159068C66ABCB9B0C1BEC5F0F66723AE338BFC3F3C6B0BD14751EDB2B1FEEE0'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)   # the first .NET object: nothing above this line needs FullLanguage
 $Now = { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' }
 # A standard user has no Administrators group in the token at all; an administrator under UAC has it, marked deny-only
@@ -922,7 +922,9 @@ function Invoke-PolicyStepFile([string]$Id, [string]$What, [string]$CmdFile, [st
     # runs from a folder only administrators may write to: the consent the person is about to give is for these
     # commands, and a file swapped after this line fails that check instead of running with that consent (PR #67 round
     # 1). The state lives under C:\Users\Public because every account has to reach it, so nothing here is out of the
-    # unelevated account's reach; what this closes is the step between writing a commands file and running it.
+    # unelevated account's reach: by the owner's decision of 2026-09-14 that folder is inside the trust boundary, and
+    # these checks are for accident and drift rather than for an attacker on the machine (backlog #29's second Status
+    # of that day). What they close is the step between writing a commands file and running it.
     # A digest recorded earlier is used where there is one: M9 stages its way back into the protected folder before the
     # policy it undoes is applied, and hashing that staged file again at revert time would certify whatever is there
     # by then. The digest of the file the campaign wrote is what says it is that file (PR #67 round 2).
