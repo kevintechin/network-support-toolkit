@@ -923,10 +923,15 @@ Assert-True '41. the helper ships in tests\' (Test-Path -LiteralPath $helper41) 
 $dir41 = Join-Path $WorkDir 'case41'
 New-Item -ItemType Directory -Force -Path $dir41 | Out-Null
 $result41 = Join-Path $dir41 'result.txt'
-function Invoke-Helper41([string]$Commands) {
+function Invoke-Helper41([string]$Commands, [string]$Digest) {
+    if (-not $Digest) {
+        # What the campaign passes: the digest of the file as it wrote it. The helper checks it before it elevates
+        # anything and again on the copy it runs, so a file swapped in between fails rather than running (PR #67).
+        $Digest = $(if (Test-Path -LiteralPath $Commands) { [string](Get-FileHash -LiteralPath $Commands -Algorithm SHA256).Hash } else { ('0' * 64) })
+    }
     if (Test-Path -LiteralPath $result41) { Remove-Item -LiteralPath $result41 -Force }
     $ErrorActionPreference = 'Continue'
-    $null = & $helper41 $Commands $result41 2>&1
+    $null = & $helper41 $Commands $result41 $Digest 2>&1
     $code = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
     $lines = @()
@@ -949,6 +954,10 @@ $unelevated41 = (($r41c.ExitCode -eq 5) -and ($r41c.Text -like '*elevated=no*') 
 $elevated41 = (($r41c.ExitCode -eq 0) -and ($r41c.Text -like '*elevated=yes*') -and ($r41c.Text -like '*result=OK*') -and $ranIt41)
 Assert-True '41. and a file it does accept says whether it was elevated: unelevated it refuses and runs nothing, elevated it runs it and says OK' (($said41.Count -eq 1) -and ($unelevated41 -or $elevated41)) ('exit ' + $r41c.ExitCode + '; ' + $r41c.Text)
 
+$wrong41 = Join-Path $dir41 'ours-but-swapped.cmd'
+Set-Content -LiteralPath $wrong41 -Encoding Ascii -Value @('@echo off', 'rem NHC-POLICY-STEP SELFTEST harmless', 'exit /b 0')
+$r41d = Invoke-Helper41 $wrong41 ('0' * 64)
+Assert-True '41. a commands file whose digest is not the one the campaign hashed is refused, and before anything is elevated - the marker says what shape a file has, the digest says it is the file the campaign wrote' (($r41d.ExitCode -eq 4) -and ($r41d.Text -like '*not the one the campaign hashed*') -and ($r41d.Text -like '*elevated=not asked*')) ('exit ' + $r41d.ExitCode + '; ' + $r41d.Text)
 # -------------------- 42. the shape of one step's commands file --------------------
 # The file the campaign writes for the helper: the marker the helper insists on, every command followed by its own
 # exit code before the next command can replace it, and the number of commands that failed as the file's own exit
@@ -1054,6 +1063,42 @@ $attemptAt44 = $afterApply44.IndexOf('$rec.Attempted = $true; Save-State')
 Assert-True '44. the attempt is recorded before the helper is asked, because a step can fail with the machine half changed and the revert has to run anyway' (($attemptAt44 -ge 0) -and ($attemptAt44 -lt $afterApply44.IndexOf('$ap = & $S.Apply'))) ('attempt at ' + $attemptAt44 + ', apply at ' + $afterApply44.IndexOf('$ap = & $S.Apply'))
 Assert-True '44. the revert is believed only after the scenario''s own check has read the machine, never on the helper''s exit code' (($revertAt44 -ge 0) -and ($verifyAt44 -gt $revertAt44) -and ($cleanupText44 -like '*if ($v0.Ok)*')) ('revert at ' + $revertAt44 + ', verify at ' + $verifyAt44)
 Assert-True '44. and a helper that could not put the machine back falls through to the prompt that asks a person, which is what the campaign did before' ($cleanupText44 -like '*did not put the machine back*') 'no fallback message in Complete-Cleanup'
+
+# -------------------- 45. M9 is put back to what was there, not to a blank --------------------
+# PR #67 round 1: the revert restores a Script policy the machine had of its own, and the check that certifies the
+# revert demanded an empty, unenforced collection - so on such a machine the revert could never finish, and the
+# instruction it fell back to told the person to delete the rules that had just been restored. Both the check and the
+# instruction read what the scenario recorded before it changed anything now, the way M8's already did.
+Write-Output ''
+Write-Output '45. M9''s revert is verified against the Script policy the machine had, and its instruction says which way back'
+$m9text45 = [IO.File]::ReadAllText($driver)
+# From M9's own block onwards: M8's cleanup instruction is a scriptblock as well and comes first in the file,
+# and evaluating that one would call a function of the driver this case has not loaded.
+$m9at45 = $m9text45.IndexOf("@{ Id = 'M9'")
+$i45 = $(if ($m9at45 -ge 0) { $m9text45.IndexOf('Cleanup = @{ Instruction = { param($Ctx)', $m9at45) } else { -1 })
+$j45 = $(if ($i45 -ge 0) { $m9text45.IndexOf('Verify = { param($Ctx)', $i45) } else { -1 })
+Assert-True '45. M9''s cleanup instruction is built from the recorded state, not a fixed sentence' (($i45 -ge 0) -and ($j45 -gt $i45)) ('instruction at ' + $i45 + ', verify at ' + $j45)
+$sb45 = $null
+if (($i45 -ge 0) -and ($j45 -gt $i45)) {
+    $block45 = $m9text45.Substring($i45, $j45 - $i45)
+    $from45 = $block45.IndexOf('{ param($Ctx)')
+    $to45 = $block45.LastIndexOf('}')
+    Invoke-Expression ('$sb45 = ' + $block45.Substring($from45, $to45 - $from45 + 1))
+}
+$blank45 = @()
+$own45 = @()
+if ($null -ne $sb45) {
+    $blank45 = @(& $sb45 @{ Facts = @{ ScriptEnforcementBefore = 'none'; ScriptRuleCountBefore = '0' } })
+    $own45 = @(& $sb45 @{ Facts = @{ ScriptEnforcementBefore = 'Enabled'; ScriptRuleCountBefore = '3'; AppLockerPolicyBefore = 'C:\state\M9\applocker-before.xml' } })
+}
+Assert-True '45. where the machine had no Script policy of its own, the instruction is the one it has always been' ((@($blank45).Count -eq 2) -and (@($blank45)[0] -like 'AppLocker > Configure rule enforcement*delete the Script rules*')) ('lines: ' + (@($blank45) -join ' // '))
+Assert-True '45. where it had one, the person is told to put THAT back, the saved copy is named, and nothing says delete the rules' ((@($own45).Count -eq 2) -and (@($own45)[0] -like '*put THAT back*') -and (@($own45)[0] -like '*applocker-before.xml*') -and (@($own45)[0] -notlike '*delete the Script rules*')) ('lines: ' + (@($own45) -join ' // '))
+$verify45 = $(if ($j45 -gt 0) { $m9text45.Substring($j45, [Math]::Min(2500, $m9text45.Length - $j45)) } else { '' })
+Assert-True '45. and the check that certifies the revert reads what was recorded before the change, rather than demanding an empty collection' (($verify45 -like '*ScriptEnforcementBefore*') -and ($verify45 -like '*ScriptRuleCountBefore*') -and ($verify45 -notlike '*the revert asks for them deleted*')) 'the verify still demands a blank'
+$stepText45 = ''
+$fnStep45 = @($ast42.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-PolicyStepFile' }, $true))
+if ($fnStep45.Count -eq 1) { $stepText45 = [string]$fnStep45[0].Extent.Text }
+Assert-True '45. the step hands the helper the digest of the file it just hashed, so the consent given is for those commands' (($stepText45 -like '*Get-FileHash*') -and ($stepText45 -like '*$digest*') -and ($stepText45.IndexOf('Get-FileHash') -lt $stepText45.IndexOf('Start-Process'))) 'the digest is not computed before the helper is started'
 
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''

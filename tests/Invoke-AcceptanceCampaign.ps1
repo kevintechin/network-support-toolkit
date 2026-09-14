@@ -812,9 +812,17 @@ function Invoke-PolicyStepFile([string]$Id, [string]$What, [string]$CmdFile, [st
     if (Test-Path -LiteralPath $resultFile) { Remove-Item -LiteralPath $resultFile -Force }
     if (-not (Test-Path -LiteralPath $Helper)) { return @{ Ok = $false; Detail = ('no elevated helper at ' + $Helper); Lines = @(); CommandsFile = $CmdFile } }
     if (-not (Test-Path -LiteralPath $CmdFile)) { return @{ Ok = $false; Detail = ('no commands file at ' + $CmdFile); Lines = @(); CommandsFile = $CmdFile } }
+    # The digest of the file as it is now, which the helper checks before it elevates anything and again on the copy it
+    # runs from a folder only administrators may write to: the consent the person is about to give is for these
+    # commands, and a file swapped after this line fails that check instead of running with that consent (PR #67 round
+    # 1). The state lives under C:\Users\Public because every account has to reach it, so nothing here is out of the
+    # unelevated account's reach; what this closes is the step between writing a commands file and running it.
+    $digest = ''
+    try { $digest = [string](Get-FileHash -LiteralPath $CmdFile -Algorithm SHA256 -ErrorAction Stop).Hash } catch { $digest = '' }
+    if (-not $digest) { return @{ Ok = $false; Detail = ('the commands file could not be hashed: ' + $CmdFile); Lines = @(); CommandsFile = $CmdFile } }
     Write-Host ('  {0}: {1} through the elevated helper - answer the consent prompt Windows raises' -f $Id, $What) -ForegroundColor Cyan
     $proc = $null
-    try { $proc = Start-Process -FilePath $Helper -ArgumentList @(('"' + $CmdFile + '"'), ('"' + $resultFile + '"')) -Verb RunAs -Wait -PassThru -ErrorAction Stop }
+    try { $proc = Start-Process -FilePath $Helper -ArgumentList @(('"' + $CmdFile + '"'), ('"' + $resultFile + '"'), $digest) -Verb RunAs -Wait -PassThru -ErrorAction Stop }
     catch { return @{ Ok = $false; Detail = ('the elevated helper did not start (' + $_.Exception.Message + ')'); Lines = @(); CommandsFile = $CmdFile } }
     $out = @()
     if (Test-Path -LiteralPath $resultFile) { $out = @(Get-Content -LiteralPath $resultFile -ErrorAction SilentlyContinue | ForEach-Object { [string]$_ }) }
@@ -1189,7 +1197,17 @@ function Get-Plan {
                # The copy the launcher will run, made now so that the precondition can ask AppLocker about the very path
                # that is executed (PR #11 round 7); and the service's state, which the instruction changes and must go back.
                $null = Copy-LanguageFolder 'en-US' (Join-Path $Ctx.Dir 'en-US')
-               try { $svc = Get-Service -Name AppIDSvc -ErrorAction Stop; return @{ AppIDSvcStartType = [string]$svc.StartType; AppIDSvcStatus = [string]$svc.Status } } catch { return @{ AppIDSvcStartType = 'n/a'; AppIDSvcStatus = 'n/a' } }
+               # And what the Script collection is before the change, so that the revert is verified against that and not
+               # against a blank: a machine with a policy of its own gets that policy back, and the campaign has to be
+               # able to accept its own restoration (PR #67 round 1).
+               $before = @{ ScriptEnforcementBefore = 'none'; ScriptRuleCountBefore = '0' }
+               try {
+                   $p0 = Get-AppLockerPolicy -Effective -ErrorAction Stop
+                   $s0 = @($p0.RuleCollections | Where-Object { [string]$_.RuleCollectionType -eq 'Script' })[0]
+                   if ($null -ne $s0) { $before = @{ ScriptEnforcementBefore = [string]$s0.EnforcementMode; ScriptRuleCountBefore = [string][int]$s0.Count } }
+               }
+               catch { }
+               try { $svc = Get-Service -Name AppIDSvc -ErrorAction Stop; return ($before + @{ AppIDSvcStartType = [string]$svc.StartType; AppIDSvcStatus = [string]$svc.Status }) } catch { return ($before + @{ AppIDSvcStartType = 'n/a'; AppIDSvcStatus = 'n/a' }) }
            }
            Apply = { param($Ctx)
                # What the campaign applies is a policy file in tests\, not a sequence of clicks: AppLocker's default
@@ -1201,11 +1219,12 @@ function Get-Plan {
                $Ctx.Facts['AppLockerPolicyBefore'] = $before
                # The way back is written and staged BEFORE the policy is in force: once Script rules are enforced, a
                # .cmd under C:\Users\Public is denied - the campaign's own folder is what this policy denies - and
-               # both the helper and its commands file would be denied with it. %WINDIR%\Temp is inside the allowed
-               # %WINDIR%\*. The staged pair stays there: a running .cmd cannot delete itself, and the next M9
-               # overwrites it.
+               # both the helper and its commands file would be denied with it. The staging folder is the helper's own
+               # %SystemRoot%\Temp\nhc-policy: inside the allowed %WINDIR%\*, and locked by the helper so that only
+               # administrators may write there - so the staged pair cannot be rewritten between the steps either
+               # (PR #67 round 1). It stays there: a running .cmd cannot delete itself, and the next M9 overwrites it.
                $revertFile = New-PolicyStepFile $Ctx.Id 'revert' (Get-M9RevertLines $Ctx) $Ctx.Dir
-               $staged = Join-Path $env:WINDIR 'Temp'
+               $staged = Join-Path (Join-Path $env:SystemRoot 'Temp') 'nhc-policy'
                $lines = @(('copy /y "' + (Join-Path $State.TestsCopy 'policy_helper.cmd') + '" "' + (Join-Path $staged 'nhc-policy_helper.cmd') + '"'),
                           ('copy /y "' + $revertFile + '" "' + (Join-Path $staged 'nhc-policy-revert.cmd') + '"'),
                           ('powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-AppLockerPolicy -Local -Xml | Set-Content -LiteralPath ''' + $before + ''' -Encoding UTF8"'),
@@ -1218,7 +1237,7 @@ function Get-Plan {
                # From %WINDIR%\Temp, where the apply staged both files, because under the enforced rules the copies in
                # the campaign's own folder are denied. Where nothing was staged - an apply that never got that far -
                # the campaign's own copies are tried, and the check below decides either way.
-               $staged = Join-Path $env:WINDIR 'Temp'
+               $staged = Join-Path (Join-Path $env:SystemRoot 'Temp') 'nhc-policy'
                $stagedRevert = Join-Path $staged 'nhc-policy-revert.cmd'
                $stagedHelper = Join-Path $staged 'nhc-policy_helper.cmd'
                if ((Test-Path -LiteralPath $stagedRevert) -and (Test-Path -LiteralPath $stagedHelper)) {
@@ -1263,15 +1282,39 @@ function Get-Plan {
            # The commands are not spelled with a placeholder here: RECOVER.txt holds them with this machine's recorded
            # values filled in, and a person typing the placeholder itself is what happened on the Windows 10 Pro VM
            # (2026-09-06). It also carries the registry line for the case where sc config is refused.
-           Cleanup = @{ Instruction = @('AppLocker > Configure rule enforcement > Script rules: Not configured; delete the Script rules; gpupdate /force. Then put the Application Identity service back as it was before this scenario: the campaign recorded its startup type and state and checks them, and RECOVER.txt in the state folder holds the two commands with this machine''s values already filled in - copy them from there into an ELEVATED command prompt rather than typing them. If sc config answers "Access is denied", RECOVER.txt also names the registry value to set instead. Then answer done.',
-                                        'AppLocker > 設定規則強制執行 > 指令碼規則：尚未設定；刪除指令碼規則；gpupdate /force。然後把 Application Identity 服務改回這個情境之前的狀態：campaign 有記錄啟動類型與狀態並會檢查，state 資料夾的 RECOVER.txt 已經把兩行指令連同這台機器的值填好，請從那裡複製到「以系統管理員身分執行」的命令提示字元，不要自己打。若 sc config 回「存取被拒」，RECOVER.txt 也寫了改用哪個登錄檔值。完成後輸入 done。')
+           Cleanup = @{ Instruction = { param($Ctx)
+                            # What the machine had before decides what the person is asked for: on a machine with
+                            # a Script policy of its own, "delete the Script rules" would take that policy away -
+                            # which is what the campaign's own restoration is there to prevent (PR #67 round 1).
+                            $wasMode = [string]$Ctx.Facts.ScriptEnforcementBefore
+                            $wasCount = [string]$Ctx.Facts.ScriptRuleCountBefore
+                            $saved = [string]$Ctx.Facts.AppLockerPolicyBefore
+                            $hadOwn = ((($wasMode) -and ($wasMode -ne 'none') -and ($wasMode -ne 'NotConfigured')) -or (($wasCount) -and ($wasCount -ne '0')))
+                            $head = 'AppLocker > Configure rule enforcement > Script rules: Not configured; delete the Script rules; gpupdate /force.'
+                            $headZh = 'AppLocker > 設定規則強制執行 > 指令碼規則：尚未設定；刪除指令碼規則；gpupdate /force。'
+                            if ($hadOwn) {
+                                $head = ('This machine had a Script policy of its own before M9 (' + $wasMode + ', ' + $wasCount + ' rule(s)): put THAT back rather than deleting the rules' + $(if ($saved) { ' - the campaign saved it, and an ELEVATED PowerShell restores it with:   Set-AppLockerPolicy -XmlPolicy "' + $saved + '"' } else { '' }) + '; then gpupdate /force.')
+                                $headZh = ('這台機器在 M9 之前就有自己的 Script 政策（' + $wasMode + '，' + $wasCount + ' 條）：請把那個放回去，不要刪除規則' + $(if ($saved) { '；campaign 已經存下來了，在「以系統管理員身分執行」的 PowerShell 執行：  Set-AppLockerPolicy -XmlPolicy "' + $saved + '"' } else { '' }) + '；再 gpupdate /force。')
+                            }
+                            return @(($head + ' Then put the Application Identity service back as it was before this scenario: the campaign recorded its startup type and state and checks them, and RECOVER.txt in the state folder holds the two commands with this machine''s values already filled in - copy them from there into an ELEVATED command prompt rather than typing them. If sc config answers "Access is denied", RECOVER.txt also names the registry value to set instead. Then answer done.'), ($headZh + '然後把 Application Identity 服務改回這個情境之前的狀態：campaign 有記錄啟動類型與狀態並會檢查，state 資料夾的 RECOVER.txt 已經把兩行指令連同這台機器的值填好，請從那裡複製到「以系統管理員身分執行」的命令提示字元，不要自己打。若 sc config 回「存取被拒」，RECOVER.txt 也寫了改用哪個登錄檔值。完成後輸入 done。'))
+                        }
                         Verify = { param($Ctx)
                             # The precondition proved the policy readable; a policy that cannot be read now does not certify the revert (PR #11 round 3).
                             try {
                                 $p = Get-AppLockerPolicy -Effective -ErrorAction Stop
                                 $s = @($p.RuleCollections | Where-Object { [string]$_.RuleCollectionType -eq 'Script' })[0]
-                                if ($null -ne $s -and [string]$s.EnforcementMode -eq 'Enabled') { return @{ Ok = $false; Detail = 'Script rules still enforced' } }
-                                if ($null -ne $s -and [int]$s.Count -gt 0) { return @{ Ok = $false; Detail = ('{0} Script rule(s) still present ({1}); the revert asks for them deleted' -f $s.Count, $s.EnforcementMode) } }
+                                # Against what was there before M9, never against a blank: on a machine with a Script policy of
+                                # its own the revert puts that policy back, and a check demanding an empty collection would
+                                # refuse every such revert and send the person to an instruction that deletes the machine's
+                                # own rules (PR #67 round 1). A record from before these facts were kept reads as the blank
+                                # the campaign used to demand, which is what both acceptance machines have.
+                                $nowMode = $(if ($null -ne $s) { [string]$s.EnforcementMode } else { 'none' })
+                                $nowCount = $(if ($null -ne $s) { [int]$s.Count } else { 0 })
+                                $wasMode = [string]$Ctx.Facts.ScriptEnforcementBefore
+                                if (-not $wasMode) { $wasMode = 'none' }
+                                $wasCount = 0
+                                [void][int]::TryParse([string]$Ctx.Facts.ScriptRuleCountBefore, [ref]$wasCount)
+                                if ($nowMode -ne $wasMode -or $nowCount -ne $wasCount) { return @{ Ok = $false; Detail = ('Script rules are {0} with {1} rule(s); before M9 they were {2} with {3}' -f $nowMode, $nowCount, $wasMode, $wasCount) } }
                                 $svc = Get-Service -Name AppIDSvc -ErrorAction Stop
                                 $wantType = [string]$Ctx.Facts.AppIDSvcStartType; $wantStatus = [string]$Ctx.Facts.AppIDSvcStatus
                                 if ($wantType -ne 'n/a' -and ([string]$svc.StartType -ne $wantType -or [string]$svc.Status -ne $wantStatus)) { return @{ Ok = $false; Detail = ('Script rules no longer enforced, but AppIDSvc is {0} ({1}); it was {2} ({3}) before M9' -f $svc.StartType, $svc.Status, $wantType, $wantStatus) } }
