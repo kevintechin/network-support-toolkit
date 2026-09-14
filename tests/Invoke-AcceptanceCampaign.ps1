@@ -761,6 +761,28 @@ function Get-M8RegistryLines {
     return @(('reg add ' + $k + ' /v EnableScripts /t REG_DWORD /d 1 /f'),
              ('reg add ' + $k + ' /v ExecutionPolicy /t REG_SZ /d AllSigned /f'))
 }
+function Get-AppLockerPolicyShape([string]$Xml) {
+    # What an AppLocker policy is, reduced to what a revert has to put back: every rule collection that says anything,
+    # its enforcement mode, and the ids of its rules, in an order that does not depend on how the policy was written.
+    # The mode and the number of rules are not enough - M9's own two rules would read as the machine's own two - and a
+    # Script collection is not enough either, because Set-AppLockerPolicy without -Merge replaces the whole local
+    # policy, so the exe, dll, msi and packaged-app collections are part of what a revert owes (PR #67 round 2).
+    # A collection with no rules and no enforcement is dropped, so that 'nothing' compares equal however it is spelled.
+    if (-not $Xml) { return '' }
+    $doc = $null
+    try { $doc = [xml]$Xml } catch { return 'unreadable' }
+    $parts = @()
+    foreach ($c in @($doc.AppLockerPolicy.RuleCollection)) {
+        if ($null -eq $c) { continue }
+        $ids = @()
+        foreach ($r in @($c.ChildNodes)) { if ($null -ne $r -and $r.Id) { $ids += ([string]$r.Id).ToLowerInvariant() } }
+        $mode = [string]$c.EnforcementMode
+        if (-not $mode) { $mode = 'NotConfigured' }
+        if (($ids.Count -eq 0) -and ($mode -eq 'NotConfigured')) { continue }
+        $parts += ('{0}:{1}:{2}' -f [string]$c.Type, $mode, ((@($ids) | Sort-Object) -join ','))
+    }
+    return ((@($parts) | Sort-Object) -join '; ')
+}
 function Get-M9RevertLines($Ctx) {
     # The lines that put AppLocker and the Application Identity service back - the same ones RECOVER.txt gives a person
     # (backlog #29). The local policy is removed at the registry rather than through Set-AppLockerPolicy, because that
@@ -803,7 +825,7 @@ function New-PolicyStepFile([string]$Id, [string]$What, [string[]]$Lines, [strin
     [IO.File]::WriteAllLines($cmdFile, [string[]]$body, $oem)
     return $cmdFile
 }
-function Invoke-PolicyStepFile([string]$Id, [string]$What, [string]$CmdFile, [string]$Helper, [string]$Dir) {
+function Invoke-PolicyStepFile([string]$Id, [string]$What, [string]$CmdFile, [string]$Helper, [string]$Dir, [string]$Digest) {
     # One elevated run of one commands file. The campaign itself stays unelevated - A1 measures what an ordinary user
     # gets - so a machine change is a consent prompt for one step, and nothing of the campaign runs elevated after it.
     # What comes back is the helper's own account of it; what decides the scenario is the machine, read by the
@@ -817,8 +839,13 @@ function Invoke-PolicyStepFile([string]$Id, [string]$What, [string]$CmdFile, [st
     # commands, and a file swapped after this line fails that check instead of running with that consent (PR #67 round
     # 1). The state lives under C:\Users\Public because every account has to reach it, so nothing here is out of the
     # unelevated account's reach; what this closes is the step between writing a commands file and running it.
-    $digest = ''
-    try { $digest = [string](Get-FileHash -LiteralPath $CmdFile -Algorithm SHA256 -ErrorAction Stop).Hash } catch { $digest = '' }
+    # A digest recorded earlier is used where there is one: M9 stages its way back into the protected folder before the
+    # policy it undoes is applied, and hashing that staged file again at revert time would certify whatever is there
+    # by then. The digest of the file the campaign wrote is what says it is that file (PR #67 round 2).
+    $digest = [string]$Digest
+    if (-not $digest) {
+        try { $digest = [string](Get-FileHash -LiteralPath $CmdFile -Algorithm SHA256 -ErrorAction Stop).Hash } catch { $digest = '' }
+    }
     if (-not $digest) { return @{ Ok = $false; Detail = ('the commands file could not be hashed: ' + $CmdFile); Lines = @(); CommandsFile = $CmdFile } }
     Write-Host ('  {0}: {1} through the elevated helper - answer the consent prompt Windows raises' -f $Id, $What) -ForegroundColor Cyan
     $proc = $null
@@ -1224,10 +1251,19 @@ function Get-Plan {
                # administrators may write there - so the staged pair cannot be rewritten between the steps either
                # (PR #67 round 1). It stays there: a running .cmd cannot delete itself, and the next M9 overwrites it.
                $revertFile = New-PolicyStepFile $Ctx.Id 'revert' (Get-M9RevertLines $Ctx) $Ctx.Dir
+               # The digest of the way back as the campaign wrote it, kept for the revert: the staged copy is hashed
+               # against this and not against itself, so a file changed after it was staged fails (PR #67 round 2).
+               try { $Ctx.Facts['RevertDigest'] = [string](Get-FileHash -LiteralPath $revertFile -Algorithm SHA256 -ErrorAction Stop).Hash } catch { $Ctx.Facts['RevertDigest'] = '' }
                $staged = Join-Path (Join-Path $env:SystemRoot 'Temp') 'nhc-policy'
+               # The export of the machine's own policy is a prerequisite for replacing it, not a step that may fail
+               # quietly: a step file runs every line and counts the failures, so the two lines after the export refuse
+               # to go on where it wrote nothing - a machine whose policy was replaced with no copy of it saved would
+               # have nothing to be put back from (PR #67 round 2).
                $lines = @(('copy /y "' + (Join-Path $State.TestsCopy 'policy_helper.cmd') + '" "' + (Join-Path $staged 'nhc-policy_helper.cmd') + '"'),
                           ('copy /y "' + $revertFile + '" "' + (Join-Path $staged 'nhc-policy-revert.cmd') + '"'),
                           ('powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-AppLockerPolicy -Local -Xml | Set-Content -LiteralPath ''' + $before + ''' -Encoding UTF8"'),
+                          ('if not exist "' + $before + '" exit /b 1'),
+                          ('for %%A in ("' + $before + '") do if %%~zA EQU 0 exit /b 1'),
                           ('powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-AppLockerPolicy -XmlPolicy ''' + $xml + '''"'),
                           'sc config AppIDSvc start= auto',
                           'net start AppIDSvc',
@@ -1241,7 +1277,7 @@ function Get-Plan {
                $stagedRevert = Join-Path $staged 'nhc-policy-revert.cmd'
                $stagedHelper = Join-Path $staged 'nhc-policy_helper.cmd'
                if ((Test-Path -LiteralPath $stagedRevert) -and (Test-Path -LiteralPath $stagedHelper)) {
-                   $r = Invoke-PolicyStepFile $Ctx.Id 'revert' $stagedRevert $stagedHelper $Ctx.Dir
+                   $r = Invoke-PolicyStepFile $Ctx.Id 'revert' $stagedRevert $stagedHelper $Ctx.Dir ([string]$Ctx.Facts['RevertDigest'])
                    $Ctx.Facts['revertBy'] = $(if ($r.Ok) { 'the elevated helper, from ' + $stagedRevert } else { 'not the helper: ' + $r.Detail })
                    Add-Event ('{0}: revert {1} - {2}' -f $Ctx.Id, $(if ($r.Ok) { 'through the elevated helper, from the staged copy' } else { 'NOT made by the helper' }), $r.Detail)
                    return $r
@@ -1303,18 +1339,22 @@ function Get-Plan {
                             try {
                                 $p = Get-AppLockerPolicy -Effective -ErrorAction Stop
                                 $s = @($p.RuleCollections | Where-Object { [string]$_.RuleCollectionType -eq 'Script' })[0]
-                                # Against what was there before M9, never against a blank: on a machine with a Script policy of
-                                # its own the revert puts that policy back, and a check demanding an empty collection would
-                                # refuse every such revert and send the person to an instruction that deletes the machine's
-                                # own rules (PR #67 round 1). A record from before these facts were kept reads as the blank
-                                # the campaign used to demand, which is what both acceptance machines have.
-                                $nowMode = $(if ($null -ne $s) { [string]$s.EnforcementMode } else { 'none' })
-                                $nowCount = $(if ($null -ne $s) { [int]$s.Count } else { 0 })
-                                $wasMode = [string]$Ctx.Facts.ScriptEnforcementBefore
-                                if (-not $wasMode) { $wasMode = 'none' }
-                                $wasCount = 0
-                                [void][int]::TryParse([string]$Ctx.Facts.ScriptRuleCountBefore, [ref]$wasCount)
-                                if ($nowMode -ne $wasMode -or $nowCount -ne $wasCount) { return @{ Ok = $false; Detail = ('Script rules are {0} with {1} rule(s); before M9 they were {2} with {3}' -f $nowMode, $nowCount, $wasMode, $wasCount) } }
+                                # Against the policy that was saved before M9 changed anything, rule by rule and collection by
+                                # collection - never against a blank, and never on a count. A blank would refuse every
+                                # revert on a machine with a policy of its own and send the person to an instruction that
+                                # deletes the rules just restored (round 1); a mode and a count would certify M9's own two
+                                # rules as the machine's two, and would say nothing at all about the exe, dll, msi and
+                                # packaged-app collections that Set-AppLockerPolicy replaces along with the script one
+                                # (round 2). Where nothing was saved, the shape of nothing is what has to be there.
+                                $savedPath = [string]$Ctx.Facts.AppLockerPolicyBefore
+                                $savedXml = ''
+                                if ($savedPath -and (Test-Path -LiteralPath $savedPath)) { try { $savedXml = [string](Get-Content -LiteralPath $savedPath -Raw -Encoding UTF8 -ErrorAction Stop) } catch { $savedXml = '' } }
+                                if ($savedPath -and -not $savedXml) { return @{ Ok = $false; Detail = ('the policy saved before M9 cannot be read (' + $savedPath + '), so nothing here can say the machine was put back') } }
+                                $nowXml = [string](Get-AppLockerPolicy -Local -Xml -ErrorAction Stop)
+                                $wantShape = Get-AppLockerPolicyShape $savedXml
+                                $nowShape = Get-AppLockerPolicyShape $nowXml
+                                if ($wantShape -eq 'unreadable') { return @{ Ok = $false; Detail = ('the policy saved before M9 is not readable as XML (' + $savedPath + ')') } }
+                                if ($nowShape -ne $wantShape) { return @{ Ok = $false; Detail = ('the local AppLocker policy is [{0}]; before M9 it was [{1}]' -f $(if ($nowShape) { $nowShape } else { 'nothing' }), $(if ($wantShape) { $wantShape } else { 'nothing' })) } }
                                 $svc = Get-Service -Name AppIDSvc -ErrorAction Stop
                                 $wantType = [string]$Ctx.Facts.AppIDSvcStartType; $wantStatus = [string]$Ctx.Facts.AppIDSvcStatus
                                 if ($wantType -ne 'n/a' -and ([string]$svc.StartType -ne $wantType -or [string]$svc.Status -ne $wantStatus)) { return @{ Ok = $false; Detail = ('Script rules no longer enforced, but AppIDSvc is {0} ({1}); it was {2} ({3}) before M9' -f $svc.StartType, $svc.Status, $wantType, $wantStatus) } }

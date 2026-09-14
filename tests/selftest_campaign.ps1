@@ -1094,11 +1094,64 @@ if ($null -ne $sb45) {
 Assert-True '45. where the machine had no Script policy of its own, the instruction is the one it has always been' ((@($blank45).Count -eq 2) -and (@($blank45)[0] -like 'AppLocker > Configure rule enforcement*delete the Script rules*')) ('lines: ' + (@($blank45) -join ' // '))
 Assert-True '45. where it had one, the person is told to put THAT back, the saved copy is named, and nothing says delete the rules' ((@($own45).Count -eq 2) -and (@($own45)[0] -like '*put THAT back*') -and (@($own45)[0] -like '*applocker-before.xml*') -and (@($own45)[0] -notlike '*delete the Script rules*')) ('lines: ' + (@($own45) -join ' // '))
 $verify45 = $(if ($j45 -gt 0) { $m9text45.Substring($j45, [Math]::Min(2500, $m9text45.Length - $j45)) } else { '' })
-Assert-True '45. and the check that certifies the revert reads what was recorded before the change, rather than demanding an empty collection' (($verify45 -like '*ScriptEnforcementBefore*') -and ($verify45 -like '*ScriptRuleCountBefore*') -and ($verify45 -notlike '*the revert asks for them deleted*')) 'the verify still demands a blank'
+Assert-True '45. and the check that certifies the revert reads the policy that was saved before the change, rather than demanding an empty collection' (($verify45 -like '*AppLockerPolicyBefore*') -and ($verify45 -like '*Get-AppLockerPolicyShape*') -and ($verify45 -notlike '*the revert asks for them deleted*')) 'the verify still demands a blank'
 $stepText45 = ''
 $fnStep45 = @($ast42.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-PolicyStepFile' }, $true))
 if ($fnStep45.Count -eq 1) { $stepText45 = [string]$fnStep45[0].Extent.Text }
 Assert-True '45. the step hands the helper the digest of the file it just hashed, so the consent given is for those commands' (($stepText45 -like '*Get-FileHash*') -and ($stepText45 -like '*$digest*') -and ($stepText45.IndexOf('Get-FileHash') -lt $stepText45.IndexOf('Start-Process'))) 'the digest is not computed before the helper is started'
+
+# -------------------- 46. what a revert of M9 has to put back --------------------
+# PR #67 round 2, three findings and all three about M9's own footing: Set-AppLockerPolicy without -Merge replaces the
+# whole local policy, so a revert owes the exe, dll, msi and packaged-app collections as much as the script one; a
+# mode and a rule count would certify M9's own two rules as the machine's own two; and the export that saves the
+# machine's policy has to succeed before the policy is replaced, or there is nothing to put back from.
+Write-Output ''
+Write-Output '46. the policy a revert has to put back: every collection, by the ids of its rules'
+$loaded46 = @('Get-AppLockerPolicyShape')
+Assert-True '46. the driver defines Get-AppLockerPolicyShape once, so this case runs that definition and no other' ($defs42.ContainsKey('Get-AppLockerPolicyShape') -and $defs42['Get-AppLockerPolicyShape'].Count -eq 1) ('definitions: ' + $(if ($defs42.ContainsKey('Get-AppLockerPolicyShape')) { $defs42['Get-AppLockerPolicyShape'].Count } else { 0 }))
+$needs46 = @(); $free46 = @()
+if ($defs42.ContainsKey('Get-AppLockerPolicyShape') -and $defs42['Get-AppLockerPolicyShape'].Count -eq 1) {
+    $needs46 = @($defs42['Get-AppLockerPolicyShape'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) -and $loaded46 -notcontains $_ } | Sort-Object -Unique)
+    $free46 = @(Get-FreeVariables $defs42['Get-AppLockerPolicyShape'][0])
+    Invoke-Expression $defs42['Get-AppLockerPolicyShape'][0].Extent.Text
+}
+Assert-True '46. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs46.Count -eq 0) -and ($free46.Count -eq 0)) ('also needed: ' + ($needs46 -join ', ') + '; free variables: ' + ($free46 -join ', '))
+$saved46 = '<AppLockerPolicy Version="1"><RuleCollection Type="Script" EnforcementMode="Enabled"><FilePathRule Id="AAA" /><FilePathRule Id="BBB" /></RuleCollection><RuleCollection Type="Exe" EnforcementMode="Enabled"><FilePathRule Id="CCC" /></RuleCollection></AppLockerPolicy>'
+$m9own46 = '<AppLockerPolicy Version="1"><RuleCollection Type="Script" EnforcementMode="Enabled"><FilePathRule Id="111" /><FilePathRule Id="222" /></RuleCollection></AppLockerPolicy>'
+$lostExe46 = '<AppLockerPolicy Version="1"><RuleCollection Type="Script" EnforcementMode="Enabled"><FilePathRule Id="BBB" /><FilePathRule Id="AAA" /></RuleCollection></AppLockerPolicy>'
+$restored46 = '<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="Enabled"><FilePathRule Id="ccc" /></RuleCollection><RuleCollection Type="Script" EnforcementMode="Enabled"><FilePathRule Id="bbb" /><FilePathRule Id="aaa" /></RuleCollection></AppLockerPolicy>'
+$empty46 = '<AppLockerPolicy Version="1"><RuleCollection Type="Script" EnforcementMode="NotConfigured" /><RuleCollection Type="Exe" EnforcementMode="NotConfigured" /></AppLockerPolicy>'
+$shapeSaved46 = Get-AppLockerPolicyShape $saved46
+Assert-True '46. a policy put back exactly - the same rules in the same collections, whatever their order and case - reads as the one that was saved' ((Get-AppLockerPolicyShape $restored46) -eq $shapeSaved46) ('restored: ' + (Get-AppLockerPolicyShape $restored46) + ' / saved: ' + $shapeSaved46)
+Assert-True '46. M9''s own two rules do not read as the machine''s own two, which a mode and a count could not tell apart' ((Get-AppLockerPolicyShape $m9own46) -ne $shapeSaved46) ('m9: ' + (Get-AppLockerPolicyShape $m9own46) + ' / saved: ' + $shapeSaved46)
+Assert-True '46. and a collection the revert lost is a difference too, although the script rules came back' ((Get-AppLockerPolicyShape $lostExe46) -ne $shapeSaved46) ('without the exe collection: ' + (Get-AppLockerPolicyShape $lostExe46))
+Assert-True '46. nothing is nothing however it is spelled: collections with no rules and no enforcement drop out' ((Get-AppLockerPolicyShape $empty46) -eq '') ('empty policy reads as: [' + (Get-AppLockerPolicyShape $empty46) + ']')
+Assert-True '46. and a saved file that is not a policy says so rather than reading as nothing, which would certify any machine' ((Get-AppLockerPolicyShape 'not a policy <<<') -eq 'unreadable') ('reads as: ' + (Get-AppLockerPolicyShape 'not a policy <<<'))
+# The export is a prerequisite for the replacement, not a step that may fail quietly: a step file runs every line and
+# counts the failures, so the apply has to stop itself between the two.
+# M9's whole block, to its end: a window of a few thousand characters does not reach the hooks, because the
+# instruction and the prerequisite that come before them are longer than that (this case's own first reading).
+$m9apply46 = ''
+$applyAt46 = $m9text45.IndexOf("@{ Id = 'M9'")
+if ($applyAt46 -ge 0) {
+    $endAt46 = $m9text45.IndexOf("@{ Id = '", $applyAt46 + 10)
+    $m9apply46 = $(if ($endAt46 -gt $applyAt46) { $m9text45.Substring($applyAt46, $endAt46 - $applyAt46) } else { $m9text45.Substring($applyAt46) })
+}
+$exportAt46 = $m9apply46.IndexOf('Get-AppLockerPolicy -Local -Xml')
+$guardAt46 = $m9apply46.IndexOf('exit /b 1')
+$setAt46 = $m9apply46.IndexOf('Set-AppLockerPolicy -XmlPolicy')
+Assert-True '46. the apply stops between saving the machine''s policy and replacing it, where the save wrote nothing' (($exportAt46 -ge 0) -and ($guardAt46 -gt $exportAt46) -and ($setAt46 -gt $guardAt46) -and ($m9apply46 -like '*if %%~zA EQU 0 exit /b 1*')) ('export at ' + $exportAt46 + ', guard at ' + $guardAt46 + ', replace at ' + $setAt46)
+Assert-True '46. and the staged way back is checked against the digest recorded when it was staged, not against itself' (($m9apply46 -like '*RevertDigest*') -and ($m9apply46 -like "*Invoke-PolicyStepFile `$Ctx.Id 'revert' `$stagedRevert `$stagedHelper `$Ctx.Dir (*RevertDigest*")) 'the revert does not pass the recorded digest'
+# And the helper's own footing: %SystemRoot%\Temp is writable by ordinary users, so a folder already there may carry
+# an explicit write entry icacls /grant:r would leave in place - it is refused where it is a reparse point, removed,
+# and made again by the elevated process before anything is copied into it.
+$helperText46 = [IO.File]::ReadAllText($helper41)
+$reparseAt46 = $helperText46.IndexOf('fsutil reparsepoint query')
+$rdAt46 = $helperText46.IndexOf('rd /s /q')
+$mdAt46 = $helperText46.IndexOf('md "%NHCSAFE%"')
+$icaclsAt46 = $helperText46.IndexOf('icacls "%NHCSAFE%"')
+$copyAt46 = $helperText46.IndexOf('copy /y "%~1" "%NHCSTEP%"')
+Assert-True '46. the helper refuses a reparse point where its folder should be, makes the folder fresh, locks it, and only then copies into it' ((($reparseAt46 -ge 0) -and ($rdAt46 -gt $reparseAt46) -and ($mdAt46 -gt $rdAt46) -and ($icaclsAt46 -gt $mdAt46) -and ($copyAt46 -gt $icaclsAt46))) ('reparse ' + $reparseAt46 + ', rd ' + $rdAt46 + ', md ' + $mdAt46 + ', icacls ' + $icaclsAt46 + ', copy ' + $copyAt46)
 
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
