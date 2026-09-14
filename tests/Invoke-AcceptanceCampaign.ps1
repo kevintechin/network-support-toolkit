@@ -97,6 +97,12 @@ if ([string]$ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
     Write-Host ('Put the machine back first without PowerShell - see ' + (Join-Path $StateDir 'RECOVER.txt') + ' (after M7: run undo-M7.cmd in that folder as administrator) - then run this command again.')
     exit 3
 }
+# The digest of tests\policy_helper.cmd as this driver was written beside it. The helper is what runs elevated,
+# and it sits in the copy of tests\ under the campaign's state, which the account the campaign runs as can write -
+# so it is checked against this before it is started (PR #67 round 4). The anchor is this file: an account that can
+# rewrite the driver decides what the campaign asks for anyway, and the campaign is what a person deliberately
+# runs. The self-test checks this constant against the file it names, so it cannot go stale unnoticed.
+$PolicyHelperDigest = 'BB917EDB4E34280FFADA3307BA2320AED567BB1B36FAADF912DD819F90BAB7C9'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)   # the first .NET object: nothing above this line needs FullLanguage
 $Now = { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' }
 # A standard user has no Administrators group in the token at all; an administrator under UAC has it, marked deny-only
@@ -815,7 +821,15 @@ function Get-AppLockerPolicyShape([string]$Xml) {
     foreach ($c in @($doc.AppLockerPolicy.RuleCollection)) {
         if ($null -eq $c) { continue }
         $ids = @()
-        foreach ($r in @($c.ChildNodes)) { if ($null -ne $r -and $r.Id) { $ids += ([string]$r.Id).ToLowerInvariant() } }
+        # The whole rule, not its id: the same id with another action, another account, another path or another
+        # condition is another rule, and a shape built from ids would have read the two as one (PR #67 round 4).
+        # Whitespace is collapsed because both sides are written by Get-AppLockerPolicy and only the text matters.
+        foreach ($r in @($c.ChildNodes)) {
+            if ($null -eq $r) { continue }
+            $text = [string]$r.OuterXml
+            if (-not $text) { continue }
+            $ids += (($text -replace '\s+', ' ').Trim())
+        }
         $mode = [string]$c.EnforcementMode
         if (-not $mode) { $mode = 'NotConfigured' }
         if (($ids.Count -eq 0) -and ($mode -eq 'NotConfigured')) { continue }
@@ -875,6 +889,13 @@ function Invoke-PolicyStepFile([string]$Id, [string]$What, [string]$CmdFile, [st
     $resultFile = Join-Path $Dir ('policy-' + $What + '-result.txt')
     if (Test-Path -LiteralPath $resultFile) { Remove-Item -LiteralPath $resultFile -Force }
     if (-not (Test-Path -LiteralPath $Helper)) { return @{ Ok = $false; Detail = ('no elevated helper at ' + $Helper); Lines = @(); CommandsFile = $CmdFile } }
+    # What is about to run elevated is this file, and hashing the commands it will read says nothing about the program
+    # that reads them: the helper is checked against the digest this driver carries before anything is elevated
+    # (PR #67 round 4).
+    $helperDigest = ''
+    try { $helperDigest = [string](Get-FileHash -LiteralPath $Helper -Algorithm SHA256 -ErrorAction Stop).Hash } catch { $helperDigest = '' }
+    if (-not $helperDigest) { return @{ Ok = $false; Detail = ('the elevated helper could not be hashed: ' + $Helper); Lines = @(); CommandsFile = $CmdFile } }
+    if ($helperDigest -ne $PolicyHelperDigest) { return @{ Ok = $false; Detail = ('the elevated helper is not the one this campaign was written with (' + $Helper + ' is ' + $helperDigest + ', expected ' + $PolicyHelperDigest + ')'); Lines = @(); CommandsFile = $CmdFile } }
     if (-not (Test-Path -LiteralPath $CmdFile)) { return @{ Ok = $false; Detail = ('no commands file at ' + $CmdFile); Lines = @(); CommandsFile = $CmdFile } }
     # The digest of the file as it is now, which the helper checks before it elevates anything and again on the copy it
     # runs from a folder only administrators may write to: the consent the person is about to give is for these
@@ -1147,10 +1168,37 @@ function Get-Plan {
                if ($r.Reports.Count) { $bad += 'a report was written although the guard should have stopped the run' }
                @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1} ({2}); reports: {3}' -f $r.ExitCode, $r.EnvironmentReports.Count, $r.EnvironmentReportsNote, $r.Reports.Count)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\NetworkHealthCheck_ENVIRONMENT_*.txt') }
            }
+           Prepare = { param($Ctx)
+               # What the machine had, so that the revert puts that back instead of deleting it: a machine where
+               # __PSLockdownPolicy was already set to something else is changed permanently by a revert that only
+               # deletes, and the automated path made that the default one (PR #67 round 4).
+               $v = Get-MachineEnv '__PSLockdownPolicy'
+               return @{ LockdownBefore = $(if ($null -eq $v -or [string]$v -eq '') { 'absent' } else { [string]$v }) }
+           }
            Apply = { param($Ctx) Invoke-PolicyChange $Ctx.Id $Ctx 'apply' @('setx /M __PSLockdownPolicy 4') }
-           Revert = { param($Ctx) Invoke-PolicyChange $Ctx.Id $Ctx 'revert' @('reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f') }
-           Cleanup = @{ Instruction = @('Remove it - in an ELEVATED command prompt:   reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f   - then answer done.', '移除它——在「以系統管理員身分執行」的命令提示字元執行：reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f，然後輸入 done。')
-                        Verify = { $v = Get-MachineEnv '__PSLockdownPolicy'; if ($null -eq $v -or $v -eq '') { @{ Ok = $true; Detail = 'removed' } } else { @{ Ok = $false; Detail = ('__PSLockdownPolicy is still ' + $v) } } } } },
+           Revert = { param($Ctx)
+               $was = [string]$Ctx.Facts['LockdownBefore']
+               if (-not $was -or $was -eq 'absent') { return (Invoke-PolicyChange $Ctx.Id $Ctx 'revert' @('reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f')) }
+               if (-not (Test-PolicyLineData $was)) { return @{ Ok = $false; Detail = ('the value this machine had cannot be carried in a command line; RECOVER.txt has the line to type') } }
+               return (Invoke-PolicyChange $Ctx.Id $Ctx 'revert' @('setx /M __PSLockdownPolicy "' + $was + '"'))
+           }
+           Cleanup = @{ Instruction = { param($Ctx)
+                            $was = [string]$Ctx.Facts['LockdownBefore']
+                            if ($was -and $was -ne 'absent') {
+                                return @(('This machine had __PSLockdownPolicy set to ' + $was + ' before M7: put THAT back, do not delete it - in an ELEVATED command prompt:   setx /M __PSLockdownPolicy "' + $was + '"   Then answer done.'),
+                                         ('這台機器在 M7 之前 __PSLockdownPolicy 就是 ' + $was + '：請改回那個值，不要刪除——在「以系統管理員身分執行」的命令提示字元執行：setx /M __PSLockdownPolicy "' + $was + '"，然後輸入 done。'))
+                            }
+                            return @('Remove it - in an ELEVATED command prompt:   reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f   - then answer done.', '移除它——在「以系統管理員身分執行」的命令提示字元執行：reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v __PSLockdownPolicy /f，然後輸入 done。')
+                        }
+                        Verify = { param($Ctx)
+                            # Against what the machine had: a machine where the value was already set to
+                            # something else is put back to that, and 'gone' would certify the loss of it.
+                            $v = Get-MachineEnv '__PSLockdownPolicy'
+                            $now = $(if ($null -eq $v -or [string]$v -eq '') { 'absent' } else { [string]$v })
+                            $was = [string]$Ctx.Facts['LockdownBefore']
+                            if (-not $was) { $was = 'absent' }
+                            if ($now -eq $was) { @{ Ok = $true; Detail = $(if ($was -eq 'absent') { 'removed' } else { '__PSLockdownPolicy=' + $now + ', as before M7' }) } }
+                            else { @{ Ok = $false; Detail = ('__PSLockdownPolicy is ' + $now + '; before M7 it was ' + $was) } } } } },
         @{ Id = 'M8'; Title = 'Group Policy execution policy: allow only signed scripts'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('Two ways to the same MachinePolicy - PowerShell reads HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell either way:',
                            '  with gpedit.msc: Computer Configuration > Administrative Templates > Windows Components > Windows PowerShell > Turn on Script Execution > Enabled, "Allow only signed scripts" > OK; then in a command prompt:   gpupdate /force',
@@ -1234,7 +1282,31 @@ function Get-Plan {
                             $lines = Get-M8MachineLines
                             @(('Put it back as it was (MachinePolicy was ' + $before + ' before M8) - with gpedit.msc: ' + $gp + ', then   gpupdate /force;   without it, in an ELEVATED command prompt:   ' + ($back -join '   then   ')), $lines[0], 'Then answer done.',
                               ('改回原本的狀態（M8 之前 MachinePolicy 是 ' + $before + '）——有 gpedit.msc：' + $gpZh + '，再執行 gpupdate /force；沒有：在「以系統管理員身分執行」的命令提示字元執行 ' + ($back -join '，再執行 ')), $lines[1], '然後輸入 done。') }
-                        Verify = { param($Ctx) $p = Get-MachinePolicyExecutionPolicy; $want = [string]$Ctx.Facts.MachinePolicyBefore; if (-not $want) { $want = 'Undefined' }; if ($p -eq $want) { @{ Ok = $true; Detail = ('MachinePolicy=' + $p + ', as before M8') } } else { @{ Ok = $false; Detail = ('MachinePolicy is ' + $p + '; it was ' + $want + ' before M8') } } } } },
+                        Verify = { param($Ctx)
+                            # The two values as they were, each by its existence, its kind and its data - and only then
+                            # the policy they add up to. A revert that half succeeded can leave the effective policy
+                            # reading as it did before with a value of M8's still in the key: both were absent, the
+                            # delete of one succeeded and the restore of the other did not, and MachinePolicy is
+                            # Undefined either way (PR #67 round 4).
+                            $key = Get-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell' -ErrorAction SilentlyContinue
+                            $bad = @()
+                            foreach ($v in @(@{ Name = 'ExecutionPolicy'; Data = 'RegExecutionPolicyBefore'; Kind = 'RegExecutionPolicyKindBefore' }, @{ Name = 'EnableScripts'; Data = 'RegEnableScriptsBefore'; Kind = 'RegEnableScriptsKindBefore' })) {
+                                $wantData = [string]$Ctx.Facts[$v.Data]; $wantKind = [string]$Ctx.Facts[$v.Kind]
+                                if ($wantKind) { $wantThere = ($wantKind -ne 'absent') } else { $wantThere = ($wantData -and $wantData -ne 'absent'); if (-not $wantThere) { $wantData = '' } }
+                                $isThere = ($null -ne $key -and (@($key.GetValueNames()) -contains $v.Name))
+                                if (-not $isThere -and -not $wantThere) { continue }
+                                if ($isThere -ne $wantThere) { $bad += ('{0} is {1}; before M8 it was {2}' -f $v.Name, $(if ($isThere) { 'there' } else { 'not there' }), $(if ($wantThere) { 'there' } else { 'not there' })); continue }
+                                $kind = [string]$key.GetValueKind($v.Name)
+                                $raw = $key.GetValue($v.Name, $null, 'DoNotExpandEnvironmentNames')
+                                $data = $(switch ($kind) { 'MultiString' { @($raw) -join '\0' } 'Binary' { (@($raw) | ForEach-Object { ([byte]$_).ToString('x2') }) -join '' } default { [string]$raw } })
+                                if ($wantKind -and $kind -ne $wantKind) { $bad += ('{0} is a {1} value; before M8 it was a {2} one' -f $v.Name, $kind, $wantKind) }
+                                if ($data -ne $wantData) { $bad += ('{0} is "{1}"; before M8 it was "{2}"' -f $v.Name, $data, $wantData) }
+                            }
+                            if ($bad.Count) { return @{ Ok = $false; Detail = (($bad -join '; ') + ' - the revert did not put the key back as it was') } }
+                            $p = Get-MachinePolicyExecutionPolicy
+                            $want = [string]$Ctx.Facts.MachinePolicyBefore; if (-not $want) { $want = 'Undefined' }
+                            if ($p -ne $want) { return @{ Ok = $false; Detail = ('MachinePolicy is ' + $p + '; it was ' + $want + ' before M8') } }
+                            @{ Ok = $true; Detail = ('MachinePolicy=' + $p + ' and both values as before M8') } } } },
         @{ Id = 'M9'; Title = 'AppLocker script rules enforced'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('secpol.msc > Application Control Policies > AppLocker > Script Rules > right-click > Create Default Rules, then DELETE the default rule that allows BUILTIN\Administrators all scripts - your account is an administrator, and with that rule in place it is exempt and the test measures nothing; AppLocker > Configure rule enforcement > Script rules: Configured, Enforce rules. Then in an ELEVATED command prompt:   sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force   - then answer done. The driver checks that the rules really restrict this account before it runs anything.',
                            'secpol.msc > 應用程式控制原則 > AppLocker > 指令碼規則 > 右鍵 > 建立預設規則，然後「刪除」允許 BUILTIN\Administrators 執行所有指令碼的那條預設規則——你的帳號是管理員，留著它就被豁免、什麼都量不到；AppLocker > 設定規則強制執行 > 指令碼規則：已設定、強制執行規則。再在「以系統管理員身分執行」的命令提示字元執行：sc config AppIDSvc start= auto & net start AppIDSvc & gpupdate /force，然後輸入 done。driver 執行前會確認規則真的限制了這個帳號。') + $recoverLines
@@ -1280,7 +1352,11 @@ function Get-Plan {
                    if ($null -ne $s0) { $before = @{ ScriptEnforcementBefore = [string]$s0.EnforcementMode; ScriptRuleCountBefore = [string][int]$s0.Count } }
                }
                catch { }
-               try { $svc = Get-Service -Name AppIDSvc -ErrorAction Stop; return ($before + @{ AppIDSvcStartType = [string]$svc.StartType; AppIDSvcStatus = [string]$svc.Status }) } catch { return ($before + @{ AppIDSvcStartType = 'n/a'; AppIDSvcStatus = 'n/a' }) }
+               # A service whose state could not be read is a service nothing here could put back, and the apply changes
+               # it: the scenario is not attempted at all rather than left running with a startup type of its own
+               # (PR #67 round 4). A machine without AppLocker never reaches this - the prerequisite skips it first.
+               try { $svc = Get-Service -Name AppIDSvc -ErrorAction Stop } catch { throw ('the Application Identity service cannot be read (' + $_.Exception.Message + '), so nothing here could put it back after M9 changed it') }
+               return ($before + @{ AppIDSvcStartType = [string]$svc.StartType; AppIDSvcStatus = [string]$svc.Status })
            }
            Apply = { param($Ctx)
                # What the campaign applies is a policy file in tests\, not a sequence of clicks: AppLocker's default
@@ -1299,7 +1375,9 @@ function Get-Plan {
                # the helper locks, not the campaign's own, which the account the campaign runs as can write to. A file
                # already at that name would otherwise pass the guards below as this run's export, and one replaced
                # after the export would be installed by the revert and certified by the check as the original, since
-               # both read the same file (PR #67 round 3). The campaign keeps a copy of its own as evidence.
+               # both read the same file (PR #67 round 3). The export writes straight into the locked folder - going
+               # through the campaign's own and copying across would have left the same gap one step further on
+               # (round 4) - and the copy that lands in the campaign's folder afterwards is evidence and nothing else.
                $staged = Join-Path (Join-Path $env:SystemRoot 'Temp') 'nhc-policy'
                $beforeCopy = Join-Path $Ctx.Dir 'applocker-before.xml'
                $before = Join-Path $staged 'applocker-before.xml'
@@ -1327,12 +1405,11 @@ function Get-Plan {
                # have nothing to be put back from (PR #67 round 2).
                $lines = @(('copy /y "' + (Join-Path $State.TestsCopy 'policy_helper.cmd') + '" "' + (Join-Path $staged 'nhc-policy_helper.cmd') + '"'),
                           ('copy /y "' + $revertFile + '" "' + (Join-Path $staged 'nhc-policy-revert.cmd') + '"'),
-                          ('del /f /q "' + $beforeCopy + '" 2>nul'),
-                          ('powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-AppLockerPolicy -Local -Xml | Set-Content -LiteralPath ''' + $beforeCopy + ''' -Encoding UTF8"'),
-                          ('if not exist "' + $beforeCopy + '" exit /b 1'),
-                          ('for %%A in ("' + $beforeCopy + '") do if %%~zA EQU 0 exit /b 1'),
-                          ('copy /y "' + $beforeCopy + '" "' + $before + '"'),
+                          ('del /f /q "' + $before + '" 2>nul'),
+                          ('powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-AppLockerPolicy -Local -Xml | Set-Content -LiteralPath ''' + $before + ''' -Encoding UTF8"'),
                           ('if not exist "' + $before + '" exit /b 1'),
+                          ('for %%A in ("' + $before + '") do if %%~zA EQU 0 exit /b 1'),
+                          ('copy /y "' + $before + '" "' + $beforeCopy + '"'),
                           ('copy /y "' + $xml + '" "' + $stagedXml + '"'),
                           ('certutil -hashfile "' + $stagedXml + '" SHA256 | find /i "' + $xmlDigest + '" >nul'),
                           ('if errorlevel 1 exit /b 1'),

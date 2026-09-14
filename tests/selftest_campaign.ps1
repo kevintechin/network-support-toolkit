@@ -661,7 +661,7 @@ $r34b = Invoke-Campaign 'm8facts' @('-Resume', '-Scenarios', 'M8') "M8/revert=do
 $out34b = $r34b.Output -join "`n"
 Assert-True '34. the revert instruction re-creates the values as they were, kinds included' (($out34b -match 'Put it back as it was \(MachinePolicy was RemoteSigned before M8\)') -and ($out34b -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v ExecutionPolicy /t REG_EXPAND_SZ /d "RemoteSigned" /f') -and ($out34b -match 'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell" /v EnableScripts /t REG_SZ /d "1" /f')) (($r34b.Output | Where-Object { $_ -match 'Put it back|reg add' }) -join ' / ')
 $s34b = Read-State $r34.State
-Assert-True '34. the verification compares with what was there, not with Undefined' ($s34b.Scenarios.M8.Result -eq 'PENDING' -and $s34b.Scenarios.M8.Reverted -like 'NOT VERIFIED - MachinePolicy is *; it was RemoteSigned before M8' -and $r34b.ExitCode -eq 1) ($s34b.Scenarios.M8.Result + ' / ' + $s34b.Scenarios.M8.Reverted + ' / exit ' + $r34b.ExitCode)
+Assert-True '34. the verification compares with what was there, value by value, and names what differs' ($s34b.Scenarios.M8.Result -eq 'PENDING' -and $s34b.Scenarios.M8.Reverted -like 'NOT VERIFIED - *before M8*' -and $s34b.Scenarios.M8.Reverted -like '*ExecutionPolicy*' -and $r34b.ExitCode -eq 1) ($s34b.Scenarios.M8.Result + ' / ' + $s34b.Scenarios.M8.Reverted + ' / exit ' + $r34b.ExitCode)
 
 $crafted34c = Get-Content -LiteralPath $stateFile34 -Raw -Encoding UTF8 | ConvertFrom-Json
 $crafted34c.Scenarios.M8.Facts.RegExecutionPolicyBefore = ''; $crafted34c.Scenarios.M8.Facts.RegExecutionPolicyKindBefore = 'String'
@@ -1163,7 +1163,7 @@ Assert-True '46. the helper refuses a reparse point where its folder should be, 
 Write-Output ''
 Write-Output '47. the policy M9 saves: where it is kept, what counts as one, and what a crash leaves the person'
 Assert-True '47. a well-formed document that is not a policy reads as unreadable, not as an empty policy - the reading that would certify a machine whose policy was deleted and never put back' ((Get-AppLockerPolicyShape '<foo/>') -eq 'unreadable') ('reads as: [' + (Get-AppLockerPolicyShape '<foo/>') + ']')
-Assert-True '47. and a policy with only an exe collection still reads as a policy, which is the case a Script-only reading missed' ((Get-AppLockerPolicyShape '<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="Enabled"><FilePathRule Id="CCC" /></RuleCollection></AppLockerPolicy>') -eq 'Exe:Enabled:ccc') ('reads as: ' + (Get-AppLockerPolicyShape '<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="Enabled"><FilePathRule Id="CCC" /></RuleCollection></AppLockerPolicy>'))
+Assert-True '47. and a policy with only an exe collection still reads as a policy, which is the case a Script-only reading missed' ((Get-AppLockerPolicyShape '<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="Enabled"><FilePathRule Id="CCC" /></RuleCollection></AppLockerPolicy>') -like 'Exe:Enabled:*FilePathRule*CCC*') ('reads as: ' + (Get-AppLockerPolicyShape '<AppLockerPolicy Version="1"><RuleCollection Type="Exe" EnforcementMode="Enabled"><FilePathRule Id="CCC" /></RuleCollection></AppLockerPolicy>'))
 $loaded47 = @('Get-M9RecoveryLines')
 Assert-True '47. the driver defines Get-M9RecoveryLines once, so this case runs that definition and no other' ($defs42.ContainsKey('Get-M9RecoveryLines') -and $defs42['Get-M9RecoveryLines'].Count -eq 1) ('definitions: ' + $(if ($defs42.ContainsKey('Get-M9RecoveryLines')) { $defs42['Get-M9RecoveryLines'].Count } else { 0 }))
 $needs47 = @(); $free47 = @()
@@ -1194,10 +1194,10 @@ Assert-True '47. a machine with exe rules and no script rules is a machine with 
 # its guard, and only then the policy replaced - with the notes written before any of it runs.
 $delAt47 = $m9apply46.IndexOf('del /f /q')
 $exportAt47 = $m9apply46.IndexOf('Get-AppLockerPolicy -Local -Xml')
-$copyAt47 = $m9apply46.IndexOf('copy /y "'' + $beforeCopy + ''" "'' + $before + ''"')
+$copyAt47 = $m9apply46.IndexOf('copy /y "'' + $before + ''" "'' + $beforeCopy + ''"')
 $setAt47 = $m9apply46.IndexOf('Set-AppLockerPolicy -XmlPolicy')
 $notesAt47 = $m9apply46.IndexOf('Write-RecoveryNotes')
-Assert-True '47. the export writes over nothing: the old file is removed first, the copy into the locked folder is checked, and only then is the policy replaced' ((($delAt47 -ge 0) -and ($delAt47 -lt $exportAt47) -and ($copyAt47 -gt $exportAt47) -and ($setAt47 -gt $copyAt47))) ('del ' + $delAt47 + ', export ' + $exportAt47 + ', copy ' + $copyAt47 + ', replace ' + $setAt47)
+Assert-True '47. the export writes over nothing and into the locked folder: the old file is removed first, the copy out to the campaign''s own folder is evidence, and only then is the policy replaced' ((($delAt47 -ge 0) -and ($delAt47 -lt $exportAt47) -and ($copyAt47 -gt $exportAt47) -and ($setAt47 -gt $copyAt47))) ('del ' + $delAt47 + ', export ' + $exportAt47 + ', copy ' + $copyAt47 + ', replace ' + $setAt47)
 Assert-True '47. and the notes are rewritten before the step runs, so a session that dies under the enforced rules finds the staged way back named in them' (($notesAt47 -ge 0) -and ($notesAt47 -lt $m9apply46.IndexOf('Invoke-PolicyChange'))) ('notes at ' + $notesAt47 + ', the step at ' + $m9apply46.IndexOf('Invoke-PolicyChange'))
 Assert-True '47. what the revert installs and what the check reads is the copy in the locked folder, not the one in the campaign''s own' (($m9apply46 -like '*$before = Join-Path $staged ''applocker-before.xml''*') -and ($m9apply46 -like '*AppLockerPolicyBeforeCopy*')) 'the saved policy is not staged'
 
@@ -1239,6 +1239,54 @@ $xmlHashAt48 = $m9apply46.IndexOf('certutil -hashfile "'' + $stagedXml + ''" SHA
 $setStagedAt48 = $m9apply46.IndexOf('Set-AppLockerPolicy -XmlPolicy ''''' + "'" + ' + $stagedXml')
 Assert-True '48. the policy is copied into the locked folder, checked there against the digest this campaign took, and applied from that copy' ((($xmlCopyAt48 -ge 0) -and ($xmlHashAt48 -gt $xmlCopyAt48) -and ($m9apply46 -like '*$xmlDigest*'))) ('copy ' + $xmlCopyAt48 + ', hash ' + $xmlHashAt48 + ', digest named: ' + ($m9apply46 -like '*$xmlDigest*'))
 Assert-True '48. and what is applied is the staged copy, not the one in the campaign''s own folder' (($m9apply46 -like '*Set-AppLockerPolicy -XmlPolicy*$stagedXml*') -and ($m9apply46 -notlike '*Set-AppLockerPolicy -XmlPolicy*'' + $xml + ''*')) 'the policy applied is not the staged copy'
+
+# -------------------- 49. what round 4 asked of the three scenarios --------------------
+# PR #67 round 4: the program that checks a digest is not itself checked; a backup that travels through a writable
+# path is a backup that can be swapped one step later; M7 deleted a value the machine may have had of its own; M9
+# changed a service whose state it had failed to read; a rule is not its id; and a revert of M8 that half succeeded
+# read as done, because only the policy the two values add up to was compared.
+Write-Output ''
+Write-Output '49. the helper checked before it is elevated, the values put back as they were, and a rule read as a rule'
+$helperDigest49 = [string](Get-FileHash -LiteralPath $helper41 -Algorithm SHA256).Hash
+$driverText49 = [IO.File]::ReadAllText($driver)
+$constAt49 = $driverText49.IndexOf('$PolicyHelperDigest = ')
+$const49 = ''
+if ($constAt49 -ge 0) {
+    $quote49 = $driverText49.IndexOf("'", $constAt49)
+    $end49 = $driverText49.IndexOf("'", $quote49 + 1)
+    $const49 = $driverText49.Substring($quote49 + 1, $end49 - $quote49 - 1)
+}
+Assert-True '49. the digest the driver carries for the helper is the digest of the helper it ships with, so the constant cannot go stale unnoticed' ($const49 -eq $helperDigest49) ('driver: ' + $const49 + '; file: ' + $helperDigest49)
+$stepText49 = ''
+$fnStep49 = @($ast42.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-PolicyStepFile' }, $true))
+if ($fnStep49.Count -eq 1) { $stepText49 = [string]$fnStep49[0].Extent.Text }
+Assert-True '49. and the step compares it before it elevates anything - hashing the commands says nothing about the program that reads them' (($stepText49 -like '*PolicyHelperDigest*') -and ($stepText49.IndexOf('PolicyHelperDigest') -lt $stepText49.IndexOf('Start-Process'))) 'the helper is not checked before it is started'
+# M7 puts back the value the machine had, where it had one.
+$m7block49 = ''
+$m7at49 = $driverText49.IndexOf("@{ Id = 'M7'")
+if ($m7at49 -ge 0) {
+    $m7end49 = $driverText49.IndexOf("@{ Id = '", $m7at49 + 10)
+    $m7block49 = $(if ($m7end49 -gt $m7at49) { $driverText49.Substring($m7at49, $m7end49 - $m7at49) } else { $driverText49.Substring($m7at49) })
+}
+Assert-True '49. M7 records what __PSLockdownPolicy was before it changed it' (($m7block49 -like '*Prepare = {*') -and ($m7block49 -like '*LockdownBefore*') -and ($m7block49 -like '*Get-MachineEnv ''__PSLockdownPolicy''*')) 'M7 records nothing about the value it overwrites'
+Assert-True '49. its revert puts that value back where there was one and deletes only where there was none, and its check compares with what was recorded' (($m7block49 -like '*setx /M __PSLockdownPolicy*$was*') -and ($m7block49 -like '*reg delete*__PSLockdownPolicy /f*') -and ($m7block49 -like '*before M7 it was*')) 'M7 still deletes whatever it finds'
+# M9 does not change a service it could not read.
+$m9prep49 = $m9apply46.IndexOf('Prepare = {')
+$m9throw49 = $m9apply46.IndexOf('cannot be read (')
+Assert-True '49. M9 refuses the scenario where the service state could not be read, rather than changing what nothing could put back' (($m9prep49 -ge 0) -and ($m9throw49 -gt $m9prep49) -and ($m9apply46 -like '*throw (*Application Identity service cannot be read*')) 'M9 still records n/a and goes on'
+# A rule is its definition.
+$sameIds49a = '<AppLockerPolicy Version="1"><RuleCollection Type="Script" EnforcementMode="Enabled"><FilePathRule Id="AAA" Action="Allow" UserOrGroupSid="S-1-1-0" /></RuleCollection></AppLockerPolicy>'
+$sameIds49b = '<AppLockerPolicy Version="1"><RuleCollection Type="Script" EnforcementMode="Enabled"><FilePathRule Id="AAA" Action="Deny" UserOrGroupSid="S-1-1-0" /></RuleCollection></AppLockerPolicy>'
+Assert-True '49. the same rule id with another action is another rule, which a shape built from ids read as the same one' ((Get-AppLockerPolicyShape $sameIds49a) -ne (Get-AppLockerPolicyShape $sameIds49b)) ('allow: ' + (Get-AppLockerPolicyShape $sameIds49a) + ' / deny: ' + (Get-AppLockerPolicyShape $sameIds49b))
+Assert-True '49. and the reading is not vacuous: the same rule written the same way twice is the same shape' ((Get-AppLockerPolicyShape $sameIds49a) -eq (Get-AppLockerPolicyShape ($sameIds49a -replace '><', ">`r`n<"))) ('one: ' + (Get-AppLockerPolicyShape $sameIds49a))
+# M8 is put back value by value.
+$m8verify49 = ''
+$m8at49b = $driverText49.IndexOf("@{ Id = 'M8'")
+if ($m8at49b -ge 0) {
+    $m8end49b = $driverText49.IndexOf("@{ Id = '", $m8at49b + 10)
+    $m8verify49 = $(if ($m8end49b -gt $m8at49b) { $driverText49.Substring($m8at49b, $m8end49b - $m8at49b) } else { $driverText49.Substring($m8at49b) })
+}
+Assert-True '49. M8''s check reads both values back - whether each is there, its kind and its data - before the policy they add up to' (($m8verify49 -like '*GetValueKind*') -and ($m8verify49 -like '*RegExecutionPolicyKindBefore*') -and ($m8verify49 -like '*RegEnableScriptsKindBefore*') -and ($m8verify49 -like '*the revert did not put the key back as it was*')) 'M8 still certifies on the derived policy alone'
 
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
