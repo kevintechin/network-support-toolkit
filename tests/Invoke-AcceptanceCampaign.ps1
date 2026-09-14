@@ -221,6 +221,24 @@ function Copy-LanguageFolder([string]$Lang, [string]$Destination) {
     Get-ChildItem -LiteralPath (Join-Path $State.PackageRoot $Lang) -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $Destination }
     return $Destination
 }
+function Select-CapturedMessages($Candidates, [string]$NamedIn, [string]$Copy) {
+    # Which capture of PowerShell's messages belongs to THIS run. The launcher writes one beside itself and falls back
+    # to %TEMP% only where that folder refuses a file - and the fallback name carries no run identity, so a second
+    # launcher started by the same account while this one runs leaves a file that looks just as fresh. Taking the
+    # newest of them would let another run's refusal answer for this one (PR #65, round 8).
+    # $NamedIn is the text this run's launcher wrote - its error report and its console output - in which it names the
+    # file it kept those messages in. That is the correlation, and it holds in any display language, because a path is
+    # a path. A capture in the scenario's own folder is this run's too: that folder is made for this run and emptied
+    # first. Anything else is refused rather than read, and the reason is carried back so the row can say it.
+    $list = @(@($Candidates) | Where-Object { $_ })
+    if (-not $list.Count) { return @{ File = $null; Reason = 'the launcher kept no messages file' } }
+    $named = @($list | Where-Object { ([string]$NamedIn).IndexOf([string]$_.FullName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 })
+    if ($named.Count) { return @{ File = @($named | Sort-Object LastWriteTime -Descending)[0]; Reason = 'named by this run''s launcher' } }
+    $here = @($list | Where-Object { [string]$_.DirectoryName -eq [string]$Copy })
+    if ($here.Count -eq 1) { return @{ File = $here[0]; Reason = 'the one capture in this run''s own folder' } }
+    if ($here.Count -gt 1) { return @{ File = $null; Reason = ('{0} captures in this run''s own folder, and the launcher named none of them' -f $here.Count) } }
+    return @{ File = $null; Reason = ('{0} capture(s) were written under this account while this run went on, and the launcher named none of them - none can be read as this run''s' -f $list.Count) }
+}
 function Invoke-LauncherRun([string]$Id, [string]$Lang) {
     # The shipped console launcher of one language, started the way a double-click starts it (cmd.exe; stdin from NUL
     # so that its pause returns), from a fresh copy under the scenario's folder. The console launcher rather than the
@@ -242,8 +260,12 @@ function Invoke-LauncherRun([string]$Id, [string]$Lang) {
     # scenario that reads the console output to decide WHICH policy refused the script finds that phrase whatever had
     # refused it - which is how M8 could still have passed an application-control block (PR #65, round 1).
     $messageFiles = @(Get-ChildItem -LiteralPath $copy -Filter 'PowerShellMessages_*.txt' -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $started }) + @(Get-ChildItem -LiteralPath $env:TEMP -Filter 'NetworkHealthCheck_PowerShellMessages_*.txt' -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $started })
-    foreach ($m in $messageFiles) { if ($m.DirectoryName -ne $copy) { Copy-Item -LiteralPath $m.FullName -Destination $copy -Force } }
-    $messageFile = @($messageFiles | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+    $errorText = $(if ($launcherError.Count) { Get-Content -LiteralPath $launcherError[0].FullName -Raw -Encoding UTF8 } else { '' })
+    # The launcher names the file it kept PowerShell's messages in, in its error report and on the screen; that is what
+    # says which capture is this run's, and only that one is read and only that one travels as evidence.
+    $picked = Select-CapturedMessages $messageFiles ($errorText + "`n" + (@($r.Output) -join "`n")) $copy
+    $messageFile = @($picked.File)
+    if ($messageFile.Count -and ($messageFile[0].DirectoryName -ne $copy)) { Copy-Item -LiteralPath $messageFile[0].FullName -Destination $copy -Force }
     return @{
         Copy = $copy; ExitCode = $r.ExitCode; Output = $r.Output
         # Both files are read as UTF-8 by name. The launchers run `chcp 65001` on their third line, so everything they
@@ -255,9 +277,10 @@ function Invoke-LauncherRun([string]$Id, [string]$Lang) {
         # file is in Chinese on a zh-TW machine whatever the launcher says (PR #65, round 2). The error report matters
         # for the same reason once a path in it carries a character outside ASCII: a mis-decoded three-byte sequence
         # takes the byte after it with it, and what follows in that file is the ASCII the scenarios match on.
-        LauncherError = $(if ($launcherError.Count) { Get-Content -LiteralPath $launcherError[0].FullName -Raw -Encoding UTF8 } else { '' })
+        LauncherError = $errorText
         PowerShellMessages = @($(if ($messageFile.Count) { Get-Content -LiteralPath $messageFile[0].FullName -Encoding UTF8 -ErrorAction SilentlyContinue } else { @() }))
         PowerShellMessagesFile = $(if ($messageFile.Count) { $messageFile[0].Name } else { '' })
+        PowerShellMessagesNote = [string]$picked.Reason
         EnvironmentReports = @($envReports | ForEach-Object { $_.FullName }); Reports = @($reports | ForEach-Object { $_.FullName })
     }
 }
@@ -965,7 +988,7 @@ function Get-Plan {
                # the console text: the launcher's own suggested action names the signature refusal on every blocked run,
                # so the console would carry the phrase whatever had refused the script (PR #65, round 1).
                $refusal = Get-SignatureRefusal $r.PowerShellMessages @($r.Copy, $StateDir)
-               if (-not $refusal.Matched) { $bad += ('what PowerShell printed does not carry the signature refusal itself' + $(if ($r.PowerShellMessagesFile) { ' (' + $r.PowerShellMessagesFile + ')' } else { ' - and the launcher kept no messages file, so there is nothing to read it from' }) + ' - ' + $refusal.Detail) }
+               if (-not $refusal.Matched) { $bad += ('what PowerShell printed does not carry the signature refusal itself' + $(if ($r.PowerShellMessagesFile) { ' (' + $r.PowerShellMessagesFile + ', ' + $r.PowerShellMessagesNote + ')' } else { ' - ' + $r.PowerShellMessagesNote + ', so there is nothing to read it from' }) + ' - ' + $refusal.Detail) }
                if ($r.EnvironmentReports.Count) { $bad += ('an environment report was written ({0}): the script started, so it was not AllSigned that stopped it' -f $r.EnvironmentReports.Count) }
                # The policy is read again after the run: the precondition saw it before, and what this scenario claims is
                # that the refusal came from the policy in force while the launcher ran (backlog #25). A machine whose
@@ -974,7 +997,7 @@ function Get-Plan {
                $policyAfter = Get-MachinePolicyExecutionPolicy
                if ($policyAfter -ne 'AllSigned') { $bad += ('MachinePolicy is ' + $policyAfter + ' after the run, and AllSigned before it: what refused the script cannot be tied to the policy') }
                $shown = @($r.Output | Where-Object { $_.Trim() -ne '' } | Select-Object -First 4) -join ' / '
-               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; refusal read from {2}: {3}; MachinePolicy after the run: {4}; what the user sees: {5}' -f $r.ExitCode, $r.EnvironmentReports.Count, $(if ($r.PowerShellMessagesFile) { $r.PowerShellMessagesFile } else { 'no messages file' }), $refusal.Detail, $policyAfter, $shown)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\PowerShellMessages_*.txt', 'en-US\NetworkHealthCheck_PowerShellMessages_*.txt') }
+               @{ Passed = ($bad.Count -eq 0); Detail = (($bad -join '; ') + $(if ($bad.Count) { ' | ' } else { '' }) + ('launcher exit {0}; environment report(s): {1}; refusal read from {2} ({3}): {4}; MachinePolicy after the run: {5}; what the user sees: {6}' -f $r.ExitCode, $r.EnvironmentReports.Count, $(if ($r.PowerShellMessagesFile) { $r.PowerShellMessagesFile } else { 'no messages file' }), $r.PowerShellMessagesNote, $refusal.Detail, $policyAfter, $shown)); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\PowerShellMessages_*.txt', 'en-US\NetworkHealthCheck_PowerShellMessages_*.txt') }
            }
            # The revert restores what Prepare recorded, not a blank: a machine that had a policy before M8 gets it back, and the
            # verification compares with that, not with Undefined (Codex round 1 on PR #14). A scriptblock, evaluated at revert time.

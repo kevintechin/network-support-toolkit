@@ -719,6 +719,34 @@ Assert-True '37. and it reads no variable of the driver either, which would be $
 $control37 = @()
 if ($defs37.ContainsKey('Get-MachinePolicyExecutionPolicy')) { $control37 = @(Get-FreeVariables $defs37['Get-MachinePolicyExecutionPolicy'][0]) }
 Assert-True '37. the reading is not vacuous: on Get-MachinePolicyExecutionPolicy, which reads the driver''s $PsExe, it names it' ($control37 -contains 'PsExe') ('free variables found there: ' + ($control37 -join ', '))
+# Round 8 of PR #65: which capture of PowerShell's messages belongs to this run is a decision of its own, so it is a
+# function of its own and is loaded the same way. A run that leaves such a file needs a policy that blocks the script,
+# which no self-test can impose, so it is given crafted candidates instead.
+$loaded37 += 'Select-CapturedMessages'
+Assert-True '37. the driver defines Select-CapturedMessages once as well' ($defs37.ContainsKey('Select-CapturedMessages') -and $defs37['Select-CapturedMessages'].Count -eq 1) ('definitions: ' + $(if ($defs37.ContainsKey('Select-CapturedMessages')) { $defs37['Select-CapturedMessages'].Count } else { 0 }))
+$needsSel37 = @(); $freeSel37 = @()
+if ($defs37.ContainsKey('Select-CapturedMessages') -and $defs37['Select-CapturedMessages'].Count -eq 1) {
+    $needsSel37 = @($defs37['Select-CapturedMessages'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs37.ContainsKey($_) -and $loaded37 -notcontains $_ } | Sort-Object -Unique)
+    $freeSel37 = @(Get-FreeVariables $defs37['Select-CapturedMessages'][0])
+    Invoke-Expression $defs37['Select-CapturedMessages'][0].Extent.Text
+}
+Assert-True '37. and it too calls and reads nothing of the driver that this case has not loaded' (($needsSel37.Count -eq 0) -and ($freeSel37.Count -eq 0)) ('also needed: ' + ($needsSel37 -join ', ') + '; free variables: ' + ($freeSel37 -join ', '))
+function New-Capture37([string]$Dir, [string]$Name, [datetime]$When) { [pscustomobject]@{ FullName = (Join-Path $Dir $Name); DirectoryName = $Dir; Name = $Name; LastWriteTime = $When } }
+$copy37 = 'C:\state\M8\en-US'
+$ours37 = New-Capture37 $copy37 'PowerShellMessages_20260914_010203.txt' (Get-Date)
+$foreign37 = New-Capture37 $env:TEMP 'NetworkHealthCheck_PowerShellMessages_20260914_010204.txt' ((Get-Date).AddSeconds(5))
+$namedIn37 = 'ERROR: Windows PowerShell could not run the program file.' + "`n" + 'What PowerShell said, kept in "' + $ours37.FullName + '":'
+$sel37a = Select-CapturedMessages @($ours37, $foreign37) $namedIn37 $copy37
+Assert-True '37. a capture another launcher left under this account, newer than this run''s own, does not answer for this run' ((([string]$sel37a.File.FullName) -eq $ours37.FullName) -and ($sel37a.Reason -like '*named by this run*')) ('picked: ' + [string]$sel37a.File.FullName + '; ' + $sel37a.Reason)
+$sel37b = Select-CapturedMessages @($foreign37) 'this launcher named no file at all' $copy37
+Assert-True '37. and where the launcher named none of them, none is read and the reason says how many there were' ((-not $sel37b.File) -and ($sel37b.Reason -like '*named none of them*')) ('picked: ' + [string]$sel37b.File + '; ' + $sel37b.Reason)
+$sel37c = Select-CapturedMessages @($ours37) 'this launcher named no file at all' $copy37
+Assert-True '37. a capture in this run''s own folder is this run''s, named or not - the folder is made for it' ((([string]$sel37c.File.FullName) -eq $ours37.FullName) -and ($sel37c.Reason -like '*own folder*')) ('picked: ' + [string]$sel37c.File.FullName + '; ' + $sel37c.Reason)
+$sel37d = Select-CapturedMessages @() '' $copy37
+Assert-True '37. and a run that left no capture says that, rather than reading something else' ((-not $sel37d.File) -and ($sel37d.Reason -like '*kept no messages file*')) ('picked: ' + [string]$sel37d.File + '; ' + $sel37d.Reason)
+$usesSel37 = @()
+if ($defs37.ContainsKey('Invoke-LauncherRun')) { $usesSel37 = @($defs37['Invoke-LauncherRun'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Select-CapturedMessages' }, $true)) }
+Assert-True '37. and Invoke-LauncherRun decides through it which capture is its own, instead of taking the newest one it can see' ($usesSel37.Count -eq 1) ('calls in Invoke-LauncherRun: ' + $usesSel37.Count)
 # The three shapes: a security refusal that is not about signing - PowerShell's documented wording for a Software
 # Restriction Policy, carrying the classification and no signature message - and the signature refusal in each language
 # the driver reads. The zh-TW message is built from its code points because this file is ASCII and carries no
