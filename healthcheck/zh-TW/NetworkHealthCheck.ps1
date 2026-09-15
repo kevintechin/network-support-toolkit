@@ -4288,11 +4288,13 @@ function Add-WifiRfResult {
     # 這台電腦有沒有無線網卡改由網卡清單回答，在這幾列之前取一次，
     # 而這一列讀那一次判讀，只為了自己那句「沒有介面」。
     if ([string]$sample.Error -eq "netsh" -and $views.Count -eq 0) {
-        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message "找不到 netsh.exe，無法取得 Wi-Fi 無線資料。" -Details $apiLine -Tag "wifi" -Scope "IT" | Out-Null
+        $verdictRf = Get-WirelessAbsenceVerdict -Status "INFO" -Message "找不到 netsh.exe，無法取得 Wi-Fi 無線資料。" -AbsentMessage "這台電腦沒有無線網卡，所以沒有無線電可以描述；netsh.exe 也找不到，所以它的欄位一樣沒有。"
+        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status $verdictRf.Status -Message $verdictRf.Message -Details ((@($apiLine, (Get-WirelessHardwareLine)) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join [Environment]::NewLine) -Tag "wifi" -Scope "IT" | Out-Null
         return
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$sample.Error) -and $views.Count -eq 0) {
-        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "ERROR" -Message "無法讀取 Wi-Fi 無線資料。" -Details ((@([string]$sample.ErrorText, $apiLine) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join [Environment]::NewLine) -Diagnostics ([string]$sample.Diagnostics) -Tag "wifi" -Scope "IT" | Out-Null
+        $verdictRf = Get-WirelessAbsenceVerdict -Status "ERROR" -Message "無法讀取 Wi-Fi 無線資料。" -AbsentMessage "這台電腦沒有無線網卡，所以沒有無線電可以描述——例如有線電腦；詳細資料寫著兩個讀取來源各自回報了什麼。"
+        Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status $verdictRf.Status -Message $verdictRf.Message -Details ((@([string]$sample.ErrorText, $apiLine, (Get-WirelessHardwareLine)) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join [Environment]::NewLine) -Diagnostics ([string]$sample.Diagnostics) -Tag "wifi" -Scope "IT" | Out-Null
         return
     }
 
@@ -4310,7 +4312,7 @@ function Add-WifiRfResult {
             $radio = Get-WifiRadioSwitchText -View $view
             $lines += ("{0}：{1}{2}" -f (ConvertTo-DisplayString $name), $stateText, $(if ($radio) { "，" + $radio } else { "" }))
         }
-        if ($views.Count -eq 0) { $message = $(if ($script:WirelessHardware.Read -and -not $script:WirelessHardware.Present) { "這台電腦沒有無線網卡，所以沒有無線電可以描述——例如有線電腦；詳細資料寫著兩個讀取來源各自回報了什麼。" } else { "netsh 與 WLAN 服務都沒有列出任何無線介面；詳細資料寫著兩個讀取來源各自回報了什麼。" }) }
+        if ($views.Count -eq 0) { $message = (Get-WirelessAbsenceVerdict -Status "INFO" -Message "netsh 與 WLAN 服務都沒有列出任何無線介面；詳細資料寫著兩個讀取來源各自回報了什麼。" -AbsentMessage "這台電腦沒有無線網卡，所以沒有無線電可以描述——例如有線電腦；詳細資料寫著兩個讀取來源各自回報了什麼。").Message }
         else { $message = "沒有已連線的無線介面：列出 {0} 個，都未連線——{1}。" -f $views.Count, ($lines -join "；") }
         $details = @()
         $details += $lines
@@ -4474,6 +4476,29 @@ function Get-WirelessHardwareReading {
               Detail = ("這台電腦沒有無線網卡：{0} 張介面卡裡沒有任何一張是無線媒體——沒有 Native 802.11 媒體類型、沒有 NDIS 媒體 9、也沒有介面類型 71" -f $items.Count) }
 }
 
+function Get-WirelessAbsenceVerdict {
+    param(
+        [string]$Status,
+        [string]$Message,
+        [string]$AbsentMessage,
+        [bool]$AbsenceAllowed = $true
+    )
+
+    # 三個 Wi-Fi 列把共用的硬體判讀變成結論的唯一一個地方，讓之後才寫的路徑不可能答得跟其他人不一樣。
+    # 這個修法的第一版把無線電列那兩個提早返回留在外面，一台沒有無線電的機器上只要讀取器拋了例外，
+    # 那一列就是「無法檢查」而旁邊兩列是「資訊」——正是這個項目要消掉的那種不一致（PR #69 第 8 輪）。
+    # 規則只寫一次就不會跟自己跨開，這是 backlog #70 的教訓用在 backlog #69 自己的修法裡。
+    #
+    # 只有在這一列自己沒有東西反驳時，「沒有網卡」才會贏（$AbsenceAllowed）：例如重試列在兩次讀數中的某一次
+    # 看到了介面。而一個不是失敗的列維持它自己的句子，因為沒有任何事失敗時，也沒有什麼要解釋。
+    $reading = $script:WirelessHardware
+    if ($AbsenceAllowed -and $reading.Read -and -not $reading.Present) { return @{ Status = "INFO"; Message = $AbsentMessage } }
+    if ($Status -ne "ERROR") { return @{ Status = $Status; Message = $Message } }
+    if ($reading.Read -and $reading.Present) { return @{ Status = $Status; Message = ($Message + "網卡是在的——這是一次沒有回答的讀取，不是沒有無線電。") } }
+    if (-not $reading.Read) { return @{ Status = $Status; Message = ($Message + "而且連這台電腦有沒有無線網卡也讀不到。") } }
+    return @{ Status = $Status; Message = $Message }
+}
+
 function Get-WirelessHardwareLine {
     # 三個 Wi-Fi 列共用的那一行詳細資料，讓介面卡清單說的話跟各個讀取器回報的放在一起，
     # 而不是只寫在列的句子裡。還沒取過判讀時回傳 $null。
@@ -4590,16 +4615,11 @@ function Compare-WifiAssociation {
             if ([string]::IsNullOrWhiteSpace($netshText)) { $netshText = Get-WifiNetshReasonText -Sample $entry.Sample }
             $lines += ("{0}：無法讀取——{1}{2}" -f $entry.Prefix, $netshText, $(if ($apiSummary) { "；" + $apiSummary } else { "" }))
         }
-        # 這一列同樣三種答案（backlog #69）：每一個樣本都失敗，從這裡看起來就是一台沒有
-        # 無線電的機器，而分辨它與「讀取被拒」的是網卡清單。
-        $status = "ERROR"
-        $hwa = $script:WirelessHardware
-        if ($hwa.Read -and -not $hwa.Present) {
-            $status = "INFO"
-            $message = "這台電腦沒有無線網卡，所以沒有存取點可以回報；詳細資料寫著兩個讀取來源各自回報了什麼。"
-        }
-        elseif ($hwa.Read -and $hwa.Present) { $message = $message + "網卡是在的——這是一次沒有回答的讀取，不是沒有無線電。" }
-        elseif (-not $hwa.Read) { $message = $message + "而且連這台電腦有沒有無線網卡也讀不到。" }
+        # 這一列也由同一次判讀、經同一個地方決定（backlog #69）：每一個樣本都失敗，
+        # 從這裡看起來就是一台沒有無線電的機器，而分辨它與「讀取被拒」的是介面卡清單。
+        $verdictAssoc = Get-WirelessAbsenceVerdict -Status "ERROR" -Message $message -AbsentMessage "這台電腦沒有無線網卡，所以沒有存取點可以回報；詳細資料寫著兩個讀取來源各自回報了什麼。"
+        $status = $verdictAssoc.Status
+        $message = $verdictAssoc.Message
         $hardwareLine = Get-WirelessHardwareLine
         if ($hardwareLine) { $lines += $hardwareLine }
         Add-CheckResult -Category $category -Check $check -Status $status -Message $message -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Diagnostics ([string]$first.Diagnostics) -Tag "wifi-association" -Scope "IT" | Out-Null
@@ -6290,25 +6310,21 @@ function Compare-WifiRetryCounters {
         $reason = [string]$snapshot.Error
         $status = "ERROR"
         $message = ""
-        # 三種答案而不是兩種（backlog #69）。網卡清單說沒有無線網卡時，這一列說機器是什麼；
-        # 說有時，失敗的就是一次讀取，而這一列把它說出來——因為讀到「無法檢查」的人會去找一件事做；
-        # 而清單答不出來時，也把這件事說出來，而不是替它選前兩種中的一種。
-        # $eitherSawAnInterface 仍然守著清單看不到的那一種：清單只在開頭取一次，
-        # 所以執行中途才插上的網卡，是讀數看到了而清單沒有（PR #69 第 1 與第 6 輪）。
-        $hw = $script:WirelessHardware
-        if ($hw.Read -and -not $hw.Present -and -not $eitherSawAnInterface) {
-            $status = "INFO"
-            $message = "這台電腦沒有無線網卡，所以沒有無線重傳數字；連線的統計看 TCP 重傳那幾列。"
-        }
-        else { switch ($reason) {
+        # 機器是什麼同樣決定這一列，而且是在三個 Wi-Fi 列共用的那一個地方決定
+        # （Get-WirelessAbsenceVerdict，backlog #69）。$eitherSawAnInterface 是這一列自己的反驳：
+        # 介面卡清單只在開頭取一次，所以執行中途才插上的網卡是讀數看到了而清單沒有，
+        # 那裡不能讓「沒有網卡」贏（PR #69 第 1、6、8 輪）。
+        switch ($reason) {
             "none"      { if ($bothNone) { $status = "INFO"; $message = "這台電腦沒有無線介面，所以沒有無線重傳數字；連線的統計看 TCP 重傳那幾列。" } else { $message = "兩次讀取只有一次列出了無線介面（{0}沒有），所以無法計算差值：網卡在檢測期間被啟用或停用，或另一次讀取失敗了。" -f $pair.Side } }
             "addtype"   { $message = "無法讀取 Wi-Fi 重傳計數器：讀取器（執行時編譯的一個小型 P/Invoke 型別）無法編譯或載入，應用程式控制政策可能會拒絕它。" }
             "open"      { $message = "無法讀取 Wi-Fi 重傳計數器：WLAN 服務沒有回應（{0}）。" -f $snapshot.ErrorText }
             "enumerate" { $message = "無法讀取 Wi-Fi 重傳計數器：無法列出無線介面（{0}）。" -f $snapshot.ErrorText }
             default     { $message = "無法讀取 Wi-Fi 重傳計數器（{0}）。" -f $pair.Side }
-        } }
-        # And which of the other two answers it is, said where the row stays a failure.
-        if ($status -eq "ERROR") { $message = $message + $(if ($hw.Read -and $hw.Present) { "網卡是在的——這是一次沒有回答的讀取，不是沒有無線電。" } elseif (-not $hw.Read) { "而且連這台電腦有沒有無線網卡也讀不到。" } else { "" }) }
+        }
+        # And the shared reading decides, in the one place all three rows decide it.
+        $verdictRetry = Get-WirelessAbsenceVerdict -Status $status -Message $message -AbsentMessage "這台電腦沒有無線網卡，所以沒有無線重傳數字；連線的統計看 TCP 重傳那幾列。" -AbsenceAllowed (-not $eitherSawAnInterface)
+        $status = $verdictRetry.Status
+        $message = $verdictRetry.Message
         # 第一行以原因代碼結尾——語言中立的記號，像標籤一樣——chain 的 oracle 靠它把這列彙總列和帶同樣標籤、同樣狀態的
         # 逐介面錯誤列分開（PR #52 第 2 輪）。
         $details = @(
