@@ -964,7 +964,7 @@ Set-Content -LiteralPath $plain41 -Encoding Ascii -Value @('@echo off', 'echo th
 $r41b = Invoke-Helper41 $plain41
 Assert-True '41. a commands file without the campaign''s marker is refused before anything is asked about elevation' (($r41b.ExitCode -eq 3) -and ($r41b.Text -like '*marker*') -and ($r41b.Text -like '*result=FAILED*')) ('exit ' + $r41b.ExitCode + '; ' + $r41b.Text)
 $ours41 = Join-Path $dir41 'ours.cmd'
-Set-Content -LiteralPath $ours41 -Encoding Ascii -Value @('@echo off', 'rem NHC-POLICY-STEP SELFTEST harmless', 'set NHCFAIL=0', 'ver', 'echo step=1 rc=%ERRORLEVEL%', 'if errorlevel 1 set NHCFAIL=1', 'exit /b %NHCFAIL%')
+Set-Content -LiteralPath $ours41 -Encoding Ascii -Value @('@echo off', 'rem NHC-POLICY-STEP SELFTEST harmless', 'set NHCFAIL=0', 'ver', 'echo step=1 rc=%ERRORLEVEL%', 'if not "%ERRORLEVEL%"=="0" set NHCFAIL=1', 'exit /b %NHCFAIL%')
 $r41c = Invoke-Helper41 $ours41
 $said41 = @($r41c.Lines | Where-Object { $_ -like 'elevated=*' })
 $ranIt41 = ($r41c.Text -like '*step=1 rc=0*')
@@ -1852,7 +1852,7 @@ New-Item -ItemType Directory -Force -Path $dir56 | Out-Null
 $file56 = New-PolicyStepFile 'SELFTEST' 'mayfail' @('ver', 'may fail: cmd /c exit 5', 'ver') $dir56
 $body56 = @(Get-Content -LiteralPath $file56 | ForEach-Object { [string]$_ })
 Assert-True '56. the marker is stripped from the command the file runs - what cmd sees is the command, not the campaign''s note about it' ((@($body56 | Where-Object { $_ -like '*may fail:*' }).Count -eq 0) -and (@($body56 | Where-Object { $_ -eq 'cmd /c exit 5' }).Count -eq 1)) ($body56 -join ' / ')
-Assert-True '56. and a marked line gets no counting line, where an unmarked one does - two of the three' ((@($body56 | Where-Object { $_ -eq 'if errorlevel 1 set NHCFAIL=1' }).Count -eq 2) -and (@($body56 | Where-Object { $_ -like 'echo step=2 rc=*(not counted)*' }).Count -eq 1)) ($body56 -join ' / ')
+Assert-True '56. and a marked line gets no counting line, where an unmarked one does - two of the three' ((@($body56 | Where-Object { $_ -eq 'if not "%ERRORLEVEL%"=="0" set NHCFAIL=1' }).Count -eq 2) -and (@($body56 | Where-Object { $_ -like 'echo step=2 rc=*(not counted)*' }).Count -eq 1)) ($body56 -join ' / ')
 $ErrorActionPreference = 'Continue'
 $out56 = @(& $env:ComSpec '/c' $file56 2>&1 | ForEach-Object { [string]$_ })
 $code56 = $LASTEXITCODE
@@ -1871,6 +1871,26 @@ $code56c = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 Assert-True '56. a marked line does not cover for an unmarked one beside it - the step still fails on the line that must succeed' ($code56c -ne 0) ('exit ' + $code56c)
 
+$file56d = New-PolicyStepFile 'SELFTEST' 'negative' @('cmd /c exit -1', 'ver') $dir56
+$body56d = @(Get-Content -LiteralPath $file56d | ForEach-Object { [string]$_ })
+$ErrorActionPreference = 'Continue'
+$out56d = @(& $env:ComSpec '/c' $file56d 2>&1 | ForEach-Object { [string]$_ })
+$code56d = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+# IF ERRORLEVEL n is true where the code is n or more, so every negative one passed over it. gpupdate returns -1 when
+# it gives up on the computer policy - which is M9's last line - and the step that had not done its work reported
+# result=OK (the campaign of 2026-09-15). The comparison is text now, and this case is what says so: the step file is
+# what runs here, and it runs a command that exits -1.
+Assert-True '56. a command that exits -1 is counted - IF ERRORLEVEL means that number or more, and gpupdate returns -1 where it gives up' (($code56d -ne 0) -and (@($out56d | Where-Object { $_ -like 'step=1 rc=-1*' }).Count -eq 1) -and (@($body56d | Where-Object { $_ -like 'if errorlevel*' }).Count -eq 0)) ('exit ' + $code56d + '; ' + ($out56d -join ' | '))
+$file56e = New-PolicyStepFile 'SELFTEST' 'negativeold' @('cmd /c exit -1') $dir56
+$body56e = @(Get-Content -LiteralPath $file56e | ForEach-Object { [string]$_ } | ForEach-Object { if ($_ -like 'if not "%ERRORLEVEL%"*') { 'if errorlevel 1 set NHCFAIL=1' } else { $_ } })
+$old56 = Join-Path $dir56 'the-idiom-that-missed-it.cmd'
+[IO.File]::WriteAllLines($old56, [string[]]$body56e, [Text.Encoding]::ASCII)
+$ErrorActionPreference = 'Continue'
+$null = & $env:ComSpec '/c' $old56 2>&1
+$code56e = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+Assert-True '56. and the reading is not vacuous: the same file with the idiom this replaced lets that -1 through, which is the defect' ($code56e -eq 0) ('exit ' + $code56e + ' with if errorlevel 1, against ' + $code56d + ' with the comparison')
 # -------------------- 57. the marker M9's way back writes is the marker the file honours --------------------
 # Two literals, one in the builder and one in each line that carries it: this case is what says they are the same
 # string. The lines the scenario generates are built into a file and the file is read back.
@@ -1883,7 +1903,7 @@ $dir57 = Join-Path $WorkDir 'case57'
 New-Item -ItemType Directory -Force -Path $dir57 | Out-Null
 $file57 = New-PolicyStepFile 'M9' 'revert' $manual57 $dir57
 $body57 = @(Get-Content -LiteralPath $file57 | ForEach-Object { [string]$_ })
-$counted57 = @($body57 | Where-Object { $_ -eq 'if errorlevel 1 set NHCFAIL=1' }).Count
+$counted57 = @($body57 | Where-Object { $_ -eq 'if not "%ERRORLEVEL%"=="0" set NHCFAIL=1' }).Count
 Assert-True '57. the file runs every one of them, with the marker gone and two of them out of the count' ((@($body57 | Where-Object { $_ -like '*may fail:*' }).Count -eq 0) -and (@($body57 | Where-Object { $_ -eq 'sc config AppIDSvc start= demand' }).Count -eq 1) -and (@($body57 | Where-Object { $_ -eq 'net stop AppIDSvc' }).Count -eq 1) -and ($counted57 -eq (@($manual57).Count - 2))) ('counted ' + $counted57 + ' of ' + @($manual57).Count + '; ' + ($body57 -join ' / '))
 Assert-True '57. and the reading is not vacuous: RECOVER.txt still gives a person the plain commands, with no marker of the campaign''s in them' ((@(Get-M9RecoveryLines @{ AppIDSvcStartType = 'Manual'; AppIDSvcStatus = 'Stopped' }) | Where-Object { $_ -like '*may fail*' }).Count -eq 0) ((Get-M9RecoveryLines @{ AppIDSvcStartType = 'Manual'; AppIDSvcStatus = 'Stopped' }) -join ' / ')
 

@@ -1136,7 +1136,13 @@ function New-PolicyStepFile([string]$Id, [string]$What, [string[]]$Lines, [strin
         $n++
         $body += $text
         $body += ('echo step=' + $n + ' rc=%ERRORLEVEL%' + $(if ($mayFail) { ' (not counted)' } else { '' }))
-        if (-not $mayFail) { $body += 'if errorlevel 1 set NHCFAIL=1' }
+        # Compared as text and not with IF ERRORLEVEL, which means 'that number or more' and so passes over every
+        # negative exit code. Measured in a .cmd on 2026-09-15, line by line as this file is run: after a command that
+        # exits -1, `if errorlevel 1` does not fire and `if not "%ERRORLEVEL%"=="0"` does. The first program to return
+        # one here was gpupdate - M9's last line, which gave up after its ten-minute timeout with the computer policy
+        # unrefreshed, returned -1, was not counted, and let a step that had not done its work report result=OK
+        # (the campaign of 2026-09-15; the precondition is what caught it).
+        if (-not $mayFail) { $body += 'if not "%ERRORLEVEL%"=="0" set NHCFAIL=1' }
     }
     $body += 'exit /b %NHCFAIL%'
     $oem = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
