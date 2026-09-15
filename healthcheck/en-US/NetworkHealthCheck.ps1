@@ -4430,15 +4430,11 @@ function Add-WifiRfResult {
     elseif (-not [string]::IsNullOrWhiteSpace([string]$api.Error)) { $apiLine = (("WLAN service: not read - {0} {1}" -f $api.Error, $api.ErrorText).Trim() + ("; wlanapi={0}" -f $api.Error)) }
     else { $apiLine = ("WLAN service: {0} wireless interface(s) listed; wlanapi=ok" -f @($api.Interfaces).Count) }
     $netshReason = Get-WifiNetshReasonText -Sample $sample
-    # One reading of the machine for three rows (backlog #69). The retries row and the association row each decided
-    # from their own reader's failure, and on a computer with no radio those readers fail in ways that look like a
-    # refusal: the WLAN service is not running at all, so the retry reader stops at "the service did not answer
-    # (error 1062)" and never reaches its own no-interface branch. This row is written before either of them, and it
-    # is the one that reads BOTH readers, so what it found is what they use. The fact is true only where both
-    # answered and neither named an interface - an interface that exists and could not be read is not no interface,
-    # which is what closed item #62 measured, so a reader that failed leaves this false and the other two rows say
-    # what they have always said.
-    $script:WifiNoInterfaceAnywhere = (($views.Count -eq 0) -and (Test-WifiNetshAnswered $sample) -and ($null -ne $api) -and ([string]::IsNullOrWhiteSpace([string]$api.Error)))
+    # This row no longer decides for the other two (backlog #69, PR #69 round 6). It used to read both Wi-Fi
+    # readers and record whether either had listed an interface, which answers nothing on the machine the item
+    # came from: there neither reader answered at all - the WLAN service was not running (error 1062) and netsh
+    # exited 1. Whether this computer has a wireless adapter is read from the adapter inventory instead, once,
+    # before any of these rows, and this row reads that reading for its own no-interface sentence.
     if ([string]$sample.Error -eq "netsh" -and $views.Count -eq 0) {
         Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message "netsh.exe was not found; Wi-Fi radio data is unavailable." -Details $apiLine -Tag "wifi" -Scope "IT" | Out-Null
         return
@@ -4463,7 +4459,7 @@ function Add-WifiRfResult {
             $radio = Get-WifiRadioSwitchText -View $view
             $lines += ("{0}: {1}{2}" -f (ConvertTo-DisplayString $name), $stateText, $(if ($radio) { ", " + $radio } else { "" }))
         }
-        if ($views.Count -eq 0) { $message = "No wireless interface is listed by netsh or by the WLAN service - a wired computer, for example; the details say what each reader returned." }
+        if ($views.Count -eq 0) { $message = $(if ($script:WirelessHardware.Read -and -not $script:WirelessHardware.Present) { "This computer has no wireless adapter, so there is no radio to describe - a wired computer; the details say what each reader returned." } else { "No wireless interface is listed by netsh or by the WLAN service; the details say what each reader returned." }) }
         else { $message = "No wireless interface is connected: {0} listed, none connected - {1}." -f $views.Count, ($lines -join "; ") }
         $details = @()
         $details += $lines
@@ -4553,6 +4549,36 @@ function Add-WifiRfResult {
         ) | Where-Object { $null -ne $_ }) -join [Environment]::NewLine
         Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message $message -Details $details -Tag "wifi" -Scope "IT" | Out-Null
     }
+}
+
+function Get-WirelessHardwareReading {
+    param([object[]]$Adapters)
+
+    # Whether this computer has a wireless adapter at all, which is the question the two Wi-Fi readers cannot answer
+    # when neither of them answers. It is a different privilege domain: the adapter inventory is the NDIS interface
+    # list, and it needs no WLAN service running, no location permission and no elevation, while `netsh wlan show
+    # interfaces` needs the location on Windows 11 24H2 and the WLAN service reads need the service started. On the
+    # machine that raised backlog #69 the service was stopped (error 1062) and netsh exited 1, so both readers were
+    # silent - and the rows had nothing left to tell "there is no radio here" from "the radio could not be read".
+    #
+    # Three answers and not two, because "I could not tell" is not either of them. Only the NetTCPIP path carries a
+    # media type that names a wireless adapter: the CIM/WMI fallback fills MediaType from Win32_NetworkAdapter's
+    # AdapterType, which reports "Ethernet 802.3" for a Wi-Fi card as readily as for a wired one (measured
+    # 2026-09-16 on an Intel Wi-Fi 6E AX211: PhysicalMediaType "Native 802.11", AdapterType "Ethernet 802.3",
+    # AdapterTypeID 0). Where the inventory cannot answer, Read is false and the rows say so rather than choosing.
+    $usable = @(@($Adapters) | Where-Object { $null -ne $_ -and ([string](Get-PropertyValue $_ "Source" "")) -eq "NetTCPIP" })
+    if (-not $usable.Count) {
+        return @{ Read = $false; Present = $false
+                  Detail = "the adapter inventory cannot say: it was read through CIM, whose adapter type does not tell a wireless adapter from a wired one" }
+    }
+    $wireless = @($usable | Where-Object { ([string](Get-PropertyValue $_ "MediaType" "")) -like "*Native 802.11*" })
+    if ($wireless.Count) {
+        $named = @($wireless | ForEach-Object { ConvertTo-DisplayString ([string](Get-PropertyValue $_ "Name" "")) } | Where-Object { $_ })
+        return @{ Read = $true; Present = $true
+                  Detail = ("this computer has {0} wireless adapter(s): {1}" -f $wireless.Count, (($named -join ", "))) }
+    }
+    return @{ Read = $true; Present = $false
+              Detail = ("this computer has no wireless adapter: none of its {0} adapter(s) is of media type Native 802.11" -f $usable.Count) }
 }
 
 function Test-WifiNetshAnswered {
@@ -4666,15 +4692,16 @@ function Compare-WifiAssociation {
             if ([string]::IsNullOrWhiteSpace($netshText)) { $netshText = Get-WifiNetshReasonText -Sample $entry.Sample }
             $lines += ("{0}: could not be read - {1}{2}" -f $entry.Prefix, $netshText, $(if ($apiSummary) { "; " + $apiSummary } else { "" }))
         }
-        # And the same reading decides this row (backlog #69): every sample failing is what a computer with no radio
-        # looks like from here, not a reader that was refused. Where the radio row found both readers answering and
-        # neither naming an interface, the row says what the machine is, in that row's words, and the reader lines
-        # stay in the details for IT.
+        # The same three answers here (backlog #69); every sample failing is what a computer with no
+        # radio looks like from this row, and what tells that from a refused reader is the inventory.
         $status = "ERROR"
-        if ($script:WifiNoInterfaceAnywhere) {
+        $hwa = $script:WirelessHardware
+        if ($hwa.Read -and -not $hwa.Present) {
             $status = "INFO"
-            $message = "No wireless interface is listed by netsh or by the WLAN service - a wired computer, for example - so there is no association to report; the details say what each reader returned."
+            $message = "This computer has no wireless adapter, so there is no access point to report; the details say what each reader returned."
         }
+        elseif ($hwa.Read -and $hwa.Present) { $message = $message + " The adapter is there - this is a reading that did not answer, not an absent radio." }
+        elseif (-not $hwa.Read) { $message = $message + " Whether this computer has a wireless adapter could not be read either." }
         Add-CheckResult -Category $category -Check $check -Status $status -Message $message -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Diagnostics ([string]$first.Diagnostics) -Tag "wifi-association" -Scope "IT" | Out-Null
         return
     }
@@ -6456,13 +6483,17 @@ function Compare-WifiRetryCounters {
         $reason = [string]$snapshot.Error
         $status = "ERROR"
         $message = ""
-        # What the machine is, before what this reader managed: where the radio row read both readers and neither
-        # listed an interface, there is nothing here to read and no reader failed (backlog #69). The branches below
-        # still answer for a machine that has a radio, and the "none" branch still answers where this reader itself
-        # enumerated none while the radio row could not speak - a disabled Wi-Fi radio check, for one.
-        if ($script:WifiNoInterfaceAnywhere -and -not $eitherSawAnInterface) {
+        # Three answers, not two (backlog #69). Where the adapter inventory says there is no wireless
+        # adapter, the row says what the machine is; where it says there is one, the reading that failed
+        # is a reading and the row says so, because a person who meets *could not be read* looks for
+        # something to do about it; and where the inventory could not answer, the row says that too
+        # rather than choosing one of the other two. $eitherSawAnInterface still guards the case the
+        # inventory cannot see: it is taken once at the start, so an adapter plugged in mid-run is a
+        # reading that saw one while the inventory did not (PR #69 rounds 1 and 6).
+        $hw = $script:WirelessHardware
+        if ($hw.Read -and -not $hw.Present -and -not $eitherSawAnInterface) {
             $status = "INFO"
-            $message = "No wireless interface is listed by netsh or by the WLAN service - a wired computer, for example - so there is no wireless retry figure; the TCP retransmission rows are the link's statistics."
+            $message = "This computer has no wireless adapter, so there is no wireless retry figure; the TCP retransmission rows are the link's statistics."
         }
         else { switch ($reason) {
             "none"      { if ($bothNone) { $status = "INFO"; $message = "No wireless interface on this computer, so there is no wireless retry figure; the TCP retransmission rows are the link's statistics." } else { $message = "The wireless interface was listed at only one of the two readings ({0} it was not), so no delta could be calculated: the adapter was enabled or disabled during the test, or the other reading failed." -f $pair.Side } }
@@ -6471,6 +6502,8 @@ function Compare-WifiRetryCounters {
             "enumerate" { $message = "The Wi-Fi retry counters could not be read: the wireless interfaces could not be listed ({0})." -f $snapshot.ErrorText }
             default     { $message = "The Wi-Fi retry counters could not be read {0}." -f $pair.Side }
         } }
+        # And which of the other two answers it is, said where the row stays a failure.
+        if ($status -eq "ERROR") { $message = $message + $(if ($hw.Read -and $hw.Present) { " The adapter is there - this is a reading that did not answer, not an absent radio." } elseif (-not $hw.Read) { " Whether this computer has a wireless adapter could not be read either." } else { "" }) }
         # The first line ends with the reason code - a language-neutral token, like a tag - which is how the chain's oracle
         # tells this aggregate row from a per-interface error row that carries the same tag and status (PR #52, round 2).
         $details = @(
@@ -7308,10 +7341,9 @@ function Run-AllChecks {
     $script:PendingPingSamples = New-Object System.Collections.ArrayList
     # And the access-point samples (backlog #61's other half): a run compares the samples it took itself.
     $script:WifiAssociationSamples = New-Object System.Collections.ArrayList
-    # False until the radio row has read the machine: a run where the Wi-Fi radio check is off, or one that
-    # has not reached that row yet, knows nothing about the adapter and the two rows below keep their own
-    # readings (backlog #69).
-    $script:WifiNoInterfaceAnywhere = $false
+    # Nothing read yet: until the adapter inventory has been taken, the Wi-Fi rows know nothing about
+    # the hardware and say what their own readers say (backlog #69).
+    $script:WirelessHardware = @{ Read = $false; Present = $false; Detail = '' }
     $script:GatewayNeighborRows = New-Object System.Collections.ArrayList
     # And the reads inside the TCP window (backlog #65): one run's state, never a later run's.
     $script:TcpIntervalSampling = $null
@@ -7440,6 +7472,10 @@ function Run-AllChecks {
         $networkSnapshot = @($networkSnapshot)
     }
     $script:PrimaryAdapters = @(Get-PrimaryAdapters -Adapters $networkSnapshot)
+    # The one reading the three Wi-Fi rows share, taken from the adapter inventory rather than from the two
+    # Wi-Fi readers, because on a computer with no radio those two fail in ways that look like a refusal
+    # (backlog #69, the machine of 2026-09-15: the WLAN service stopped at error 1062 and netsh exiting 1).
+    $script:WirelessHardware = Get-WirelessHardwareReading -Adapters $networkSnapshot
 
     Invoke-CheckStep -Category "Network Adapter and IP" -Name "Check Current Network Configuration" -Progress 28 -Action {
         Add-NetworkSnapshotResults -Adapters $networkSnapshot
