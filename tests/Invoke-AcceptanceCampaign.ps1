@@ -1271,9 +1271,15 @@ function Get-ApplyOutcome([string]$Id, $Helper, $Pre, $Was) {
     # and is believed on its own; the machine's reading alone is not (PR #68 round 1).
     # A reading that says the machine did NOT read this way before the step is what allows the attribution; no reading
     # at all is not a licence to make it, because the question it answers was never asked.
-    $changed = (($null -ne $Was) -and -not [bool]$Was.Ok)
+    # `Read` is the reading saying it was taken. A precondition that could not read the machine answers Ok = $false
+    # like one that read it and found the state absent, and taking that for a negative is the same mistake in the same
+    # place: an unreadable before-reading would have made every after-reading a change (PR #68 round 2). Only an
+    # explicit, readable negative is evidence, and a precondition that says nothing about it says no.
+    $changed = (($null -ne $Was) -and ($true -eq $Was.Read) -and -not [bool]$Was.Ok)
     if ($Pre.Ok -and -not $helperOk -and -not $changed) {
-        $why = $(if ($null -eq $Was) { 'and nothing read the machine before it was asked, so this reading cannot be a change' } else { 'and the machine already read this way before it was asked: ' + [string]$Was.Detail })
+        $why = $(if ($null -eq $Was) { 'and nothing read the machine before it was asked, so this reading cannot be a change' }
+                 elseif ($true -ne $Was.Read) { 'and the machine could not be read before it was asked (' + [string]$Was.Detail + '), so this reading cannot be a change' }
+                 else { 'and the machine already read this way before it was asked: ' + [string]$Was.Detail })
         return @{ Applied = $false; ApplyBy = ''; Event = ''
                   Message = @(('The elevated helper did not make the change (' + [string]$Helper.Detail + '), ' + $why + ' - so nothing here says the change was made, and no revert of this run''s runs against it - do it by hand:'),
                               ('提權 helper 沒有完成變更（' + [string]$Helper.Detail + '），' + $(if ($null -eq $Was) { '而且沒有任何東西在動手之前讀過這台機器，所以這個讀數不可能是一個變化' } else { '而且機器在被要求之前就已經是這個樣子：' + [string]$Was.Detail }) + '——所以這裡沒有任何東西能說明變更發生過，這次執行的還原也不會對它動手——請手動處理：')) }
@@ -1521,7 +1527,10 @@ function Get-Plan {
         @{ Id = 'M7'; Title = 'Every new PowerShell in ConstrainedLanguage (__PSLockdownPolicy = 4)'; Kind = 'reconfigure'; Session = 'admin'
            Instruction = @('In an ELEVATED command prompt run:   setx /M __PSLockdownPolicy 4   - then answer done. This puts every new PowerShell on this machine into ConstrainedLanguage until it is removed; you will be asked to remove it afterwards.',
                            '在「以系統管理員身分執行」的命令提示字元執行：setx /M __PSLockdownPolicy 4，然後輸入 done。移除之前，這台機器每個新的 PowerShell 都會是 ConstrainedLanguage；之後會提示你移除。') + $recoverLines
-           Precondition = { $raw = Get-MachineEnvRaw '__PSLockdownPolicy'; if (-not $raw.Readable) { @{ Ok = $false; Detail = 'the machine environment key cannot be read, so whether __PSLockdownPolicy is 4 cannot be said' } } elseif ([string]$raw.Value -eq '4') { @{ Ok = $true; Detail = '__PSLockdownPolicy=4 in the machine environment' } } else { @{ Ok = $false; Detail = ('__PSLockdownPolicy is ' + $(if ($raw.Existed) { '"' + [string]$raw.Value + '"' } else { 'not set' }) + ' in the machine environment') } } }
+           # Read says the machine was read, which is not what Ok says: a key that cannot be opened answers Ok = $false
+           # like a key that is there and holds something else, and only the second is a negative anything may build on
+           # (PR #68 round 2).
+           Precondition = { $raw = Get-MachineEnvRaw '__PSLockdownPolicy'; if (-not $raw.Readable) { @{ Ok = $false; Read = $false; Detail = 'the machine environment key cannot be read, so whether __PSLockdownPolicy is 4 cannot be said' } } elseif ([string]$raw.Value -eq '4') { @{ Ok = $true; Read = $true; Detail = '__PSLockdownPolicy=4 in the machine environment' } } else { @{ Ok = $false; Read = $true; Detail = ('__PSLockdownPolicy is ' + $(if ($raw.Existed) { '"' + [string]$raw.Value + '"' } else { 'not set' }) + ' in the machine environment') } } }
            Action = { param($Ctx)
                $env:__PSLockdownPolicy = '4'   # what a double-click inherits from Explorer after the broadcast; PowerShell reads the machine value itself
                try { $r = Invoke-LauncherRun $Ctx.Id 'en-US' } finally { Remove-Item -LiteralPath Env:\__PSLockdownPolicy -ErrorAction SilentlyContinue }
@@ -1627,7 +1636,9 @@ function Get-Plan {
                          MachinePolicyBefore = (Get-MachinePolicyExecutionPolicy)
                          RegExecutionPolicyBefore = $snap['ExecutionPolicy'].Data; RegExecutionPolicyKindBefore = $snap['ExecutionPolicy'].Kind
                          RegEnableScriptsBefore = $snap['EnableScripts'].Data; RegEnableScriptsKindBefore = $snap['EnableScripts'].Kind } }
-           Precondition = { $p = Get-MachinePolicyExecutionPolicy; if ($p -eq 'AllSigned') { @{ Ok = $true; Detail = 'MachinePolicy=AllSigned' } } else { @{ Ok = $false; Detail = ('MachinePolicy is ' + $p + ', not AllSigned') } } }
+           # An empty answer is the child PowerShell having said nothing, which is not the same as a policy that is not
+           # AllSigned, and the two used to read alike (PR #68 round 2).
+           Precondition = { $p = Get-MachinePolicyExecutionPolicy; if (-not $p) { @{ Ok = $false; Read = $false; Detail = 'the MachinePolicy execution policy could not be read' } } elseif ($p -eq 'AllSigned') { @{ Ok = $true; Read = $true; Detail = 'MachinePolicy=AllSigned' } } else { @{ Ok = $false; Read = $true; Detail = ('MachinePolicy is ' + $p + ', not AllSigned') } } }
            Action = { param($Ctx)
                $r = Invoke-LauncherRun $Ctx.Id 'en-US'
                $bad = @()
@@ -1808,11 +1819,20 @@ function Get-Plan {
                # through the campaign's own and copying across would have left the same gap one step further on
                # (round 4) - and the copy that lands in the campaign's folder afterwards is evidence and nothing else.
                $staged = Join-Path (Join-Path $env:SystemRoot 'Temp') 'nhc-policy'
+               # The two staged files carry a token made for this attempt, because their folder deliberately survives a
+               # run and the paths are recorded - and RECOVER.txt written - BEFORE the helper is asked for anything. An
+               # apply that never ran (a consent prompt refused) would otherwise leave this run's notes pointing a
+               # person at an earlier campaign's staged revert and its export, and that way back would delete this
+               # machine's whole local AppLocker policy and install the other run's saved one in its place. Existence
+               # is not provenance: the name is what says which attempt wrote the file (PR #68 round 2). The token is
+               # recorded with the facts, so a resume keeps the same two paths.
+               $token = [guid]::NewGuid().ToString('N').Substring(0, 12)
+               $Ctx.Facts['PolicyStageToken'] = $token
                $beforeCopy = Join-Path $Ctx.Dir 'applocker-before.xml'
-               $before = Join-Path $staged 'applocker-before.xml'
+               $before = Join-Path $staged ('applocker-before-' + $token + '.xml')
                $Ctx.Facts['AppLockerPolicyBefore'] = $before
                $Ctx.Facts['AppLockerPolicyBeforeCopy'] = $beforeCopy
-               $Ctx.Facts['StagedRevert'] = Join-Path $staged 'nhc-policy-revert.cmd'
+               $Ctx.Facts['StagedRevert'] = Join-Path $staged ('nhc-policy-revert-' + $token + '.cmd')
                $stagedXml = Join-Path $staged 'applocker-m9.xml'
                # The way back is written and staged BEFORE the policy is in force: once Script rules are enforced, a
                # .cmd under C:\Users\Public is denied - the campaign's own folder is what this policy denies - and
@@ -1838,8 +1858,8 @@ function Get-Plan {
                # to go on where it wrote nothing - a machine whose policy was replaced with no copy of it saved would
                # have nothing to be put back from (PR #67 round 2).
                $lines = @(('copy /y "' + (Join-Path $State.TestsCopy 'policy_helper.cmd') + '" "' + (Join-Path $staged 'nhc-policy_helper.cmd') + '"'),
-                          ('copy /y "' + $revertFile + '" "' + (Join-Path $staged 'nhc-policy-revert.cmd') + '"'),
-                          ('certutil -hashfile "' + (Join-Path $staged 'nhc-policy-revert.cmd') + '" SHA256 | find /i "' + [string]$Ctx.Facts['RevertDigest'] + '" >nul'),
+                          ('copy /y "' + $revertFile + '" "' + [string]$Ctx.Facts['StagedRevert'] + '"'),
+                          ('certutil -hashfile "' + [string]$Ctx.Facts['StagedRevert'] + '" SHA256 | find /i "' + [string]$Ctx.Facts['RevertDigest'] + '" >nul'),
                           ('if errorlevel 1 exit /b 1'),
                           ('del /f /q "' + $before + '" 2>nul'),
                           ('powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-AppLockerPolicy -Local -Xml | Set-Content -LiteralPath ''' + $before + ''' -Encoding UTF8"'),
@@ -1863,9 +1883,11 @@ function Get-Plan {
                # the campaign's own folder are denied. Where nothing was staged - an apply that never got that far -
                # the campaign's own copies are tried, and the check below decides either way.
                $staged = Join-Path (Join-Path $env:SystemRoot 'Temp') 'nhc-policy'
-               $stagedRevert = Join-Path $staged 'nhc-policy-revert.cmd'
+               # The path this attempt recorded, not the fixed one: a file left by an earlier campaign carries that
+               # campaign's export, and running it here would put that machine state on this one (PR #68 round 2).
+               $stagedRevert = [string]$Ctx.Facts['StagedRevert']
                $stagedHelper = Join-Path $staged 'nhc-policy_helper.cmd'
-               if ((Test-Path -LiteralPath $stagedRevert) -and (Test-Path -LiteralPath $stagedHelper)) {
+               if ($stagedRevert -and (Test-Path -LiteralPath $stagedRevert) -and (Test-Path -LiteralPath $stagedHelper)) {
                    $r = Invoke-PolicyStepFile $Ctx.Id 'revert' $stagedRevert $stagedHelper $Ctx.Dir ([string]$Ctx.Facts['RevertDigest'])
                    $Ctx.Facts['revertBy'] = $(if ($r.Ok) { 'the elevated helper, from ' + $stagedRevert } else { 'not the helper: ' + $r.Detail })
                    Add-Event ('{0}: revert {1} - {2}' -f $Ctx.Id, $(if ($r.Ok) { 'through the elevated helper, from the staged copy' } else { 'NOT made by the helper' }), $r.Detail)
@@ -1878,7 +1900,7 @@ function Get-Plan {
                    $scriptRules = @($p.RuleCollections | Where-Object { [string]$_.RuleCollectionType -eq 'Script' })[0]
                    $svc = Get-Service -Name AppIDSvc -ErrorAction Stop
                    # Enforcement with no rule at all lets every script run: the experiment would then measure nothing (PR #11 round 5).
-                   if ($null -ne $scriptRules -and [string]$scriptRules.EnforcementMode -eq 'Enabled' -and [int]$scriptRules.Count -eq 0) { @{ Ok = $false; Detail = 'Script rules enforced but empty - create the default rules first, or nothing is enforced' } }
+                   if ($null -ne $scriptRules -and [string]$scriptRules.EnforcementMode -eq 'Enabled' -and [int]$scriptRules.Count -eq 0) { @{ Ok = $false; Read = $true; Detail = 'Script rules enforced but empty - create the default rules first, or nothing is enforced' } }
                    elseif ($null -ne $scriptRules -and [string]$scriptRules.EnforcementMode -eq 'Enabled' -and [string]$svc.Status -eq 'Running') {
                        # The rules must restrict the account that runs the test: the default rules exempt BUILTIN\Administrators,
                        # and an exempt account would run the script normally and record a FAIL that measures nothing (PR #11
@@ -1886,12 +1908,12 @@ function Get-Plan {
                        $copy = Join-Path $StateDir 'M9\en-US\NetworkHealthCheck.ps1'   # the path Invoke-LauncherRun executes, made by Prepare
                        if (-not (Test-Path -LiteralPath $copy)) { $null = Copy-LanguageFolder 'en-US' (Join-Path $StateDir 'M9\en-US') }
                        $decision = @(Test-AppLockerPolicy -PolicyObject $p -Path $copy -User ($env:USERDOMAIN + '\' + $env:USERNAME) -ErrorAction Stop)[0]
-                       if ($null -ne $decision -and [string]$decision.PolicyDecision -eq 'Allowed') { @{ Ok = $false; Detail = ('the Script rules allow {0}\{1} to run the script here ({2}) - this account is exempt, so delete the default rule for BUILTIN\Administrators (or use rules that restrict it) before the test' -f $env:USERDOMAIN, $env:USERNAME, $decision.MatchingRule) } }
-                       else { @{ Ok = $true; Detail = ('Script rules enforced ({0} rules), AppIDSvc running; the script is {1} for {2}\{3}' -f $scriptRules.Count, $(if ($null -ne $decision) { [string]$decision.PolicyDecision } else { 'not allowed' }), $env:USERDOMAIN, $env:USERNAME) } }
+                       if ($null -ne $decision -and [string]$decision.PolicyDecision -eq 'Allowed') { @{ Ok = $false; Read = $true; Detail = ('the Script rules allow {0}\{1} to run the script here ({2}) - this account is exempt, so delete the default rule for BUILTIN\Administrators (or use rules that restrict it) before the test' -f $env:USERDOMAIN, $env:USERNAME, $decision.MatchingRule) } }
+                       else { @{ Ok = $true; Read = $true; Detail = ('Script rules enforced ({0} rules), AppIDSvc running; the script is {1} for {2}\{3}' -f $scriptRules.Count, $(if ($null -ne $decision) { [string]$decision.PolicyDecision } else { 'not allowed' }), $env:USERDOMAIN, $env:USERNAME) } }
                    }
-                   else { @{ Ok = $false; Detail = ('Script rules: ' + $(if ($null -ne $scriptRules) { [string]$scriptRules.EnforcementMode + ', ' + $scriptRules.Count + ' rules' } else { 'none' }) + '; AppIDSvc ' + $svc.Status) } }
+                   else { @{ Ok = $false; Read = $true; Detail = ('Script rules: ' + $(if ($null -ne $scriptRules) { [string]$scriptRules.EnforcementMode + ', ' + $scriptRules.Count + ' rules' } else { 'none' }) + '; AppIDSvc ' + $svc.Status) } }
                }
-               catch { @{ Ok = $false; Detail = ('AppLocker is not available here: ' + $_.Exception.Message) } }
+               catch { @{ Ok = $false; Read = $false; Detail = ('AppLocker is not available here: ' + $_.Exception.Message) } }
            }
            Action = { param($Ctx)
                $r = Invoke-LauncherRun $Ctx.Id 'en-US'
@@ -2105,7 +2127,7 @@ function Invoke-Scenario($S) {
         $was = $null
         if ($null -ne $S.Precondition) {
             try { $was = & $S.Precondition $ctx }
-            catch { $was = @{ Ok = $false; Detail = ('the machine could not be read before the step: ' + $_.Exception.Message) } }
+            catch { $was = @{ Ok = $false; Read = $false; Detail = ('the machine could not be read before the step: ' + $_.Exception.Message) } }
             if ($null -ne $ctx.Facts) { $ctx.Facts['preconditionBefore'] = ($(if ($was.Ok) { 'met' } else { 'not met' }) + ': ' + [string]$was.Detail) }
         }
         # The attempt is recorded before the helper is asked, not after it answers: a step can fail with the machine

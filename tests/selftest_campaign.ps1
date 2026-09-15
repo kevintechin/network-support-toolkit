@@ -1248,7 +1248,7 @@ $setAt47 = $m9hook46.IndexOf('Set-AppLockerPolicy -XmlPolicy')
 $notesAt47 = $m9hook46.IndexOf('Write-RecoveryNotes')
 Assert-True '47. the export writes over nothing and into the locked folder: the old file is removed first, the copy out to the campaign''s own folder is evidence, and only then is the policy replaced' ((($delAt47 -ge 0) -and ($delAt47 -lt $exportAt47) -and ($copyAt47 -gt $exportAt47) -and ($setAt47 -gt $copyAt47))) ('del ' + $delAt47 + ', export ' + $exportAt47 + ', copy ' + $copyAt47 + ', replace ' + $setAt47)
 Assert-True '47. and the notes are rewritten before the step runs, so a session that dies under the enforced rules finds the staged way back named in them' (($notesAt47 -ge 0) -and ($notesAt47 -lt $m9hook46.IndexOf('Invoke-PolicyChange'))) ('notes at ' + $notesAt47 + ', the step at ' + $m9hook46.IndexOf('Invoke-PolicyChange'))
-Assert-True '47. what the revert installs and what the check reads is the copy in the locked folder, not the one in the campaign''s own' (($m9apply46 -like '*$before = Join-Path $staged ''applocker-before.xml''*') -and ($m9apply46 -like '*AppLockerPolicyBeforeCopy*')) 'the saved policy is not staged'
+Assert-True '47. what the revert installs and what the check reads is the copy in the locked folder, not the one in the campaign''s own' (($m9apply46 -like '*$before = Join-Path $staged (''applocker-before-'' + $token + ''.xml'')*') -and ($m9apply46 -like '*AppLockerPolicyBeforeCopy*')) 'the saved policy is not staged'
 
 # -------------------- 48. the policy M9 applies, and what recorded data may do inside a command line --------------------
 # The self-audit the working method asks for, run over the whole change after round 3 - looking for the family the
@@ -1923,7 +1923,7 @@ if ($defs42.ContainsKey('Get-ApplyOutcome') -and $defs42['Get-ApplyOutcome'].Cou
 Assert-True '58. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs58.Count -eq 0) -and ($free58.Count -eq 0)) ('also needed: ' + ($needs58 -join ', ') + '; free variables: ' + ($free58 -join ', '))
 $bothYes58 = Get-ApplyOutcome 'M9' @{ Ok = $true; Detail = 'helper exit 0' } @{ Ok = $true; Detail = 'Script rules enforced' }
 Assert-True '58. helper says yes and the machine agrees: applied, and nothing is written over what the helper was recorded as' (($bothYes58.Applied -eq $true) -and ([string]$bothYes58.ApplyBy -eq '') -and ([string]$bothYes58.Event -like 'M9: applied by the elevated helper; precondition met - Script rules enforced*')) ('applied=' + $bothYes58.Applied + '; applyBy=' + [string]$bothYes58.ApplyBy + '; ' + [string]$bothYes58.Event)
-$wrongHelper58 = Get-ApplyOutcome 'M9' @{ Ok = $false; Detail = 'helper exit 1 | step=15 rc=2 | result=FAILED' } @{ Ok = $true; Detail = 'Script rules enforced (2 rules), AppIDSvc running' } @{ Ok = $false; Detail = 'Script rules: NotConfigured' }
+$wrongHelper58 = Get-ApplyOutcome 'M9' @{ Ok = $false; Detail = 'helper exit 1 | step=15 rc=2 | result=FAILED' } @{ Ok = $true; Detail = 'Script rules enforced (2 rules), AppIDSvc running' } @{ Ok = $false; Read = $true; Detail = 'Script rules: NotConfigured' }
 Assert-True '58. the helper reported a failure the machine does not bear out: applied all the same, and the helper''s own account is kept beside it' (($wrongHelper58.Applied -eq $true) -and ([string]$wrongHelper58.ApplyBy -like '*step=15 rc=2*') -and ([string]$wrongHelper58.Event -like '*reported a failure the machine does not bear out*')) ('applied=' + $wrongHelper58.Applied + '; applyBy=' + [string]$wrongHelper58.ApplyBy)
 Assert-True '58. and it is still the helper that made it, in the words the revert gate reads - a scenario applied this way is put back the same way, not left to a person' ([string]$wrongHelper58.ApplyBy).StartsWith('the elevated helper') ('applyBy=' + [string]$wrongHelper58.ApplyBy)
 $machineNo58 = Get-ApplyOutcome 'M9' @{ Ok = $true; Detail = 'helper exit 0' } @{ Ok = $false; Detail = 'Script rules: NotConfigured' }
@@ -1972,8 +1972,8 @@ Assert-True '59. and a run that did nothing at all and said so with a zero is un
 # machine did NOT look this way before the step; and the way back refuses to delete where this run exported nothing.
 Write-Output ''
 Write-Output '60. what a machine that already looked like that may be read as'
-$wasNot60 = @{ Ok = $false; Detail = 'Script rules: NotConfigured, 0 rules' }
-$wasAlready60 = @{ Ok = $true; Detail = 'Script rules enforced (2 rules), AppIDSvc running' }
+$wasNot60 = @{ Ok = $false; Read = $true; Detail = 'Script rules: NotConfigured, 0 rules' }
+$wasAlready60 = @{ Ok = $true; Read = $true; Detail = 'Script rules enforced (2 rules), AppIDSvc running' }
 $pre60 = @{ Ok = $true; Detail = 'Script rules enforced (2 rules), AppIDSvc running' }
 $failed60 = @{ Ok = $false; Detail = 'helper exit 1; the helper wrote no result file' }
 $ok60 = @{ Ok = $true; Detail = 'helper exit 0' }
@@ -1993,6 +1993,43 @@ Assert-True '60. and where no export was ever recorded there is nothing to prove
 $applyText60 = ''
 if ($defs42.ContainsKey('Invoke-Scenario') -and $defs42['Invoke-Scenario'].Count -eq 1) { $applyText60 = [string]$defs42['Invoke-Scenario'][0].Extent.Text }
 Assert-True '60. and the driver reads the machine before the step and hands both readings to the verdict, so the campaign asks the question this case answers' (($applyText60 -like '*$was = & $S.Precondition $ctx*') -and ($applyText60 -like '*Get-ApplyOutcome $id $ap $pc $was*') -and ($applyText60.IndexOf('$was = & $S.Precondition') -lt $applyText60.IndexOf('$ap = & $S.Apply'))) 'the driver does not read the machine before the step'
+
+# -------------------- 61. a reading that says it was taken, and a file that says which run made it --------------------
+# PR #68 round 2, two P1s with one cause: something weak read as proof. A precondition that could not read the machine
+# answers Ok = $false exactly as one that read it and found the state absent, so an unreadable before-reading made
+# every after-reading a change; and the staged export was accepted on existence alone, although its folder survives a
+# run and its path is recorded - and RECOVER.txt written - before the helper is asked for anything, so an apply that
+# never ran left this run's notes pointing at an earlier campaign's export.
+Write-Output ''
+Write-Output '61. what a reading and a staged file have to say about themselves'
+$pre61 = @{ Ok = $true; Read = $true; Detail = 'Script rules enforced (2 rules), AppIDSvc running' }
+$failed61 = @{ Ok = $false; Detail = 'helper exit 1; the helper wrote no result file' }
+$unreadable61 = Get-ApplyOutcome 'M9' $failed61 $pre61 @{ Ok = $false; Detail = 'AppLocker is not available here: the RPC server is unavailable' }
+Assert-True '61. a before-reading that could not be taken is not a negative - it answers Ok false like a real one, and only a real one is evidence of a change' (($unreadable61.Applied -eq $false) -and ([string]$unreadable61.ApplyBy -eq '') -and (@($unreadable61.Message)[0] -like '*could not be read before it was asked*')) ('applied=' + $unreadable61.Applied + '; ' + (@($unreadable61.Message)[0]))
+$readable61 = Get-ApplyOutcome 'M9' $failed61 $pre61 @{ Ok = $false; Read = $true; Detail = 'Script rules: NotConfigured, 0 rules' }
+Assert-True '61. and the reading is not vacuous: the same answer marked as read is a negative, and the step is still the helper''s' (($readable61.Applied -eq $true) -and ([string]$readable61.ApplyBy).StartsWith('the elevated helper')) ('applied=' + $readable61.Applied + '; applyBy=' + [string]$readable61.ApplyBy)
+# And the three policy preconditions say it of themselves, on their unreadable branch and on the branches that read.
+$pre61text = ''
+if ($defs42.ContainsKey('Get-Plan') -and $defs42['Get-Plan'].Count -eq 1) { $pre61text = [string]$defs42['Get-Plan'][0].Extent.Text }
+$reads61 = @([regex]::Matches($pre61text, 'Read = \$true')).Count
+$unreads61 = @([regex]::Matches($pre61text, 'Read = \$false')).Count
+Assert-True '61. the three policy preconditions mark every branch, the ones that read the machine and the ones that could not' (($reads61 -ge 6) -and ($unreads61 -ge 3) -and ($pre61text -like '*the machine environment key cannot be read*Read = $false*' -or $pre61text -like '*Read = $false; Detail = ''the machine environment key cannot be read*')) ('read branches: ' + $reads61 + ', unreadable branches: ' + $unreads61)
+# The staged pair: the name is what says which attempt wrote it.
+$m9text61 = ''
+foreach ($n in @('Get-Plan')) { if ($defs42.ContainsKey($n) -and $defs42[$n].Count -eq 1) { $m9text61 = [string]$defs42[$n][0].Extent.Text } }
+# Compared as text and not with -like: [guid], [string] and ['StagedRevert'] are character classes in a wildcard
+# pattern, and a needle in a double-quoted string has its $Ctx expanded away before it is ever compared. Both were
+# measured here, on this case's own first run.
+function Test-Holds61([string]$Haystack, [string]$Needle) { return ($Haystack.IndexOf($Needle, [System.StringComparison]::Ordinal) -ge 0) }
+$q61 = [string][char]39
+$exportName61 = '(' + $q61 + 'applocker-before-' + $q61 + ' + $token + ' + $q61 + '.xml' + $q61 + ')'
+$revertName61 = '(' + $q61 + 'nhc-policy-revert-' + $q61 + ' + $token + ' + $q61 + '.cmd' + $q61 + ')'
+$recorded61 = '[string]$Ctx.Facts[' + $q61 + 'StagedRevert' + $q61 + ']'
+$fixed61 = '$stagedRevert = Join-Path $staged ' + $q61 + 'nhc-policy-revert.cmd' + $q61
+$uses61 = (($m9text61 -split [regex]::Escape($recorded61)).Count - 1)
+Assert-True '61. the export and the staged way back are named for the attempt, so an earlier campaign''s cannot answer for this one' ((Test-Holds61 $m9text61 '$token = [guid]::NewGuid()') -and (Test-Holds61 $m9text61 $exportName61) -and (Test-Holds61 $m9text61 $revertName61)) 'the staged names do not carry the attempt'
+Assert-True '61. and the revert reads the path this attempt recorded rather than the fixed one, which is where an earlier run''s file would have been found' ((Test-Holds61 $m9text61 ('$stagedRevert = ' + $recorded61)) -and (-not (Test-Holds61 $m9text61 $fixed61))) 'the revert still reads the fixed staged path'
+Assert-True '61. and the apply copies to and hashes that same recorded path, so the file it checks is the file it wrote' ($uses61 -ge 3) ('recorded-path uses in M9: ' + $uses61)
 
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
