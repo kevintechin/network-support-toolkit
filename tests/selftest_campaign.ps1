@@ -1935,6 +1935,35 @@ if ($defs42.ContainsKey('Invoke-Scenario') -and $defs42['Invoke-Scenario'].Count
 if (-not $stepText58) { $stepText58 = [IO.File]::ReadAllText($driver) }
 Assert-True '58. and the driver asks the machine before it decides, inside a try - a reader that throws on a half-changed machine used to take the campaign with it' (($stepText58 -like '*$outcome = Get-ApplyOutcome $id $ap $pc*') -and ($stepText58 -like '*the machine could not be read after the step*') -and ($stepText58 -notlike '*if ($ap.Ok) {*Save-State*$pc = $(if ($null -eq $S.Precondition)*')) 'the driver still reads the machine only where the helper said it worked'
 
+# -------------------- 59. what M9's row may say about a run that wrote nothing --------------------
+# AppLocker's script rules cover .cmd as well as .ps1, so a policy that does not allow the package's folder refuses
+# Start-NetworkCheck.cmd itself: the package stops before its first line, nothing of ours is written, and all the
+# person has is the line cmd printed. That is backlog #37, whose own text said the state had never been produced on
+# any machine this project had looked at - and the campaign of 2026-09-15 produced it. The row said 'the launcher
+# reported the failure', which is the one thing that had not happened.
+Write-Output ''
+Write-Output '59. a run that wrote nothing of its own, told apart from one that stopped and reported'
+Assert-True '59. the driver defines Get-M9LauncherVerdict once, so this case runs that definition and no other' ($defs42.ContainsKey('Get-M9LauncherVerdict') -and $defs42['Get-M9LauncherVerdict'].Count -eq 1) ('definitions: ' + $(if ($defs42.ContainsKey('Get-M9LauncherVerdict')) { $defs42['Get-M9LauncherVerdict'].Count } else { 0 }))
+$needs59 = @(); $free59 = @()
+if ($defs42.ContainsKey('Get-M9LauncherVerdict') -and $defs42['Get-M9LauncherVerdict'].Count -eq 1) {
+    $needs59 = @($defs42['Get-M9LauncherVerdict'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) } | Sort-Object -Unique)
+    $free59 = @(Get-FreeVariables $defs42['Get-M9LauncherVerdict'][0])
+    Invoke-Expression $defs42['Get-M9LauncherVerdict'][0].Extent.Text
+}
+Assert-True '59. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs59.Count -eq 0) -and ($free59.Count -eq 0)) ('also needed: ' + ($needs59 -join ', ') + '; free variables: ' + ($free59 -join ', '))
+# The run the machine of 2026-09-15 produced: exit 1, no launcher error report, no environment report, no report.
+$refused59 = Get-M9LauncherVerdict @{ EnvironmentReports = @(); LauncherError = ''; Reports = @(); ExitCode = 1 }
+Assert-True '59. a run that left no report of its own is the launcher itself refused, and the row says the person has only what Windows printed' (($refused59.Passed -eq $true) -and ([string]$refused59.What -like '*wrote nothing of its own*') -and ([string]$refused59.What -like '*#37*') -and ([string]$refused59.What -notlike '*the launcher*reported the failure*')) ('says: ' + [string]$refused59.What)
+# The same exit code with the launcher's own report beside it, which is a different thing and always was.
+$reported59 = Get-M9LauncherVerdict @{ EnvironmentReports = @(); LauncherError = 'NetworkHealthCheck could not run. Exit code 1.'; Reports = @(); ExitCode = 1 }
+Assert-True '59. and the reading is not vacuous: the same exit code with a launcher error report beside it says the launcher stopped and wrote one' (($reported59.Passed -eq $true) -and ([string]$reported59.What -like '*the launcher stopped and wrote its own report*') -and ([string]$reported59.What -notlike '*wrote nothing of its own*')) ('says: ' + [string]$reported59.What)
+$constrained59 = Get-M9LauncherVerdict @{ EnvironmentReports = @('env.txt'); LauncherError = 'ended with exit code 3'; Reports = @(); ExitCode = 3 }
+Assert-True '59. a run that reached ConstrainedLanguage and fired the guard is still that, and it is a pass only where no report came out of it' (($constrained59.Passed -eq $true) -and ([string]$constrained59.What -like '*ConstrainedLanguage*')) ('says: ' + [string]$constrained59.What)
+$ran59 = Get-M9LauncherVerdict @{ EnvironmentReports = @(); LauncherError = ''; Reports = @('report.html'); ExitCode = 0 }
+Assert-True '59. a run that produced a report under enforced rules is not a pass, whatever else is missing - the machine is what to investigate' (($ran59.Passed -eq $false) -and ([string]$ran59.What -like '*ran unrestricted*') -and ([string]$ran59.What -like '*KB 5024351*')) ('says: ' + [string]$ran59.What)
+$quiet59 = Get-M9LauncherVerdict @{ EnvironmentReports = @(); LauncherError = ''; Reports = @(); ExitCode = 0 }
+Assert-True '59. and a run that did nothing at all and said so with a zero is unexplained, not a pass' (($quiet59.Passed -eq $false) -and ([string]$quiet59.What -like '*unexplained*')) ('says: ' + [string]$quiet59.What)
+
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
 Write-Output '38. the bundle name carries the time to the millisecond and the process id (backlog #25). A name good to the second collided whenever a second invocation of the same campaign fell inside the same second as the first: Compress-Archive refuses a destination that exists, and the record kept that refusal as a bundle failure - twice on GitHub Actions, both times on a commit that touched nothing the step reads. The collision is reproduced here rather than waited for: every second-precision name the clock can produce in the next five minutes is occupied before the invocation runs'

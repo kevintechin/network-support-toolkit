@@ -1225,6 +1225,28 @@ function Invoke-PolicyChange([string]$Id, $Ctx, [string]$What, [string[]]$Lines)
     Add-Event ('{0}: {1} {2} - {3}' -f $Id, $What, $(if ($r.Ok) { 'through the elevated helper' } else { 'NOT made by the helper' }), $r.Detail)
     return $r
 }
+function Get-M9LauncherVerdict($Run) {
+    # What one launcher run under enforced Script rules comes to, given what the run left behind. The distinction the
+    # middle pair draws is the whole of backlog #37: AppLocker's script rules cover .cmd as well as .ps1, so a policy
+    # that does not allow the package's folder refuses Start-NetworkCheck.cmd itself - cmd prints its own line, nothing
+    # of ours is written, and the person has no file to send with a support request. Measured on the Windows 10 Pro VM
+    # on 2026-09-15, the first machine in this project on which AppLocker enforcement has ever taken effect (#31): exit code
+    # 1, "This program is blocked by group policy. For more information, contact your system administrator.", and in
+    # the folder nothing but the manuals that were extracted with the package - no LauncherError_<stamp>.txt, no
+    # environment report, no report. This row had said 'the launcher reported the failure' for that run, which is the
+    # one thing that did not happen, and it is exactly the case #37 exists to tell apart.
+    if ($Run.EnvironmentReports.Count -ge 1 -and $Run.LauncherError -match 'exit code 3') {
+        return @{ What = 'the script ran in ConstrainedLanguage and the guard fired (environment report written)'; Passed = ($Run.Reports.Count -eq 0) }
+    }
+    if ($Run.Reports.Count -eq 0 -and $Run.ExitCode -ne 0) {
+        if ([string]$Run.LauncherError) {
+            return @{ What = 'the script was blocked before its first line; no environment report, and the launcher stopped and wrote its own report of it'; Passed = $true }
+        }
+        return @{ What = 'the package was stopped before its first line and wrote nothing of its own - no launcher error report, so what was refused is the launcher itself and all the person has is the line Windows printed (backlog #37, the state that had never been produced)'; Passed = $true }
+    }
+    if ($Run.Reports.Count -gt 0) { return @{ What = 'the script ran unrestricted although the Script rules are enforced and AppLocker itself answers DeniedByDefault for this account - the policy is on record but nothing acted on it. Since Windows 10 2004 with KB 5024351 every edition enforces, so this is the machine to investigate (build, update level, whether the policy reaches this account), not an edition rule'; Passed = $false } }
+    return @{ What = 'no report, no launcher error, exit code 0 - unexplained'; Passed = $false }
+}
 function Get-ApplyOutcome([string]$Id, $Helper, $Pre) {
     # What an apply step comes to, given the helper's own account of it and the machine read afterwards. The machine
     # decides. A step file counts the commands that returned something other than zero, and on the Windows 10 Pro VM
@@ -1850,12 +1872,9 @@ function Get-Plan {
            }
            Action = { param($Ctx)
                $r = Invoke-LauncherRun $Ctx.Id 'en-US'
-               $what = ''
-               $passed = $false
-               if ($r.EnvironmentReports.Count -ge 1 -and $r.LauncherError -match 'exit code 3') { $what = 'the script ran in ConstrainedLanguage and the guard fired (environment report written)'; $passed = ($r.Reports.Count -eq 0) }
-               elseif ($r.Reports.Count -eq 0 -and $r.ExitCode -ne 0) { $what = 'the script was blocked before its first line (no environment report; the launcher reported the failure)'; $passed = $true }
-               elseif ($r.Reports.Count -gt 0) { $what = 'the script ran unrestricted although the Script rules are enforced and AppLocker itself answers DeniedByDefault for this account - the policy is on record but nothing acted on it. Since Windows 10 2004 with KB 5024351 every edition enforces, so this is the machine to investigate (build, update level, whether the policy reaches this account), not an edition rule' }
-               else { $what = 'no report, no launcher error, exit code 0 - unexplained' }
+               $verdict = Get-M9LauncherVerdict $r
+               $what = [string]$verdict.What
+               $passed = [bool]$verdict.Passed
                $shown = @($r.Output | Where-Object { $_.Trim() -ne '' } | Select-Object -First 4) -join ' / '
                @{ Passed = $passed; Detail = ('{0}; launcher exit {1}; environment report(s): {2} ({5}); reports: {3}; what the user sees: {4}' -f $what, $r.ExitCode, $r.EnvironmentReports.Count, $r.Reports.Count, $shown, $r.EnvironmentReportsNote); Evidence = @('en-US\launcher-output.log', 'en-US\LauncherError_*.txt', 'en-US\NetworkHealthCheck_ENVIRONMENT_*.txt') }
            }
