@@ -6182,6 +6182,11 @@ function Compare-WifiRetryCounters {
     # 取不到的快照說明原因，說一次，而且那一列不計權重：讀取器不存在是這台機器的事實，不是它網路的量測。沒有無線介面是
     # 一般有線機器的情形，也照那樣讀。
     $bothNone = ([string]$Before.Error -eq "none" -and [string]$After.Error -eq "none")
+    # 看到過介面的讀數，這個覆寫不得與它相牙。沒有錯誤的快照代表它成功列出了介面，
+    # 所以其中一次看到過的機器，不管中間那個樣本讀到什麼，都不是一台沒有無線介面的機器：
+    # 執行期間網卡被拔掉或停用，正是下面那個分支要講的事，而它知道的比無線電列多（PR #69 第 1 輪）。
+    # 覆寫只在沒有任何重試讀數跟它相牙時成立——在当初發現這件事的那台機器上，兩次讀取都在 WLAN 服務以錯誤 1062 失敗。
+    $eitherSawAnInterface = ([string]::IsNullOrWhiteSpace([string]$Before.Error) -or [string]::IsNullOrWhiteSpace([string]$After.Error))
     foreach ($pair in @(@{ Snapshot = $Before; Side = "開始時"; Other = $After }, @{ Snapshot = $After; Side = "結束時"; Other = $Before })) {
         $snapshot = $pair.Snapshot
         if ([string]::IsNullOrWhiteSpace([string]$snapshot.Error)) { continue }
@@ -6192,7 +6197,7 @@ function Compare-WifiRetryCounters {
         # 這裡本來就沒有東西可讀，也沒有任何讀取器失敗（backlog #69）。下面那些分支依然回答
         # 有無線電的機器，而 none 那一支依然回答「這個讀取器自己列不到介面、而無線電列沒能說話」
         # 的情況，例如 Wi-Fi 無線電檢查被關掉。
-        if ($script:WifiNoInterfaceAnywhere) {
+        if ($script:WifiNoInterfaceAnywhere -and -not $eitherSawAnInterface) {
             $status = "INFO"
             $message = "沒有無線介面被 netsh 或 WLAN 服務列出——例如有線電腦——所以沒有無線重傳數字；連線的統計看 TCP 重傳那幾列。"
         }

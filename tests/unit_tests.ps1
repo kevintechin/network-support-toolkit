@@ -2413,6 +2413,17 @@ Assert-Equal '#69 retry: the reader that did not answer is still named in the de
 Assert-Equal '#69 assoc: and so is every sample that failed' (($noIfAssoc[0].Details -match 'refused') -and ($noIfAssoc[0].Details -match 'WLAN')) $true
 # Weightless either way: an absent radio is a fact about the machine, not a measurement of its network.
 Assert-Equal '#69 retry: the Information row decides nothing' $noIfRetry[0].Weightless $true
+# And a reading that saw an interface is one the override may not contradict (PR #69 round 1): an adapter present for
+# the baseline and gone by the middle sample makes the radio row's fact true, but the machine is not a wired computer -
+# it is a machine whose adapter went away during the test, which is what the branch below the override is for and which
+# knows more than the radio row does.
+$wentAwayBefore = New-WifiSnapshot $noIfT0 (New-WifiInterface $wifiGuid 1 @(New-WifiPhy 0 1000 0 100 20 300 5000))
+$wentAwayAfter = New-WifiSnapshot $noIfT1 @() 'none' ''
+$script:WifiNoInterfaceAnywhere = $true
+$wentAwayRows = @(Get-WifiRows $wentAwayBefore $wentAwayAfter)
+$script:WifiNoInterfaceAnywhere = $false
+Assert-Equal '#69 retry: an adapter that was there at the start and gone at the end is not a computer without one' ("{0}/{1}" -f $wentAwayRows.Count, $wentAwayRows[0].Status) '1/ERROR'
+Assert-Equal '#69 retry: and it does not borrow the sentence written for a machine that never had one' ($wentAwayRows[0].Message -eq $noIfRetry[0].Message) $false
 
 # ---------------------------------------------------------------------------
 # backlog #65: the counters read again inside the sample window, at least Tests.RetransmissionIntervalSeconds apart,

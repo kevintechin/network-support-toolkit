@@ -6433,6 +6433,12 @@ function Compare-WifiRetryCounters {
     # A snapshot that could not be taken names why, once, and the row is weightless: an absent reader is a fact about
     # this machine, not a measurement of its network. No wireless interface is the ordinary wired case and reads as one.
     $bothNone = ([string]$Before.Error -eq "none" -and [string]$After.Error -eq "none")
+    # A reading that saw an interface is a reading this override may not contradict. A snapshot with no error read the
+    # interfaces and found some, so a machine one of them saw is not a machine with no wireless interface, whatever
+    # the middle sample found: an adapter removed or disabled during the run is what the branch below is for, and it
+    # knows more than the radio row does (PR #69 round 1). The override stands only where no retry reading says
+    # otherwise - on the machine this was written for, both readings failed at the WLAN service with error 1062.
+    $eitherSawAnInterface = ([string]::IsNullOrWhiteSpace([string]$Before.Error) -or [string]::IsNullOrWhiteSpace([string]$After.Error))
     foreach ($pair in @(@{ Snapshot = $Before; Side = "at the start"; Other = $After }, @{ Snapshot = $After; Side = "at the end"; Other = $Before })) {
         $snapshot = $pair.Snapshot
         if ([string]::IsNullOrWhiteSpace([string]$snapshot.Error)) { continue }
@@ -6443,7 +6449,7 @@ function Compare-WifiRetryCounters {
         # listed an interface, there is nothing here to read and no reader failed (backlog #69). The branches below
         # still answer for a machine that has a radio, and the "none" branch still answers where this reader itself
         # enumerated none while the radio row could not speak - a disabled Wi-Fi radio check, for one.
-        if ($script:WifiNoInterfaceAnywhere) {
+        if ($script:WifiNoInterfaceAnywhere -and -not $eitherSawAnInterface) {
             $status = "INFO"
             $message = "No wireless interface is listed by netsh or by the WLAN service - a wired computer, for example - so there is no wireless retry figure; the TCP retransmission rows are the link's statistics."
         }
