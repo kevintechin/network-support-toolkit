@@ -4594,7 +4594,9 @@ function Compare-WifiAssociation {
     )
 
     if ($samples.Count -eq 0) {
-        Add-CheckResult -Category $category -Check $check -Status "ERROR" -Message "測試期間沒有取得任何存取點樣本，無法比較連線的存取點。" -Details ((@("讀取：none") + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
+        # 同樣地，每一個取樣步驟都在留下樣本之前就拋了例外的情況（PR #69 第 9 輪）。
+        $verdictNoSample = Get-WirelessAbsenceVerdict -Status "ERROR" -Message "測試期間沒有取得任何存取點樣本，無法比較連線的存取點。" -AbsentMessage "這台電腦沒有無線網卡，所以沒有存取點可以回報；詳細資料寫著兩個讀取來源各自回報了什麼。"
+        Add-CheckResult -Category $category -Check $check -Status $verdictNoSample.Status -Message $verdictNoSample.Message -Details ((@("讀取：none", (Get-WirelessHardwareLine)) + $methodLines | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
         return
     }
     if ($readable.Count -eq 0) {
@@ -4655,7 +4657,12 @@ function Compare-WifiAssociation {
             }
             else { $lines += ("{0}：無法讀取——{1}{2}" -f $entry.Prefix, [string]$sample.ErrorText, $(if ($apiSummary) { "；" + $apiSummary } else { "" })) }
         }
-        Add-CheckResult -Category $category -Check $check -Status "INFO" -Message ("{0} 次樣本都沒有列出任何無線介面——netsh 與 WLAN 服務都沒有——所以沒有存取點可以比較；例如有線電腦，樣本行寫著兩個讀取來源各自回報了什麼。" -f $samples.Count) -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
+        # 每一個樣本都沒列出介面，從這裡看起來就是一台沒有無線電的機器，
+        # 所以讓共用的判讀用三列一致的話來說（PR #69 第 9 輪）。
+        $verdictNone = Get-WirelessAbsenceVerdict -Status "INFO" -Message ("{0} 次樣本都沒有列出任何無線介面——netsh 與 WLAN 服務都沒有——所以沒有存取點可以比較；例如有線電腦，樣本行寫著兩個讀取來源各自回報了什麼。" -f $samples.Count) -AbsentMessage "這台電腦沒有無線網卡，所以沒有存取點可以回報；詳細資料寫著兩個讀取來源各自回報了什麼。"
+        $hardwareLine = Get-WirelessHardwareLine
+        if ($hardwareLine) { $lines += $hardwareLine }
+        Add-CheckResult -Category $category -Check $check -Status $verdictNone.Status -Message $verdictNone.Message -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
         return
     }
 
@@ -6292,7 +6299,10 @@ function Compare-WifiRetryCounters {
 
     $category = "Wi-Fi 重傳"
     if ($null -eq $Before -or $null -eq $After) {
-        Add-CheckResult -Category $category -Check "無線重傳" -Status "ERROR" -Message "缺少完整的 Wi-Fi 重傳計數前後資料。" -Details "" -Tag "wifi-retry" -Weightless | Out-Null
+        # 什麼都沒讀到，所以這一列跟另外兩列一樣是在說機器（backlog #69，
+        # PR #69 第 9 輪）：由同一個地方決定。
+        $verdictMissing = Get-WirelessAbsenceVerdict -Status "ERROR" -Message "缺少完整的 Wi-Fi 重傳計數前後資料。" -AbsentMessage "這台電腦沒有無線網卡，所以沒有無線重傳數字；連線的統計看 TCP 重傳那幾列。"
+        Add-CheckResult -Category $category -Check "無線重傳" -Status $verdictMissing.Status -Message $verdictMissing.Message -Details ([string](Get-WirelessHardwareLine)) -Tag "wifi-retry" -Weightless | Out-Null
         return
     }
 

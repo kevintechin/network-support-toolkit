@@ -2435,6 +2435,28 @@ $rf69code = Get-FunctionCode 'Add-WifiRfResult'
 $rf69rows = @(@($rf69code -split '\r?\n') | Where-Object { $_ -match 'Add-CheckResult' })
 Assert-Equal '#69 radio: no row the radio check writes hard-codes a failure status - the shared reading decides them' ((($rf69code -match 'Get-WirelessAbsenceVerdict') -and (@($rf69rows | Where-Object { $_ -match '-Status "ERROR"' }).Count -eq 0))) $true
 Assert-Equal '#69 rows: and the other two rows decide in that same one place' ((((Get-FunctionCode 'Compare-WifiRetryCounters') -match 'Get-WirelessAbsenceVerdict') -and ((Get-FunctionCode 'Compare-WifiAssociation') -match 'Get-WirelessAbsenceVerdict'))) $true
+# And the class rather than the instance (PR #69 round 9, which found two more exits deciding on their own, and
+# this project's audit a third). Every row these three functions write OUTSIDE a loop over the interfaces they
+# read is a row about a machine that listed none, so it may not carry a failure status of its own: the shared
+# reading decides it. Inside such a loop the interface in hand is itself the answer to whether this computer has
+# a radio, and those rows keep their own status. Asked of the syntax tree, so a new exit anywhere in the three
+# functions fails this without anyone having to notice it - which is what closes a class instead of patching it.
+$looseWifiRows69 = @()
+foreach ($fn69 in @('Add-WifiRfResult', 'Compare-WifiAssociation', 'Compare-WifiRetryCounters')) {
+    $fnAst69 = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $fn69 }, $true)
+    if ($null -eq $fnAst69) { $looseWifiRows69 += ("{0}:not found" -f $fn69); continue }
+    foreach ($call69 in @($fnAst69.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and ([string]$n.GetCommandName()) -eq 'Add-CheckResult' }, $true))) {
+        if ($call69.Extent.Text -notmatch '-Status\s+"(ERROR|WARN)"') { continue }
+        $node69 = $call69.Parent
+        $perInterface69 = $false
+        while ($null -ne $node69 -and -not ($node69 -is [System.Management.Automation.Language.FunctionDefinitionAst])) {
+            if (($node69 -is [System.Management.Automation.Language.ForEachStatementAst]) -and ([string]$node69.Condition.Extent.Text -match 'Interfaces')) { $perInterface69 = $true; break }
+            $node69 = $node69.Parent
+        }
+        if (-not $perInterface69) { $looseWifiRows69 += ("{0}:{1}" -f $fn69, $call69.Extent.StartLineNumber) }
+    }
+}
+Assert-Equal '#69 rows: no Wi-Fi row written outside a loop over the interfaces read carries a failure status of its own' ($looseWifiRows69 -join ', ') ''
 
 # The two rows, driven from that reading rather than from an assignment - and with the readers that failed on the
 # machine of 2026-09-15: the WLAN service at error 1062 and netsh exiting 1, so neither reader answered.

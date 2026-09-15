@@ -4758,7 +4758,9 @@ function Compare-WifiAssociation {
     )
 
     if ($samples.Count -eq 0) {
-        Add-CheckResult -Category $category -Check $check -Status "ERROR" -Message "No access-point sample was taken during the test, so the association cannot be compared." -Details ((@("Reading: none") + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
+        # The same, where every sampling step threw before a sample was kept (PR #69 round 9).
+        $verdictNoSample = Get-WirelessAbsenceVerdict -Status "ERROR" -Message "No access-point sample was taken during the test, so the association cannot be compared." -AbsentMessage "This computer has no wireless adapter, so there is no access point to report; the details say what each reader returned."
+        Add-CheckResult -Category $category -Check $check -Status $verdictNoSample.Status -Message $verdictNoSample.Message -Details ((@("Reading: none", (Get-WirelessHardwareLine)) + $methodLines | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
         return
     }
     if ($readable.Count -eq 0) {
@@ -4820,7 +4822,12 @@ function Compare-WifiAssociation {
             }
             else { $lines += ("{0}: could not be read - {1}{2}" -f $entry.Prefix, [string]$sample.ErrorText, $(if ($apiSummary) { "; " + $apiSummary } else { "" })) }
         }
-        Add-CheckResult -Category $category -Check $check -Status "INFO" -Message ("No wireless interface was listed at any of the {0} sample(s), by netsh or by the WLAN service, so there is no access point to compare - a wired computer, for example; the sample lines say what each reader returned." -f $samples.Count) -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
+        # No interface at any sample is what a computer with no radio looks like from here, so the shared
+        # reading gets to say it in the words all three rows use (PR #69 round 9).
+        $verdictNone = Get-WirelessAbsenceVerdict -Status "INFO" -Message ("No wireless interface was listed at any of the {0} sample(s), by netsh or by the WLAN service, so there is no access point to compare - a wired computer, for example; the sample lines say what each reader returned." -f $samples.Count) -AbsentMessage "This computer has no wireless adapter, so there is no access point to report; the details say what each reader returned."
+        $hardwareLine = Get-WirelessHardwareLine
+        if ($hardwareLine) { $lines += $hardwareLine }
+        Add-CheckResult -Category $category -Check $check -Status $verdictNone.Status -Message $verdictNone.Message -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Tag "wifi-association" -Scope "IT" | Out-Null
         return
     }
 
@@ -6549,7 +6556,10 @@ function Compare-WifiRetryCounters {
 
     $category = "Wi-Fi Retransmissions"
     if ($null -eq $Before -or $null -eq $After) {
-        Add-CheckResult -Category $category -Check "Wireless retries" -Status "ERROR" -Message "Complete before-and-after Wi-Fi retry counter data is unavailable." -Details "" -Tag "wifi-retry" -Weightless | Out-Null
+        # Nothing was read at all, so this row is about the machine as much as the other two are (backlog #69,
+        # PR #69 round 9): the same one place decides it.
+        $verdictMissing = Get-WirelessAbsenceVerdict -Status "ERROR" -Message "Complete before-and-after Wi-Fi retry counter data is unavailable." -AbsentMessage "This computer has no wireless adapter, so there is no wireless retry figure; the TCP retransmission rows are the link's statistics."
+        Add-CheckResult -Category $category -Check "Wireless retries" -Status $verdictMissing.Status -Message $verdictMissing.Message -Details ([string](Get-WirelessHardwareLine)) -Tag "wifi-retry" -Weightless | Out-Null
         return
     }
 
