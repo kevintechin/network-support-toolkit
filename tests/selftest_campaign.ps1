@@ -1033,12 +1033,12 @@ if ($missingDefs43.Count -eq 0) {
 }
 Assert-True '43. neither reads a variable of the driver, which would be $null here and say nothing about it' ($free43.Count -eq 0) ('free variables: ' + ($free43 -join ', '))
 $auto43 = Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppLockerPolicyBefore = 'C:\state\M9\applocker-before.xml' } }
-Assert-True '43. a service that was Automatic and running comes back as auto, with the registry value for the case where sc config is refused, and is not stopped' ((@($auto43 | Where-Object { $_ -like 'sc config AppIDSvc start= auto*' }).Count -eq 1) -and (@($auto43 | Where-Object { $_ -like '*Services\AppIDSvc*/d 2 /f*' }).Count -eq 1) -and (@($auto43 | Where-Object { $_ -like 'net stop*' }).Count -eq 0)) ($auto43 -join ' / ')
+Assert-True '43. a service that was Automatic and running comes back as auto, with the registry value for the case where sc config is refused, and is not stopped' ((@($auto43 | Where-Object { $_ -like 'may fail: sc config AppIDSvc start= auto*' }).Count -eq 1) -and (@($auto43 | Where-Object { $_ -like '*Services\AppIDSvc*/d 2 /f*' }).Count -eq 1) -and (@($auto43 | Where-Object { $_ -like '*net stop*' }).Count -eq 0)) ($auto43 -join ' / ')
 Assert-True '43. the local policy is removed at the registry, which needs neither PowerShell nor the AppLocker module, and the machine''s own policy is put back after it' ((@($auto43)[0] -like 'reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2"*') -and (@($auto43 | Where-Object { $_ -like '*Set-AppLockerPolicy -XmlPolicy*applocker-before.xml*' }).Count -eq 1) -and (@($auto43)[-1] -eq 'gpupdate /force')) ($auto43 -join ' / ')
 $manual43 = Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Manual'; AppIDSvcStatus = 'Stopped' } }
-Assert-True '43. a service that was Manual and stopped comes back as demand and is stopped again, and no policy is restored where none was saved' ((@($manual43 | Where-Object { $_ -like 'sc config AppIDSvc start= demand*' }).Count -eq 1) -and (@($manual43 | Where-Object { $_ -like '*/d 3 /f*' }).Count -eq 1) -and (@($manual43 | Where-Object { $_ -eq 'net stop AppIDSvc' }).Count -eq 1) -and (@($manual43 | Where-Object { $_ -like '*Set-AppLockerPolicy*' }).Count -eq 0)) ($manual43 -join ' / ')
+Assert-True '43. a service that was Manual and stopped comes back as demand and is stopped again, and no policy is restored where none was saved' ((@($manual43 | Where-Object { $_ -like 'may fail: sc config AppIDSvc start= demand*' }).Count -eq 1) -and (@($manual43 | Where-Object { $_ -like '*/d 3 /f*' }).Count -eq 1) -and (@($manual43 | Where-Object { $_ -eq 'may fail: net stop AppIDSvc' }).Count -eq 1) -and (@($manual43 | Where-Object { $_ -like '*Set-AppLockerPolicy*' }).Count -eq 0)) ($manual43 -join ' / ')
 $none43 = Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'n/a'; AppIDSvcStatus = 'n/a' } }
-Assert-True '43. and where the service was never recorded, nothing is said about it - the policy is still removed and the machine still told to reload' ((@($none43 | Where-Object { $_ -like 'sc config*' }).Count -eq 0) -and (@($none43)[0] -like 'reg delete*SrpV2*') -and (@($none43)[-1] -eq 'gpupdate /force')) ($none43 -join ' / ')
+Assert-True '43. and where the service was never recorded, nothing is said about it - the policy is still removed and the machine still told to reload' ((@($none43 | Where-Object { $_ -like '*sc config*' }).Count -eq 0) -and (@($none43)[0] -like 'reg delete*SrpV2*') -and (@($none43)[-1] -eq 'gpupdate /force')) ($none43 -join ' / ')
 $m8lines43 = @(Get-M8RegistryLines)
 $m8text43 = [IO.File]::ReadAllText($driver)
 $m8start43 = $m8text43.IndexOf("@{ Id = 'M8'")
@@ -1280,9 +1280,9 @@ if ($m8at48 -ge 0) {
 }
 Assert-True '48. and M8''s revert asks that question of the two values it carries before it asks the helper for anything' (($m8revert48 -like '*Test-PolicyLineData*') -and ($m8revert48 -like '*RegExecutionPolicyBefore*') -and ($m8revert48 -like '*RegEnableScriptsBefore*')) 'M8''s revert does not check the values it carries'
 $weird48 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = ('Weird' + [char]38 + ' calc'); AppIDSvcStatus = 'Running' } })
-Assert-True '48. a service startup type Windows does not have produces no command at all, rather than one built around it' ((@($weird48 | Where-Object { $_ -like 'sc config*' }).Count -eq 0) -and (@($weird48)[0] -like 'reg delete*') -and (@($weird48)[-1] -eq 'gpupdate /force')) ($weird48 -join ' / ')
+Assert-True '48. a service startup type Windows does not have produces no command at all, rather than one built around it' ((@($weird48 | Where-Object { $_ -like '*sc config*' }).Count -eq 0) -and (@($weird48)[0] -like 'reg delete*') -and (@($weird48)[-1] -eq 'gpupdate /force')) ($weird48 -join ' / ')
 $known48 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running' } })
-Assert-True '48. and the reading is not vacuous: a startup type it does have still produces its line' (@($known48 | Where-Object { $_ -like 'sc config AppIDSvc start= auto*' }).Count -eq 1) ($known48 -join ' / ')
+Assert-True '48. and the reading is not vacuous: a startup type it does have still produces its line' (@($known48 | Where-Object { $_ -like 'may fail: sc config AppIDSvc start= auto*' }).Count -eq 1) ($known48 -join ' / ')
 $xmlCopyAt48 = $m9apply46.IndexOf('copy /y "'' + $xml + ''" "'' + $stagedXml + ''"')
 $xmlHashAt48 = $m9apply46.IndexOf('certutil -hashfile "'' + $stagedXml + ''" SHA256')
 $setStagedAt48 = $m9apply46.IndexOf('Set-AppLockerPolicy -XmlPolicy ''''' + "'" + ' + $stagedXml')
@@ -1636,9 +1636,9 @@ Assert-True '52. and the reading is not vacuous: the Application Identity servic
 $delayed52 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppIDSvcDelayedAuto = 'yes' } })
 $plainAuto52 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppIDSvcDelayedAuto = 'no' } })
 $unknown52 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppIDSvcDelayedAuto = 'unknown' } })
-Assert-True '52. a service that started delayed is put back delayed - by the word sc config has for it, and by the value it reads where sc config is refused' ((@($delayed52 | Where-Object { $_ -eq 'sc config AppIDSvc start= delayed-auto' }).Count -eq 1) -and (@($delayed52 | Where-Object { $_ -like '*DelayedAutostart*/d 1 /f' }).Count -eq 1)) ($delayed52 -join ' / ')
-Assert-True '52. one that started plain automatic is put back plain, and the flag is written as 0 rather than left as it is' ((@($plainAuto52 | Where-Object { $_ -eq 'sc config AppIDSvc start= auto' }).Count -eq 1) -and (@($plainAuto52 | Where-Object { $_ -like '*DelayedAutostart*/d 0 /f' }).Count -eq 1)) ($plainAuto52 -join ' / ')
-Assert-True '52. and where the flag could not be read, nothing is written for it - a campaign that does not know does not set' ((@($unknown52 | Where-Object { $_ -eq 'sc config AppIDSvc start= auto' }).Count -eq 1) -and (@($unknown52 | Where-Object { $_ -like '*DelayedAutostart*' }).Count -eq 0)) ($unknown52 -join ' / ')
+Assert-True '52. a service that started delayed is put back delayed - by the word sc config has for it, and by the value it reads where sc config is refused' ((@($delayed52 | Where-Object { $_ -eq 'may fail: sc config AppIDSvc start= delayed-auto' }).Count -eq 1) -and (@($delayed52 | Where-Object { $_ -like '*DelayedAutostart*/d 1 /f' }).Count -eq 1)) ($delayed52 -join ' / ')
+Assert-True '52. one that started plain automatic is put back plain, and the flag is written as 0 rather than left as it is' ((@($plainAuto52 | Where-Object { $_ -eq 'may fail: sc config AppIDSvc start= auto' }).Count -eq 1) -and (@($plainAuto52 | Where-Object { $_ -like '*DelayedAutostart*/d 0 /f' }).Count -eq 1)) ($plainAuto52 -join ' / ')
+Assert-True '52. and where the flag could not be read, nothing is written for it - a campaign that does not know does not set' ((@($unknown52 | Where-Object { $_ -eq 'may fail: sc config AppIDSvc start= auto' }).Count -eq 1) -and (@($unknown52 | Where-Object { $_ -like '*DelayedAutostart*' }).Count -eq 0)) ($unknown52 -join ' / ')
 $notesDelayed52 = (@(Get-M9RecoveryLines @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppIDSvcDelayedAuto = 'yes' }) -join "`n")
 Assert-True '52. RECOVER.txt says the same, in the words a person types: the delayed start named, and the value beside Start' (($notesDelayed52 -match 'delayed start') -and ($notesDelayed52 -match 'sc config AppIDSvc start= delayed-auto') -and ($notesDelayed52 -match 'DelayedAutostart')) ($notesDelayed52 -replace "`n", ' / ')
 $wantOther52 = $(if ($live52 -eq 'yes') { 'no' } else { 'yes' })
@@ -1838,6 +1838,82 @@ $stepText55 = ''
 $fnStep55 = @($ast42.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-PolicyStepFile' }, $true))
 if ($fnStep55.Count -eq 1) { $stepText55 = [string]$fnStep55[0].Extent.Text }
 Assert-True '55. and the step starts cmd.exe by its own path under System32 with that line - not the .cmd through its association, and not %ComSpec%, which a session can point elsewhere' (($stepText55 -like '*Start-Process -FilePath $cmdExe*') -and ($stepText55 -like '*Get-ElevatedHelperArguments $Helper $CmdFile $resultFile $digest*') -and ($stepText55 -like "*Join-Path (Join-Path `$env:SystemRoot 'System32') 'cmd.exe'*") -and ($stepText55 -notlike '*ComSpec*') -and ($stepText55 -notlike '*Start-Process -FilePath $Helper*')) 'the step still starts the helper through the shell association'
+
+# -------------------- 56. a line whose exit code is not what the step is asking --------------------
+# The campaign of 2026-09-15 ended M9 in FAILED with the policy applied, the service running and gpupdate done,
+# because `net start AppIDSvc` exits 2 where the service is already running. The same campaign's revert exited 0 on a
+# `net stop` that printed "the service could not be stopped" and did not stop it, and 5 on an `sc config` the reg add
+# beside it made good. A line the scenario marks is still run and still printed - it is taken out of the count and
+# nothing else.
+Write-Output ''
+Write-Output '56. the marker that takes a line out of the count, run for real'
+$dir56 = Join-Path $WorkDir 'case56'
+New-Item -ItemType Directory -Force -Path $dir56 | Out-Null
+$file56 = New-PolicyStepFile 'SELFTEST' 'mayfail' @('ver', 'may fail: cmd /c exit 5', 'ver') $dir56
+$body56 = @(Get-Content -LiteralPath $file56 | ForEach-Object { [string]$_ })
+Assert-True '56. the marker is stripped from the command the file runs - what cmd sees is the command, not the campaign''s note about it' ((@($body56 | Where-Object { $_ -like '*may fail:*' }).Count -eq 0) -and (@($body56 | Where-Object { $_ -eq 'cmd /c exit 5' }).Count -eq 1)) ($body56 -join ' / ')
+Assert-True '56. and a marked line gets no counting line, where an unmarked one does - two of the three' ((@($body56 | Where-Object { $_ -eq 'if errorlevel 1 set NHCFAIL=1' }).Count -eq 2) -and (@($body56 | Where-Object { $_ -like 'echo step=2 rc=*(not counted)*' }).Count -eq 1)) ($body56 -join ' / ')
+$ErrorActionPreference = 'Continue'
+$out56 = @(& $env:ComSpec '/c' $file56 2>&1 | ForEach-Object { [string]$_ })
+$code56 = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+Assert-True '56. the step exits 0 although the marked command exited 5, and the record still carries that 5 - the command ran, it was not skipped' (($code56 -eq 0) -and (@($out56 | Where-Object { $_ -like 'step=2 rc=5*' }).Count -eq 1) -and (@($out56 | Where-Object { $_ -like 'step=2 rc=5 (not counted)*' }).Count -eq 1)) ('exit ' + $code56 + '; ' + ($out56 -join ' | '))
+$file56b = New-PolicyStepFile 'SELFTEST' 'counted' @('ver', 'cmd /c exit 5', 'ver') $dir56
+$ErrorActionPreference = 'Continue'
+$null = & $env:ComSpec '/c' $file56b 2>&1
+$code56b = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+Assert-True '56. and the reading is not vacuous: the same command without the marker still fails the step' ($code56b -ne 0) ('exit ' + $code56b)
+$file56c = New-PolicyStepFile 'SELFTEST' 'mixed' @('may fail: cmd /c exit 5', 'cmd /c exit 1') $dir56
+$ErrorActionPreference = 'Continue'
+$null = & $env:ComSpec '/c' $file56c 2>&1
+$code56c = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+Assert-True '56. a marked line does not cover for an unmarked one beside it - the step still fails on the line that must succeed' ($code56c -ne 0) ('exit ' + $code56c)
+
+# -------------------- 57. the marker M9's way back writes is the marker the file honours --------------------
+# Two literals, one in the builder and one in each line that carries it: this case is what says they are the same
+# string. The lines the scenario generates are built into a file and the file is read back.
+Write-Output ''
+Write-Output '57. the lines M9 puts back, through the builder that reads the marker'
+$manual57 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Manual'; AppIDSvcStatus = 'Stopped' } })
+$marked57 = @($manual57 | Where-Object { $_ -like 'may fail: *' })
+Assert-True '57. the two service commands are the marked ones, and the registry write that makes the first of them good is not' ((@($marked57).Count -eq 2) -and (@($marked57 | Where-Object { $_ -like '*sc config AppIDSvc*' }).Count -eq 1) -and (@($marked57 | Where-Object { $_ -like '*net stop AppIDSvc*' }).Count -eq 1) -and (@($manual57 | Where-Object { $_ -like 'reg add*Start*/d 3 /f' }).Count -eq 1)) ($manual57 -join ' / ')
+$dir57 = Join-Path $WorkDir 'case57'
+New-Item -ItemType Directory -Force -Path $dir57 | Out-Null
+$file57 = New-PolicyStepFile 'M9' 'revert' $manual57 $dir57
+$body57 = @(Get-Content -LiteralPath $file57 | ForEach-Object { [string]$_ })
+$counted57 = @($body57 | Where-Object { $_ -eq 'if errorlevel 1 set NHCFAIL=1' }).Count
+Assert-True '57. the file runs every one of them, with the marker gone and two of them out of the count' ((@($body57 | Where-Object { $_ -like '*may fail:*' }).Count -eq 0) -and (@($body57 | Where-Object { $_ -eq 'sc config AppIDSvc start= demand' }).Count -eq 1) -and (@($body57 | Where-Object { $_ -eq 'net stop AppIDSvc' }).Count -eq 1) -and ($counted57 -eq (@($manual57).Count - 2))) ('counted ' + $counted57 + ' of ' + @($manual57).Count + '; ' + ($body57 -join ' / '))
+Assert-True '57. and the reading is not vacuous: RECOVER.txt still gives a person the plain commands, with no marker of the campaign''s in them' ((@(Get-M9RecoveryLines @{ AppIDSvcStartType = 'Manual'; AppIDSvcStatus = 'Stopped' }) | Where-Object { $_ -like '*may fail*' }).Count -eq 0) ((Get-M9RecoveryLines @{ AppIDSvcStartType = 'Manual'; AppIDSvcStatus = 'Stopped' }) -join ' / ')
+
+# -------------------- 58. what an apply step comes to: the machine, not the helper's account of itself --------------------
+# The driver used to ask the precondition only where the helper said the step worked, although the comment above it
+# said the precondition is what decides either way. On 2026-09-15 that sent the operator to do by hand what the helper
+# had just finished.
+Write-Output ''
+Write-Output '58. the verdict an apply step comes to'
+Assert-True '58. the driver defines Get-ApplyOutcome once, so this case runs that definition and no other' ($defs42.ContainsKey('Get-ApplyOutcome') -and $defs42['Get-ApplyOutcome'].Count -eq 1) ('definitions: ' + $(if ($defs42.ContainsKey('Get-ApplyOutcome')) { $defs42['Get-ApplyOutcome'].Count } else { 0 }))
+$needs58 = @(); $free58 = @()
+if ($defs42.ContainsKey('Get-ApplyOutcome') -and $defs42['Get-ApplyOutcome'].Count -eq 1) {
+    $needs58 = @($defs42['Get-ApplyOutcome'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $defs42.ContainsKey($_) } | Sort-Object -Unique)
+    $free58 = @(Get-FreeVariables $defs42['Get-ApplyOutcome'][0])
+    Invoke-Expression $defs42['Get-ApplyOutcome'][0].Extent.Text
+}
+Assert-True '58. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs58.Count -eq 0) -and ($free58.Count -eq 0)) ('also needed: ' + ($needs58 -join ', ') + '; free variables: ' + ($free58 -join ', '))
+$bothYes58 = Get-ApplyOutcome 'M9' @{ Ok = $true; Detail = 'helper exit 0' } @{ Ok = $true; Detail = 'Script rules enforced' }
+Assert-True '58. helper says yes and the machine agrees: applied, and nothing is written over what the helper was recorded as' (($bothYes58.Applied -eq $true) -and ([string]$bothYes58.ApplyBy -eq '') -and ([string]$bothYes58.Event -like 'M9: applied by the elevated helper; precondition met - Script rules enforced*')) ('applied=' + $bothYes58.Applied + '; applyBy=' + [string]$bothYes58.ApplyBy + '; ' + [string]$bothYes58.Event)
+$wrongHelper58 = Get-ApplyOutcome 'M9' @{ Ok = $false; Detail = 'helper exit 1 | step=15 rc=2 | result=FAILED' } @{ Ok = $true; Detail = 'Script rules enforced (2 rules), AppIDSvc running' }
+Assert-True '58. the helper reported a failure the machine does not bear out: applied all the same, and the helper''s own account is kept beside it' (($wrongHelper58.Applied -eq $true) -and ([string]$wrongHelper58.ApplyBy -like '*step=15 rc=2*') -and ([string]$wrongHelper58.Event -like '*reported a failure the machine does not bear out*')) ('applied=' + $wrongHelper58.Applied + '; applyBy=' + [string]$wrongHelper58.ApplyBy)
+Assert-True '58. and it is still the helper that made it, in the words the revert gate reads - a scenario applied this way is put back the same way, not left to a person' ([string]$wrongHelper58.ApplyBy).StartsWith('the elevated helper') ('applyBy=' + [string]$wrongHelper58.ApplyBy)
+$machineNo58 = Get-ApplyOutcome 'M9' @{ Ok = $true; Detail = 'helper exit 0' } @{ Ok = $false; Detail = 'Script rules: NotConfigured' }
+Assert-True '58. the helper says yes and the machine does not: not applied, and the message says which of the two was read' (($machineNo58.Applied -eq $false) -and ([string]$machineNo58.ApplyBy -eq '') -and (@($machineNo58.Message)[0] -like '*machine does not show it: Script rules: NotConfigured*')) ('applied=' + $machineNo58.Applied + '; ' + (@($machineNo58.Message) -join ' | '))
+$bothNo58 = Get-ApplyOutcome 'M9' @{ Ok = $false; Detail = 'helper exit 1' } @{ Ok = $false; Detail = 'Script rules: NotConfigured' }
+Assert-True '58. and where neither says so, the person is told both - what the helper said, and what the machine says now' (($bothNo58.Applied -eq $false) -and (@($bothNo58.Message)[0] -like '*helper exit 1*') -and (@($bothNo58.Message)[0] -like '*the machine says: Script rules: NotConfigured*') -and (@($bothNo58.Message).Count -eq 2)) ((@($bothNo58.Message) -join ' | '))
+$stepText58 = ''
+if ($defs42.ContainsKey('Invoke-Scenario') -and $defs42['Invoke-Scenario'].Count -eq 1) { $stepText58 = [string]$defs42['Invoke-Scenario'][0].Extent.Text }
+if (-not $stepText58) { $stepText58 = [IO.File]::ReadAllText($driver) }
+Assert-True '58. and the driver asks the machine before it decides, inside a try - a reader that throws on a half-changed machine used to take the campaign with it' (($stepText58 -like '*$outcome = Get-ApplyOutcome $id $ap $pc*') -and ($stepText58 -like '*the machine could not be read after the step*') -and ($stepText58 -notlike '*if ($ap.Ok) {*Save-State*$pc = $(if ($null -eq $S.Precondition)*')) 'the driver still reads the machine only where the helper said it worked'
 
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''

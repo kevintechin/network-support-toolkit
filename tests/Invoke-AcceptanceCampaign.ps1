@@ -1085,12 +1085,20 @@ function Get-M9RevertLines($Ctx) {
     # calls it Automatic like any other, so the flag is recorded and put back on its own (PR #67 round 8).
     $delayed = [string]$Ctx.Facts['AppIDSvcDelayedAuto']
     if ($t -and $map.ContainsKey($t)) {
-        $lines += ('sc config AppIDSvc start= ' + $(if (($t -eq 'Automatic') -and ($delayed -eq 'yes')) { 'delayed-auto' } else { $map[$t] }))
         # Measured on the Windows 10 Pro VM (campaign win10-zhTW, 2026-09-06): sc config is refused once the rules are
         # gone, although the same command was accepted while they were in force - so the value it reads is set as well.
+        # Measured again on 2026-09-15, twice in one campaign and once by hand beside it: refused with the rules in
+        # force as well, elevated, exit 5. What puts the value back either way is the reg add on the line below, which
+        # is counted; sc config is asked first because it is the command a person knows and the one that spells
+        # delayed-auto, and its exit code is not what says whether the service was put back - the Verify reads the
+        # machine for that.
+        $lines += ('may fail: sc config AppIDSvc start= ' + $(if (($t -eq 'Automatic') -and ($delayed -eq 'yes')) { 'delayed-auto' } else { $map[$t] }))
         if ($mapNumber.ContainsKey($t)) { $lines += ('reg add "HKLM\SYSTEM\CurrentControlSet\Services\AppIDSvc" /v Start /t REG_DWORD /d ' + $mapNumber[$t] + ' /f') }
         if (($t -eq 'Automatic') -and (@('yes', 'no') -contains $delayed)) { $lines += ('reg add "HKLM\SYSTEM\CurrentControlSet\Services\AppIDSvc" /v DelayedAutostart /t REG_DWORD /d ' + $(if ($delayed -eq 'yes') { '1' } else { '0' }) + ' /f') }
-        if ([string]$Ctx.Facts['AppIDSvcStatus'] -eq 'Stopped') { $lines += 'net stop AppIDSvc' }
+        # net stop's exit code says nothing either, in the other direction: on 2026-09-15 it printed "the Application
+        # Identity service could not be stopped" and exited 0, and the service was still running - the revert's Verify
+        # is what caught it. So it is asked and not counted, and the machine is read afterwards.
+        if ([string]$Ctx.Facts['AppIDSvcStatus'] -eq 'Stopped') { $lines += 'may fail: net stop AppIDSvc' }
     }
     $lines += 'gpupdate /force'
     return $lines
@@ -1108,13 +1116,27 @@ function New-PolicyStepFile([string]$Id, [string]$What, [string[]]$Lines, [strin
     $body = @('@echo off', ('rem NHC-POLICY-STEP ' + $Id + ' ' + $What),
               'set "PATH=%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\Wbem;%SystemRoot%\System32\WindowsPowerShell\v1.0"',
               'set NHCFAIL=0')
+    # A line the scenario writes as 'may fail: <command>' is run like any other and its exit code printed like any
+    # other, and it is not counted. Measured on the Windows 10 Pro VM on 2026-09-15, both directions inside one
+    # campaign: `net start AppIDSvc` exits 2 with "the requested service has already been started", which is the state
+    # the line was for; `net stop AppIDSvc` printed "the Application Identity service could not be stopped" and exited
+    # 0, with the service still running; and `sc config AppIDSvc start= demand` exits 5, access denied, elevated, both
+    # while the rules were in force and after they were gone, with the reg add beside it writing the same value and
+    # succeeding. So the exit code of these commands does not say whether the step did its work, in either direction -
+    # the machine says, read by the scenario's precondition after an apply and by its Verify after a revert, which is
+    # what this campaign's design says decides (backlog #29). The marker takes a line out of the count and does
+    # nothing else: it still runs, its output and its own rc still go into the record, and every line that must
+    # succeed is still counted.
     $n = 0
     foreach ($l in @($Lines)) {
         if (-not $l) { continue }
+        $text = [string]$l
+        $mayFail = $text.StartsWith('may fail: ', [System.StringComparison]::Ordinal)
+        if ($mayFail) { $text = $text.Substring(10) }
         $n++
-        $body += [string]$l
-        $body += ('echo step=' + $n + ' rc=%ERRORLEVEL%')
-        $body += 'if errorlevel 1 set NHCFAIL=1'
+        $body += $text
+        $body += ('echo step=' + $n + ' rc=%ERRORLEVEL%' + $(if ($mayFail) { ' (not counted)' } else { '' }))
+        if (-not $mayFail) { $body += 'if errorlevel 1 set NHCFAIL=1' }
     }
     $body += 'exit /b %NHCFAIL%'
     $oem = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.OEMCodePage)
@@ -1196,6 +1218,31 @@ function Invoke-PolicyChange([string]$Id, $Ctx, [string]$What, [string[]]$Lines)
     $Ctx.Facts[($What + 'Lines')] = (@($Lines) -join ' ; ')
     Add-Event ('{0}: {1} {2} - {3}' -f $Id, $What, $(if ($r.Ok) { 'through the elevated helper' } else { 'NOT made by the helper' }), $r.Detail)
     return $r
+}
+function Get-ApplyOutcome([string]$Id, $Helper, $Pre) {
+    # What an apply step comes to, given the helper's own account of it and the machine read afterwards. The machine
+    # decides. A step file counts the commands that returned something other than zero, and on the Windows 10 Pro VM
+    # of 2026-09-15 that count was wrong in both directions at once: M9's apply ended FAILED because net start exits 2
+    # where the service is already running - with the policy applied, the service running and gpupdate done - and the
+    # campaign sent the operator away to do by hand what the helper had just finished. The helper's account is kept
+    # beside the verdict either way, because a helper that is wrong about itself is worth seeing in the record.
+    $helperOk = [bool]$Helper.Ok
+    if ($Pre.Ok) {
+        return @{ Applied = $true
+                  # applyBy has to begin with 'the elevated helper' for the revert to be automated too, and that is
+                  # what happened: the helper made the change, and the account it gave of itself was wrong.
+                  ApplyBy = $(if ($helperOk) { '' } else { ('the elevated helper, whose own account of the step was a failure (' + [string]$Helper.Detail + ') although the machine shows the change') })
+                  Event = ('{0}: applied by the elevated helper{1}; precondition met - {2}' -f $Id, $(if ($helperOk) { '' } else { ', which reported a failure the machine does not bear out' }), [string]$Pre.Detail)
+                  Message = @() }
+    }
+    if ($helperOk) {
+        return @{ Applied = $false; ApplyBy = ''; Event = ''
+                  Message = @(('The helper made the change, but the machine does not show it: ' + [string]$Pre.Detail + ' - do it by hand:'),
+                              ('helper 做了變更，但機器上看不出來：' + [string]$Pre.Detail + '——請手動處理：')) }
+    }
+    return @{ Applied = $false; ApplyBy = ''; Event = ''
+              Message = @(('The elevated helper did not make the change (' + [string]$Helper.Detail + '); the machine says: ' + [string]$Pre.Detail + ' - do it by hand:'),
+                          ('提權 helper 沒有完成變更（' + [string]$Helper.Detail + '）；機器目前是：' + [string]$Pre.Detail + '——請手動處理：')) }
 }
 # -------------------- The plan --------------------
 # Folders the extraction scenarios use, at script scope: a scenario's scriptblocks run long after Get-Plan has
@@ -1752,8 +1799,12 @@ function Get-Plan {
                           ('certutil -hashfile "' + $stagedXml + '" SHA256 | find /i "' + $xmlDigest + '" >nul'),
                           ('if errorlevel 1 exit /b 1'),
                           ('powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-AppLockerPolicy -XmlPolicy ''' + $stagedXml + '''"'),
-                          'sc config AppIDSvc start= auto',
-                          'net start AppIDSvc',
+                          # Asked and not counted, for what the campaign of 2026-09-15 measured: net start exits 2
+                          # where the service is already running, which is the state this line is for, and sc config
+                          # AppIDSvc is refused even elevated. What says AppLocker is enforcing is the precondition
+                          # below, which reads the rules and the service off the machine.
+                          'may fail: sc config AppIDSvc start= auto',
+                          'may fail: net start AppIDSvc',
                           'gpupdate /force')
                Invoke-PolicyChange $Ctx.Id $Ctx 'apply' $lines }
            Revert = { param($Ctx)
@@ -2006,13 +2057,24 @@ function Invoke-Scenario($S) {
         $rec.Attempted = $true; Save-State
         $ap = & $S.Apply $ctx
         $rec.Facts = $ctx.Facts
-        if ($ap.Ok) {
-            Save-State
-            $pc = $(if ($null -eq $S.Precondition) { @{ Ok = $true; Detail = 'no precondition' } } else { & $S.Precondition $ctx })
-            if ($pc.Ok) { $autoApplied = $true; Add-Event ('{0}: applied by the elevated helper; precondition met - {1}' -f $id, $pc.Detail) }
-            else { Write-Line @(('The helper made the change, but the machine does not show it: ' + $pc.Detail + ' - do it by hand:'), ('helper 做了變更，但機器上看不出來：' + $pc.Detail + '——請手動處理：')) 'Yellow' }
+        Save-State
+        # Read whether or not the helper says it worked, and read inside a try: the precondition is now asked after a
+        # step that may have left the machine half changed, and a reader that throws there would take the whole
+        # campaign with it where it used to say 'do it by hand' (backlog #29, the campaign of 2026-09-15).
+        $pc = $null
+        if ($null -eq $S.Precondition) { $pc = @{ Ok = [bool]$ap.Ok; Detail = 'no precondition' } }
+        else {
+            try { $pc = & $S.Precondition $ctx }
+            catch { $pc = @{ Ok = $false; Detail = ('the machine could not be read after the step: ' + $_.Exception.Message) } }
         }
-        else { Write-Line @(('The elevated helper did not make the change (' + $ap.Detail + ') - do it by hand:'), ('提權 helper 沒有完成變更（' + $ap.Detail + '）——請手動處理：')) 'Yellow' }
+        $outcome = Get-ApplyOutcome $id $ap $pc
+        if ($outcome.Applied) {
+            $autoApplied = $true
+            if ($outcome.ApplyBy) { $ctx.Facts['applyBy'] = $outcome.ApplyBy; $rec.Facts = $ctx.Facts }
+            Add-Event $outcome.Event
+            Save-State
+        }
+        else { Write-Line @($outcome.Message) 'Yellow' }
     }
     if (($S.Kind -ne 'auto') -and (-not $autoApplied)) {
         Write-Line $S.Instruction 'Cyan'
