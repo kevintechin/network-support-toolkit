@@ -122,11 +122,11 @@ Assert-Catches 'a number in both tables, and the README believing the closed tab
     Edit-All $Readme ' are closed' (', ' + $first + ' are closed')
 }
 Assert-Catches 'a number in neither table' 'I4' {
-    # Closed item 32 leaves both the closed table and the README's list, which names it on its own between two
-    # ranges; the list then still matches the table, and the number is nowhere.
+    # Closed item 32 leaves both the closed table and the README's list, where it sits inside a range that is split
+    # around it; the list then still matches the table, and the number is nowhere.
     $rowLine = (Get-FirstMatch $Backlog '(?m)^\| 32 \|.*$').Value.TrimEnd("`r")
     Edit-All $Backlog ($rowLine + (Get-Newline $Backlog)) ''
-    Edit-All $Readme ', 32 to 36,' ', 33 to 36,'
+    Edit-All $Readme ', 23 to 37,' ', 23 to 31, 33 to 37,'
 }
 Assert-Catches 'a row numbered 0, the README listing it too' 'I4' {
     # PR #63, round 4: 0 is a number the casts keep and the range 1..highest never sees; the README's closed list
@@ -164,38 +164,38 @@ Assert-Catches 'the open count one too many' 'R1' {
 Assert-Catches 'a closed item still listed as open, its group counted right' 'R2' {
     # The number is closed, the group's count is raised with it, and the link has no body to point at: R4 leaves
     # a link without a body to I1, so only R2 sees the closed number.
-    Edit-All $Readme 'two changes to the tool ([#38]' 'three changes to the tool ([#40](docs/backlog.md#40--the-report-explained-the-badge) the badge explanation, [#38]'
-    Edit-All $Readme 'sum to ten where the items are nine' 'sum to eleven where the items are ten'
+    Edit-All $Readme 'four changes to the tool ([#38]' 'five changes to the tool ([#40](docs/backlog.md#40--the-report-explained-the-badge) the badge explanation, [#38]'
+    Edit-All $Readme 'sum to eight where the items are eight' 'sum to nine where the items are nine'
 }
 Assert-Catches 'an open item dropped from the row, its group counted right' 'R3' {
-    Edit-All $Readme '[#29](docs/backlog.md#29--the-campaign-asks-a-person-to-type-what-a-script-could-do) the campaign''s manual steps, ' ''
-    Edit-All $Readme 'four in `tests/`' 'three in `tests/`'
-    Edit-All $Readme 'sum to ten where the items are nine' 'sum to nine where the items are eight'
+    Edit-All $Readme '[#42](docs/backlog.md#42--nothing-proves-the-tool-changes-nothing) nothing proving the tool changes nothing, and ' ''
+    Edit-All $Readme 'two in `tests/`' 'one in `tests/`'
+    Edit-All $Readme 'sum to eight where the items are eight' 'sum to seven where the items are seven'
 }
 Assert-Catches 'a link to a heading the page does not have' 'R4' {
-    Edit-All $Readme 'docs/backlog.md#29--the-campaign-asks-a-person-to-type-what-a-script-could-do' 'docs/backlog.md#29--the-campaign-asks-a-person-to-type-what-a-scripts-could-do'
+    Edit-All $Readme 'docs/backlog.md#42--nothing-proves-the-tool-changes-nothing' 'docs/backlog.md#42--nothing-proves-the-tools-changes-nothing'
 }
 Assert-Catches 'a group whose stated count is not what it lists' 'R5' {
-    Edit-All $Readme 'two changes to the tool (' 'three changes to the tool ('
-    Edit-All $Readme 'sum to ten where the items are nine' 'sum to eleven where the items are nine'
+    Edit-All $Readme 'four changes to the tool (' 'five changes to the tool ('
+    Edit-All $Readme 'sum to eight where the items are eight' 'sum to nine where the items are eight'
 }
 Assert-Catches 'an open item linked outside every group, its group counted right' 'R5' {
     # PR #63, round 1: the link leaves its group, the group's count follows it, and the link stands in the row's prose
     # between the last group and the closed list, where it is listed (R2, R3) and points at its heading (R4) and is
     # in no group; the overlap sentence is moved with the count so that this is the one thing R5 has to say.
-    Edit-All $Readme '[#29](docs/backlog.md#29--the-campaign-asks-a-person-to-type-what-a-script-could-do) the campaign''s manual steps, ' ''
-    Edit-All $Readme 'four in `tests/`' 'three in `tests/`'
-    Edit-All $Readme 'sum to ten where the items are nine' 'sum to nine where the items are nine'
-    Edit-All $Readme ' Numbers 1 to 21' ' [#29](docs/backlog.md#29--the-campaign-asks-a-person-to-type-what-a-script-could-do) stands outside every group. Numbers 1 to 21'
+    Edit-All $Readme '[#42](docs/backlog.md#42--nothing-proves-the-tool-changes-nothing) nothing proving the tool changes nothing, and ' ''
+    Edit-All $Readme 'two in `tests/`' 'one in `tests/`'
+    Edit-All $Readme 'sum to eight where the items are eight' 'sum to seven where the items are eight'
+    Edit-All $Readme ' Numbers 1 to 21' ' [#42](docs/backlog.md#42--nothing-proves-the-tool-changes-nothing) stands outside every group. Numbers 1 to 21'
 }
 Assert-Catches 'the overlap sentence stating a sum the groups do not make' 'R5' {
-    Edit-All $Readme 'sum to ten where the items are nine' 'sum to eleven where the items are nine'
+    Edit-All $Readme 'sum to eight where the items are eight' 'sum to nine where the items are eight'
 }
 Assert-Catches 'an item listed twice in the same group, the count and the sum raised with it' 'R5' {
     # PR #63, round 2: a copied link is a second membership of the same group, not of a further one; the group's count
     # and the overlap sentence are raised with it so that the duplicate is the one thing R5 has to say.
-    Edit-All $Readme 'two changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the retransmission' 'three changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) twice, [#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the retransmission'
-    Edit-All $Readme 'sum to ten where the items are nine' 'sum to eleven where the items are nine'
+    Edit-All $Readme 'four changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the retransmission' 'five changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) twice, [#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the retransmission'
+    Edit-All $Readme 'sum to eight where the items are eight' 'sum to nine where the items are eight'
 }
 Assert-Catches 'a number listed as closed that no closed row carries' 'R6' {
     Edit-All $Readme ' are closed' ', 999 are closed'
@@ -212,7 +212,7 @@ Assert-Catches 'a second closed-numbers sentence after the first' 'R6' {
 # 4 - what the row may say without being misread: a date, a version and a mention between a group's count and its
 # parenthesis are not the count (the self-audit before round 4 - the last number before the parenthesis used to be).
 Assert-StillClean 'a date, a version and a mention between a count and its group are not the count' {
-    Edit-All $Readme 'four in `tests/` (' 'four in `tests/`, as of 2026-09-13 and 1.2.14 and #25 ('
+    Edit-All $Readme 'two in `tests/` (' 'two in `tests/`, as of 2026-09-13 and 1.2.14 and #25 ('
 }
 
 # 5 - and the control again, to prove every mutation was put back.

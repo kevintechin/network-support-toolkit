@@ -13,8 +13,12 @@
 # hosted runner. A green run therefore means "everything a machine can check unattended still passes", not "the
 # release is validated": that remains the local `-Package -RequireHealthy` run recorded in healthcheck/VALIDATION.md.
 #
-# No path filter on purpose: a required status check that is skipped for a docs-only commit blocks the merge, and the
-# run costs two or three minutes.
+# No path filter on purpose: a required status check that is skipped for a docs-only commit blocks the merge, and
+# nobody waits for this run: it is a hosted runner on a public repository, so its minutes cost nothing and none of
+# them are a person's. The run took two or three minutes when this was written and takes nine to sixteen now -
+# 12, 9 and 16 minutes over the three pushes of PR #68, measured 2026-09-15 - because the chain has grown; the
+# figure is here so that a reader deciding whether to skip a run knows what a skip is worth, and it is worth
+# re-measuring rather than trusting.
 name: Validation chain
 
 on:
