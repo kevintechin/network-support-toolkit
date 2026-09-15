@@ -1073,9 +1073,17 @@ function Get-M9RevertLines($Ctx) {
     # (backlog #29). The local policy is removed at the registry rather than through Set-AppLockerPolicy, because that
     # path needs neither PowerShell nor the AppLocker module: under an enforced policy the way back must not depend on
     # either. A machine that had a policy of its own gets it back afterwards, from the copy the apply step saved.
-    $lines = @('reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2" /f')
     $before = [string]$Ctx.Facts['AppLockerPolicyBefore']
-    if ($before) { $lines += ('if exist "' + $before + '" powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-AppLockerPolicy -XmlPolicy ''' + $before + '''"') }
+    $lines = @()
+    if ($before) {
+        # This run's own export of the machine's policy, checked BEFORE the deletion rather than after it. reg delete
+        # takes the whole local AppLocker policy away and only that file puts it back, so a step that never got as far
+        # as writing it - a consent prompt refused, an export that failed, a stale file from an earlier campaign -
+        # must refuse rather than leave a machine with neither its own policy nor a copy of it (PR #68 round 1).
+        $lines += ('if not exist "' + $before + '" exit /b 1')
+    }
+    $lines += 'reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2" /f'
+    if ($before) { $lines += ('powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-AppLockerPolicy -XmlPolicy ''' + $before + '''"') }
     $map = @{ Automatic = 'auto'; Manual = 'demand'; Disabled = 'disabled' }
     $mapNumber = @{ Automatic = '2'; Manual = '3'; Disabled = '4' }
     $t = [string]$Ctx.Facts['AppIDSvcStartType']
@@ -1247,7 +1255,7 @@ function Get-M9LauncherVerdict($Run) {
     if ($Run.Reports.Count -gt 0) { return @{ What = 'the script ran unrestricted although the Script rules are enforced and AppLocker itself answers DeniedByDefault for this account - the policy is on record but nothing acted on it. Since Windows 10 2004 with KB 5024351 every edition enforces, so this is the machine to investigate (build, update level, whether the policy reaches this account), not an edition rule'; Passed = $false } }
     return @{ What = 'no report, no launcher error, exit code 0 - unexplained'; Passed = $false }
 }
-function Get-ApplyOutcome([string]$Id, $Helper, $Pre) {
+function Get-ApplyOutcome([string]$Id, $Helper, $Pre, $Was) {
     # What an apply step comes to, given the helper's own account of it and the machine read afterwards. The machine
     # decides. A step file counts the commands that returned something other than zero, and on the Windows 10 Pro VM
     # of 2026-09-15 that count was wrong in both directions at once: M9's apply ended FAILED because net start exits 2
@@ -1255,6 +1263,21 @@ function Get-ApplyOutcome([string]$Id, $Helper, $Pre) {
     # campaign sent the operator away to do by hand what the helper had just finished. The helper's account is kept
     # beside the verdict either way, because a helper that is wrong about itself is worth seeing in the record.
     $helperOk = [bool]$Helper.Ok
+    # And what the machine said before anything was asked of it. A precondition that holds afterwards is evidence of
+    # the step only where it did not hold before: a machine that already enforces a policy of M9's shape reads as
+    # "the change is there" whatever the helper did, and attributing that to the helper would start the automated
+    # revert - which deletes the machine's whole local AppLocker policy and puts back only what this run exported -
+    # against a machine this run exported nothing from. The helper's own success is independent evidence of the step
+    # and is believed on its own; the machine's reading alone is not (PR #68 round 1).
+    # A reading that says the machine did NOT read this way before the step is what allows the attribution; no reading
+    # at all is not a licence to make it, because the question it answers was never asked.
+    $changed = (($null -ne $Was) -and -not [bool]$Was.Ok)
+    if ($Pre.Ok -and -not $helperOk -and -not $changed) {
+        $why = $(if ($null -eq $Was) { 'and nothing read the machine before it was asked, so this reading cannot be a change' } else { 'and the machine already read this way before it was asked: ' + [string]$Was.Detail })
+        return @{ Applied = $false; ApplyBy = ''; Event = ''
+                  Message = @(('The elevated helper did not make the change (' + [string]$Helper.Detail + '), ' + $why + ' - so nothing here says the change was made, and no revert of this run''s runs against it - do it by hand:'),
+                              ('提權 helper 沒有完成變更（' + [string]$Helper.Detail + '），' + $(if ($null -eq $Was) { '而且沒有任何東西在動手之前讀過這台機器，所以這個讀數不可能是一個變化' } else { '而且機器在被要求之前就已經是這個樣子：' + [string]$Was.Detail }) + '——所以這裡沒有任何東西能說明變更發生過，這次執行的還原也不會對它動手——請手動處理：')) }
+    }
     if ($Pre.Ok) {
         return @{ Applied = $true
                   # applyBy has to begin with 'the elevated helper' for the revert to be automated too, and that is
@@ -2076,6 +2099,15 @@ function Invoke-Scenario($S) {
     # self-test asserts.
     $autoApplied = $false
     if (($S.Kind -ne 'auto') -and ($null -ne $S.Apply) -and (-not $ManualPolicy) -and ($null -eq $AnswersTable) -and (-not $rec.Attempted)) {
+        # What the machine says before anything is asked of it, so that the reading afterwards can be a change and
+        # not a state - see Get-ApplyOutcome. Read before the attempt is recorded, because it is about the machine as
+        # this scenario found it (PR #68 round 1).
+        $was = $null
+        if ($null -ne $S.Precondition) {
+            try { $was = & $S.Precondition $ctx }
+            catch { $was = @{ Ok = $false; Detail = ('the machine could not be read before the step: ' + $_.Exception.Message) } }
+            if ($null -ne $ctx.Facts) { $ctx.Facts['preconditionBefore'] = ($(if ($was.Ok) { 'met' } else { 'not met' }) + ': ' + [string]$was.Detail) }
+        }
         # The attempt is recorded before the helper is asked, not after it answers: a step can fail with the machine
         # half changed - one of M8's two values written, the service started before the policy failed - and an
         # attempt is what makes the revert run at all, whatever the person does next (PR #11 round 3 for the gate).
@@ -2092,7 +2124,7 @@ function Invoke-Scenario($S) {
             try { $pc = & $S.Precondition $ctx }
             catch { $pc = @{ Ok = $false; Detail = ('the machine could not be read after the step: ' + $_.Exception.Message) } }
         }
-        $outcome = Get-ApplyOutcome $id $ap $pc
+        $outcome = Get-ApplyOutcome $id $ap $pc $was
         if ($outcome.Applied) {
             $autoApplied = $true
             if ($outcome.ApplyBy) { $ctx.Facts['applyBy'] = $outcome.ApplyBy; $rec.Facts = $ctx.Facts }

@@ -1034,7 +1034,7 @@ if ($missingDefs43.Count -eq 0) {
 Assert-True '43. neither reads a variable of the driver, which would be $null here and say nothing about it' ($free43.Count -eq 0) ('free variables: ' + ($free43 -join ', '))
 $auto43 = Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Automatic'; AppIDSvcStatus = 'Running'; AppLockerPolicyBefore = 'C:\state\M9\applocker-before.xml' } }
 Assert-True '43. a service that was Automatic and running comes back as auto, with the registry value for the case where sc config is refused, and is not stopped' ((@($auto43 | Where-Object { $_ -like 'may fail: sc config AppIDSvc start= auto*' }).Count -eq 1) -and (@($auto43 | Where-Object { $_ -like '*Services\AppIDSvc*/d 2 /f*' }).Count -eq 1) -and (@($auto43 | Where-Object { $_ -like '*net stop*' }).Count -eq 0)) ($auto43 -join ' / ')
-Assert-True '43. the local policy is removed at the registry, which needs neither PowerShell nor the AppLocker module, and the machine''s own policy is put back after it' ((@($auto43)[0] -like 'reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2"*') -and (@($auto43 | Where-Object { $_ -like '*Set-AppLockerPolicy -XmlPolicy*applocker-before.xml*' }).Count -eq 1) -and (@($auto43)[-1] -eq 'gpupdate /force')) ($auto43 -join ' / ')
+Assert-True '43. the local policy is removed at the registry, which needs neither PowerShell nor the AppLocker module, and the machine''s own policy is put back after it' ((@($auto43)[0] -like 'if not exist "*applocker-before.xml" exit /b 1') -and (@($auto43)[1] -like 'reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2"*') -and (@($auto43 | Where-Object { $_ -like '*Set-AppLockerPolicy -XmlPolicy*applocker-before.xml*' }).Count -eq 1) -and (@($auto43)[-1] -eq 'gpupdate /force')) ($auto43 -join ' / ')
 $manual43 = Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'Manual'; AppIDSvcStatus = 'Stopped' } }
 Assert-True '43. a service that was Manual and stopped comes back as demand and is stopped again, and no policy is restored where none was saved' ((@($manual43 | Where-Object { $_ -like 'may fail: sc config AppIDSvc start= demand*' }).Count -eq 1) -and (@($manual43 | Where-Object { $_ -like '*/d 3 /f*' }).Count -eq 1) -and (@($manual43 | Where-Object { $_ -eq 'may fail: net stop AppIDSvc' }).Count -eq 1) -and (@($manual43 | Where-Object { $_ -like '*Set-AppLockerPolicy*' }).Count -eq 0)) ($manual43 -join ' / ')
 $none43 = Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'n/a'; AppIDSvcStatus = 'n/a' } }
@@ -1923,7 +1923,7 @@ if ($defs42.ContainsKey('Get-ApplyOutcome') -and $defs42['Get-ApplyOutcome'].Cou
 Assert-True '58. it calls and reads nothing of the driver, so what runs here is what runs there' (($needs58.Count -eq 0) -and ($free58.Count -eq 0)) ('also needed: ' + ($needs58 -join ', ') + '; free variables: ' + ($free58 -join ', '))
 $bothYes58 = Get-ApplyOutcome 'M9' @{ Ok = $true; Detail = 'helper exit 0' } @{ Ok = $true; Detail = 'Script rules enforced' }
 Assert-True '58. helper says yes and the machine agrees: applied, and nothing is written over what the helper was recorded as' (($bothYes58.Applied -eq $true) -and ([string]$bothYes58.ApplyBy -eq '') -and ([string]$bothYes58.Event -like 'M9: applied by the elevated helper; precondition met - Script rules enforced*')) ('applied=' + $bothYes58.Applied + '; applyBy=' + [string]$bothYes58.ApplyBy + '; ' + [string]$bothYes58.Event)
-$wrongHelper58 = Get-ApplyOutcome 'M9' @{ Ok = $false; Detail = 'helper exit 1 | step=15 rc=2 | result=FAILED' } @{ Ok = $true; Detail = 'Script rules enforced (2 rules), AppIDSvc running' }
+$wrongHelper58 = Get-ApplyOutcome 'M9' @{ Ok = $false; Detail = 'helper exit 1 | step=15 rc=2 | result=FAILED' } @{ Ok = $true; Detail = 'Script rules enforced (2 rules), AppIDSvc running' } @{ Ok = $false; Detail = 'Script rules: NotConfigured' }
 Assert-True '58. the helper reported a failure the machine does not bear out: applied all the same, and the helper''s own account is kept beside it' (($wrongHelper58.Applied -eq $true) -and ([string]$wrongHelper58.ApplyBy -like '*step=15 rc=2*') -and ([string]$wrongHelper58.Event -like '*reported a failure the machine does not bear out*')) ('applied=' + $wrongHelper58.Applied + '; applyBy=' + [string]$wrongHelper58.ApplyBy)
 Assert-True '58. and it is still the helper that made it, in the words the revert gate reads - a scenario applied this way is put back the same way, not left to a person' ([string]$wrongHelper58.ApplyBy).StartsWith('the elevated helper') ('applyBy=' + [string]$wrongHelper58.ApplyBy)
 $machineNo58 = Get-ApplyOutcome 'M9' @{ Ok = $true; Detail = 'helper exit 0' } @{ Ok = $false; Detail = 'Script rules: NotConfigured' }
@@ -1963,6 +1963,36 @@ $ran59 = Get-M9LauncherVerdict @{ EnvironmentReports = @(); LauncherError = ''; 
 Assert-True '59. a run that produced a report under enforced rules is not a pass, whatever else is missing - the machine is what to investigate' (($ran59.Passed -eq $false) -and ([string]$ran59.What -like '*ran unrestricted*') -and ([string]$ran59.What -like '*KB 5024351*')) ('says: ' + [string]$ran59.What)
 $quiet59 = Get-M9LauncherVerdict @{ EnvironmentReports = @(); LauncherError = ''; Reports = @(); ExitCode = 0 }
 Assert-True '59. and a run that did nothing at all and said so with a zero is unexplained, not a pass' (($quiet59.Passed -eq $false) -and ([string]$quiet59.What -like '*unexplained*')) ('says: ' + [string]$quiet59.What)
+
+# -------------------- 60. a state the machine was already in is not a change, and a deletion needs its own copy --------------------
+# PR #68 round 1, P1: where M9's precondition was already true before the attempt - a machine that enforces a policy
+# of that shape of its own - and the helper failed early, the verdict of case 58 read the pre-existing state as the
+# helper's work, set applyBy, and started the automated revert, whose first command deletes the machine's whole local
+# AppLocker policy and whose restore reads a file this run never wrote. Attribution needs a reading that says the
+# machine did NOT look this way before the step; and the way back refuses to delete where this run exported nothing.
+Write-Output ''
+Write-Output '60. what a machine that already looked like that may be read as'
+$wasNot60 = @{ Ok = $false; Detail = 'Script rules: NotConfigured, 0 rules' }
+$wasAlready60 = @{ Ok = $true; Detail = 'Script rules enforced (2 rules), AppIDSvc running' }
+$pre60 = @{ Ok = $true; Detail = 'Script rules enforced (2 rules), AppIDSvc running' }
+$failed60 = @{ Ok = $false; Detail = 'helper exit 1; the helper wrote no result file' }
+$ok60 = @{ Ok = $true; Detail = 'helper exit 0' }
+$refused60 = Get-ApplyOutcome 'M9' $failed60 $pre60 $wasAlready60
+Assert-True '60. the helper failed and the machine already read that way before the step: not applied, nothing is attributed to the helper, and no revert of this run''s is armed' (($refused60.Applied -eq $false) -and ([string]$refused60.ApplyBy -eq '') -and ([string]$refused60.Event -eq '') -and (@($refused60.Message)[0] -like '*already read this way before it was asked*')) ('applied=' + $refused60.Applied + '; applyBy=' + [string]$refused60.ApplyBy + '; ' + (@($refused60.Message)[0]))
+$blind60 = Get-ApplyOutcome 'M9' $failed60 $pre60 $null
+Assert-True '60. and no reading at all is not a licence either - the question was never asked, so the answer cannot be a change' (($blind60.Applied -eq $false) -and ([string]$blind60.ApplyBy -eq '') -and (@($blind60.Message)[0] -like '*nothing read the machine before it was asked*')) ('applied=' + $blind60.Applied + '; ' + (@($blind60.Message)[0]))
+$changed60 = Get-ApplyOutcome 'M9' $failed60 $pre60 $wasNot60
+Assert-True '60. and the reading is not vacuous: the same failure where the machine did not read that way before is still the helper''s work, and the revert is still the helper''s' (($changed60.Applied -eq $true) -and ([string]$changed60.ApplyBy).StartsWith('the elevated helper') -and ([string]$changed60.Event -like '*does not bear out*')) ('applied=' + $changed60.Applied + '; applyBy=' + [string]$changed60.ApplyBy)
+$helperSays60 = Get-ApplyOutcome 'M9' $ok60 $pre60 $wasAlready60
+Assert-True '60. a helper that says it did the work is believed on its own, whatever the machine looked like before - its own account is evidence of the step and the machine''s reading alone is not' (($helperSays60.Applied -eq $true) -and ([string]$helperSays60.ApplyBy -eq '')) ('applied=' + $helperSays60.Applied + '; applyBy=' + [string]$helperSays60.ApplyBy)
+$exported60 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'n/a'; AppIDSvcStatus = 'n/a'; AppLockerPolicyBefore = 'C:\Windows\Temp\nhc-policy\applocker-before.xml' } })
+$noExport60 = @(Get-M9RevertLines @{ Facts = @{ AppIDSvcStartType = 'n/a'; AppIDSvcStatus = 'n/a' } })
+$deleteAt60 = [array]::IndexOf($exported60, 'reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2" /f')
+Assert-True '60. the way back proves this run''s own export before it deletes the machine''s policy, not after - the deletion is what only that file puts right' (($exported60[0] -eq 'if not exist "C:\Windows\Temp\nhc-policy\applocker-before.xml" exit /b 1') -and ($deleteAt60 -eq 1) -and (@($exported60 | Where-Object { $_ -like '*Set-AppLockerPolicy -XmlPolicy*' }).Count -eq 1)) ($exported60 -join ' / ')
+Assert-True '60. and where no export was ever recorded there is nothing to prove and nothing to restore, which is the shape it always had' ((@($noExport60 | Where-Object { $_ -like 'if not exist*' }).Count -eq 0) -and ($noExport60[0] -like 'reg delete*SrpV2*') -and (@($noExport60 | Where-Object { $_ -like '*Set-AppLockerPolicy*' }).Count -eq 0)) ($noExport60 -join ' / ')
+$applyText60 = ''
+if ($defs42.ContainsKey('Invoke-Scenario') -and $defs42['Invoke-Scenario'].Count -eq 1) { $applyText60 = [string]$defs42['Invoke-Scenario'][0].Extent.Text }
+Assert-True '60. and the driver reads the machine before the step and hands both readings to the verdict, so the campaign asks the question this case answers' (($applyText60 -like '*$was = & $S.Precondition $ctx*') -and ($applyText60 -like '*Get-ApplyOutcome $id $ap $pc $was*') -and ($applyText60.IndexOf('$was = & $S.Precondition') -lt $applyText60.IndexOf('$ap = & $S.Apply'))) 'the driver does not read the machine before the step'
 
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
