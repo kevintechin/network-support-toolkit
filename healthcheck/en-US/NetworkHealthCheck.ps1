@@ -4438,7 +4438,7 @@ function Add-WifiRfResult {
     # answered and neither named an interface - an interface that exists and could not be read is not no interface,
     # which is what closed item #62 measured, so a reader that failed leaves this false and the other two rows say
     # what they have always said.
-    $script:WifiNoInterfaceAnywhere = (($views.Count -eq 0) -and ([string]::IsNullOrWhiteSpace([string]$sample.Error)) -and ($null -ne $api) -and ([string]::IsNullOrWhiteSpace([string]$api.Error)))
+    $script:WifiNoInterfaceAnywhere = (($views.Count -eq 0) -and (Test-WifiNetshAnswered $sample) -and ($null -ne $api) -and ([string]::IsNullOrWhiteSpace([string]$api.Error)))
     if ([string]$sample.Error -eq "netsh" -and $views.Count -eq 0) {
         Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message "netsh.exe was not found; Wi-Fi radio data is unavailable." -Details $apiLine -Tag "wifi" -Scope "IT" | Out-Null
         return
@@ -4555,6 +4555,17 @@ function Add-WifiRfResult {
     }
 }
 
+function Test-WifiNetshAnswered {
+    param([object]$Sample)
+
+    # netsh answered where it ran and exited 0. A non-zero exit with nothing listed is a failed read as much as a
+    # thrown one (PR #55, round 10), and the distinction is the difference between a computer with no wireless
+    # interface and one whose reader was refused - which is why this is one predicate and not a condition written
+    # twice: #69's "neither reader listed an interface" had a weaker copy of it and would have called a machine with
+    # a hidden or disabled adapter a wired computer (PR #69 round 2).
+    if ($null -eq $Sample) { return $false }
+    return ([string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" "")) -and (ConvertTo-IntSafe (Get-PropertyValue $Sample "NetshExitCode" 0) 0) -eq 0)
+}
 function Test-WifiSampleReadable {
     param([object]$Sample)
 
@@ -4565,7 +4576,7 @@ function Test-WifiSampleReadable {
     if ($null -eq $Sample) { return $false }
     # netsh answered only where it ran and exited 0 (PR #55, round 10): a non-zero exit with nothing listed is a failed read as
     # much as a thrown one, and beside a failed service reading it makes the aggregate row, not the wired computer's.
-    if ([string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" "")) -and (ConvertTo-IntSafe (Get-PropertyValue $Sample "NetshExitCode" 0) 0) -eq 0) { return $true }
+    if (Test-WifiNetshAnswered $Sample) { return $true }
     $api = Get-PropertyValue $Sample "Api" $null
     return ($null -ne $api -and [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $api "Error" "")))
 }

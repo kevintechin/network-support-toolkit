@@ -4288,7 +4288,7 @@ function Add-WifiRfResult {
     # 而且只有它同時讀了兩個讀取器，所以它看到的就是那兩列要用的。這個事實只在兩個讀取器都答了、
     # 而且都沒列出介面時才成立——「介面存在但讀不到」不等於「沒有介面」，那是已結案的 #62 量到的事；
     # 只要有一個讀取器失敗，這裡就是假，另外兩列維持它們原本的說法。
-    $script:WifiNoInterfaceAnywhere = (($views.Count -eq 0) -and ([string]::IsNullOrWhiteSpace([string]$sample.Error)) -and ($null -ne $api) -and ([string]::IsNullOrWhiteSpace([string]$api.Error)))
+    $script:WifiNoInterfaceAnywhere = (($views.Count -eq 0) -and (Test-WifiNetshAnswered $sample) -and ($null -ne $api) -and ([string]::IsNullOrWhiteSpace([string]$api.Error)))
     if ([string]$sample.Error -eq "netsh" -and $views.Count -eq 0) {
         Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message "找不到 netsh.exe，無法取得 Wi-Fi 無線資料。" -Details $apiLine -Tag "wifi" -Scope "IT" | Out-Null
         return
@@ -4402,6 +4402,16 @@ function Add-WifiRfResult {
     }
 }
 
+function Test-WifiNetshAnswered {
+    param([object]$Sample)
+
+    # netsh 算回答了，只有在它真的跑了而且以 0 結束時。結束代碼非 0 而且沒列出任何東西，跟拋例外一樣是一次失敗的讀取
+    # （PR #55 第 10 輪），而這個區別正好就是「沒有無線介面的電腦」與「讀取器被拒的電腦」的差別——所以它是一個述語，
+    # 而不是寫兩次的條件：#69 的「兩個讀取器都沒列出介面」曾經有一份較弱的複本，會把一台網卡被隱藏或停用的機器
+    # 說成有線電腦（PR #69 第 2 輪）。
+    if ($null -eq $Sample) { return $false }
+    return ([string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" "")) -and (ConvertTo-IntSafe (Get-PropertyValue $Sample "NetshExitCode" 0) 0) -eq 0)
+}
 function Test-WifiSampleReadable {
     param([object]$Sample)
 
@@ -4411,7 +4421,7 @@ function Test-WifiSampleReadable {
     if ($null -eq $Sample) { return $false }
     # netsh 有執行且以 0 結束才算有回答（PR #55，第 10 回合）：非零結束碼、什麼都沒列，和擲出例外一樣是失敗的讀取，旁邊的
     # 服務讀取也失敗時，得到的是彙總列，不是有線電腦那一列。
-    if ([string]::IsNullOrWhiteSpace([string](Get-PropertyValue $Sample "Error" "")) -and (ConvertTo-IntSafe (Get-PropertyValue $Sample "NetshExitCode" 0) 0) -eq 0) { return $true }
+    if (Test-WifiNetshAnswered $Sample) { return $true }
     $api = Get-PropertyValue $Sample "Api" $null
     return ($null -ne $api -and [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $api "Error" "")))
 }
