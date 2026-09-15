@@ -4465,6 +4465,8 @@ function Add-WifiRfResult {
         $details += $lines
         $details += ("Wireless interfaces reported by netsh: {0}" -f $netshCount)
         $details += $apiLine
+        $hardwareLine = Get-WirelessHardwareLine
+        if ($hardwareLine) { $details += $hardwareLine }
         if ($netshReason) { $details += ("netsh: " + $netshReason) }
         $details += "Method: the WLAN service (WlanEnumInterfaces) for the interfaces and their connection state, netsh wlan show interfaces for the fields."
         $details += "Manual check: netsh wlan show interfaces"
@@ -4551,34 +4553,92 @@ function Add-WifiRfResult {
     }
 }
 
+function Get-WirelessAdapterInventory {
+    # Every adapter this computer has, asked of the adapter list itself - which is NOT the run's network snapshot.
+    # That snapshot starts from Get-NetIPConfiguration and keeps only adapters that are Up and carry an address, so
+    # a Wi-Fi adapter that is disabled, disconnected or without a lease is not in it (PR #69 round 7) - and those
+    # are exactly the machines where the two Wi-Fi readers fail, so asking the snapshot would have told a person
+    # whose radio is switched off that this computer has no wireless adapter.
+    #
+    # Hidden adapters are left out on purpose: measured 2026-09-16 on a machine with one radio, Get-NetAdapter lists
+    # one Native 802.11 adapter and -IncludeHidden lists three, the other two being the virtual Wi-Fi Direct adapters
+    # the driver makes. The visible list is the one that names hardware.
+    #
+    # $null means the list could not be read, which is not a list with no radio in it. There is no second reader for
+    # this question: the CIM class reports a Wi-Fi card's AdapterType as "Ethernet 802.3" as readily as a wired
+    # one's (measured 2026-09-16 on an Intel Wi-Fi 6E AX211, whose PhysicalMediaType is "Native 802.11" at the same
+    # moment), so where this cannot be read the rows say so rather than choosing an answer.
+    if (-not (Get-Command Get-NetAdapter -ErrorAction SilentlyContinue)) { return $null }
+    try { return @(Get-NetAdapter -ErrorAction Stop | Where-Object { $null -ne $_ }) }
+    catch { return $null }
+}
+
+function Test-IsWirelessAdapterEntry {
+    param([object]$Adapter)
+
+    # Wireless by any one of the four things the adapter list says about an entry, because "this computer has no
+    # wireless adapter" is the harmful answer to get wrong: the media type naming Native 802.11 (PhysicalMediaType or
+    # MediaType), NdisPhysicalMedium 9 (NdisPhysicalMediumNative802_11), or InterfaceType 71 (the IANA ifType for
+    # IEEE 802.11). Measured 2026-09-16 on an Intel Wi-Fi 6E AX211: all four agree there - while on the same machine
+    # several wired and virtual adapters carry PhysicalMediaType "Unspecified" beside MediaType "802.3", so no one
+    # field is the one to trust, and a driver that leaves the medium unspecified must not read as a machine with no
+    # radio (PR #69 round 7, this project's own audit).
+    if ($null -eq $Adapter) { return $false }
+    foreach ($field in @("PhysicalMediaType", "MediaType")) {
+        if (([string](Get-PropertyValue $Adapter $field "")) -like "*Native 802.11*") { return $true }
+    }
+    if ((ConvertTo-IntSafe (Get-PropertyValue $Adapter "NdisPhysicalMedium" -1) -1) -eq 9) { return $true }
+    if ((ConvertTo-IntSafe (Get-PropertyValue $Adapter "InterfaceType" -1) -1) -eq 71) { return $true }
+    return $false
+}
+
 function Get-WirelessHardwareReading {
-    param([object[]]$Adapters)
+    param([object]$Inventory)
 
     # Whether this computer has a wireless adapter at all, which is the question the two Wi-Fi readers cannot answer
-    # when neither of them answers. It is a different privilege domain: the adapter inventory is the NDIS interface
-    # list, and it needs no WLAN service running, no location permission and no elevation, while `netsh wlan show
-    # interfaces` needs the location on Windows 11 24H2 and the WLAN service reads need the service started. On the
-    # machine that raised backlog #69 the service was stopped (error 1062) and netsh exited 1, so both readers were
-    # silent - and the rows had nothing left to tell "there is no radio here" from "the radio could not be read".
+    # when neither of them answers. It is a different privilege domain: the adapter list needs no WLAN service
+    # running, no location permission and no elevation, while `netsh wlan show interfaces` needs the location on
+    # Windows 11 24H2 and the WLAN service reads need the service started. On the machine that raised backlog #69
+    # the service was stopped (error 1062) and netsh exited 1, so both readers were silent - and the rows had
+    # nothing left to tell "there is no radio here" from "the radio could not be read".
     #
-    # Three answers and not two, because "I could not tell" is not either of them. Only the NetTCPIP path carries a
-    # media type that names a wireless adapter: the CIM/WMI fallback fills MediaType from Win32_NetworkAdapter's
-    # AdapterType, which reports "Ethernet 802.3" for a Wi-Fi card as readily as for a wired one (measured
-    # 2026-09-16 on an Intel Wi-Fi 6E AX211: PhysicalMediaType "Native 802.11", AdapterType "Ethernet 802.3",
-    # AdapterTypeID 0). Where the inventory cannot answer, Read is false and the rows say so rather than choosing.
-    $usable = @(@($Adapters) | Where-Object { $null -ne $_ -and ([string](Get-PropertyValue $_ "Source" "")) -eq "NetTCPIP" })
-    if (-not $usable.Count) {
+    # Three answers and not two, because "I could not tell" is neither of the other two: a reading that was not
+    # taken must never read as an absence.
+    if ($null -eq $Inventory) {
         return @{ Read = $false; Present = $false
-                  Detail = "the adapter inventory cannot say: it was read through CIM, whose adapter type does not tell a wireless adapter from a wired one" }
+                  Detail = "the adapter list could not be read, so whether this computer has a wireless adapter is unknown" }
     }
-    $wireless = @($usable | Where-Object { ([string](Get-PropertyValue $_ "MediaType" "")) -like "*Native 802.11*" })
+    $items = @(@($Inventory) | Where-Object { $null -ne $_ })
+    if (-not $items.Count) {
+        return @{ Read = $false; Present = $false
+                  Detail = "the adapter list came back empty, which is not the same as a computer with no wireless adapter" }
+    }
+    $wireless = @($items | Where-Object { Test-IsWirelessAdapterEntry $_ })
     if ($wireless.Count) {
-        $named = @($wireless | ForEach-Object { ConvertTo-DisplayString ([string](Get-PropertyValue $_ "Name" "")) } | Where-Object { $_ })
+        # The adapter's state is named beside it: a radio that is Disabled or Disconnected is why the two readers
+        # failed, and it is the one thing the person reading this can do something about.
+        $named = @($wireless | ForEach-Object {
+            $adapterName = ConvertTo-DisplayString ([string](Get-PropertyValue $_ "Name" ""))
+            if ([string]::IsNullOrWhiteSpace($adapterName)) { $adapterName = ConvertTo-DisplayString ([string](Get-PropertyValue $_ "InterfaceDescription" "")) }
+            $adapterState = [string](Get-PropertyValue $_ "Status" "")
+            ($adapterName + $(if ($adapterState) { " (" + $adapterState + ")" } else { "" })).Trim()
+        } | Where-Object { $_ })
         return @{ Read = $true; Present = $true
                   Detail = ("this computer has {0} wireless adapter(s): {1}" -f $wireless.Count, (($named -join ", "))) }
     }
     return @{ Read = $true; Present = $false
-              Detail = ("this computer has no wireless adapter: none of its {0} adapter(s) is of media type Native 802.11" -f $usable.Count) }
+              Detail = ("this computer has no wireless adapter: none of its {0} adapter(s) reports a wireless medium - no Native 802.11 media type, no NDIS medium 9, no interface type 71" -f $items.Count) }
+}
+
+function Get-WirelessHardwareLine {
+    # The details line the three Wi-Fi rows share, so that what the adapter list said sits beside what each reader
+    # returned instead of only inside the row's sentence. $null where no reading has been taken.
+    # The reading is a hashtable, and a hashtable's keys are not PSObject properties, so Get-PropertyValue answers
+    # nothing here - measured by the case that caught it (PR #69 round 7).
+    $hardwareDetail = ""
+    if ($null -ne $script:WirelessHardware) { $hardwareDetail = [string]$script:WirelessHardware["Detail"] }
+    if ([string]::IsNullOrWhiteSpace($hardwareDetail)) { return $null }
+    return ("Wireless hardware: {0}" -f $hardwareDetail)
 }
 
 function Test-WifiNetshAnswered {
@@ -4702,6 +4762,8 @@ function Compare-WifiAssociation {
         }
         elseif ($hwa.Read -and $hwa.Present) { $message = $message + " The adapter is there - this is a reading that did not answer, not an absent radio." }
         elseif (-not $hwa.Read) { $message = $message + " Whether this computer has a wireless adapter could not be read either." }
+        $hardwareLine = Get-WirelessHardwareLine
+        if ($hardwareLine) { $lines += $hardwareLine }
         Add-CheckResult -Category $category -Check $check -Status $status -Message $message -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Diagnostics ([string]$first.Diagnostics) -Tag "wifi-association" -Scope "IT" | Out-Null
         return
     }
@@ -6508,6 +6570,7 @@ function Compare-WifiRetryCounters {
         # tells this aggregate row from a per-interface error row that carries the same tag and status (PR #52, round 2).
         $details = @(
             ("Reading {0}: {1}" -f $pair.Side, $reason),
+            (Get-WirelessHardwareLine),
             $(if (-not [string]::IsNullOrWhiteSpace([string]$snapshot.ErrorText)) { [string]$snapshot.ErrorText } else { $null }),
             $(if (-not $bothNone -and -not [string]::IsNullOrWhiteSpace([string]$pair.Other.Error)) { "The other reading: {0} {1}" -f $pair.Other.Error, $pair.Other.ErrorText } else { $null }),
             "Method: Native Wifi API, WlanQueryInterface with wlan_intf_opcode_statistics through P/Invoke (wlanapi.dll), read before and after the run.",
@@ -7472,10 +7535,12 @@ function Run-AllChecks {
         $networkSnapshot = @($networkSnapshot)
     }
     $script:PrimaryAdapters = @(Get-PrimaryAdapters -Adapters $networkSnapshot)
-    # The one reading the three Wi-Fi rows share, taken from the adapter inventory rather than from the two
-    # Wi-Fi readers, because on a computer with no radio those two fail in ways that look like a refusal
-    # (backlog #69, the machine of 2026-09-15: the WLAN service stopped at error 1062 and netsh exiting 1).
-    $script:WirelessHardware = Get-WirelessHardwareReading -Adapters $networkSnapshot
+    # The one reading the three Wi-Fi rows share, taken from the adapter list rather than from the two Wi-Fi
+    # readers, because on a computer with no radio those two fail in ways that look like a refusal (backlog
+    # #69, the machine of 2026-09-15: the WLAN service stopped at error 1062 and netsh exiting 1). The list
+    # is asked on its own and not taken from $networkSnapshot, which keeps only adapters that are Up and
+    # carry an address - a disabled or disconnected radio is missing from it (PR #69 round 7).
+    $script:WirelessHardware = Get-WirelessHardwareReading -Inventory (Get-WirelessAdapterInventory)
 
     Invoke-CheckStep -Category "Network Adapter and IP" -Name "Check Current Network Configuration" -Progress 28 -Action {
         Add-NetworkSnapshotResults -Adapters $networkSnapshot

@@ -2,7 +2,7 @@
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$errors)
-$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Compare-WifiRetryCounters', 'Get-WifiRetrySnapshot', 'Get-WifiInterfaceStateText', 'Get-Win32ErrorText', 'Get-TcpInitialRto', 'New-TcpConnectSample', 'Get-TcpConnectSampleText', 'Invoke-TcpConnectionTest', 'Get-LatencySpreadText', 'Get-WifiAssociationSample', 'Add-WifiAssociationSample', 'Compare-WifiAssociation', 'Get-MacRelation', 'Get-AccessPointGatewayText', 'Get-AccessPointGatewayEvidence', 'Update-AccessPointGatewayHints', 'Get-WlanApiType', 'Get-WlanInterfaceStates', 'Get-WifiInterfaceView', 'Get-WifiNetshReasonText', 'Get-WifiRadioSwitchText', 'Get-WifiApiSummaryText', 'Get-LocationConsentState', 'Test-WifiSampleReadable', 'Test-WifiNetshAnswered', 'Get-WirelessHardwareReading', 'Get-RadioSwitchState', 'Get-TcpIntervalSeconds', 'Start-TcpIntervalSampling', 'Stop-TcpIntervalSampling', 'Read-TcpIntervalCounters', 'Invoke-TcpIntervalReadIfDue', 'Get-TcpIntervalTable', 'Get-TcpDistributionLines', 'Get-TcpIntervalStopLine', 'Wait-ForMinimumTcpSample', 'Wait-ForConsoleClose', 'Get-HostNameSyntaxProblem', 'Get-UrlHostProblemSuffix', 'Get-UrlConfiguredHost'
+$wanted = 'ConvertTo-SafeString', 'ConvertTo-IntSafe', 'Test-IsWholeNumber', 'ConvertFrom-NetshWlanOutput', 'Test-IsVirtualAdapter', 'ConvertTo-DisplayString', 'Get-PropertyValue', 'ConvertTo-DoubleSafe', 'Test-IsNumericValue', 'Get-ExceptionDetails', 'Get-ExceptionDiagnostics', 'Test-IsValidIPv4Address', 'Get-NetworkErrorCauseText', 'Add-NetworkErrorCause', 'Test-IsRunningFromArchive', 'ConvertTo-UInt64Safe', 'Get-CimOrWmiInstance', 'Get-TcpCounterSnapshot', 'Get-TcpReadFailureLines', 'Format-TcpAttemptList', 'Get-TcpAttemptSeconds', 'Compare-TcpCounters', 'Test-PingTargetSyntax', 'Test-HttpTargetSyntax', 'Test-HostNameSyntax', 'Test-TcpTargetSyntax', 'Get-RouteSelection', 'Get-RouteSelectionText', 'Format-RouteSelection', 'Get-RouteMethodText', 'Get-PingCountForThreshold', 'Get-LossBand', 'Get-CountThreshold', 'Get-PingLossClassification', 'Get-PingExtensionPlan', 'Get-PingSampleInterval', 'Add-PingTargetResult', 'Test-TcpSampleNeedsExtension', 'Merge-TcpEndingSnapshot', 'Test-NearEndTargetPlacement', 'Resolve-PingTargets', 'Test-IPv4InCidr', 'Get-DhcpServerText', 'Get-CanonicalIPv4Text', 'Test-NearEndAddressSyntax', 'Compare-WifiRetryCounters', 'Get-WifiRetrySnapshot', 'Get-WifiInterfaceStateText', 'Get-Win32ErrorText', 'Get-TcpInitialRto', 'New-TcpConnectSample', 'Get-TcpConnectSampleText', 'Invoke-TcpConnectionTest', 'Get-LatencySpreadText', 'Get-WifiAssociationSample', 'Add-WifiAssociationSample', 'Compare-WifiAssociation', 'Get-MacRelation', 'Get-AccessPointGatewayText', 'Get-AccessPointGatewayEvidence', 'Update-AccessPointGatewayHints', 'Get-WlanApiType', 'Get-WlanInterfaceStates', 'Get-WifiInterfaceView', 'Get-WifiNetshReasonText', 'Get-WifiRadioSwitchText', 'Get-WifiApiSummaryText', 'Get-LocationConsentState', 'Test-WifiSampleReadable', 'Test-WifiNetshAnswered', 'Get-WirelessHardwareReading', 'Get-WirelessHardwareLine', 'Test-IsWirelessAdapterEntry', 'Get-RadioSwitchState', 'Get-TcpIntervalSeconds', 'Start-TcpIntervalSampling', 'Stop-TcpIntervalSampling', 'Read-TcpIntervalCounters', 'Invoke-TcpIntervalReadIfDue', 'Get-TcpIntervalTable', 'Get-TcpDistributionLines', 'Get-TcpIntervalStopLine', 'Wait-ForMinimumTcpSample', 'Wait-ForConsoleClose', 'Get-HostNameSyntaxProblem', 'Get-UrlHostProblemSuffix', 'Get-UrlConfiguredHost'
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $true)
 foreach ($f in $funcs) { Invoke-Expression $f.Extent.Text }
 Write-Output ("Loaded {0} functions from {1}" -f @($funcs).Count, (Split-Path -Leaf (Split-Path -Parent $ScriptPath)))
@@ -982,6 +982,11 @@ function Get-FunctionBody([string]$Name) {
     $fn = $scriptAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }, $true)
     if ($null -eq $fn) { return "" }
     return $fn.Extent.Text
+}
+function Get-FunctionCode([string]$Name) {
+    # The function's code without its comment lines. A structural assertion is about what the code reads, and a
+    # comment that names the very thing the code must not call would fail it (PR #69 round 7).
+    return ((@((Get-FunctionBody $Name) -split '\r?\n') | Where-Object { $_ -notmatch '^\s*#' }) -join "`n")
 }
 Assert-Equal '#39 verdict: Get-OverallStatus reads the weighted rows' ((Get-FunctionBody 'Get-OverallStatus') -match '-not \$_\.Weightless') True
 Assert-Equal '#39 fingerprint: its predicates read the weighted rows' ((Get-FunctionBody 'Get-FingerprintSummary') -match '-not \$_\.Weightless') True
@@ -2384,27 +2389,43 @@ Assert-Equal '#62 row r2: the manual check of the not-listed row is chosen by th
 # because they assigned the shared state instead of producing it (PR #69 round 6). They drive the producer now, from
 # the values that machine recorded.
 #
-# The reading is the adapter inventory, which is a different privilege domain: no WLAN service, no location
-# permission, no elevation. Three answers, because "I could not tell" is neither of the other two - and only the
-# NetTCPIP path can tell, since the CIM fallback reports a Wi-Fi card's adapter type as Ethernet 802.3.
-function New-Adapter69($name, $media, $source = 'NetTCPIP') { return [pscustomobject]@{ Name = $name; Description = $name; MediaType = $media; Source = $source } }
+# The reading is the adapter list, which is a different privilege domain: no WLAN service, no location permission, no
+# elevation. Three answers, because "I could not tell" is neither of the other two - and it has to be the adapter list
+# itself rather than the run's network snapshot, which keeps only adapters that are Up and carry an address: a Wi-Fi
+# adapter that is disabled or disconnected is missing from that snapshot, and a machine whose radio is switched off is
+# exactly where the two Wi-Fi readers fail (PR #69 round 7).
+function New-Adapter69($name, $media, $state = 'Up') { return [pscustomobject]@{ Name = $name; InterfaceDescription = $name; PhysicalMediaType = $media; Status = $state } }
 $wiredOnly69 = @((New-Adapter69 'Ethernet' '802.3'), (New-Adapter69 'Bluetooth Network Connection' 'Bluetooth'))
-$withWifi69 = @((New-Adapter69 'Ethernet' '802.3'), (New-Adapter69 'Wi-Fi' 'Native 802.11'))
-$cimOnly69 = @((New-Adapter69 'Wi-Fi' 'Ethernet 802.3' 'CIM/WMI'), (New-Adapter69 'Ethernet' 'Ethernet 802.3' 'CIM/WMI'))
+$withWifi69 = @((New-Adapter69 'Ethernet' '802.3'), (New-Adapter69 'Wi-Fi' 'Native 802.11' 'Disabled'))
 
-$noneRead69 = Get-WirelessHardwareReading -Adapters $wiredOnly69
-$someRead69 = Get-WirelessHardwareReading -Adapters $withWifi69
-$cimRead69 = Get-WirelessHardwareReading -Adapters $cimOnly69
-$emptyRead69 = Get-WirelessHardwareReading -Adapters @()
-Assert-Equal '#69 read: an inventory with no Native 802.11 adapter says the computer has none, and says it read' ("{0}/{1}" -f $noneRead69.Read, $noneRead69.Present) 'True/False'
-Assert-Equal '#69 read: an inventory with one says so, and names it' ("{0}/{1}/{2}" -f $someRead69.Read, $someRead69.Present, ($someRead69.Detail -match 'Wi-Fi')) 'True/True/True'
-Assert-Equal '#69 read: a CIM inventory cannot tell a Wi-Fi card from a wired one, so it answers neither' ("{0}/{1}" -f $cimRead69.Read, $cimRead69.Present) 'False/False'
-Assert-Equal '#69 read: and no inventory at all is the same kind of not-knowing' ("{0}/{1}" -f $emptyRead69.Read, $emptyRead69.Present) 'False/False'
-# The property that makes the four cases above worth anything: the reading is a function of the inventory and
-# of nothing else, so a silent reader cannot make it false. That is what the first fix got wrong - it asked
-# the two readers whether the machine had a radio, and on the machine that raised the item neither answered.
-$read69body = Get-FunctionBody 'Get-WirelessHardwareReading'
-Assert-Equal '#69 read: the reading consults the adapter inventory and no reader, so a silent reader cannot make it false' ((($read69body -match 'Adapters') -and (-not ($read69body -match '\$api')) -and (-not ($read69body -match 'NetshExitCode')) -and (-not ($read69body -match 'Test-WifiNetshAnswered')) -and (-not ($read69body -match '\$views')))) $true
+$noneRead69 = Get-WirelessHardwareReading -Inventory $wiredOnly69
+$someRead69 = Get-WirelessHardwareReading -Inventory $withWifi69
+$unreadRead69 = Get-WirelessHardwareReading -Inventory $null
+$emptyRead69 = Get-WirelessHardwareReading -Inventory @()
+Assert-Equal '#69 read: a list with no Native 802.11 adapter says the computer has none, and says it read' ("{0}/{1}" -f $noneRead69.Read, $noneRead69.Present) 'True/False'
+Assert-Equal '#69 read: a list with one says so, and names it' ("{0}/{1}/{2}" -f $someRead69.Read, $someRead69.Present, ($someRead69.Detail -match 'Wi-Fi')) 'True/True/True'
+# The switched-off radio is the machine round 7 was about: the adapter is there, both readers fail, and its state is
+# the one thing the person reading the row can act on - so the state is named beside the adapter.
+Assert-Equal '#69 read: and it names the state, because a disabled radio is why the readers failed' ($someRead69.Detail -match 'Disabled') $true
+# A driver that leaves the medium unspecified is not a machine without a radio: NDIS medium 9 and interface type
+# 71 say 802.11 as well, and absence is claimed only where no adapter shows any of the four (the audit after
+# round 7 - on the machine measured, several wired and virtual adapters carry PhysicalMediaType 'Unspecified').
+$mediumless69 = @((New-Adapter69 'Ethernet' '802.3'), ([pscustomobject]@{ Name = 'Wi-Fi'; InterfaceDescription = 'Wi-Fi'; PhysicalMediaType = 'Unspecified'; MediaType = 'Unspecified'; NdisPhysicalMedium = 9; InterfaceType = 71; Status = 'Up' }))
+$mediumlessRead69 = Get-WirelessHardwareReading -Inventory $mediumless69
+Assert-Equal '#69 read: an adapter whose driver names no medium is still a radio where NDIS and the interface type say 802.11' ("{0}/{1}" -f $mediumlessRead69.Read, $mediumlessRead69.Present) 'True/True'
+Assert-Equal '#69 read: a list that could not be read at all answers neither' ("{0}/{1}" -f $unreadRead69.Read, $unreadRead69.Present) 'False/False'
+Assert-Equal '#69 read: and an empty list is the same kind of not-knowing, never an absent radio' ("{0}/{1}" -f $emptyRead69.Read, $emptyRead69.Present) 'False/False'
+# The property that makes the four cases above worth anything: the reading is a function of the inventory it is given
+# and of nothing else, so a silent reader cannot make it false. That is what the first fix got wrong - it asked the
+# two readers whether the machine had a radio, and on the machine that raised the item neither answered.
+$read69body = Get-FunctionCode 'Get-WirelessHardwareReading'
+Assert-Equal '#69 read: the reading consults its inventory and no reader, so a silent reader cannot make it false' ((($read69body -match 'Inventory') -and (-not ($read69body -match '\$api')) -and (-not ($read69body -match 'NetshExitCode')) -and (-not ($read69body -match 'Test-WifiNetshAnswered')) -and (-not ($read69body -match '\$views')))) $true
+# And which list it is given decides what it can see: the run's snapshot starts from Get-NetIPConfiguration and drops
+# every adapter that is not Up with an address, so a disabled radio would have read as no radio at all (round 7).
+$inv69body = Get-FunctionCode 'Get-WirelessAdapterInventory'
+Assert-Equal '#69 read: the inventory is the adapter list itself, not a reading filtered by status or address' ((($inv69body -match 'Get-NetAdapter') -and (-not ($inv69body -match 'Get-NetIPConfiguration')) -and (-not ($inv69body -match 'networkSnapshot')))) $true
+$run69body = Get-FunctionCode 'Run-AllChecks'
+Assert-Equal '#69 read: and the run asks that list rather than the snapshot it already has in its hand' ((($run69body -match 'Get-WirelessHardwareReading -Inventory \(Get-WirelessAdapterInventory\)') -and (-not ($run69body -match 'Get-WirelessHardwareReading -Adapters')))) $true
 
 # The two rows, driven from that reading rather than from an assignment - and with the readers that failed on the
 # machine of 2026-09-15: the WLAN service at error 1062 and netsh exiting 1, so neither reader answered.
@@ -2420,33 +2441,36 @@ $noIfAssoc = @(Get-AssocRows $noIfSamples)
 $script:WirelessHardware = $someRead69
 $presentRetry = @(Get-WifiRows $noIfBefore $noIfAfter)
 $presentAssoc = @(Get-AssocRows $noIfSamples)
-$script:WirelessHardware = $cimRead69
+$script:WirelessHardware = $unreadRead69
 $unknownRetry = @(Get-WifiRows $noIfBefore $noIfAfter)
 $unknownAssoc = @(Get-AssocRows $noIfSamples)
 
-Assert-Equal '#69 retry: the machine of 2026-09-15 - neither reader answered, and the inventory says there is no adapter - is Information' ("{0}/{1}" -f $noIfRetry.Count, $noIfRetry[0].Status) '1/INFO'
+Assert-Equal '#69 retry: the machine of 2026-09-15 - neither reader answered, and the list says there is no adapter - is Information' ("{0}/{1}" -f $noIfRetry.Count, $noIfRetry[0].Status) '1/INFO'
 Assert-Equal '#69 assoc: and so is the association row, from the same reading' ("{0}/{1}" -f $noIfAssoc.Count, $noIfAssoc[0].Status) '1/INFO'
-Assert-Equal '#69 retry: the same failed readers with an adapter in the inventory keep Unable to Check' ("{0}/{1}" -f $presentRetry.Count, $presentRetry[0].Status) '1/ERROR'
+Assert-Equal '#69 retry: the same failed readers with an adapter in the list keep Unable to Check' ("{0}/{1}" -f $presentRetry.Count, $presentRetry[0].Status) '1/ERROR'
 Assert-Equal '#69 assoc: and so does the association row' ("{0}/{1}" -f $presentAssoc.Count, $presentAssoc[0].Status) '1/ERROR'
-Assert-Equal '#69 retry: and where the inventory could not tell, the row does not choose - it stays Unable to Check' ("{0}/{1}" -f $unknownRetry.Count, $unknownRetry[0].Status) '1/ERROR'
+Assert-Equal '#69 retry: and where the list could not be read, the row does not choose - it stays Unable to Check' ("{0}/{1}" -f $unknownRetry.Count, $unknownRetry[0].Status) '1/ERROR'
 Assert-Equal '#69 assoc: nor does the association row' ("{0}/{1}" -f $unknownAssoc.Count, $unknownAssoc[0].Status) '1/ERROR'
 # Three readings, three sentences: a row that read the same either way would be telling one of the machines something
 # untrue, and the two that stay Unable to Check must not read alike either - one knows the adapter is there.
 Assert-Equal '#69 retry: the three readings produce three different sentences' ((@($noIfRetry[0].Message, $presentRetry[0].Message, $unknownRetry[0].Message) | Sort-Object -Unique).Count) 3
 Assert-Equal '#69 assoc: and so do the association rows' ((@($noIfAssoc[0].Message, $presentAssoc[0].Message, $unknownAssoc[0].Message) | Sort-Object -Unique).Count) 3
-# What each reader returned stays in the details for IT, on the Information row as much as on the others.
+# What each reader returned stays in the details for IT, on the Information row as much as on the others - and beside
+# it, what the adapter list itself said, which is the evidence for the row's own sentence.
 Assert-Equal '#69 retry: the reader that did not answer is still named in the details' (($noIfRetry[0].Details -match 'open') -and ($noIfRetry[0].Details -match '1062')) $true
 Assert-Equal '#69 assoc: and so is every sample that failed' (($noIfAssoc[0].Details -match 'refused') -and ($noIfAssoc[0].Details -match 'WLAN')) $true
+Assert-Equal '#69 retry: what the adapter list answered is in the details as well' ($noIfRetry[0].Details -match 'Native 802') $true
+Assert-Equal '#69 assoc: and in the association row''s details' ($noIfAssoc[0].Details -match 'Native 802') $true
 Assert-Equal '#69 retry: the Information row decides nothing' $noIfRetry[0].Weightless $true
 
 # And a reading that saw an interface is one the override may not contradict (PR #69 round 1): the inventory is taken
-# once at the start, so an adapter plugged in during the run is a snapshot that saw one while the inventory did not.
+# once at the start, so an adapter plugged in during the run is a snapshot that saw one while the list did not.
 $wentAwayBefore = New-WifiSnapshot $noIfT0 (New-WifiInterface $wifiGuid 1 @(New-WifiPhy 0 1000 0 100 20 300 5000))
 $wentAwayAfter = New-WifiSnapshot $noIfT1 @() 'none' ''
 $script:WirelessHardware = $noneRead69
 $wentAwayRows = @(Get-WifiRows $wentAwayBefore $wentAwayAfter)
 $script:WirelessHardware = @{ Read = $false; Present = $false; Detail = '' }
-Assert-Equal '#69 retry: a snapshot that listed an interface the inventory never saw is not a computer without one' ("{0}/{1}" -f $wentAwayRows.Count, $wentAwayRows[0].Status) '1/ERROR'
+Assert-Equal '#69 retry: a snapshot that listed an interface the list never saw is not a computer without one' ("{0}/{1}" -f $wentAwayRows.Count, $wentAwayRows[0].Status) '1/ERROR'
 Assert-Equal '#69 retry: and it does not borrow the sentence written for a machine that has no adapter' ($wentAwayRows[0].Message -eq $noIfRetry[0].Message) $false
 
 # ---------------------------------------------------------------------------
