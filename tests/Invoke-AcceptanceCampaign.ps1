@@ -242,13 +242,13 @@ function Select-CapturedMessages($Candidates, [string]$NamedIn, [string]$Copy) {
     # a path. A capture in the scenario's own folder is this run's too: that folder is made for this run and emptied
     # first. Anything else is refused rather than read, and the reason is carried back so the row can say it.
     $list = @(@($Candidates) | Where-Object { $_ })
-    if (-not $list.Count) { return @{ File = $null; Reason = 'the launcher kept no messages file' } }
+    if (-not $list.Count) { return @{ Files = @(); Reason = 'the launcher kept no messages file' } }
     $named = @($list | Where-Object { ([string]$NamedIn).IndexOf([string]$_.FullName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 })
-    if ($named.Count) { return @{ File = @($named | Sort-Object LastWriteTime -Descending)[0]; Reason = 'named by this run''s launcher' } }
+    if ($named.Count) { return @{ Files = @(@($named | Sort-Object LastWriteTime -Descending)[0]); Reason = 'named by this run''s launcher' } }
     $here = @($list | Where-Object { [string]$_.DirectoryName -eq [string]$Copy })
-    if ($here.Count -eq 1) { return @{ File = $here[0]; Reason = 'the one capture in this run''s own folder' } }
-    if ($here.Count -gt 1) { return @{ File = $null; Reason = ('{0} captures in this run''s own folder, and the launcher named none of them' -f $here.Count) } }
-    return @{ File = $null; Reason = ('{0} capture(s) were written under this account while this run went on, and the launcher named none of them - none can be read as this run''s' -f $list.Count) }
+    if ($here.Count -eq 1) { return @{ Files = @($here[0]); Reason = 'the one capture in this run''s own folder' } }
+    if ($here.Count -gt 1) { return @{ Files = @(); Reason = ('{0} captures in this run''s own folder, and the launcher named none of them' -f $here.Count) } }
+    return @{ Files = @(); Reason = ('{0} capture(s) were written under this account while this run went on, and the launcher named none of them - none can be read as this run''s' -f $list.Count) }
 }
 function Select-EnvironmentReports($Here, $Elsewhere, [string]$Copy) {
     # Which environment reports belong to THIS run. The script's guard writes one beside the script and falls back to
@@ -313,7 +313,12 @@ function Invoke-LauncherRun([string]$Id, [string]$Lang) {
     # The launcher names the file it kept PowerShell's messages in, in its error report and on the screen; that is what
     # says which capture is this run's, and only that one is read and only that one travels as evidence.
     $picked = Select-CapturedMessages $messageFiles ($errorText + "`n" + (@($r.Output) -join "`n")) $copy
-    $messageFile = @($picked.File)
+    # A collection, because @() around a single value that may be $null is an array holding one null: its Count is
+    # 1, the guards below take it for a file, and the first thing asked of it - .FullName - is $null. That is what ran
+    # on the machine of 2026-09-15: M7 and M9 leave no capture, and both scenarios ended in 'cannot bind argument to
+    # parameter LiteralPath because it is null' with the machine changed and the run unmeasured. Select-CapturedMessages
+    # answers with none, one or refused, and none is an empty collection (the campaign of 2026-09-15, backlog #29).
+    $messageFile = @($picked.Files)
     if ($messageFile.Count -and ($messageFile[0].DirectoryName -ne $copy)) { Copy-Item -LiteralPath $messageFile[0].FullName -Destination $copy -Force }
     return @{
         Copy = $copy; ExitCode = $r.ExitCode; Output = $r.Output
@@ -509,11 +514,21 @@ function Get-SignatureRefusal([string[]]$Lines, [string[]]$Paths) {
         foreach ($drop in @($Paths)) { if ($drop) { $text = $text -replace [regex]::Escape([string]$drop), ' ' } }
         $text
     })
+    # And the same lines joined with nothing between them, because the console folds this message at the width of the
+    # buffer it was printed into - mid-word where the width falls mid-word. Measured on 2026-09-15: the capture of a
+    # real AllSigned refusal read `is not dig` / `itally signed` across a line break, the phrase was in no single line,
+    # and M8 reported the classification without the message on a machine whose capture carried it (backlog #29's
+    # campaign). Joining without a separator restores a word the fold split and leaves a fold at a space alone, since
+    # the space stays at the end of its line.
+    $folded = (@($lines) -join '')
     foreach ($k in $known) {
         foreach ($line in $lines) {
             if (([string]$line).IndexOf([string]$k.Text, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
                 return @{ Matched = $true; Culture = [string]$k.Culture; Generic = $generic; Detail = ('the signature refusal in ' + $k.Culture + ' ("' + $k.Text + '")') }
             }
+        }
+        if (([string]$folded).IndexOf([string]$k.Text, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return @{ Matched = $true; Culture = [string]$k.Culture; Generic = $generic; Detail = ('the signature refusal in ' + $k.Culture + ' ("' + $k.Text + '"), folded across a line break by the console it was printed into') }
         }
     }
     $read = (@($known | ForEach-Object { $_.Culture + ' "' + $_.Text + '"' }) -join ', ')

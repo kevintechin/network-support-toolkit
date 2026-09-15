@@ -737,13 +737,31 @@ $ours37 = New-Capture37 $copy37 'PowerShellMessages_20260914_010203.txt' (Get-Da
 $foreign37 = New-Capture37 $env:TEMP 'NetworkHealthCheck_PowerShellMessages_20260914_010204.txt' ((Get-Date).AddSeconds(5))
 $namedIn37 = 'ERROR: Windows PowerShell could not run the program file.' + "`n" + 'What PowerShell said, kept in "' + $ours37.FullName + '":'
 $sel37a = Select-CapturedMessages @($ours37, $foreign37) $namedIn37 $copy37
-Assert-True '37. a capture another launcher left under this account, newer than this run''s own, does not answer for this run' ((([string]$sel37a.File.FullName) -eq $ours37.FullName) -and ($sel37a.Reason -like '*named by this run*')) ('picked: ' + [string]$sel37a.File.FullName + '; ' + $sel37a.Reason)
+Assert-True '37. a capture another launcher left under this account, newer than this run''s own, does not answer for this run' ((([string]@($sel37a.Files)[0].FullName) -eq $ours37.FullName) -and ($sel37a.Reason -like '*named by this run*')) ('picked: ' + [string]$sel37a.File.FullName + '; ' + $sel37a.Reason)
 $sel37b = Select-CapturedMessages @($foreign37) 'this launcher named no file at all' $copy37
-Assert-True '37. and where the launcher named none of them, none is read and the reason says how many there were' ((-not $sel37b.File) -and ($sel37b.Reason -like '*named none of them*')) ('picked: ' + [string]$sel37b.File + '; ' + $sel37b.Reason)
+Assert-True '37. and where the launcher named none of them, none is read and the reason says how many there were' ((@($sel37b.Files).Count -eq 0) -and ($sel37b.Reason -like '*named none of them*')) ('picked: ' + @($sel37b.Files).Count + ' file(s); ' + $sel37b.Reason)
 $sel37c = Select-CapturedMessages @($ours37) 'this launcher named no file at all' $copy37
-Assert-True '37. a capture in this run''s own folder is this run''s, named or not - the folder is made for it' ((([string]$sel37c.File.FullName) -eq $ours37.FullName) -and ($sel37c.Reason -like '*own folder*')) ('picked: ' + [string]$sel37c.File.FullName + '; ' + $sel37c.Reason)
+Assert-True '37. a capture in this run''s own folder is this run''s, named or not - the folder is made for it' ((([string]@($sel37c.Files)[0].FullName) -eq $ours37.FullName) -and ($sel37c.Reason -like '*own folder*')) ('picked: ' + [string]$sel37c.File.FullName + '; ' + $sel37c.Reason)
 $sel37d = Select-CapturedMessages @() '' $copy37
-Assert-True '37. and a run that left no capture says that, rather than reading something else' ((-not $sel37d.File) -and ($sel37d.Reason -like '*kept no messages file*')) ('picked: ' + [string]$sel37d.File + '; ' + $sel37d.Reason)
+Assert-True '37. and a run that left no capture says that, rather than reading something else' ((@($sel37d.Files).Count -eq 0) -and ($sel37d.Reason -like '*kept no messages file*')) ('picked: ' + @($sel37d.Files).Count + ' file(s); ' + $sel37d.Reason)
+# What a caller counts, which is the whole of the defect the machine found. @() around a single value that may be
+# $null is an array holding one null - Count 1, and .FullName on it is $null - so a run that left no capture was read
+# as a run that left one, and M7 and M9 both ended in "cannot bind argument to parameter 'LiteralPath' because it is
+# null" with the machine changed and nothing measured (the campaign of 2026-09-15). The answer is a collection, and
+# none of it is none.
+Assert-True '37. and none is an empty collection, not a null a caller would count as one - the shape that ended two scenarios on the first machine this ever ran on' (((@($sel37b.Files) | Where-Object { $null -ne $_ }).Count -eq @($sel37b.Files).Count) -and ((@($sel37d.Files) | Where-Object { $null -ne $_ }).Count -eq @($sel37d.Files).Count) -and (@($sel37d.Files).Count -eq 0) -and (@($sel37a.Files).Count -eq 1)) ('none-standings count: ' + @($sel37b.Files).Count + ', ' + @($sel37d.Files).Count + '; the named one: ' + @($sel37a.Files).Count)
+# A refusal the console folded. These are the bytes a real AllSigned run wrote on DESKTOP-CO7QIMR on 2026-09-15: the
+# message is whole, and the phrase is split across a line break because PowerShell folds at the width of the buffer it
+# prints into, mid-word where that is where the width falls.
+$folded37 = @('File C:\state\M8\en-US\NetworkHealthCheck.ps1 cannot be loaded',
+              '. The file C:\state\M8\en-US\NetworkHealthCheck.ps1 is not dig',
+              'itally signed. You cannot run this script on the current system. For more information about running',
+              ' scripts and setting execution policy, see about_Execution_Policies at https:/go.microsoft.com/fwlink/?LinkID=135170.',
+              '    + CategoryInfo          : SecurityError: (:) [], ParentContainsErrorRecordException',
+              '    + FullyQualifiedErrorId : UnauthorizedAccess')
+$foldRead37 = Get-SignatureRefusal $folded37 @('C:\state\M8\en-US')
+Assert-True '37. a refusal the console folded mid-word is still the refusal - no line carries the phrase, and reading line by line reported the classification without the message on a machine whose capture held it' (($foldRead37.Matched -eq $true) -and ($foldRead37.Culture -eq 'en-US') -and ([string]$foldRead37.Detail -like '*folded*')) ('read as: ' + [string]$foldRead37.Detail)
+Assert-True '37. and the reading is not vacuous: no single line of that capture carries the phrase' ((@($folded37 | Where-Object { $_ -like '*is not digitally signed*' }).Count -eq 0) -and (($folded37 -join '') -like '*is not digitally signed*')) ('lines carrying it: ' + @($folded37 | Where-Object { $_ -like '*is not digitally signed*' }).Count)
 $usesSel37 = @()
 if ($defs37.ContainsKey('Invoke-LauncherRun')) { $usesSel37 = @($defs37['Invoke-LauncherRun'][0].Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Select-CapturedMessages' }, $true)) }
 Assert-True '37. and Invoke-LauncherRun decides through it which capture is its own, instead of taking the newest one it can see' ($usesSel37.Count -eq 1) ('calls in Invoke-LauncherRun: ' + $usesSel37.Count)
