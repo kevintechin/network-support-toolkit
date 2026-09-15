@@ -50,7 +50,7 @@ param(
 # - Traceability: exception type, message, and inner exceptions are stored in every
 #   report; script location and call stack go to the JSON report only (Diagnostics).
 
-$script:ToolVersion = "1.2.14"
+$script:ToolVersion = "1.2.15"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -555,14 +555,14 @@ function Get-StatusText {
 function Get-StatusPrefix {
     param([string]$Status)
 
-    switch ($Status) {
-        "PASS"  { return "[Pass]" }
-        "WARN"  { return "[Warning]" }
-        "FAIL"  { return "[Fail]" }
-        "INFO"  { return "[Information]" }
-        "ERROR" { return "[Error]" }
-        default  { return "[$Status]" }
-    }
+    # The live log's word for a status is the report's word, in brackets. One status, one name, wherever a person
+    # meets it: the console and the GUI log while the run happens, the three reports afterwards, and the badge table
+    # in the manuals. These were two lists and the lists drifted - ERROR read "Unable to Check" in the report and
+    # "[Error]" on the screen, which are two different claims about one reading, and no document in the package
+    # defined the screen's word at all (backlog #70, found on the en-US walk of 2026-09-15; the zh-TW script had
+    # drifted at WARN as well). A list cannot drift from itself, which is why this is a call and not a copy: the
+    # unknown-status case is unchanged, since Get-StatusText returns the status itself there.
+    return ("[" + (Get-StatusText $Status) + "]")
 }
 
 function Write-UiLog {
@@ -4430,6 +4430,15 @@ function Add-WifiRfResult {
     elseif (-not [string]::IsNullOrWhiteSpace([string]$api.Error)) { $apiLine = (("WLAN service: not read - {0} {1}" -f $api.Error, $api.ErrorText).Trim() + ("; wlanapi={0}" -f $api.Error)) }
     else { $apiLine = ("WLAN service: {0} wireless interface(s) listed; wlanapi=ok" -f @($api.Interfaces).Count) }
     $netshReason = Get-WifiNetshReasonText -Sample $sample
+    # One reading of the machine for three rows (backlog #69). The retries row and the association row each decided
+    # from their own reader's failure, and on a computer with no radio those readers fail in ways that look like a
+    # refusal: the WLAN service is not running at all, so the retry reader stops at "the service did not answer
+    # (error 1062)" and never reaches its own no-interface branch. This row is written before either of them, and it
+    # is the one that reads BOTH readers, so what it found is what they use. The fact is true only where both
+    # answered and neither named an interface - an interface that exists and could not be read is not no interface,
+    # which is what closed item #62 measured, so a reader that failed leaves this false and the other two rows say
+    # what they have always said.
+    $script:WifiNoInterfaceAnywhere = (($views.Count -eq 0) -and ([string]::IsNullOrWhiteSpace([string]$sample.Error)) -and ($null -ne $api) -and ([string]::IsNullOrWhiteSpace([string]$api.Error)))
     if ([string]$sample.Error -eq "netsh" -and $views.Count -eq 0) {
         Add-CheckResult -Category "IT Diagnostics" -Check "Wi-Fi radio" -Status "INFO" -Message "netsh.exe was not found; Wi-Fi radio data is unavailable." -Details $apiLine -Tag "wifi" -Scope "IT" | Out-Null
         return
@@ -4646,7 +4655,16 @@ function Compare-WifiAssociation {
             if ([string]::IsNullOrWhiteSpace($netshText)) { $netshText = Get-WifiNetshReasonText -Sample $entry.Sample }
             $lines += ("{0}: could not be read - {1}{2}" -f $entry.Prefix, $netshText, $(if ($apiSummary) { "; " + $apiSummary } else { "" }))
         }
-        Add-CheckResult -Category $category -Check $check -Status "ERROR" -Message $message -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Diagnostics ([string]$first.Diagnostics) -Tag "wifi-association" -Scope "IT" | Out-Null
+        # And the same reading decides this row (backlog #69): every sample failing is what a computer with no radio
+        # looks like from here, not a reader that was refused. Where the radio row found both readers answering and
+        # neither naming an interface, the row says what the machine is, in that row's words, and the reader lines
+        # stay in the details for IT.
+        $status = "ERROR"
+        if ($script:WifiNoInterfaceAnywhere) {
+            $status = "INFO"
+            $message = "No wireless interface is listed by netsh or by the WLAN service - a wired computer, for example - so there is no association to report; the details say what each reader returned."
+        }
+        Add-CheckResult -Category $category -Check $check -Status $status -Message $message -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Diagnostics ([string]$first.Diagnostics) -Tag "wifi-association" -Scope "IT" | Out-Null
         return
     }
 
@@ -6421,13 +6439,21 @@ function Compare-WifiRetryCounters {
         $reason = [string]$snapshot.Error
         $status = "ERROR"
         $message = ""
-        switch ($reason) {
+        # What the machine is, before what this reader managed: where the radio row read both readers and neither
+        # listed an interface, there is nothing here to read and no reader failed (backlog #69). The branches below
+        # still answer for a machine that has a radio, and the "none" branch still answers where this reader itself
+        # enumerated none while the radio row could not speak - a disabled Wi-Fi radio check, for one.
+        if ($script:WifiNoInterfaceAnywhere) {
+            $status = "INFO"
+            $message = "No wireless interface is listed by netsh or by the WLAN service - a wired computer, for example - so there is no wireless retry figure; the TCP retransmission rows are the link's statistics."
+        }
+        else { switch ($reason) {
             "none"      { if ($bothNone) { $status = "INFO"; $message = "No wireless interface on this computer, so there is no wireless retry figure; the TCP retransmission rows are the link's statistics." } else { $message = "The wireless interface was listed at only one of the two readings ({0} it was not), so no delta could be calculated: the adapter was enabled or disabled during the test, or the other reading failed." -f $pair.Side } }
             "addtype"   { $message = "The Wi-Fi retry counters could not be read: the reader (a small P/Invoke type compiled at run time) could not be compiled or loaded, which an application-control policy can refuse." }
             "open"      { $message = "The Wi-Fi retry counters could not be read: the WLAN service did not answer ({0})." -f $snapshot.ErrorText }
             "enumerate" { $message = "The Wi-Fi retry counters could not be read: the wireless interfaces could not be listed ({0})." -f $snapshot.ErrorText }
             default     { $message = "The Wi-Fi retry counters could not be read {0}." -f $pair.Side }
-        }
+        } }
         # The first line ends with the reason code - a language-neutral token, like a tag - which is how the chain's oracle
         # tells this aggregate row from a per-interface error row that carries the same tag and status (PR #52, round 2).
         $details = @(
@@ -7265,6 +7291,10 @@ function Run-AllChecks {
     $script:PendingPingSamples = New-Object System.Collections.ArrayList
     # And the access-point samples (backlog #61's other half): a run compares the samples it took itself.
     $script:WifiAssociationSamples = New-Object System.Collections.ArrayList
+    # False until the radio row has read the machine: a run where the Wi-Fi radio check is off, or one that
+    # has not reached that row yet, knows nothing about the adapter and the two rows below keep their own
+    # readings (backlog #69).
+    $script:WifiNoInterfaceAnywhere = $false
     $script:GatewayNeighborRows = New-Object System.Collections.ArrayList
     # And the reads inside the TCP window (backlog #65): one run's state, never a later run's.
     $script:TcpIntervalSampling = $null

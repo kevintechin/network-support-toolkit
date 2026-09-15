@@ -43,7 +43,7 @@ param(
 # - 錯誤隔離：單一檢測失敗不阻止其他檢測繼續。
 # - 可追溯：報告保存例外類型、訊息與內部例外；腳本位置與呼叫堆疊只寫入 JSON 報告（Diagnostics）。
 
-$script:ToolVersion = "1.2.14"
+$script:ToolVersion = "1.2.15"
 $script:BaseDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # -----------------------------------------------------------------------------
@@ -540,14 +540,12 @@ function Get-StatusText {
 function Get-StatusPrefix {
     param([string]$Status)
 
-    switch ($Status) {
-        "PASS"  { return "[正常]" }
-        "WARN"  { return "[注意]" }
-        "FAIL"  { return "[異常]" }
-        "INFO"  { return "[資訊]" }
-        "ERROR" { return "[錯誤]" }
-        default  { return "[$Status]" }
-    }
+    # 即時記錄用的字就是報告用的字，只是加上方括號。一個狀態只有一個名字，不管人是在哪裡遇到它：執行中的主控台
+    # 與 GUI 記錄、事後的三種報告、以及手冊裡的徐章表。這裡本來是兩張清單，而兩張清單漂開了——ERROR 在報告是「無法檢查」、
+    # 在螢幕上是「[錯誤]」，那是對同一次讀取的兩種不同宣稱；WARN 也漂了，報告說「需注意」而螢幕說「[注意]」
+    # （backlog #70，2026-09-15 的 en-US 走查發現）。一張清單不可能跟自己漂開，所以這裡是呼叫而不是複製；
+    # 未知狀態的行為不變，因為 Get-StatusText 在那個分支會回傳狀態本身。
+    return ("[" + (Get-StatusText $Status) + "]")
 }
 
 function Write-UiLog {
@@ -4284,6 +4282,13 @@ function Add-WifiRfResult {
     elseif (-not [string]::IsNullOrWhiteSpace([string]$api.Error)) { $apiLine = (("WLAN 服務：未讀取——{0} {1}" -f $api.Error, $api.ErrorText).Trim() + ("; wlanapi={0}" -f $api.Error)) }
     else { $apiLine = ("WLAN 服務：列出 {0} 個無線介面; wlanapi=ok" -f @($api.Interfaces).Count) }
     $netshReason = Get-WifiNetshReasonText -Sample $sample
+    # 一次對機器的判讀，給三列用（backlog #69）。重試列與關聯列本來各自從自己那個讀取器的失敗判斷，
+    # 而在一台沒有無線電的機器上，那些失敗長得像被拒絕：WLAN 服務根本沒在跑，所以重試讀取器
+    # 停在「服務沒有回應（錯誤 1062）」，永遠到不了它自己那個「沒有介面」的分支。這一列寫在那兩列之前，
+    # 而且只有它同時讀了兩個讀取器，所以它看到的就是那兩列要用的。這個事實只在兩個讀取器都答了、
+    # 而且都沒列出介面時才成立——「介面存在但讀不到」不等於「沒有介面」，那是已結案的 #62 量到的事；
+    # 只要有一個讀取器失敗，這裡就是假，另外兩列維持它們原本的說法。
+    $script:WifiNoInterfaceAnywhere = (($views.Count -eq 0) -and ([string]::IsNullOrWhiteSpace([string]$sample.Error)) -and ($null -ne $api) -and ([string]::IsNullOrWhiteSpace([string]$api.Error)))
     if ([string]$sample.Error -eq "netsh" -and $views.Count -eq 0) {
         Add-CheckResult -Category "IT 診斷資料" -Check "Wi-Fi 無線訊號" -Status "INFO" -Message "找不到 netsh.exe，無法取得 Wi-Fi 無線資料。" -Details $apiLine -Tag "wifi" -Scope "IT" | Out-Null
         return
@@ -4492,7 +4497,15 @@ function Compare-WifiAssociation {
             if ([string]::IsNullOrWhiteSpace($netshText)) { $netshText = Get-WifiNetshReasonText -Sample $entry.Sample }
             $lines += ("{0}：無法讀取——{1}{2}" -f $entry.Prefix, $netshText, $(if ($apiSummary) { "；" + $apiSummary } else { "" }))
         }
-        Add-CheckResult -Category $category -Check $check -Status "ERROR" -Message $message -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Diagnostics ([string]$first.Diagnostics) -Tag "wifi-association" -Scope "IT" | Out-Null
+        # 同一次判讀也決定這一列（backlog #69）：每一個樣本都失敗，從這裡看起來就是一台沒有
+        # 無線電的機器的樣子，而不是一個被拒絕的讀取器。用無線電列的用字說機器是什麼，
+        # 讀取器各自回報了什麼留在詳細資料裡給 IT 看。
+        $status = "ERROR"
+        if ($script:WifiNoInterfaceAnywhere) {
+            $status = "INFO"
+            $message = "沒有無線介面被 netsh 或 WLAN 服務列出——例如有線電腦——所以沒有關聯資訊可以回報；詳細資料寫著兩個讀取來源各自回報了什麼。"
+        }
+        Add-CheckResult -Category $category -Check $check -Status $status -Message $message -Details ((@($lines) + $methodLines) -join [Environment]::NewLine) -Diagnostics ([string]$first.Diagnostics) -Tag "wifi-association" -Scope "IT" | Out-Null
         return
     }
 
@@ -6175,13 +6188,21 @@ function Compare-WifiRetryCounters {
         $reason = [string]$snapshot.Error
         $status = "ERROR"
         $message = ""
-        switch ($reason) {
+        # 先說機器是什麼，再說這個讀取器做到了什麼：無線電列讀了兩個讀取器而兩個都沒列出介面時，
+        # 這裡本來就沒有東西可讀，也沒有任何讀取器失敗（backlog #69）。下面那些分支依然回答
+        # 有無線電的機器，而 none 那一支依然回答「這個讀取器自己列不到介面、而無線電列沒能說話」
+        # 的情況，例如 Wi-Fi 無線電檢查被關掉。
+        if ($script:WifiNoInterfaceAnywhere) {
+            $status = "INFO"
+            $message = "沒有無線介面被 netsh 或 WLAN 服務列出——例如有線電腦——所以沒有無線重傳數字；連線的統計看 TCP 重傳那幾列。"
+        }
+        else { switch ($reason) {
             "none"      { if ($bothNone) { $status = "INFO"; $message = "這台電腦沒有無線介面，所以沒有無線重傳數字；連線的統計看 TCP 重傳那幾列。" } else { $message = "兩次讀取只有一次列出了無線介面（{0}沒有），所以無法計算差值：網卡在檢測期間被啟用或停用，或另一次讀取失敗了。" -f $pair.Side } }
             "addtype"   { $message = "無法讀取 Wi-Fi 重傳計數器：讀取器（執行時編譯的一個小型 P/Invoke 型別）無法編譯或載入，應用程式控制政策可能會拒絕它。" }
             "open"      { $message = "無法讀取 Wi-Fi 重傳計數器：WLAN 服務沒有回應（{0}）。" -f $snapshot.ErrorText }
             "enumerate" { $message = "無法讀取 Wi-Fi 重傳計數器：無法列出無線介面（{0}）。" -f $snapshot.ErrorText }
             default     { $message = "無法讀取 Wi-Fi 重傳計數器（{0}）。" -f $pair.Side }
-        }
+        } }
         # 第一行以原因代碼結尾——語言中立的記號，像標籤一樣——chain 的 oracle 靠它把這列彙總列和帶同樣標籤、同樣狀態的
         # 逐介面錯誤列分開（PR #52 第 2 輪）。
         $details = @(
@@ -7001,6 +7022,9 @@ function Run-AllChecks {
     $script:PendingPingSamples = New-Object System.Collections.ArrayList
     # And the access-point samples (backlog #61's other half): a run compares the samples it took itself.
     $script:WifiAssociationSamples = New-Object System.Collections.ArrayList
+    # 在無線電列讀過機器之前都是假：Wi-Fi 無線電檢查被關掉、或還沒跑到那一列的執行，
+    # 就是對網卡一無所知，下面兩列維持自己的判讀（backlog #69）。
+    $script:WifiNoInterfaceAnywhere = $false
     $script:GatewayNeighborRows = New-Object System.Collections.ArrayList
     # 還有 TCP 取樣窗內的讀取（backlog #65）：狀態是這一次執行的，絕不是之後某次執行的。
     $script:TcpIntervalSampling = $null

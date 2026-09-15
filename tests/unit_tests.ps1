@@ -2375,6 +2375,45 @@ Assert-Equal '#62 row: the radio row reads the sample through the view and has t
 Assert-Equal '#62 row: the ordinary row names the source of its state' ($rfBody -match '\$stateSource') True
 Assert-Equal '#62 row r2: the manual check of the not-listed row is chosen by the witness - Refused, then AccessDenied, then the plain read' ($rfBody -match '(?s)if \(\$wifi\.Refused\) \{ \$details \+= "[^"]*ms-settings:privacy-location[^"]*" \}\s*elseif \(\$wifi\.AccessDenied\) \{ \$details \+= "[^"]*" \}\s*else \{ \$details \+= "[^"]*" \}') True
 
+# ---- #69: one reading of the machine decides all three Wi-Fi rows -------------------------------------------------
+# A computer with no wireless hardware made three rows disagree on the walk of 2026-09-15: the radio row said what the
+# machine is, as Information, while the retries row and the association row described readers that did not answer, as
+# Unable to Check - and nothing had been prevented, there is simply no radio. Each of those two decided from its own
+# reader's failure, and on such a machine the WLAN service is not running at all, so they fail in ways that look like
+# a refusal: the retry reader stops at "open" (error 1062) and never reaches its own no-interface branch. The radio
+# row is written first and is the only one that reads both readers, so what it found is what these two use. The
+# standing that must survive is closed item #62's: an interface that exists and could not be read is not no interface,
+# and there the two rows keep Unable to Check and their own words.
+$noIfT0 = Get-Date '2026-09-15 10:00:00'; $noIfT1 = $noIfT0.AddSeconds(20)
+$noIfBefore = New-WifiSnapshot $noIfT0 @() 'open' 'error 1062: The service has not been started'
+$noIfAfter = New-WifiSnapshot $noIfT1 @() 'open' 'error 1062: The service has not been started'
+$noIfSamples = @((New-AssocSample 'start' $noIfT0 @() 'refused' 'the WLAN service could not be read'),
+                 (New-AssocSample 'end' $noIfT1 @() 'refused' 'the WLAN service could not be read'))
+
+$script:WifiNoInterfaceAnywhere = $true
+$noIfRetry = @(Get-WifiRows $noIfBefore $noIfAfter)
+$noIfAssoc = @(Get-AssocRows $noIfSamples)
+$script:WifiNoInterfaceAnywhere = $false
+$refusedRetry = @(Get-WifiRows $noIfBefore $noIfAfter)
+$refusedAssoc = @(Get-AssocRows $noIfSamples)
+
+Assert-Equal '#69 retry: where neither reader listed an interface, the row is Information and not a reader that could not be read' ("{0}/{1}" -f $noIfRetry.Count, $noIfRetry[0].Status) '1/INFO'
+Assert-Equal '#69 assoc: and so is the association row, from the same reading' ("{0}/{1}" -f $noIfAssoc.Count, $noIfAssoc[0].Status) '1/INFO'
+# The control is #62's machine: the same failed readers, with an interface listed by the other one. Both rows keep
+# Unable to Check, because there the sentence is true.
+Assert-Equal '#69 retry: an interface that exists and could not be read is not no interface - the row keeps Unable to Check' ("{0}/{1}" -f $refusedRetry.Count, $refusedRetry[0].Status) '1/ERROR'
+Assert-Equal '#69 assoc: and the association row keeps it too' ("{0}/{1}" -f $refusedAssoc.Count, $refusedAssoc[0].Status) '1/ERROR'
+# The words differ with the standing, in whichever language this run is in: a row that said the same thing either way
+# would be telling one of the two machines something untrue.
+Assert-Equal '#69 retry: the two standings do not share a sentence' ($noIfRetry[0].Message -eq $refusedRetry[0].Message) $false
+Assert-Equal '#69 assoc: nor do the association rows' ($noIfAssoc[0].Message -eq $refusedAssoc[0].Message) $false
+# And what each reader returned stays in the details for IT, on the Information rows as much as on the others - the
+# reason token is language-neutral, which is what makes this readable in both scripts.
+Assert-Equal '#69 retry: the reader that did not answer is still named in the details' (($noIfRetry[0].Details -match 'open') -and ($noIfRetry[0].Details -match '1062')) $true
+Assert-Equal '#69 assoc: and so is every sample that failed' (($noIfAssoc[0].Details -match 'refused') -and ($noIfAssoc[0].Details -match 'WLAN')) $true
+# Weightless either way: an absent radio is a fact about the machine, not a measurement of its network.
+Assert-Equal '#69 retry: the Information row decides nothing' $noIfRetry[0].Weightless $true
+
 # ---------------------------------------------------------------------------
 # backlog #65: the counters read again inside the sample window, at least Tests.RetransmissionIntervalSeconds apart,
 # and a measured row placing its retransmissions in time beside the whole-window figure. Language-neutral throughout -

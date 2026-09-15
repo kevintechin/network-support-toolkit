@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Network Health Check 1.2.14 — User Manual</title>
+<title>Network Health Check 1.2.15 — User Manual</title>
 <style>
   :root{
     --ink:#16233b; --muted:#5b6b85; --line:#d8e0ec; --bg:#f4f7fb; --card:#ffffff;
@@ -94,7 +94,7 @@
 <div class="page">
 
 <header>
-  <h1>Network Health Check <span class="ver">1.2.14</span></h1>
+  <h1>Network Health Check <span class="ver">1.2.15</span></h1>
   <div class="tag">User Manual — for the person who runs the check</div>
   <div class="meta">English package (the <code>en-US</code> folder) · the <code>zh-TW</code> folder holds the Traditional Chinese package with its own copy of this manual · IT staff: the IT deployment manual is beside this file (<code>NetworkHealthCheck_IT_Deployment_Manual_en-US.html</code>), the design and decision rules in the technical guide</div>
   <div class="principle">
@@ -146,7 +146,7 @@
       <li>Open the extracted folder and double-click <b><code>Start-English.cmd</code></b>. The ZIP carries a folder of its own, so the folder Windows extracted often holds a single thing — another folder of the same name; open that one and the launcher is inside. Neither the extra level nor the folder's name matters, as long as the whole tree stays together. (Opening the <code>en-US</code> folder and double-clicking <code>Start-NetworkCheck.cmd</code> does the same thing.)</li>
       <li>If Windows shows <b>Open File - Security Warning</b>, choose <kbd>Run</kbd>. That is the download mark from section 2; the tool is the same either way. The same dialog says <i>The publisher could not be verified</i> and gives the publisher as <b>Unknown Publisher</b>: that is expected — this tool is not digitally signed. What IT has instead of a signature is a digest: they compare the SHA-256 of the ZIP they received with the one published with the release (the IT deployment manual, section 6). The <code>SHA256SUMS.txt</code> inside the package is a different check: it shows that the files in the package match each other, not where the package came from. If IT sent you the ZIP, <kbd>Run</kbd> is the answer; if you are not sure where the file came from, ask before you run it. Leaving <b>Always ask before opening this file</b> ticked costs one click per run; clearing it removes Windows' mark from that one file for good, which is what unblocking in section 2 does for the whole ZIP.</li>
       <li>A black text window opens first and stays in the background until the check finishes. Leave it alone.</li>
-      <li>The window <b>Network Health Check Tool 1.2.14</b> opens and <b>starts by itself</b> within a second. You will see:
+      <li>The window <b>Network Health Check Tool 1.2.15</b> opens and <b>starts by itself</b> within a second. You will see:
         <table>
           <tr><th>On screen</th><th>What it means</th></tr>
           <tr><td>Result: Test in progress</td><td>The check is running</td></tr>
@@ -206,6 +206,7 @@
           <tr><td><span class="badge error">Unable to Check</span></td><td>The step could not be completed — permissions, a missing system component, company policy or an execution error. It does not necessarily mean the network is faulty</td></tr>
           <tr><td><span class="badge info">Information</span></td><td>A fact recorded with no verdict attached — the computer's name, a virtual adapter, an optional ping, TCP or HTTP target that did not answer, a note that IT has not defined a company standard in the configuration file</td></tr>
         </table>
+        <p>The live log — the lines the window prints while the run happens, and the log pane of the graphical window — shows these same five words in square brackets, so a row is called the same thing on the screen and in the report.</p>
       </li>
       <li><b>IT diagnostics</b> — collapsed at the bottom: Wi-Fi radio details and whether the Wi-Fi stayed on one access point during the run (on Windows 11 24H2 and later the radio details need the location setting to allow desktop apps, and the row says so when they could not be read), routes, the gateway's hardware address (and, on Wi-Fi, whether it is the access point's own), proxy settings, the first hops of a traceroute, adapter drivers. These rows are for IT and never change the verdict. You can leave them closed.</li>
       <li>The six counters under the verdict (<b>Pass</b>, <b>Warning</b>, <b>Fail</b>, <b>Unable to Check</b>, <b>Information</b>, <b>Total</b>) count the rows of the Test Results table.</li>
@@ -311,7 +312,7 @@ NetworkHealthCheck_&lt;date&gt;_&lt;time&gt;_&lt;COMPUTERNAME&gt;.json</pre>
   </div>
 </section>
 
-<footer>NetworkHealthCheck 1.2.14. This manual describes the tool as shipped; what your IT department changed in the configuration file — targets, thresholds, the report folder — shows up in the report's rows and in its Computer and Run Information section.</footer>
+<footer>NetworkHealthCheck 1.2.15. This manual describes the tool as shipped; what your IT department changed in the configuration file — targets, thresholds, the report folder — shows up in the report's rows and in its Computer and Run Information section.</footer>
 
 </div>
 </body>

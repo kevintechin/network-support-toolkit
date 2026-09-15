@@ -164,20 +164,20 @@ Assert-Catches 'the open count one too many' 'R1' {
 Assert-Catches 'a closed item still listed as open, its group counted right' 'R2' {
     # The number is closed, the group's count is raised with it, and the link has no body to point at: R4 leaves
     # a link without a body to I1, so only R2 sees the closed number.
-    Edit-All $Readme 'four changes to the tool ([#38]' 'five changes to the tool ([#40](docs/backlog.md#40--the-report-explained-the-badge) the badge explanation, [#38]'
-    Edit-All $Readme 'sum to eight where the items are eight' 'sum to nine where the items are nine'
+    Edit-All $Readme 'two changes to the tool ([#38]' 'three changes to the tool ([#40](docs/backlog.md#40--the-report-explained-the-badge) the badge explanation, [#38]'
+    Edit-All $Readme 'sum to six where the items are six' 'sum to seven where the items are seven'
 }
 Assert-Catches 'an open item dropped from the row, its group counted right' 'R3' {
     Edit-All $Readme '[#42](docs/backlog.md#42--nothing-proves-the-tool-changes-nothing) nothing proving the tool changes nothing, and ' ''
     Edit-All $Readme 'two in `tests/`' 'one in `tests/`'
-    Edit-All $Readme 'sum to eight where the items are eight' 'sum to seven where the items are seven'
+    Edit-All $Readme 'sum to six where the items are six' 'sum to five where the items are five'
 }
 Assert-Catches 'a link to a heading the page does not have' 'R4' {
     Edit-All $Readme 'docs/backlog.md#42--nothing-proves-the-tool-changes-nothing' 'docs/backlog.md#42--nothing-proves-the-tools-changes-nothing'
 }
 Assert-Catches 'a group whose stated count is not what it lists' 'R5' {
-    Edit-All $Readme 'four changes to the tool (' 'five changes to the tool ('
-    Edit-All $Readme 'sum to eight where the items are eight' 'sum to nine where the items are eight'
+    Edit-All $Readme 'two changes to the tool (' 'three changes to the tool ('
+    Edit-All $Readme 'sum to six where the items are six' 'sum to seven where the items are six'
 }
 Assert-Catches 'an open item linked outside every group, its group counted right' 'R5' {
     # PR #63, round 1: the link leaves its group, the group's count follows it, and the link stands in the row's prose
@@ -185,17 +185,17 @@ Assert-Catches 'an open item linked outside every group, its group counted right
     # in no group; the overlap sentence is moved with the count so that this is the one thing R5 has to say.
     Edit-All $Readme '[#42](docs/backlog.md#42--nothing-proves-the-tool-changes-nothing) nothing proving the tool changes nothing, and ' ''
     Edit-All $Readme 'two in `tests/`' 'one in `tests/`'
-    Edit-All $Readme 'sum to eight where the items are eight' 'sum to seven where the items are eight'
+    Edit-All $Readme 'sum to six where the items are six' 'sum to five where the items are six'
     Edit-All $Readme ' Numbers 1 to 21' ' [#42](docs/backlog.md#42--nothing-proves-the-tool-changes-nothing) stands outside every group. Numbers 1 to 21'
 }
 Assert-Catches 'the overlap sentence stating a sum the groups do not make' 'R5' {
-    Edit-All $Readme 'sum to eight where the items are eight' 'sum to nine where the items are eight'
+    Edit-All $Readme 'sum to six where the items are six' 'sum to seven where the items are six'
 }
 Assert-Catches 'an item listed twice in the same group, the count and the sum raised with it' 'R5' {
     # PR #63, round 2: a copied link is a second membership of the same group, not of a further one; the group's count
     # and the overlap sentence are raised with it so that the duplicate is the one thing R5 has to say.
-    Edit-All $Readme 'four changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the retransmission' 'five changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) twice, [#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the retransmission'
-    Edit-All $Readme 'sum to eight where the items are eight' 'sum to nine where the items are eight'
+    Edit-All $Readme 'two changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the retransmission' 'three changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) twice, [#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the retransmission'
+    Edit-All $Readme 'sum to six where the items are six' 'sum to seven where the items are six'
 }
 Assert-Catches 'a number listed as closed that no closed row carries' 'R6' {
     Edit-All $Readme ' are closed' ', 999 are closed'

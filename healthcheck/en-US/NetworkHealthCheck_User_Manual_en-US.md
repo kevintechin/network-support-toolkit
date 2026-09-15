@@ -1,4 +1,4 @@
-﻿# Network Health Check 1.2.14 — User Manual
+﻿# Network Health Check 1.2.15 — User Manual
 
 **For the person who runs the check.** One double-click, a window that runs by itself, and a report you send to IT.
 
@@ -34,7 +34,7 @@ Network Health Check looks at the network from this computer's point of view and
 1. Open the extracted folder and double-click **`Start-English.cmd`**. The ZIP carries a folder of its own, so the folder Windows extracted often holds a single thing — another folder of the same name; open that one and the launcher is inside. Neither the extra level nor the folder's name matters, as long as the whole tree stays together. (Opening the `en-US` folder and double-clicking `Start-NetworkCheck.cmd` does the same thing.)
 2. If Windows shows **Open File - Security Warning**, choose **Run**. That is the download mark from step 2 above; the tool is the same either way. The same dialog says *The publisher could not be verified* and gives the publisher as **Unknown Publisher**: that is expected — this tool is not digitally signed. What IT has instead of a signature is a digest: they compare the SHA-256 of the ZIP they received with the one published with the release (the IT deployment manual, section 6). The `SHA256SUMS.txt` inside the package is a different check: it shows that the files in the package match each other, not where the package came from. If IT sent you the ZIP, **Run** is the answer; if you are not sure where the file came from, ask before you run it. Leaving **Always ask before opening this file** ticked costs one click per run; clearing it removes Windows' mark from that one file for good, which is what unblocking in section 2 does for the whole ZIP.
 3. A black text window opens first and stays in the background until the check finishes. Leave it alone.
-4. The window **Network Health Check Tool 1.2.14** opens and **starts by itself** within a second. You will see:
+4. The window **Network Health Check Tool 1.2.15** opens and **starts by itself** within a second. You will see:
 
    | On screen | What it means |
    |---|---|
@@ -97,6 +97,8 @@ The first three problem titles name things you can check yourself before calling
   | **Fail** | The check ran, but the result did not meet its rule |
   | **Unable to Check** | The step could not be completed — permissions, a missing system component, company policy or an execution error. It does not necessarily mean the network is faulty |
   | **Information** | A fact recorded with no verdict attached — the computer's name, a virtual adapter, an optional ping, TCP or HTTP target that did not answer, a note that IT has not defined a company standard in the configuration file |
+
+  The live log — the lines the window prints while the run happens, and the log pane of the graphical window — shows these same five words in square brackets, so a row is called the same thing on the screen and in the report.
 
 - **IT diagnostics** — collapsed at the bottom: Wi-Fi radio details and whether the Wi-Fi stayed on one access point during the run (on Windows 11 24H2 and later the radio details need the location setting to allow desktop apps, and the row says so when they could not be read), routes, the gateway's hardware address (and, on Wi-Fi, whether it is the access point's own), proxy settings, the first hops of a traceroute, adapter drivers. These rows are for IT and never change the verdict. You can leave them closed.
 - The six counters under the verdict (**Pass**, **Warning**, **Fail**, **Unable to Check**, **Information**, **Total**) count the rows of the Test Results table.
@@ -223,4 +225,4 @@ A Startup Notice row is a warning. When it is about this computer — the report
 
 ---
 
-*NetworkHealthCheck 1.2.14. This manual describes the tool as shipped; what your IT department changed in the configuration file — targets, thresholds, the report folder — shows up in the report's rows and in its Computer and Run Information section.*
+*NetworkHealthCheck 1.2.15. This manual describes the tool as shipped; what your IT department changed in the configuration file — targets, thresholds, the report folder — shows up in the report's rows and in its Computer and Run Information section.*

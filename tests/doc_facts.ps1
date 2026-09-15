@@ -322,7 +322,7 @@ function Get-ProseText([string]$path) {
 $Languages = @('en-US', 'zh-TW')
 $tags = @{}; $unresolvedTags = @{}; $fingerprints = @{}; $fingerprintTitles = @{}; $exitCodes = @{}; $exitShapes = @{}; $configKeys = @{}
 $fingerprintOrder = @{}; $fingerprintTitleOf = @{}; $verdicts = @{}; $badges = @{}
-$verdictBranchCount = @{}; $badgeBranchCount = @{}
+$verdictBranchCount = @{}; $badgeBranchCount = @{}; $prefixText = @{}
 foreach ($lang in $Languages) {
     $scriptPath = Join-Path $PackageDir ($lang + '\NetworkHealthCheck.ps1')
     $text = Read-Text $scriptPath
@@ -375,6 +375,15 @@ foreach ($lang in $Languages) {
     $badgeBranches = @([regex]::Matches($fnBadge[0].Extent.Text, '(?m)^\s*[''"][A-Za-z]+[''"]\s*\{')).Count
     foreach ($m in [regex]::Matches($fnBadge[0].Extent.Text, '"([A-Z]+)"\s*\{\s*return\s*"([^"]*)"')) { $badgeOf[$m.Groups[1].Value] = $m.Groups[2].Value }
     $badges[$lang] = $badgeOf
+    # And what the live log prints, which is the same status seen earlier: the console lines while the run
+    # happens and the log pane of the graphical window. These were two lists of words and the lists drifted -
+    # ERROR read 'Unable to Check' in the report and '[Error]' on the screen, which are two different claims
+    # about one reading, and zh-TW's WARN differed as well (backlog #70, found on the en-US walk of
+    # 2026-09-15). G1 below checks the report's words against the manual that defines them; what is kept here
+    # is the text of Get-StatusPrefix, so that A12 can check the log has no words of its own to drift with.
+    $fnPrefix = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-StatusPrefix' }, $true))
+    if ($fnPrefix.Count -ne 1) { throw ('Get-StatusPrefix not found once in ' + $scriptPath) }
+    $prefixText[$lang] = [string]$fnPrefix[0].Extent.Text
     $verdictBranchCount[$lang] = $verdictBranches
     $badgeBranchCount[$lang] = $badgeBranches
 
@@ -505,6 +514,12 @@ foreach ($lang in $Languages) {
     # And the same rule for the strings on the screen: as many verdicts and badges as there are branches naming one.
     $readCounts = ('{0} of {1} verdict(s), {2} of {3} badge(s)' -f $verdicts[$lang].Count, $verdictBranchCount[$lang], $badges[$lang].Count, $badgeBranchCount[$lang])
     Assert-True ("A11 [{0}] every verdict and badge branch was read ({1})" -f $lang, $readCounts) (($verdicts[$lang].Count -eq $verdictBranchCount[$lang]) -and ($badges[$lang].Count -eq $badgeBranchCount[$lang])) ('a branch the reader could not follow would be missing from the ground truth: ' + $readCounts)
+    # A12: the log's word for a status is the report's word, and the only way to promise that without a second list
+    # to keep in step is for the log to have no list. Get-StatusPrefix returns the badge in brackets, so a word
+    # added to or changed in Get-StatusText reaches the screen with no edit here and no edit there (backlog #70).
+    $ownWords = @([regex]::Matches($prefixText[$lang], 'return\s+"\[[^"]+\]"')).Count
+    $fromBadge = ($prefixText[$lang] -match 'Get-StatusText')
+    Assert-True ("A12 [{0}] the live log's word for a status is the report's word, taken from it rather than listed again" -f $lang) ($fromBadge -and ($ownWords -eq 0)) ('Get-StatusPrefix ' + $(if ($fromBadge) { 'reads Get-StatusText' } else { 'does not read Get-StatusText' }) + ' and returns ' + $ownWords + ' word(s) of its own')
 }
 
 # ------------------------- B. the configuration file and the IT deployment manual
