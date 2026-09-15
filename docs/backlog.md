@@ -23,6 +23,7 @@ It is in the repository and not in the package, like [`application-control.md`](
 | 53 | The campaign self-test keeps no record of what the driver did | tests |
 | 69 | Two rows say a Wi-Fi reader could not be read on a computer with no wireless adapter | tool |
 | 70 | The live log calls a row Error where the report calls it Unable to Check | tool |
+| 71 | The IT manual says AppLocker enforcement has not been observed, and it has | documents |
 
 The table is an index; each item's own paragraph below is the statement.
 
@@ -154,6 +155,16 @@ One status, two words. `Get-StatusPrefix` renders the internal `ERROR` status as
 **Two ways out, and they cost different things.** The log can print the report's word, which is one line in `Get-StatusPrefix` but changes both scripts, the GUI's live log, the walk harness's captures and whatever asserts on the prefix; or the manuals can explain the log's vocabulary, which changes no code and leaves two words for one status. The first is the recommendation here, because two names for one status is the defect and the second only documents it.
 
 Acceptance: a row of the `ERROR` status is called the same thing wherever a person meets it — the console, the GUI log, the three reports and the manuals — with the word chosen recorded here, the documents' badge table naming it, both languages, and a check that the word the scripts print is the word the manuals define, so that the two cannot drift apart again. — *raised from the en-US user-manual walk of 2026-09-15 on `DESKTOP-5M1K8VU`; the owner asked for this and #69 to be opened together.*
+
+### 71 — The IT manual says AppLocker enforcement has not been observed, and it has
+
+Section 8 of the in-package IT deployment manual carries a table of what blocks the tool and what the person sees, and its **AppLocker script rules** row says *Not measured to take effect: the one machine that reported an enforcing policy denying the script ran it unrestricted (backlog #31 on the repository's backlog page, section 10). Whether an enforced rule refuses the script or runs it in the restricted mode above has not been observed*, with *Whichever of the two files above the outcome produces* in its right-hand column. On 2026-09-15 it was observed, and the outcome is a third one that row does not name: AppLocker's script rules cover `.cmd` as well as `.ps1`, so what was refused is `Start-NetworkCheck-Console.cmd` itself — the package stopped before its first line, cmd printed *This program is blocked by group policy. For more information, contact your system administrator.* and exited 1, and **neither of the two files that column promises was written**, nor an environment report, nor a report. The row is wrong in three places at once: the measurement, the two outcomes it offers, and the evidence it tells an IT department to expect. It also cites #31 as open, and #31 closed on that run.
+
+**And the field manual's version of it, which is version-free and ships nowhere.** `sop/support-engineer-field-manual.md` has the same case in its *What comes back* table, as *Nothing at all, black window closed instantly*, and reads the cause as *Usually PowerShell blocked by policy before the script's own guard could speak*. The move it gives is right and is exactly how the campaign captured that line — a photo of the window, or the console launcher run from an open `cmd` window so the text stays — but the cause is not the only one: on the machine of 2026-09-15 PowerShell was never started, because the launcher itself was refused.
+
+**What this is not.** Correcting a sentence that has become false needs no decision. What the package should *carry* for a person who meets this — a one-page printed note, or nothing beyond section 8 — is #37's open half, and the owner left it open on 2026-09-15. The two land in the same section of the same document, so a release that takes #37's decision is the natural place to take this with it; this item does not wait for that, because the row is false now.
+
+Acceptance: the AppLocker row states what was measured and names the third outcome — the launcher itself refused, no file of ours written, and what the person has instead — with its evidence column saying so rather than promising two files; #31 named as closed or not named; both languages and both formats, which is four files and therefore a release; and the field manual's row naming application control refusing the launcher beside PowerShell being blocked, since its move is right for both. `docs/application-control.md` already carries the mechanism reading and the two documents need not repeat it. — *raised from the fourth campaign of 2026-09-15 on `DESKTOP-CO7QIMR`, the run that closed #31 and met #37's measurement half.*
 
 ## Closed items
 
