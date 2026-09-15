@@ -6301,7 +6301,12 @@ function Compare-WifiRetryCounters {
     if ($null -eq $Before -or $null -eq $After) {
         # 什麼都沒讀到，所以這一列跟另外兩列一樣是在說機器（backlog #69，
         # PR #69 第 9 輪）：由同一個地方決定。
-        $verdictMissing = Get-WirelessAbsenceVerdict -Status "ERROR" -Message "缺少完整的 Wi-Fi 重傳計數前後資料。" -AbsentMessage "這台電腦沒有無線網卡，所以沒有無線重傳數字；連線的統計看 TCP 重傳那幾列。"
+        # 第 1 輪的守衛在這裡也算數（PR #69 第 10 輪）：到得了的那份讀數若讀到了網卡，
+        # 這次執行就看過一張介面卡清單已經沒有的介面——執行中被拔掉或停用的網卡——
+        # 那時「沒有網卡」不得贏過一個真的看到了介面的讀數。
+        $survivingSnapshot = $(if ($null -ne $Before) { $Before } else { $After })
+        $survivorSawAnInterface = ($null -ne $survivingSnapshot) -and ([string]::IsNullOrWhiteSpace([string]$survivingSnapshot.Error))
+        $verdictMissing = Get-WirelessAbsenceVerdict -Status "ERROR" -Message "缺少完整的 Wi-Fi 重傳計數前後資料。" -AbsentMessage "這台電腦沒有無線網卡，所以沒有無線重傳數字；連線的統計看 TCP 重傳那幾列。" -AbsenceAllowed (-not $survivorSawAnInterface)
         Add-CheckResult -Category $category -Check "無線重傳" -Status $verdictMissing.Status -Message $verdictMissing.Message -Details ([string](Get-WirelessHardwareLine)) -Tag "wifi-retry" -Weightless | Out-Null
         return
     }

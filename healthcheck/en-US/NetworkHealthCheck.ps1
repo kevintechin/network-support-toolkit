@@ -6558,7 +6558,12 @@ function Compare-WifiRetryCounters {
     if ($null -eq $Before -or $null -eq $After) {
         # Nothing was read at all, so this row is about the machine as much as the other two are (backlog #69,
         # PR #69 round 9): the same one place decides it.
-        $verdictMissing = Get-WirelessAbsenceVerdict -Status "ERROR" -Message "Complete before-and-after Wi-Fi retry counter data is unavailable." -AbsentMessage "This computer has no wireless adapter, so there is no wireless retry figure; the TCP retransmission rows are the link's statistics."
+        # Round 1's guard belongs here too (PR #69 round 10): where the snapshot that did arrive read the
+        # adapter, this run saw an interface the adapter list no longer has - an adapter removed or disabled
+        # during the run - and absence must not win against a reading that saw one.
+        $survivingSnapshot = $(if ($null -ne $Before) { $Before } else { $After })
+        $survivorSawAnInterface = ($null -ne $survivingSnapshot) -and ([string]::IsNullOrWhiteSpace([string]$survivingSnapshot.Error))
+        $verdictMissing = Get-WirelessAbsenceVerdict -Status "ERROR" -Message "Complete before-and-after Wi-Fi retry counter data is unavailable." -AbsentMessage "This computer has no wireless adapter, so there is no wireless retry figure; the TCP retransmission rows are the link's statistics." -AbsenceAllowed (-not $survivorSawAnInterface)
         Add-CheckResult -Category $category -Check "Wireless retries" -Status $verdictMissing.Status -Message $verdictMissing.Message -Details ([string](Get-WirelessHardwareLine)) -Tag "wifi-retry" -Weightless | Out-Null
         return
     }

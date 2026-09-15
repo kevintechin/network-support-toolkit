@@ -2503,6 +2503,15 @@ $wentAwayRows = @(Get-WifiRows $wentAwayBefore $wentAwayAfter)
 $script:WirelessHardware = @{ Read = $false; Present = $false; Detail = '' }
 Assert-Equal '#69 retry: a snapshot that listed an interface the list never saw is not a computer without one' ("{0}/{1}" -f $wentAwayRows.Count, $wentAwayRows[0].Status) '1/ERROR'
 Assert-Equal '#69 retry: and it does not borrow the sentence written for a machine that has no adapter' ($wentAwayRows[0].Message -eq $noIfRetry[0].Message) $false
+# Round 10: one collection threw and the other did not. The row returns at its null guard, before the reasons -
+# and where the snapshot that did arrive read the adapter, this run saw an interface the list no longer has, so
+# absence may not win there either. That is round 1's guard, at the exit round 9 routed.
+$script:WirelessHardware = $noneRead69
+$survivorSaw69 = @(Get-WifiRows $null (New-WifiSnapshot $noIfT1 (New-WifiInterface $wifiGuid 1 @(New-WifiPhy 0 1000 0 100 20 300 5000))))
+$survivorBlind69 = @(Get-WifiRows (New-WifiSnapshot $noIfT0 @() 'open' 'error 1062: The service has not been started') $null)
+$script:WirelessHardware = @{ Read = $false; Present = $false; Detail = '' }
+Assert-Equal '#69 retry: the surviving snapshot saw an interface, so the missing-data row keeps Unable to Check' ("{0}/{1}" -f $survivorSaw69.Count, $survivorSaw69[0].Status) '1/ERROR'
+Assert-Equal '#69 retry: and where the surviving snapshot read nothing either, that row says what the machine is' ("{0}/{1}" -f $survivorBlind69.Count, $survivorBlind69[0].Status) '1/INFO'
 
 # ---------------------------------------------------------------------------
 # backlog #65: the counters read again inside the sample window, at least Tests.RetransmissionIntervalSeconds apart,
