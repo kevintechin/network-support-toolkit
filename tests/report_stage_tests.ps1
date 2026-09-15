@@ -730,6 +730,27 @@ Add-WifiRfResult
 $rowsO4 = @($script:Results | Where-Object { $_.Tag -eq 'wifi' })
 Assert-Equal 'O: netsh missing and the service unreadable is the one Information row it always was, naming the service reason' ("{0}/{1}/{2}" -f $rowsO4.Count, $rowsO4[0].Status, ($rowsO4[0].Details -match 'addtype')) '1/INFO/True'
 Assert-Equal 'O r5: the radio rows written without an interface end their WLAN-service line with the read''s own token - the reason where it failed, ok where it answered' ("{0}/{1}" -f ($rowsO4[0].Details -match '(?m)wlanapi=addtype\s*$'), ($rowsO3[0].Details -match '(?m)wlanapi=ok\s*$')) 'True/True'
+# Round 8 (backlog #69): the radio row's early exits read the same machine as the two rows below it. A reader that
+# threw with no interface anywhere was Unable to Check whatever the adapter list said, so on a computer with no radio
+# that row disagreed with the other two - the disagreement this item is about, re-created inside its own fix.
+$script:SampleO = [pscustomobject]@{ Moment = 'middle'; Timestamp = (Get-Date); Interfaces = @(); Error = 'exception'; ErrorText = 'netsh could not be started'; Diagnostics = ''; NetshExitCode = -1; NetshLines = @(); Api = (New-ReadingO 1 0 'open') }
+$script:WirelessHardware = @{ Read = $true; Present = $false; Detail = 'no radio on this machine (fixture)' }
+$script:Results = New-Object System.Collections.ArrayList
+Add-WifiRfResult
+$rowsO6 = @($script:Results | Where-Object { $_.Tag -eq 'wifi' })
+Assert-Equal 'O r8: a reader that threw, where the adapter list says the computer has no radio, is Information' ("{0}/{1}" -f $rowsO6.Count, $rowsO6[0].Status) '1/INFO'
+Assert-Equal 'O r8: and what the list answered is in that row''s details' ($rowsO6[0].Details -match 'fixture') True
+$script:WirelessHardware = @{ Read = $true; Present = $true; Detail = 'one radio, disabled (fixture)' }
+$script:Results = New-Object System.Collections.ArrayList
+Add-WifiRfResult
+$rowsO7 = @($script:Results | Where-Object { $_.Tag -eq 'wifi' })
+Assert-Equal 'O r8: the same failure where the list says the adapter is there stays Unable to Check' ("{0}/{1}" -f $rowsO7.Count, $rowsO7[0].Status) '1/ERROR'
+$script:WirelessHardware = @{ Read = $false; Present = $false; Detail = 'the list could not be read (fixture)' }
+$script:Results = New-Object System.Collections.ArrayList
+Add-WifiRfResult
+$rowsO8 = @($script:Results | Where-Object { $_.Tag -eq 'wifi' })
+Assert-Equal 'O r8: a list that could not be read leaves it Unable to Check, and the three readings share no sentence' ("{0}/{1}/{2}" -f $rowsO8[0].Status, ($rowsO8[0].Message -eq $rowsO7[0].Message), ($rowsO6[0].Message -eq $rowsO7[0].Message)) 'ERROR/False/False'
+$script:WirelessHardware = @{ Read = $false; Present = $false; Detail = '' }
 Set-Item -Path function:Add-WifiAssociationSample -Value $originalKeeper
 $script:Results = New-Object System.Collections.ArrayList
 Add-CheckResult -Category "Test" -Check "Gateway" -Status "PASS" -Message "ok" -Details "" -Tag "ping-gateway" | Out-Null

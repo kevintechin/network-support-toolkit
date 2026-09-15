@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>網路健檢工具 1.2.14 — 使用手冊</title>
+<title>網路健檢工具 1.2.15 — 使用手冊</title>
 <style>
   :root{
     --ink:#16233b; --muted:#5b6b85; --line:#d8e0ec; --bg:#f4f7fb; --card:#ffffff;
@@ -94,7 +94,7 @@
 <div class="page">
 
 <header>
-  <h1>網路健檢工具 <span class="ver">1.2.14</span></h1>
+  <h1>網路健檢工具 <span class="ver">1.2.15</span></h1>
   <div class="tag">使用手冊 — 寫給執行檢測的人</div>
   <div class="meta">繁體中文套件（<code>zh-TW</code> 資料夾）· <code>en-US</code> 資料夾是英文套件，附英文版手冊 · IT 人員：部署手冊就在旁邊（<code>NetworkHealthCheck_IT_Deployment_Manual_zh-TW.html</code>），設計與判定規則在技術文件</div>
   <div class="principle">
@@ -146,7 +146,7 @@
       <li>打開解壓縮出來的資料夾，按兩下 <b><code>Start-Traditional-Chinese.cmd</code></b>。ZIP 裡面本來就帶一層資料夾，所以解壓縮出來的資料夾裡常常只有一樣東西：另一個同名的資料夾；進去，啟動器就在裡面。多一層、資料夾叫什麼名字，都沒有關係，只要整棵樹保持在一起。（進入 <code>zh-TW</code> 資料夾按兩下 <code>Start-NetworkCheck.cmd</code> 也是同一件事。）</li>
       <li>若 Windows 顯示 <b>開啟檔案 - 安全性警告</b>，選 <kbd>執行</kbd>。那是第 2 節說的下載標記，工具本身沒有差別。同一個對話框還會說無法確認發行者，發行者那一行寫著「發行者不明」：那是實情，這支工具沒有數位簽章。IT 手上代替簽章的是雜湊值：他們拿收到的 ZIP 的 SHA-256 和發行說明公布的那一個比對（IT 部署手冊第 6 節）。套件裡的 <code>SHA256SUMS.txt</code> 是另一種檢查：它證明套件裡的檔案彼此相符，證明不了套件是從哪裡來的。ZIP 是 IT 給你的，就選 <kbd>執行</kbd>；不確定檔案從哪裡來，先問過再執行。<b>開啟這個檔案前一定要先詢問</b> 保持勾選，代價是每次執行多按一下；取消勾選是把 Windows 對這一個檔案的標記永久移除，也就是第 2 節對整個 ZIP 做的解除封鎖，一次一個檔案。</li>
       <li>先出現一個黑色文字視窗，檢測結束前它會一直留在背景。不用理它。</li>
-      <li>接著 <b>網路健檢工具 1.2.14</b> 視窗打開，一秒內<b>自己開始</b>。你會看到：
+      <li>接著 <b>網路健檢工具 1.2.15</b> 視窗打開，一秒內<b>自己開始</b>。你會看到：
         <table>
           <tr><th>畫面上</th><th>意思</th></tr>
           <tr><td>結果：檢測進行中</td><td>正在檢測</td></tr>
@@ -206,6 +206,7 @@
           <tr><td><span class="badge error">無法檢查</span></td><td>這個步驟沒有完成：權限、缺少系統元件、公司政策或執行錯誤。不等同於網路本身一定異常</td></tr>
           <tr><td><span class="badge info">資訊</span></td><td>只是記錄、沒有判定的事實：電腦名稱、虛擬網卡、沒有回應的選用 Ping、TCP、HTTP 目標、IT 尚未在設定檔填入公司標準的提示</td></tr>
         </table>
+        <p>執行中的即時記錄（視窗一面跑一面印的那幾行，以及圖形介面下方的記錄區）用的就是上面這五個詞，只是加上方括號，所以同一列在螢幕上和在報告裡叫的是同一個名字。</p>
       </li>
       <li><b>IT 診斷資料</b>：收合在最下面：Wi-Fi 無線細節與 Wi-Fi 在執行期間是否一直連著同一個存取點（Windows 11 24H2 及之後，無線細節需要位置設定允許桌面應用程式，讀不到時那一列會說明）、路由、閘道的硬體位址（在 Wi-Fi 上還有它是否就是存取點自己的位址）、Proxy 設定、traceroute 的前幾跳、網卡驅動程式。這些列是給 IT 看的，永遠不影響整體結果。不打開也沒關係。</li>
       <li>整體結果下方的六個數字（<b>正常</b>、<b>需注意</b>、<b>異常</b>、<b>無法檢查</b>、<b>資訊</b>、<b>合計</b>）是檢測結果表格的列數統計。</li>
@@ -311,7 +312,7 @@ NetworkHealthCheck_&lt;日期&gt;_&lt;時間&gt;_&lt;電腦名稱&gt;.json</pre>
   </div>
 </section>
 
-<footer>NetworkHealthCheck 1.2.14。本手冊描述的是出廠狀態的工具；IT 在設定檔改過的東西（目標、門檻、報告資料夾）會反映在報告的各列和「電腦與執行資訊」一節。</footer>
+<footer>NetworkHealthCheck 1.2.15。本手冊描述的是出廠狀態的工具；IT 在設定檔改過的東西（目標、門檻、報告資料夾）會反映在報告的各列和「電腦與執行資訊」一節。</footer>
 
 </div>
 </body>
