@@ -2031,6 +2031,35 @@ Assert-True '61. the export and the staged way back are named for the attempt, s
 Assert-True '61. and the revert reads the path this attempt recorded rather than the fixed one, which is where an earlier run''s file would have been found' ((Test-Holds61 $m9text61 ('$stagedRevert = ' + $recorded61)) -and (-not (Test-Holds61 $m9text61 $fixed61))) 'the revert still reads the fixed staged path'
 Assert-True '61. and the apply copies to and hashes that same recorded path, so the file it checks is the file it wrote' ($uses61 -ge 3) ('recorded-path uses in M9: ' + $uses61)
 
+# -------------------- 62. one decision, two languages --------------------
+# PR #68 round 3, P2: the two messages of that refusal branched on two expressions of their own, and the Chinese one
+# kept the two branches it was written with - so a before-reading marked unreadable fell through to its else and told
+# the operator the machine had already been in that state, which is unavailable evidence presented as a prior positive
+# reading. This project's operator reads the Chinese line first. The decision is taken once now (Why), and this case
+# is what says both renderings follow it: a language that repeats itself across two readings is telling one of them
+# something untrue. The phrases are built from code points, because this file is ASCII (see the encoding rule).
+Write-Output ''
+Write-Output '62. the refusal says the same thing in both languages, and a different thing for each reading'
+$zhUnreadable62 = (@(0x8B80, 0x4E0D, 0x5230) | ForEach-Object { [char]$_ }) -join ''
+$zhAlready62 = (@(0x5DF2, 0x7D93, 0x662F, 0x9019, 0x500B, 0x6A23, 0x5B50) | ForEach-Object { [char]$_ }) -join ''
+$pre62 = @{ Ok = $true; Read = $true; Detail = 'Script rules enforced (2 rules), AppIDSvc running' }
+$failed62 = @{ Ok = $false; Detail = 'helper exit 1' }
+$shapes62 = @(@{ Name = 'unread'; Was = $null },
+              @{ Name = 'unreadable'; Was = @{ Ok = $false; Detail = 'AppLocker is not available here: the RPC server is unavailable' } },
+              @{ Name = 'already'; Was = @{ Ok = $true; Read = $true; Detail = 'Script rules enforced (2 rules), AppIDSvc running' } })
+$out62 = @($shapes62 | ForEach-Object { $o = Get-ApplyOutcome 'M9' $failed62 $pre62 $_.Was; @{ Name = [string]$_.Name; Why = [string]$o.Why; En = [string]@($o.Message)[0]; Zh = [string]@($o.Message)[1]; Applied = [bool]$o.Applied } })
+Assert-True '62. none of the three is applied, and each carries its own name for why' ((@($out62 | Where-Object { $_.Applied }).Count -eq 0) -and ((@($out62 | ForEach-Object { $_.Why }) | Sort-Object -Unique).Count -eq 3)) ((@($out62 | ForEach-Object { $_.Name + '=' + $_.Why }) -join ', '))
+Assert-True '62. the English line is a different line for each of the three' ((@($out62 | ForEach-Object { $_.En }) | Sort-Object -Unique).Count -eq 3) ((@($out62 | ForEach-Object { $_.En.Substring(0, [Math]::Min(70, $_.En.Length)) }) -join ' | '))
+Assert-True '62. and so is the Chinese line - the half that drifted, where two of the three used to read alike' ((@($out62 | ForEach-Object { $_.Zh }) | Sort-Object -Unique).Count -eq 3) ((@($out62 | ForEach-Object { $_.Name + ': ' + $_.Zh.Substring(0, [Math]::Min(40, $_.Zh.Length)) }) -join ' | '))
+$un62 = @($out62 | Where-Object { $_.Name -eq 'unreadable' })[0]
+$al62 = @($out62 | Where-Object { $_.Name -eq 'already' })[0]
+Assert-True '62. the unreadable reading says it could not be read, in both, and says nothing about the machine having been that way' (($un62.En -like '*could not be read before it was asked*') -and ($un62.Zh.Contains($zhUnreadable62)) -and (-not $un62.Zh.Contains($zhAlready62))) ('zh: ' + $un62.Zh)
+Assert-True '62. and the reading is not vacuous: the reading that WAS that way says so in the words the other one must not use' (($al62.En -like '*already read this way before it was asked*') -and ($al62.Zh.Contains($zhAlready62))) ('zh: ' + $al62.Zh)
+$text62 = ''
+if ($defs42.ContainsKey('Get-ApplyOutcome') -and $defs42['Get-ApplyOutcome'].Count -eq 1) { $text62 = [string]$defs42['Get-ApplyOutcome'][0].Extent.Text }
+$switches62 = (($text62 -split [regex]::Escape('switch ($whyKind)')).Count - 1)
+Assert-True '62. both languages are rendered from one decision, so neither can branch on its own again' (($text62.IndexOf('$whyKind = $(if ($null -eq $Was)', [System.StringComparison]::Ordinal) -ge 0) -and ($switches62 -eq 2)) ('renderings driven by the decision: ' + $switches62)
+
 # -------------------- 38. two invocations of one campaign cannot choose one bundle path --------------------
 Write-Output ''
 Write-Output '38. the bundle name carries the time to the millisecond and the process id (backlog #25). A name good to the second collided whenever a second invocation of the same campaign fell inside the same second as the first: Compress-Archive refuses a destination that exists, and the record kept that refusal as a bundle failure - twice on GitHub Actions, both times on a commit that touched nothing the step reads. The collision is reproduced here rather than waited for: every second-precision name the clock can produce in the next five minutes is occupied before the invocation runs'

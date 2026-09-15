@@ -1277,12 +1277,25 @@ function Get-ApplyOutcome([string]$Id, $Helper, $Pre, $Was) {
     # explicit, readable negative is evidence, and a precondition that says nothing about it says no.
     $changed = (($null -ne $Was) -and ($true -eq $Was.Read) -and -not [bool]$Was.Ok)
     if ($Pre.Ok -and -not $helperOk -and -not $changed) {
-        $why = $(if ($null -eq $Was) { 'and nothing read the machine before it was asked, so this reading cannot be a change' }
-                 elseif ($true -ne $Was.Read) { 'and the machine could not be read before it was asked (' + [string]$Was.Detail + '), so this reading cannot be a change' }
-                 else { 'and the machine already read this way before it was asked: ' + [string]$Was.Detail })
-        return @{ Applied = $false; ApplyBy = ''; Event = ''
+        # Which of the three it is, decided once and rendered twice. The two languages used to branch on two
+        # expressions of their own, and the Chinese one kept the two branches it was written with: a reading marked
+        # unreadable fell through to its else and told the operator the machine had already been in that state, which
+        # is unavailable evidence presented as a prior positive reading - and this project's operator reads the
+        # Chinese line first (PR #68 round 3). One decision cannot drift from itself.
+        $whyKind = $(if ($null -eq $Was) { 'unread' } elseif ($true -ne $Was.Read) { 'unreadable' } else { 'already' })
+        $why = $(switch ($whyKind) {
+            'unread'     { 'and nothing read the machine before it was asked, so this reading cannot be a change' }
+            'unreadable' { 'and the machine could not be read before it was asked (' + [string]$Was.Detail + '), so this reading cannot be a change' }
+            default      { 'and the machine already read this way before it was asked: ' + [string]$Was.Detail }
+        })
+        $whyZh = $(switch ($whyKind) {
+            'unread'     { '而且沒有任何東西在動手之前讀過這台機器，所以這個讀數不可能是一個變化' }
+            'unreadable' { '而且機器在動手之前讀不到（' + [string]$Was.Detail + '），所以這個讀數不可能是一個變化' }
+            default      { '而且機器在被要求之前就已經是這個樣子：' + [string]$Was.Detail }
+        })
+        return @{ Applied = $false; ApplyBy = ''; Event = ''; Why = $whyKind
                   Message = @(('The elevated helper did not make the change (' + [string]$Helper.Detail + '), ' + $why + ' - so nothing here says the change was made, and no revert of this run''s runs against it - do it by hand:'),
-                              ('提權 helper 沒有完成變更（' + [string]$Helper.Detail + '），' + $(if ($null -eq $Was) { '而且沒有任何東西在動手之前讀過這台機器，所以這個讀數不可能是一個變化' } else { '而且機器在被要求之前就已經是這個樣子：' + [string]$Was.Detail }) + '——所以這裡沒有任何東西能說明變更發生過，這次執行的還原也不會對它動手——請手動處理：')) }
+                              ('提權 helper 沒有完成變更（' + [string]$Helper.Detail + '），' + $whyZh + '——所以這裡沒有任何東西能說明變更發生過，這次執行的還原也不會對它動手——請手動處理：')) }
     }
     if ($Pre.Ok) {
         return @{ Applied = $true
