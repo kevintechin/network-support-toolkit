@@ -1074,8 +1074,16 @@ try {
         # commit because that path is declared `eol=lf`, and the manifest carried the CRLF hash - `113 passed` here
         # and `112 passed, 1 failed` on every other machine. git already knows both answers; this asks it.
         Invoke-Case 'parse' 'every packaged file is on disk as a checkout would write it' {
-            $eol = @(& git -C $Root ls-files --eol -- healthcheck 2>$null)
-            if ($LASTEXITCODE -ne 0 -or -not $eol.Count) { return @{ Passed = $false; Detail = 'git ls-files --eol said nothing, so this case checked nothing' } }
+            # Only where there is a checkout to ask. Package acceptance runs this step on a machine with neither git
+            # nor a repository - the Windows-PowerShell-only case of backlog #19, and the ZIP a test machine is given -
+            # and a guard about a working tree has nothing to say there: what ships was hashed on the machine that
+            # built it, which is a machine with git (PR #69 round 4). The detail says it did not run, because a case
+            # that checked nothing and printed PASS is the thing this file exists to prevent.
+            if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return @{ Passed = $true; Detail = 'not checked: no git on this machine, so no checkout''s form to compare with' } }
+            $g = Invoke-Native 'git' @('-C', $Root, 'ls-files', '--eol', '--', 'healthcheck') 'eol_guard'
+            if ($g.ExitCode -ne 0) { return @{ Passed = $true; Detail = ('not checked: ' + $Root + ' is not a git checkout') } }
+            $eol = @($g.Output | Where-Object { $_ })
+            if (-not $eol.Count) { return @{ Passed = $false; Detail = 'git listed no tracked file under healthcheck, so this case checked nothing' } }
             $bad = @()
             foreach ($line in $eol) {
                 # i/<index>  w/<worktree>  attr/<attributes>\t<path>
