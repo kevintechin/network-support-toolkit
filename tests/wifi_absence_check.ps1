@@ -203,17 +203,39 @@ Add-Check "S4" "and it is still stopped afterwards - the run happened in that st
     ($null -ne $svcAfter -and [string]$svcAfter.Status -eq "Stopped") $svcAfterText
 
 # ---- the report ----------------------------------------------------------------------------------------------------
-# A report this run wrote is one that was not there before it started. With -NoRun there was no run, and the newest
-# report is what is being re-read, whenever it was taken.
-$found = New-Object System.Collections.ArrayList
-foreach ($dir in $reportDirs) {
-    if (-not (Test-Path -LiteralPath $dir)) { continue }
-    foreach ($file in @(Get-ChildItem -LiteralPath $dir -Filter "*.json" -ErrorAction SilentlyContinue)) {
-        if ($NoRun -or (-not $reportsBefore.ContainsKey($file.FullName))) { [void]$found.Add($file) }
+# The child says which file it wrote, on its last lines, and that is the file this check reads (PR #70 round 2).
+# "It appeared while the run was going on" is not the same claim: the report folders are shared, so another copy of
+# the tool writing into one of them - a person running it by hand, a second check - would satisfy that and could be
+# newer. The path is read rather than the label beside it, because the label is in the tool's own language.
+$reportJson = $null
+$reportNote = ""
+if ($NoRun) {
+    # No run to bind to: the newest report kept in either folder is what is being re-read.
+    $found = New-Object System.Collections.ArrayList
+    foreach ($dir in $reportDirs) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        foreach ($file in @(Get-ChildItem -LiteralPath $dir -Filter "*.json" -ErrorAction SilentlyContinue)) { [void]$found.Add($file) }
     }
+    $newest = @($found | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+    if ($newest.Count -gt 0) { $reportJson = $newest[0]; $reportNote = "the newest report kept" }
+    else { $reportNote = "no report in either report folder" }
 }
-$reportJson = @($found | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
-if ($reportJson.Count -eq 0) { $reportJson = $null } else { $reportJson = $reportJson[0] }
+elseif ($ran) {
+    $claimed = ""
+    if (Test-Path -LiteralPath $runOut) {
+        foreach ($line in @(Get-Content -LiteralPath $runOut -ErrorAction SilentlyContinue)) {
+            $match = [regex]::Match([string]$line, '(?:[A-Za-z]:\\|\\\\)[^<>|]*\.json')
+            if ($match.Success) { $claimed = $match.Value.Trim() }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($claimed)) { $reportNote = "the run printed no JSON report path" }
+    elseif (-not (Test-Path -LiteralPath $claimed)) { $reportNote = "the run named a report that is not there: " + $claimed }
+    elseif ($reportsBefore.ContainsKey((Get-Item -LiteralPath $claimed).FullName)) {
+        $reportNote = "the run named a report that was already there before it started: " + $claimed
+    }
+    else { $reportJson = Get-Item -LiteralPath $claimed; $reportNote = "named by the run itself" }
+}
+else { $reportNote = "there is no run to read a report from" }
 
 $report = $null
 if ($null -ne $reportJson) {
@@ -224,8 +246,9 @@ if ($null -ne $reportJson) {
         if (Test-Path -LiteralPath $peer) { Copy-Item -LiteralPath $peer -Destination $bundle -Force }
     }
 }
-Add-Check "C1" "the report read is the one this run wrote - or, with -NoRun, the newest capture kept" (($null -ne $report) -and $ran) `
-    $(if ($null -ne $reportJson) { ("report: {0} ({1})" -f $reportJson.Name, $runNote) } else { "no report this run wrote; " + $runNote })
+Add-Check "C1" "the report read is the one this run named as its own - or, with -NoRun, the newest capture kept" `
+    (($null -ne $report) -and ($ran -or $NoRun)) `
+    $(if ($null -ne $reportJson) { ("report: {0} - {1} ({2})" -f $reportJson.Name, $reportNote, $runNote) } else { ($reportNote + "; " + $runNote) })
 
 $rows = @()
 if ($null -ne $report) { $rows = @($report.Results) }
