@@ -50,14 +50,25 @@ if ([string]::IsNullOrWhiteSpace($ScriptPath)) {
     }
 }
 # Never the folder this script came from: in a checkout that is the repository. Every line below says where the
-# bundle went, so a default under %TEMP% costs nothing.
+# bundle went, so a default under %TEMP% costs nothing. It is resolved to a full path because the folder inside it is
+# written into a configuration the child reads, and the child resolves a relative folder against ITS own directory -
+# which would put the reports beside the tool, in a checkout or inside the package (PR #70 round 4).
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) { $OutputRoot = Join-Path $env:TEMP "nhc-wifi-absence" }
 [void](New-Item -ItemType Directory -Path $OutputRoot -Force)
+$OutputRoot = (Resolve-Path -LiteralPath $OutputRoot).Path
 
-$stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+# The bundle is this process's: a name built from the computer and the second alone is one two copies of this check
+# started in the same second would share, and with it the folder their children write into - which is the whole
+# guarantee this check rests on (PR #70 round 4). Milliseconds and the process id, as the campaign bundles are named,
+# and the folder is created without -Force so that a name that somehow exists is an error rather than a share.
+$stamp = Get-Date -Format "yyyyMMdd_HHmmss_fff"
 $machine = ($env:COMPUTERNAME -replace '[^A-Za-z0-9_.-]', '_')
-$bundle = Join-Path $OutputRoot ("wifi-absence_{0}_{1}" -f $machine, $stamp)
-[void](New-Item -ItemType Directory -Path $bundle -Force)
+$bundle = Join-Path $OutputRoot ("wifi-absence_{0}_{1}_p{2}" -f $machine, $stamp, $PID)
+try { [void](New-Item -ItemType Directory -Path $bundle -ErrorAction Stop) }
+catch {
+    Write-Host ("[FAIL] the bundle folder could not be made for this process alone: " + [string]$_.Exception.Message)
+    exit 1
+}
 
 $checks = New-Object System.Collections.ArrayList
 function Add-Check([string]$Id, [string]$Title, [bool]$Ok, [string]$Evidence) {
@@ -156,6 +167,18 @@ Add-Check "S3" "netsh did not answer either - so neither Wi-Fi reader can be ask
 # copy under test would otherwise decide both what the run does and where it puts the answer.
 $runReports = Join-Path $bundle "run-reports"
 [void](New-Item -ItemType Directory -Path $runReports -Force)
+$runReports = (Resolve-Path -LiteralPath $runReports).Path
+# The tool writes NetworkHealthCheck_<stamp>_<computer>.json into that folder and falls back to a shared folder under
+# %TEMP% where it cannot - which this check then refuses, correctly but confusingly. A bundle under a deep path is how
+# that happens without anyone noticing: measured, a 190-character folder plus the report's name crosses MAX_PATH, both
+# children fall back, and the run looks broken for a reason nobody reads (PR #70 round 4). Refused here instead, with
+# the reason and what to do about it.
+$reportNameLength = ("NetworkHealthCheck_yyyyMMdd_HHmmss_{0}.json" -f $machine).Length
+if (($runReports.Length + 1 + $reportNameLength) -ge 260) {
+    Write-Host ("[FAIL] the bundle path is too long for the tool to write its report into: {0} characters, and the report's own name needs {1} more." -f $runReports.Length, ($reportNameLength + 1))
+    Write-Host  "       Run this again with -OutputRoot pointing somewhere shorter, for example C:\nhc."
+    exit 1
+}
 $configPath = Join-Path $bundle "run-config.json"
 [void](Save-Text "run-config.json" (ConvertTo-Json @{ ReportFolderName = $runReports }))
 
