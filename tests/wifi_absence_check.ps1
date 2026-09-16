@@ -2,8 +2,7 @@ param(
     [ValidateSet("en-US", "zh-TW")][string]$Language = "en-US",
     [string]$ScriptPath = "",
     [string]$OutputRoot = "",
-    [int]$TimeoutSeconds = 900,
-    [switch]$NoRun
+    [int]$TimeoutSeconds = 900
 )
 
 # wifi_absence_check.ps1 - what a computer with no wireless adapter should read, checked on such a computer.
@@ -20,6 +19,18 @@ param(
 #
 # Whether this machine has a radio is decided here by a copy of the rule, deliberately: a check that asked the
 # code under test whether the computer has a wireless adapter would agree with it by construction.
+#
+# The run writes into a folder this check makes, named in a configuration this check writes. Two runs of the tool on
+# one computer in the same second produce the same report NAME - Save-Reports has second precision - so in a shared
+# folder no amount of care over the path identifies the writer, and the other run can overwrite the file between the
+# child printing it and this reading it (PR #70 round 3). A folder nobody else knows about has one writer. It also
+# settles where to look: the tool resolves ReportFolderName against its own folder, or takes it as it stands where it
+# is rooted, so a configuration file beside the copy under test would otherwise decide where the report went. The
+# price is that the run uses this check's configuration rather than the machine's, which is stated in the bundle.
+#
+# There is no mode that reads a report this check did not produce. The standing readings are of this machine now, so
+# against someone else's report they would say nothing about the standing that produced it - and saying nothing while
+# looking like an answer is the failure this script exists to prevent. A bundle already carries its own checks.txt.
 #
 # So this records the standing first - the WLAN service stopped, netsh refusing, and an adapter list with no wireless
 # entry in it - runs the tool once, records the standing again, and then reads the run's own JSON report. The verdict
@@ -139,21 +150,14 @@ Add-Check "S2" "the adapter list holds no wireless entry - this is a computer wi
 Add-Check "S3" "netsh did not answer either - so neither Wi-Fi reader can be asked" `
     ($netshExit -ne 0) ("netsh exit code {0}" -f $netshExit)
 
-# ---- what was there before the run ---------------------------------------------------------------------------------
-# The report this check reads has to be the one this run wrote. A child that died, or one killed on the timeout, would
-# otherwise leave the newest report of some earlier attempt to be read as this run's - and every check below would
-# pass against it, which is the mistake this whole script exists to prevent (PR #70 round 1).
-$toolDir = Split-Path -Parent $ScriptPath
-$reportDirs = @()
-if (-not [string]::IsNullOrWhiteSpace($toolDir)) { $reportDirs += (Join-Path $toolDir "Reports") }
-$reportDirs += (Join-Path $env:TEMP "NetworkHealthCheck\Reports")
-$reportsBefore = @{}
-foreach ($dir in $reportDirs) {
-    if (-not (Test-Path -LiteralPath $dir)) { continue }
-    foreach ($file in @(Get-ChildItem -LiteralPath $dir -Filter "*.json" -ErrorAction SilentlyContinue)) {
-        $reportsBefore[$file.FullName] = $true
-    }
-}
+# ---- where the run will write --------------------------------------------------------------------------------------
+# An empty folder made for this run, and a configuration naming it, so that the report this check reads has exactly
+# one writer (PR #70 rounds 1 to 3). The configuration is this check's, not the machine's: a sidecar file beside the
+# copy under test would otherwise decide both what the run does and where it puts the answer.
+$runReports = Join-Path $bundle "run-reports"
+[void](New-Item -ItemType Directory -Path $runReports -Force)
+$configPath = Join-Path $bundle "run-config.json"
+[void](Save-Text "run-config.json" (ConvertTo-Json @{ ReportFolderName = $runReports }))
 
 # ---- the run -------------------------------------------------------------------------------------------------------
 $runStart = Get-Date
@@ -161,14 +165,7 @@ $runOut = Join-Path $bundle "run-output.txt"
 $runErr = Join-Path $bundle "run-errors.txt"
 $ran = $false
 $runNote = ""
-if ($NoRun) {
-    # The newest report as it stands, however old: this reads a capture taken earlier, and a freshness cut-off would
-    # refuse the very bundles it is for (PR #70 round 1).
-    $runNote = "-NoRun was given: the tool was not started, the newest report is read instead"
-    Write-Host ("[SKIP] the run: " + $runNote)
-    $ran = $true
-}
-elseif (-not (Test-Path -LiteralPath $ScriptPath)) {
+if (-not (Test-Path -LiteralPath $ScriptPath)) {
     $runNote = "the tool was not found at " + $ScriptPath
 }
 else {
@@ -177,7 +174,7 @@ else {
     # One string, with the path in quotes: Start-Process joins an argument array with spaces and keeps none of the
     # quoting, so a checkout under a path with a space in it - this repository's own, for one - would hand the child a
     # truncated -File and never run the tool (PR #70 round 1).
-    $arguments = ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -ConsoleOnly' -f $ScriptPath)
+    $arguments = ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -ConsoleOnly -ConfigPath "{1}"' -f $ScriptPath, $configPath)
     $proc = Start-Process -FilePath $psExe -PassThru -NoNewWindow -RedirectStandardOutput $runOut -RedirectStandardError $runErr `
         -ArgumentList $arguments
     # Touching the handle is what makes ExitCode readable after the wait.
@@ -203,24 +200,14 @@ Add-Check "S4" "and it is still stopped afterwards - the run happened in that st
     ($null -ne $svcAfter -and [string]$svcAfter.Status -eq "Stopped") $svcAfterText
 
 # ---- the report ----------------------------------------------------------------------------------------------------
-# The child says which file it wrote, on its last lines, and that is the file this check reads (PR #70 round 2).
-# "It appeared while the run was going on" is not the same claim: the report folders are shared, so another copy of
-# the tool writing into one of them - a person running it by hand, a second check - would satisfy that and could be
-# newer. The path is read rather than the label beside it, because the label is in the tool's own language.
+# The child prints the path of the report it wrote, and that file has to be inside the folder made for this run.
+# The path is read rather than the label beside it, because the label is in the tool's own language; a run that wrote
+# somewhere else - the tool falls back to a shared folder under %TEMP% where its own is not writable - is refused
+# rather than read, because a shared folder is one this check cannot call its own (PR #70 rounds 2 and 3).
 $reportJson = $null
 $reportNote = ""
-if ($NoRun) {
-    # No run to bind to: the newest report kept in either folder is what is being re-read.
-    $found = New-Object System.Collections.ArrayList
-    foreach ($dir in $reportDirs) {
-        if (-not (Test-Path -LiteralPath $dir)) { continue }
-        foreach ($file in @(Get-ChildItem -LiteralPath $dir -Filter "*.json" -ErrorAction SilentlyContinue)) { [void]$found.Add($file) }
-    }
-    $newest = @($found | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
-    if ($newest.Count -gt 0) { $reportJson = $newest[0]; $reportNote = "the newest report kept" }
-    else { $reportNote = "no report in either report folder" }
-}
-elseif ($ran) {
+if (-not $ran) { $reportNote = "there is no run to read a report from" }
+else {
     $claimed = ""
     if (Test-Path -LiteralPath $runOut) {
         foreach ($line in @(Get-Content -LiteralPath $runOut -ErrorAction SilentlyContinue)) {
@@ -228,14 +215,17 @@ elseif ($ran) {
             if ($match.Success) { $claimed = $match.Value.Trim() }
         }
     }
+    $runReportsFull = (Get-Item -LiteralPath $runReports).FullName
     if ([string]::IsNullOrWhiteSpace($claimed)) { $reportNote = "the run printed no JSON report path" }
     elseif (-not (Test-Path -LiteralPath $claimed)) { $reportNote = "the run named a report that is not there: " + $claimed }
-    elseif ($reportsBefore.ContainsKey((Get-Item -LiteralPath $claimed).FullName)) {
-        $reportNote = "the run named a report that was already there before it started: " + $claimed
+    else {
+        $claimedItem = Get-Item -LiteralPath $claimed
+        if ((Split-Path -Parent $claimedItem.FullName) -ne $runReportsFull) {
+            $reportNote = "the run wrote outside the folder made for it, so another writer could share it: " + $claimedItem.FullName
+        }
+        else { $reportJson = $claimedItem; $reportNote = "named by the run, in the folder made for it" }
     }
-    else { $reportJson = Get-Item -LiteralPath $claimed; $reportNote = "named by the run itself" }
 }
-else { $reportNote = "there is no run to read a report from" }
 
 $report = $null
 if ($null -ne $reportJson) {
@@ -246,8 +236,8 @@ if ($null -ne $reportJson) {
         if (Test-Path -LiteralPath $peer) { Copy-Item -LiteralPath $peer -Destination $bundle -Force }
     }
 }
-Add-Check "C1" "the report read is the one this run named as its own - or, with -NoRun, the newest capture kept" `
-    (($null -ne $report) -and ($ran -or $NoRun)) `
+Add-Check "C1" "the report read is the one this run named, in the folder this check made for it" `
+    (($null -ne $report) -and $ran) `
     $(if ($null -ne $reportJson) { ("report: {0} - {1} ({2})" -f $reportJson.Name, $reportNote, $runNote) } else { ($reportNote + "; " + $runNote) })
 
 $rows = @()
