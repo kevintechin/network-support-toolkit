@@ -1,5 +1,46 @@
 ﻿# Validation Record — NetworkHealthCheck
 
+## Every call the tool makes is one somebody looked at · 2026-09-16 — backlog #42's static half (`tests/`; the shipped package untouched apart from this record)
+
+**The promise and the gap.** *It changes nothing* is the first thing the user manual says about this tool, and until
+today nothing checked it. The gap was named in #42 on 2026-09-08 and the item's answer was a before-and-after
+measurement on a quiet machine; the owner deferred that on 2026-09-14 and asked, on 2026-09-16, whether confirming the
+design was not enough. It nearly is: for **our own code starting to write**, a static check beats a measurement on
+every axis — deterministic, on every push, both languages, no quiet machine, no false alarm.
+
+**What was built.** `Find-UnvettedCall`, the third guard in `tests\ast_guards.ps1`, run over both shipped scripts by
+the `guards` step. A call passes if it is a function the file defines, or a name on a list that carries the reason it
+is a read, or an invocation through a vetted variable; where an entry has an argument rule every bare word and
+parameter must match it. **An allowlist, not a list of forbidden writers**, because the ways to write to Windows are
+open-ended: a denylist is green until it meets a spelling it does not know, an allowlist is red until somebody looks.
+
+**Measured before it was written**, which is what made it affordable: the two scripts call **192 distinct command
+names, 155 of them their own functions**. That leaves 38 external names — the `Get-Net*` readers, the CIM and
+WMI queries, `netsh` and `arp`, the pipeline and text cmdlets, and the four that write the report and open it —
+and three invocations through a variable: `$netsh`, resolved to its path under `%SystemRoot%` rather than trusted to
+PATH (PR #67's lesson), and two script blocks the file builds itself. Nothing in either file writes a network setting,
+a registry value, a service state or a policy; the only writes are the report, its folder, and a file the run had
+written itself.
+
+**The rules that carry the sharp edges.** `netsh` and `arp` pass only with the verbs their entries name, so `netsh
+wlan show interfaces` is clean and `netsh int ip set address` is a finding — including through `$netsh`.
+`Start-Process` passes for the two programs it names, and for the one variable the GUI's Open-report button hands it,
+which is the single call whose path is built at run time; another variable there is a finding. An alias is not a name:
+a call spelled `sc` is a finding until somebody says which `sc` it is.
+
+**28 corpus cases**, each recorded as flagged or clean and every one of them checked: writers by cmdlet
+(`Set-NetIPAddress`, `Set-ItemProperty`, `Invoke-CimMethod`, `Set-Service`, `Remove-NetRoute`), writers by another
+program (`reg add`, `setx`), a vetted program with another verb (`netsh int ip set`, `netsh advfirewall set`, `arp
+-s`), the same through `$netsh`, an invocation through an unvetted variable, `Start-Process` with `cmd.exe` and with
+an unvetted variable, an alias, and the reads that must stay clean. `guards` step: **152 / 33 / 57 / 28 cases**, both
+shipped files clean.
+
+**What it does not do, and the item says so.** It reads the calls, not what they do: a vetted read whose side effect
+changes the machine — a query that starts a trigger-started service, a driver call that resets a counter —
+looks exactly like a read here. That is #42's other half, the two-pair measurement, and it stays deferred with its
+acceptance unchanged. One datum of that kind exists already, taken for #69: on `DESKTOP-5M1K8VU`, `WlanSvc` was
+stopped before the run and still stopped after it.
+
 ## What the `campaign` step said when it failed · 2026-09-16 — backlog #53, closed here (`tests/`; the shipped package untouched apart from this record)
 
 **The last clause of #53 was an occurrence, and two had already happened.** The item asked that the next intermittent failure of the `campaign` step be diagnosed from `campaign.log` rather than reached by elimination. Its harness half landed on 2026-09-09 — `Invoke-Campaign` writes the driver's lines to the host instead of the success stream every caller assigns away — and the workflow keeps each run's log for thirty days, so the four failed runs still on GitHub are the before and the after of exactly that change:

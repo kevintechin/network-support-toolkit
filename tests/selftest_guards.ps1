@@ -1,13 +1,18 @@
 param([string]$EnUsAnchor, [string]$ZhTwAnchor)
-# Self-test of the two AST guards in ast_guards.ps1 (backlog #17; until 2026-09-04 they were regular expressions in
-# healthcheck/tools/validate_release.py and this file was selftest_guards.py). Four parts:
+# Self-test of the AST guards in ast_guards.ps1 - the two from backlog #17 (until 2026-09-04 regular expressions in
+# healthcheck/tools/validate_release.py, and this file selftest_guards.py) and the call guard from backlog #42.
+# Four parts:
 #   1. the v1.2.0 files must be flagged at the known lines - the top-level `$script:Interactive = $false` (line 77 in
 #      en-US, 70 in zh-TW) and the six `New-Object System.Drawing.Point(22, 84 + $offset)` constructor lines;
-#   2. the current shipped files must parse and come back clean;
+#   2. the current shipped files must parse and come back clean, the call guard included: every command they call
+#      is one of their own functions or one somebody vetted;
 #   3. the corpus below - built up over the twenty-one Codex rounds of PR #4, one case per spelling a round proposed,
-#      plus the shapes the AST rewrite made reachable - must be classified exactly as recorded;
+#      plus the shapes the AST rewrite made reachable, plus the call cases of #42 - must be classified exactly as
+#      recorded;
 #   4. the guards must survive a file that does not parse (the parse step's finding, not theirs).
 # The anchors are read from git (commit f7c45a9, the merge of PR #3 = v1.2.0 as shipped) unless a file is passed in.
+# They anchor the two guards they were built from: what v1.2.0 called is a question nobody asked at the time, and a
+# number recorded here for it would be archaeology rather than a guard.
 #
 # Usage:  tests\selftest_guards.ps1 [-EnUsAnchor <v1.2.0 en-US .ps1>] [-ZhTwAnchor <v1.2.0 zh-TW .ps1>]
 # A case is written on one line: `\n` in a case stands for a line break (no case needs a literal backslash-n).
@@ -64,8 +69,9 @@ foreach ($language in @('en-US', 'zh-TW')) {
     $errors = @(Get-GuardParseError $text)
     $parameters = @(Find-OverwrittenParameter $text)
     $arithmetic = @(Find-UnparenthesizedArithmetic $text)
-    Write-Output ('current {0}: {1} parse error(s); parameter guard [{2}]; arithmetic guard [{3}]' -f $language, $errors.Count, ($parameters -join ', '), ($arithmetic -join ', '))
-    if ($errors.Count -or $parameters.Count -or $arithmetic.Count) { $ok = $false; Write-Output '  MISMATCH: the shipped file must parse and come back clean' }
+    $calls = @(Find-UnvettedCall $text)
+    Write-Output ('current {0}: {1} parse error(s); parameter guard [{2}]; arithmetic guard [{3}]; call guard [{4}]' -f $language, $errors.Count, ($parameters -join ', '), ($arithmetic -join ', '), ($calls -join ', '))
+    if ($errors.Count -or $parameters.Count -or $arithmetic.Count -or $calls.Count) { $ok = $false; Write-Output '  MISMATCH: the shipped file must parse and come back clean' }
 }
 
 # -------------------- 3. the corpus --------------------
@@ -334,6 +340,47 @@ $ArithmeticCases = @(
     New-Case '$s = @''\nNew-Object System.Drawing.Point(22, 84 + $offset)\n''@' $false
 )
 
+# The call guard (backlog #42). $true = the guard must report it. Written at the top level of a script with no function
+# definitions in it, so a name is vetted or it is not; the last case brings its own function to stand for the tool's own.
+$CallCases = @(
+    # Writers, by cmdlet: none of these is on the list, and that is the whole rule.
+    New-Case 'Set-NetIPAddress -InterfaceAlias Wi-Fi -IPAddress 10.0.0.5' $true
+    New-Case 'Set-ItemProperty -Path HKCU:\Software\X -Name Y -Value 1' $true
+    New-Case 'Invoke-CimMethod -ClassName Win32_Process -MethodName Create' $true
+    New-Case 'Set-Service -Name WlanSvc -StartupType Automatic' $true
+    New-Case 'Remove-NetRoute -DestinationPrefix 0.0.0.0/0' $true
+    # Writers, by another program: the name is not on the list at all.
+    New-Case 'reg add HKCU\Software\X /v Y /d 1 /f' $true
+    New-Case 'setx NHC 1' $true
+    # A vetted program carrying a verb its entry does not allow.
+    New-Case 'netsh int ip set address name="Wi-Fi" static 10.0.0.5' $true
+    New-Case 'netsh advfirewall set allprofiles state off' $true
+    New-Case 'arp -s 10.0.0.1 aa-bb-cc-dd-ee-ff' $true
+    # The same through the resolved-path variable, which is how the tool really calls netsh.
+    New-Case '& $netsh int ip set address name="Wi-Fi" dhcp' $true
+    # An invocation through a variable nobody vetted.
+    New-Case '& $other wlan show interfaces' $true
+    New-Case '& (Get-Command netsh) wlan show interfaces' $true
+    # Start-Process is vetted for two programs and for the report the run wrote; anything else is a finding.
+    New-Case 'Start-Process -FilePath "cmd.exe" -ArgumentList "/c echo hi"' $true
+    New-Case 'Start-Process -FilePath $somethingElse' $true
+    New-Case 'Start-Process "notepad.exe"' $false
+    New-Case 'Start-Process -FilePath "explorer.exe"' $false
+    New-Case 'Start-Process -FilePath $target' $false
+    # An alias is not the name: a call spelled sc is a finding until somebody says which sc it is.
+    New-Case 'sc -Path out.txt -Value x' $true
+    # And the reads, which are what the tool does.
+    New-Case 'netsh wlan show interfaces' $false
+    New-Case '& $netsh winhttp show proxy' $false
+    New-Case 'arp -a' $false
+    New-Case 'Get-NetAdapter -ErrorAction Stop' $false
+    New-Case 'Get-CimInstance -ClassName Win32_NetworkAdapter' $false
+    New-Case 'Set-Content -LiteralPath $path -Value $text' $false
+    New-Case 'New-Item -ItemType Directory -Path $reports' $false
+    New-Case 'Remove-Item -LiteralPath $probe -Force' $false
+    New-Case 'function Get-Mine { 1 }\nGet-Mine' $false
+)
+
 # A duplicate case would silently shrink the set instead of strengthening it, so the sets are checked for one.
 foreach ($set in @(@('top-level', $Cases), @('in-function', $FunctionCases), @('constructor', $ArithmeticCases))) {
     foreach ($duplicate in @($set[1] | ForEach-Object { $_.Text } | Group-Object -CaseSensitive | Where-Object { $_.Count -gt 1 })) {
@@ -350,11 +397,17 @@ foreach ($case in $FunctionCases) {
     if ($hit -ne $case.Expect) { $ok = $false }
     Write-Output ('  in-function {0} (expected {1}): {2}' -f $(if ($hit) { 'flagged' } else { 'clean  ' }), $(if ($case.Expect) { 'flagged' } else { 'clean' }), $case.Text)
 }
+foreach ($case in $CallCases) {
+    $hit = @(Find-UnvettedCall ((Expand-Case $case.Text) + "`n")).Count -gt 0
+    if ($hit -ne $case.Expect) { $ok = $false }
+    Write-Output ('  call        {0} (expected {1}): {2}' -f $(if ($hit) { 'flagged' } else { 'clean  ' }), $(if ($case.Expect) { 'flagged' } else { 'clean' }), $case.Text)
+}
 foreach ($case in $ArithmeticCases) {
     $hit = @(Find-UnparenthesizedArithmetic ((Expand-Case $case.Text) + "`n")).Count -gt 0
     if ($hit -ne $case.Expect) { $ok = $false }
     Write-Output ('  constructor {0} (expected {1}): {2}' -f $(if ($hit) { 'flagged' } else { 'clean  ' }), $(if ($case.Expect) { 'flagged' } else { 'clean' }), $case.Text)
 }
+
 
 # -------------------- 4. a file that does not parse --------------------
 
@@ -365,6 +418,6 @@ $brokenHits = @(Find-OverwrittenParameter $broken)
 Write-Output ('unparsed input: {0} parse error(s), parameter guard [{1}]' -f $brokenErrors, ($brokenHits -join ', '))
 if ($brokenErrors -lt 1 -or $brokenHits.Count -lt 1) { $ok = $false; Write-Output '  MISMATCH: expected a parse error and the finding inside the unclosed block' }
 
-Write-Output ('corpus: {0} top-level, {1} in-function, {2} constructor cases; anchors {3} en-US / zh-TW; guards on the PowerShell AST' -f $Cases.Count, $FunctionCases.Count, $ArithmeticCases.Count, $AnchorCommit)
+Write-Output ('corpus: {0} top-level, {1} in-function, {2} constructor, {3} call cases; anchors {4} en-US / zh-TW; guards on the PowerShell AST' -f $Cases.Count, $FunctionCases.Count, $ArithmeticCases.Count, $CallCases.Count, $AnchorCommit)
 Write-Output $(if ($ok) { 'ALL SELF-TESTS OK' } else { 'SELF-TEST FAILURE' })
 exit $(if ($ok) { 0 } else { 1 })

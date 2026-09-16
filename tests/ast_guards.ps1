@@ -1,6 +1,7 @@
 using namespace System.Management.Automation.Language
 param([string[]]$Path)
-# The two guards that keep the v1.2.0 GUI regressions out of the shipped scripts, on the PowerShell AST (backlog #17).
+# The guards on the shipped scripts, on the PowerShell AST: two that keep the v1.2.0 GUI regressions out
+# (backlog #17) and one that keeps a call nobody vetted out (backlog #42).
 # Until 2026-09-04 they were regular expressions over the comment-free logical lines of the file in
 # healthcheck/tools/validate_release.py; nineteen review rounds each added another spelling to catch, which is what the
 # parser does for free. tests/selftest_guards.ps1 is the acceptance set: the v1.2.0 files must be flagged at the known
@@ -13,6 +14,10 @@ param([string[]]$Path)
 #     parenthesized argument list (or an @( ) one) whose top-level expression is an arithmetic BinaryExpressionAst over
 #     the ArrayLiteralAst the commas built, and an unparenthesized `-ArgumentList 22, 84 + $offset`, where the comma
 #     ends the array and `+` and `$offset` reach New-Object as positional arguments it cannot bind.
+#   Find-UnvettedCall - a command the shipped script calls that is neither one of its own functions nor on the
+#     list of calls somebody looked at, which is the static half of backlog #42: "it changes nothing" is the
+#     tool's first promise and nothing measured it. An allowlist, because the ways to write to Windows are
+#     open-ended and a denylist is green until it meets a spelling it does not know. See its own section.
 #   Find-OverwrittenParameter - a bound parameter overwritten by a write that reaches the script scope, where the
 #     parameter itself lives: a script's top-level scope and its $script: scope are the same variable table, so the
 #     v1.2.0 `$script:Interactive = $false` overwrote -Interactive and the IT launcher opened the user layout. An
@@ -293,6 +298,153 @@ function Find-OverwrittenParameter([string]$Text) {
     return @($hits | Select-Object -Unique)
 }
 
+# -------------------- Calls the tool may make --------------------
+
+# "It changes nothing" is the tool's first promise to the person who runs it - section 1 of the user manual, the first
+# answer of its FAQ, the opening of the IT deployment manual - and nothing measured it (backlog #42). This is the
+# static half of that item: every command the shipped script calls has to be one somebody looked at.
+#
+# It is an allowlist, not a list of forbidden writers, and that is the whole of why it is worth having. The ways to
+# write to Windows are open-ended - a cmdlet, a .NET call, a CIM method, an external program with another verb - so a
+# denylist stays green until someone uses a spelling it does not know, while an allowlist goes red the moment a call
+# arrives that nobody has vetted. The cost is a line and a reason whenever the tool learns to call something new,
+# which is exactly when a person should be looking.
+#
+# Three ways a call passes: it is a function the file defines (a call to ourselves is not a call to Windows); its name
+# is in $GuardVettedCalls, each entry carrying the reason it is a read; or its name could not be resolved because it
+# is invoked through a variable, and that variable is in $GuardVettedInvocations. Where an entry has an argument rule
+# every bare-word argument and parameter must match it, so `netsh wlan show interfaces` passes and `netsh int ip set
+# address` is a finding; where it has a file-path rule the bound -FilePath must be one of the named programs.
+#
+# What it cannot do, and why #42's other half stays open: it reads the calls, not what they do. A vetted read whose
+# side effect changes the machine - a query that starts a trigger-started service, a driver call that resets a
+# counter - looks exactly like a read here, and only a before-and-after measurement on a quiet machine can see it.
+$GuardVettedCalls = @{
+    # Reads of the machine.
+    'Get-NetAdapter'           = 'the adapter list'
+    'Get-NetAdapterStatistics' = 'the adapter counters'
+    'Get-NetIPConfiguration'   = 'addresses, gateways and DNS servers'
+    'Get-NetIPInterface'       = 'the interface settings'
+    'Get-NetNeighbor'          = 'the neighbour table'
+    'Get-NetRoute'             = 'the route table'
+    'Get-NetTCPSetting'        = 'the TCP settings'
+    'Find-NetRoute'            = 'which route a destination would take; it finds, it does not add'
+    'Get-CimInstance'          = 'CIM queries; the method-invoking cmdlets are not on this list'
+    'Get-WmiObject'            = 'the WMI fallback for the same queries'
+    'Get-ItemProperty'         = 'registry values, read'
+    'Get-Command'              = 'whether a command exists on this machine'
+    'Get-Culture'              = 'the formats'
+    'Get-UICulture'            = 'the display language'
+    'Get-Date'                 = 'the clock'
+    'Test-Path'                = 'whether a path exists'
+    'netsh'                    = 'the Wi-Fi and WinHTTP proxy readings; show only, by the rule below'
+    'arp'                      = 'the ARP cache; -a only, by the rule below'
+    # The report and its folder, which is what the tool does write.
+    'New-Item'                 = 'the report folder'
+    'Set-Content'              = 'the report files'
+    'Remove-Item'              = 'the files it wrote itself - the write probe, an emptied error file'
+    'Start-Process'            = 'opens the report it just wrote; the programs are named by the rule below'
+    # Objects, text and waiting: nothing of the machine.
+    'Add-Member'               = 'an object in memory'
+    'Add-Type'                 = 'compiles the P/Invoke reader the Wi-Fi counters need'
+    'New-Object'               = 'an object in memory'
+    'New-TimeSpan'             = 'arithmetic on times'
+    'ConvertFrom-Json'         = 'text'
+    'ConvertTo-Json'           = 'text'
+    'Join-Path'                = 'text'
+    'Split-Path'               = 'text'
+    'Measure-Object'           = 'arithmetic'
+    'Select-Object'            = 'the pipeline'
+    'Sort-Object'              = 'the pipeline'
+    'Where-Object'             = 'the pipeline'
+    'ForEach-Object'           = 'the pipeline'
+    'Out-Null'                 = 'the pipeline'
+    'Start-Sleep'              = 'waits'
+    'Write-Host'               = 'the console'
+}
+# A name the parser cannot resolve because the call goes through a variable. The tool resolves netsh.exe to its path
+# under %SystemRoot% rather than trusting PATH (PR #67), and the other two hold script blocks the file built itself.
+$GuardVettedInvocations = @{
+    'netsh'          = 'netsh.exe by its resolved path; show only, by the rule below'
+    'Action'         = 'a script block this file passes to its own step runner'
+    'scalarPosition' = 'a script block this file builds for the report layout'
+}
+# Every bare-word argument and every parameter of these has to match, so a new verb is a finding rather than a silence.
+$GuardVettedArguments = @{
+    'netsh' = '^(wlan|winhttp|show|interfaces|proxy)$'
+    'arp'   = '^-a$'
+}
+# And the programs these may start. A path the parser can read is checked against the list; the one call whose path
+# is built at run time - the GUI's Open-report button, which starts whichever of the three files this run wrote is on
+# disk - is vetted by the variable it arrives in, so a Start-Process in that same function carrying any other variable
+# is still a finding.
+$GuardVettedFilePaths = @{
+    'Start-Process' = @('notepad.exe', 'explorer.exe')
+}
+$GuardVettedFilePathVariables = @{
+    'Start-Process' = @('target')
+}
+
+function Test-GuardVettedArgument([CommandAst]$Command, [string]$Key) {
+    if ($GuardVettedArguments.ContainsKey($Key)) {
+        $pattern = $GuardVettedArguments[$Key]
+        foreach ($element in @($Command.CommandElements | Select-Object -Skip 1)) {
+            if ($element -is [CommandParameterAst]) {
+                if (('-' + $element.ParameterName) -notmatch $pattern) { return $false }
+            }
+            elseif ($element -is [StringConstantExpressionAst] -and $element.StringConstantType -eq 'BareWord') {
+                if ($element.Value -notmatch $pattern) { return $false }
+            }
+        }
+    }
+    if ($GuardVettedFilePaths.ContainsKey($Key)) {
+        $binding = Get-GuardBinding $Command
+        if ($null -eq $binding) { return $false }
+        $bound = Get-GuardBound $binding 'FilePath'
+        $paths = @(Get-GuardLiteral $bound)
+        if ($paths.Count -gt 0) {
+            foreach ($path in $paths) { if ($GuardVettedFilePaths[$Key] -notcontains $path) { return $false } }
+        }
+        else {
+            # Not a literal: the only accepted shape is one of the vetted variables, by name.
+            if ($null -eq $bound -or $bound.Value -isnot [VariableExpressionAst]) { return $false }
+            if (-not $GuardVettedFilePathVariables.ContainsKey($Key)) { return $false }
+            if ($GuardVettedFilePathVariables[$Key] -notcontains $bound.Value.VariablePath.UserPath) { return $false }
+        }
+    }
+    return $true
+}
+
+function Find-UnvettedCall([string]$Text) {
+    # The lines of the calls that are neither this file's own functions nor vetted above.
+    $ast = ConvertTo-GuardAst $Text
+    $own = @{}
+    foreach ($function in $ast.FindAll({ param($node) $node -is [FunctionDefinitionAst] }, $true)) { $own[$function.Name] = $true }
+    $hits = New-Object System.Collections.ArrayList
+    foreach ($command in $ast.FindAll({ param($node) $node -is [CommandAst] }, $true)) {
+        $line = $command.Extent.StartLineNumber
+        # The name as written, not Get-GuardCommandName: that one answers for the handful of cmdlets the other two
+        # guards care about and $null for everything else, which would make every call here a finding. Module
+        # qualification is stripped; an alias is left as written, so a call spelled `sc` rather than Set-Content is a
+        # finding until somebody says which it is - which is the allowlist working, not failing.
+        $written = $command.GetCommandName()
+        $name = $null
+        if ($written) { $name = $written.Substring($written.LastIndexOf('\') + 1) }
+        if ($null -eq $name) {
+            $first = $command.CommandElements[0]
+            if ($first -isnot [VariableExpressionAst]) { [void]$hits.Add(('{0} (a command name built at run time)' -f $line)); continue }
+            $variable = $first.VariablePath.UserPath
+            if (-not $GuardVettedInvocations.ContainsKey($variable)) { [void]$hits.Add(('{0} (& ${1})' -f $line, $variable)); continue }
+            if (-not (Test-GuardVettedArgument $command $variable)) { [void]$hits.Add(('{0} (& ${1}, an argument the entry does not allow)' -f $line, $variable)) }
+            continue
+        }
+        if ($own.ContainsKey($name)) { continue }
+        if (-not $GuardVettedCalls.ContainsKey($name)) { [void]$hits.Add(('{0} ({1})' -f $line, $name)); continue }
+        if (-not (Test-GuardVettedArgument $command $name)) { [void]$hits.Add(('{0} ({1}, an argument the entry does not allow)' -f $line, $name)) }
+    }
+    return @($hits | Select-Object -Unique)
+}
+
 # -------------------- Scanning files --------------------
 
 if ($Path) {
@@ -310,11 +462,13 @@ if ($Path) {
         $errors = @(Get-GuardParseError $text)
         $arithmetic = @(Find-UnparenthesizedArithmetic $text)
         $overwrites = @(Find-OverwrittenParameter $text)
+        $unvetted = @(Find-UnvettedCall $text)
         foreach ($parseError in $errors) { Write-Output ('[FINDING] {0}:{1}: does not parse: {2}' -f $full, $parseError.Extent.StartLineNumber, $parseError.Message) }
         foreach ($line in $arithmetic) { Write-Output ('[FINDING] {0}:{1}: arithmetic at the top level of a New-Object argument list' -f $full, $line) }
         foreach ($hit in $overwrites) { Write-Output ('[FINDING] {0}:{1}: the write reaches the parameter at script scope' -f $full, $hit) }
-        $findings += $errors.Count + $arithmetic.Count + $overwrites.Count
-        Write-Output ('{0}: {1} parse error(s), {2} New-Object finding(s), {3} parameter finding(s)' -f $full, $errors.Count, $arithmetic.Count, $overwrites.Count)
+        foreach ($hit in $unvetted) { Write-Output ('[FINDING] {0}:{1}: a call nobody vetted' -f $full, $hit) }
+        $findings += $errors.Count + $arithmetic.Count + $overwrites.Count + $unvetted.Count
+        Write-Output ('{0}: {1} parse error(s), {2} New-Object finding(s), {3} parameter finding(s), {4} unvetted call(s)' -f $full, $errors.Count, $arithmetic.Count, $overwrites.Count, $unvetted.Count)
     }
     Write-Output ('Summary: {0} file(s), {1} finding(s)' -f $targets.Count, $findings)
     exit $findings
