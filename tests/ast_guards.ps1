@@ -541,10 +541,20 @@ $GuardVettedOrigins = @{
     'Get-WifiAssociationSample:netsh'          = @('Join-Path $env:SystemRoot "System32\netsh.exe"')
     'Initialize-Gui:target'                    = @('$null', '$candidate')
     'Initialize-OutputDirectory:fallback'      = @('Join-Path ([System.IO.Path]::GetTempPath()) "NetworkHealthCheck\Reports"')
+    'Initialize-OutputDirectory:folderName'    = @('ConvertTo-SafeString $script:Config.ReportFolderName', '"Reports"')
     'Initialize-OutputDirectory:preferred'     = @('$folderName', 'Join-Path $script:BaseDirectory $folderName')
     'Initialize-OutputDirectory:testFile'      = @('Join-Path $preferred (".write_test_{0}.tmp" -f [guid]::NewGuid().ToString("N"))')
-    'Get-WlanApiType:definition'               = @('literal')
+    # The contents, not the kind: a here-string is a literal whatever it says, and this one is the unmanaged code
+    # the process compiles, so what is vetted is its digest - line endings normalised, nothing else (PR #72 round 7).
+    # Editing the P/Invoke block is meant to fail this step until somebody looks at what it now declares.
+    'Get-WlanApiType:definition'               = @('sha256:8a7667d4909e78e7a6768dc1b63436e77599ed5fdfd53965ca48cf03d65de21b')
+    # $target = $candidate was an origin that names another name, and nobody asked what that one holds: the button
+    # opens whichever of the three report paths the run wrote and found (PR #72 round 7).
+    'Initialize-Gui:candidate'                 = @('@($script:LastHtmlReport, $script:LastTextReport, $script:LastJsonReport)')
     'Invoke-CheckStep:Action'                  = @('parameter')
+    # A script-scope name is one name for the whole file, so its entry is swept over every write in the file rather
+    # than over one function's (PR #72 round 7). This one is the folder the run made for its own reports.
+    'script:OutputDirectory'                   = @('$null', '$preferred', '$fallback')
     'Write-EmergencyReport:directory'          = @('$script:OutputDirectory', 'Join-Path ([System.IO.Path]::GetTempPath()) "NetworkHealthCheck\Reports"', '[System.IO.Path]::GetTempPath()')
     'Write-EnvironmentReport:path'             = @('Join-Path $folder $name')
     'Write-Utf8File:Path'                      = @('parameter')
@@ -574,8 +584,9 @@ function Get-GuardVariableWrites($Function, [string]$Variable) {
     # Every write to $Variable inside $Function, whatever it is spelled as. Comparing the assignment's source text
     # let $local:netsh = "..." through beside the vetted $netsh = Join-Path ... : the same variable, another spelling,
     # and the vetted assignment still there to be found (PR #72 round 4). The name is normalised the way the parameter
-    # guard normalises it, and every other shape that writes - ++ and --, a foreach variable, the variable cmdlets,
-    # a multiple or compound assignment - is a write with no expression to vet, which is a finding by itself.
+    # guard normalises it, and every other shape that writes - ++ and --, the variable cmdlets, a multiple or
+    # compound assignment - is a write with no expression to vet, which is a finding by itself. A foreach variable
+    # holds what the loop enumerates, so that is its expression (PR #72 round 7).
     $writes = New-Object System.Collections.ArrayList
     if ($null -eq $Function) { return @($writes) }
     foreach ($node in $Function.FindAll({ param($item) $true }, $true)) {
@@ -584,25 +595,39 @@ function Get-GuardVariableWrites($Function, [string]$Variable) {
                 if ((Get-GuardVariableName $target) -ne $Variable) { continue }
                 $expression = $null
                 $constant = $false
+                $value = $null
+                $source = $null
+                $sourceScope = 'local'
                 if ($node.Operator -eq 'Equals' -and $node.Left -isnot [ArrayLiteralAst] -and $node.Left -is [VariableExpressionAst]) {
                     $expression = $node.Right.Extent.Text
                     # $x = 'a' hands the assignment a CommandExpressionAst, not a pipeline: a constant here is a
                     # StringConstantExpressionAst, while "$a b" is an ExpandableStringExpressionAst and is not one.
                     $right = $node.Right
                     if ($right -is [CommandExpressionAst]) { $right = $right.Expression }
-                    $constant = ($right -is [StringConstantExpressionAst])
+                    if ($right -is [StringConstantExpressionAst]) { $constant = $true; $value = $right.Value }
+                    $source = Get-GuardBareVariable $node.Right
+                    $sourceScope = Get-GuardBareVariableScope $node.Right
                 }
-                [void]$writes.Add([pscustomobject]@{ Expression = $expression; Constant = $constant; Reach = (Get-GuardWriteReach $target $node) })
+                [void]$writes.Add([pscustomobject]@{ Expression = $expression; Constant = $constant; Value = $value; Variable = $source; VariableScope = $sourceScope; Function = (Get-GuardEnclosingFunctionAst $node); Reach = (Get-GuardWriteReach $target $node) })
             }
         }
         elseif ($node -is [UnaryExpressionAst] -and ($GuardIncrements -contains [string]$node.TokenKind) -and
                 $node.Child -is [VariableExpressionAst] -and (Get-GuardVariableName $node.Child) -eq $Variable) {
-            [void]$writes.Add([pscustomobject]@{ Expression = $null; Constant = $false; Reach = 'local' })
+            [void]$writes.Add([pscustomobject]@{ Expression = $null; Constant = $false; Value = $null; Variable = $null; VariableScope = 'local'; Function = (Get-GuardEnclosingFunctionAst $node); Reach = 'local' })
         }
         elseif ($node -is [ForEachStatementAst] -and $node.Variable -is [VariableExpressionAst] -and
                 (Get-GuardVariableName $node.Variable) -eq $Variable) {
-            # foreach ($script:netsh in ...) writes the script scope like any other qualified write (PR #72 round 6).
-            [void]$writes.Add([pscustomobject]@{ Expression = $null; Constant = $false; Reach = (Get-GuardWriteReach $node.Variable $node) })
+            # foreach ($script:netsh in ...) writes the script scope like any other qualified write (PR #72 round 6),
+            # and what it writes is one of the things it enumerates, so the enumerated expression is its origin.
+            $condition = $null
+            $source = $null
+            $sourceScope = 'local'
+            if ($null -ne $node.Condition) {
+                $condition = $node.Condition.Extent.Text
+                $source = Get-GuardBareVariable $node.Condition
+                $sourceScope = Get-GuardBareVariableScope $node.Condition
+            }
+            [void]$writes.Add([pscustomobject]@{ Expression = $condition; Constant = $false; Value = $null; Variable = $source; VariableScope = $sourceScope; Function = (Get-GuardEnclosingFunctionAst $node); Reach = (Get-GuardWriteReach $node.Variable $node) })
         }
         elseif ($node -is [CommandAst]) {
             $cmdlet = Get-GuardCommandName $node
@@ -611,13 +636,13 @@ function Get-GuardVariableWrites($Function, [string]$Variable) {
             if ($null -eq $binding) { continue }
             if ($GuardVariableCmdlets -contains $cmdlet) {
                 foreach ($name in (Get-GuardLiteral (Get-GuardBound $binding 'Name'))) {
-                    if ($name -eq $Variable) { [void]$writes.Add([pscustomobject]@{ Expression = $null; Constant = $false; Reach = 'local' }) }
+                    if ($name -eq $Variable) { [void]$writes.Add([pscustomobject]@{ Expression = $null; Constant = $false; Value = $null; Variable = $null; VariableScope = 'local'; Function = (Get-GuardEnclosingFunctionAst $node); Reach = 'local' }) }
                 }
             }
             elseif ($GuardItemCmdlets -contains $cmdlet) {
                 foreach ($path in (@(Get-GuardLiteral (Get-GuardBound $binding 'Path')) + @(Get-GuardLiteral (Get-GuardBound $binding 'LiteralPath')))) {
                     $match = [regex]::Match($path, '(?i)(?:^|[\\/:])variable:(\w+)$')
-                    if ($match.Success -and $match.Groups[1].Value -eq $Variable) { [void]$writes.Add([pscustomobject]@{ Expression = $null; Constant = $false; Reach = 'local' }) }
+                    if ($match.Success -and $match.Groups[1].Value -eq $Variable) { [void]$writes.Add([pscustomobject]@{ Expression = $null; Constant = $false; Value = $null; Variable = $null; VariableScope = 'local'; Function = (Get-GuardEnclosingFunctionAst $node); Reach = 'local' }) }
                 }
             }
         }
@@ -625,8 +650,59 @@ function Get-GuardVariableWrites($Function, [string]$Variable) {
     return @($writes)
 }
 
-function Test-GuardVettedOrigin($Function, [string]$Variable, [string]$Key) {
+function Get-GuardDigest([string]$Text) {
+    # The content, not the spelling. Line endings are normalised so that the same C# in the two shipped files - which
+    # are CRLF today and need not stay that way - hashes to the one entry.
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text.Replace("`r`n", "`n")))).Replace('-', '').ToLowerInvariant())
+    }
+    finally { $sha.Dispose() }
+}
+
+function Get-GuardBareVariableScope($Expression) {
+    # 'script' where the name this write hands on is explicitly $script: or $global:, 'local' otherwise.
+    $node = $Expression
+    if ($node -is [PipelineAst] -and @($node.PipelineElements).Count -eq 1) { $node = $node.PipelineElements[0] }
+    if ($node -is [CommandExpressionAst]) { $node = $node.Expression }
+    while ($node -is [ParenExpressionAst] -or $node -is [AttributedExpressionAst]) {
+        if ($node -is [AttributedExpressionAst]) { $node = $node.Child; continue }
+        if (@($node.Pipeline.PipelineElements).Count -ne 1) { return 'local' }
+        $element = $node.Pipeline.PipelineElements[0]
+        if ($element -isnot [CommandExpressionAst]) { return 'local' }
+        $node = $element.Expression
+    }
+    if ($node -is [VariableExpressionAst] -and ($node.VariablePath.IsScript -or $node.VariablePath.IsGlobal)) { return 'script' }
+    return 'local'
+}
+
+function Get-GuardBareVariable($Expression) {
+    # The name a write hands on, where the whole right-hand side is one: $target = $candidate is not an origin, it is
+    # a question about $candidate (PR #72 round 7). $null, $true and $false are constants, not names.
+    $node = $Expression
+    if ($node -is [PipelineAst] -and @($node.PipelineElements).Count -eq 1) { $node = $node.PipelineElements[0] }
+    if ($node -is [CommandExpressionAst]) { $node = $node.Expression }
+    while ($node -is [ParenExpressionAst] -or $node -is [AttributedExpressionAst]) {
+        if ($node -is [AttributedExpressionAst]) { $node = $node.Child; continue }
+        if (@($node.Pipeline.PipelineElements).Count -ne 1) { return $null }
+        $element = $node.Pipeline.PipelineElements[0]
+        if ($element -isnot [CommandExpressionAst]) { return $null }
+        $node = $element.Expression
+    }
+    if ($node -isnot [VariableExpressionAst]) { return $null }
+    if ($node.IsConstantVariable()) { return $null }
+    return (Get-GuardVariableName $node)
+}
+
+function Test-GuardVettedOrigin($Function, [string]$Variable, [string]$Key, $Seen, [string]$Scope) {
     # Every assignment to $Variable inside $Function must be one of the vetted expressions; 'parameter' means none.
+    # A vetted expression that is itself a bare name is followed to that name's own entry, because approving
+    # $target = $candidate never asked what $candidate holds (PR #72 round 7); a chain that comes back to a key
+    # already on the way down is refused rather than followed round again.
+    if ($null -eq $Seen) { $Seen = @{} }
+    if ([string]::IsNullOrEmpty($Scope)) { $Scope = 'local' }
+    if ($Seen.ContainsKey($Key)) { return $false }
+    $Seen[$Key] = $true
     if (-not $GuardVettedOrigins.ContainsKey($Key)) { return $false }
     $allowed = $GuardVettedOrigins[$Key]
     # 'literal' means every write hands it a string the parser already knows - a quoted string or a single-quoted
@@ -640,21 +716,50 @@ function Test-GuardVettedOrigin($Function, [string]$Variable, [string]$Key) {
     # vetted below. Where none of them runs, the variable is empty and the call fails; it does not run something else.
     $root = $Function
     while ($null -ne $root -and $null -ne $root.Parent) { $root = $root.Parent }
-    if ($null -ne $root) {
-        foreach ($outer in (Get-GuardVariableWrites $root $Variable)) {
-            if ($outer.Reach -eq 'outer') { return $false }
-        }
+    if ($Scope -eq 'script') {
+        # Nothing is refused for reaching outward here, because outward is what this name is: every write to it in
+        # the file is read instead, wherever it stands, and each one has to be a vetted expression like any other.
+        # Only the writes that reach outward, though: a local $config in another function is a different variable
+        # that happens to be spelled the same, and sweeping it in would make this entry say something untrue.
+        $writes = @(Get-GuardVariableWrites $root $Variable | Where-Object { $_.Reach -eq 'outer' })
     }
-    $writes = @(Get-GuardVariableWrites $Function $Variable)
+    else {
+        if ($null -ne $root) {
+            foreach ($outer in (Get-GuardVariableWrites $root $Variable)) {
+                if ($outer.Reach -eq 'outer') { return $false }
+            }
+        }
+        $writes = @(Get-GuardVariableWrites $Function $Variable)
+    }
     if ($allowed -contains 'parameter') { return ($writes.Count -eq 0) }
     if ($writes.Count -eq 0) { return $false }
     foreach ($write in $writes) {
-        if ($allowed -contains 'literal') {
-            if (-not $write.Constant) { return $false }
+        $matched = $false
+        if ($write.Constant -and ($allowed -contains ('sha256:' + (Get-GuardDigest $write.Value)))) { $matched = $true }
+        elseif ($null -ne $write.Expression -and ($allowed -contains $write.Expression)) { $matched = $true }
+        if (-not $matched) { return $false }
+        if ($null -eq $write.Variable) { continue }
+        # The name this write hands on is asked about where that write stands - which for a file-wide sweep is
+        # whichever function it was found in, not the one the chain started in.
+        #
+        # Where the chain stops, and why it stops there. A write whose whole value is a name is followed to that
+        # name; a write that COMPUTES from names - Join-Path $script:BaseDirectory $folderName - is pinned as the
+        # expression it is, and $folderName is not followed (PR #72 round 7). Following it was written and taken
+        # back out: to stay true it needs what this guard has refused twice to pretend to do, because $script:Config
+        # and a local $config are one name here while PowerShell tells them apart, and whether a local write shadows
+        # the outer one depends on whether that write runs. Half-modelling either would put entries in the table
+        # that read as facts and are not. What the guard claims is therefore the narrower thing, and the item and
+        # the record say it: every vetted variable is written only by expressions somebody vetted - not that nothing
+        # can influence what those expressions produce.
+        $owner = $Function
+        if ($Scope -eq 'script') { $owner = $write.Function }
+        if ($write.VariableScope -eq 'script') {
+            if (-not (Test-GuardVettedOrigin $owner $write.Variable ('script:' + $write.Variable) $Seen 'script')) { return $false }
             continue
         }
-        if ($null -eq $write.Expression) { return $false }
-        if ($allowed -notcontains $write.Expression) { return $false }
+        $site = ''
+        if ($null -ne $owner) { $site = $owner.Name }
+        if (-not (Test-GuardVettedOrigin $owner $write.Variable ($site + ':' + $write.Variable) $Seen 'local')) { return $false }
     }
     return $true
 }
@@ -746,13 +851,54 @@ function Test-GuardVettedArgument([CommandAst]$Command, [string]$Key) {
     return $true
 }
 
-function Test-GuardDefinitionEstablished($Definition, $Call) {
-    # PowerShell defines a function when it reaches it: a definition after the call, or one inside an if or a loop or
-    # a try that may not have run, is not the command that call resolves to (PR #72 round 6). Established means every
-    # step from it up to its own scope is a plain block, and - for a call at the top level of the file - that it
-    # stands before that call. A call inside a function body is not held to the text order: the definitions have all
-    # run by the time anything invokes that function, which is why this file calls forward 39 times and is right to.
-    if ($null -eq (Get-GuardEnclosingFunctionAst $Call) -and $Definition.Extent.StartOffset -ge $Call.Extent.StartOffset) { return $false }
+function Get-GuardEntryOffsets($Ast) {
+    # The earliest point in the file at which each function can start running: a top-level call to it, or a top-level
+    # call to something that reaches it. A body is not held to the text order the way a top-level call is - but it is
+    # not free of it either, because function Invoke-Early { Remove-Item ... }; Invoke-Early; function Remove-Item {}
+    # runs that body while only the real cmdlet exists (PR #72 round 7). What a body may see is what had been read by
+    # the time the first top-level call able to reach it ran.
+    $names = @{}
+    foreach ($definition in $Ast.FindAll({ param($node) $node -is [FunctionDefinitionAst] }, $true)) { $names[$definition.Name] = $true }
+    $callees = @{}
+    $roots = New-Object System.Collections.ArrayList
+    foreach ($command in $Ast.FindAll({ param($node) $node -is [CommandAst] }, $true)) {
+        $name = $command.GetCommandName()
+        if ($null -eq $name -or -not $names.ContainsKey($name)) { continue }
+        $owner = Get-GuardEnclosingFunctionAst $command
+        if ($null -eq $owner) { [void]$roots.Add($command); continue }
+        if (-not $callees.ContainsKey($owner.Name)) { $callees[$owner.Name] = @{} }
+        $callees[$owner.Name][$name] = $true
+    }
+    $entries = @{}
+    foreach ($root in $roots) {
+        $offset = $root.Extent.StartOffset
+        $queue = New-Object System.Collections.Queue
+        $queue.Enqueue($root.GetCommandName())
+        while ($queue.Count -gt 0) {
+            $name = [string]$queue.Dequeue()
+            if ($entries.ContainsKey($name) -and $entries[$name] -le $offset) { continue }
+            $entries[$name] = $offset
+            if ($callees.ContainsKey($name)) { foreach ($callee in $callees[$name].Keys) { $queue.Enqueue($callee) } }
+        }
+    }
+    return $entries
+}
+
+function Test-GuardDefinitionEstablished($Definition, $Call, $Entries) {
+    # PowerShell defines a function when execution reaches it: a definition after the call, or one inside an if or a
+    # loop or a try that may not have run, is not the command that call resolves to (PR #72 round 6). Established means
+    # every step from it up to its own scope is a plain block, and that it stands before the call can happen - which
+    # for a top-level call is the call itself, and for one in a body is the earliest top-level call that reaches that
+    # body (PR #72 round 7). This file calls forward 39 times and is right to: every one of those bodies is reached
+    # from the entry near the end of the file, by which point all 155 definitions have been read. The two functions
+    # the restricted-language guard calls at line 124 are not free that way, and they are both defined above it.
+    $owner = Get-GuardEnclosingFunctionAst $Call
+    $limit = $Call.Extent.StartOffset
+    if ($null -ne $owner) {
+        if ($null -eq $Entries -or -not $Entries.ContainsKey($owner.Name)) { $limit = $null }
+        else { $limit = $Entries[$owner.Name] }
+    }
+    if ($null -ne $limit -and $Definition.Extent.StartOffset -ge $limit) { return $false }
     $node = $Definition.Parent
     while ($null -ne $node -and $node -isnot [FunctionDefinitionAst]) {
         if ($node -is [IfStatementAst] -or $node -is [LoopStatementAst] -or $node -is [SwitchStatementAst] -or
@@ -781,6 +927,7 @@ function Find-UnvettedCall([string]$Text) {
     # there at the top level, where PowerShell would run the real cmdlet of that name (PR #72 round 5). This file has
     # no nested definitions, so the rule costs nothing and refuses the shape.
     $definitions = @($ast.FindAll({ param($node) $node -is [FunctionDefinitionAst] }, $true))
+    $entries = Get-GuardEntryOffsets $ast
     $hits = New-Object System.Collections.ArrayList
     foreach ($command in $ast.FindAll({ param($node) $node -is [CommandAst] }, $true)) {
         $line = $command.Extent.StartLineNumber
@@ -815,7 +962,7 @@ function Find-UnvettedCall([string]$Text) {
         $visible = $false
         foreach ($definition in $definitions) {
             if ($definition.Name -ne $name) { continue }
-            if (-not (Test-GuardDefinitionEstablished $definition $command)) { continue }
+            if (-not (Test-GuardDefinitionEstablished $definition $command $entries)) { continue }
             $owner = Get-GuardEnclosingFunctionAst $definition
             if ($null -eq $owner) { $visible = $true; break }
             $node = $command

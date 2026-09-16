@@ -412,13 +412,16 @@ $CallCases = @(
     New-Case 'function Write-EnvironmentReport { $path = Join-Path $folder $name\nSet-Content -LiteralPath $path -Value $t }' $false
     New-Case 'function Other { Set-Content -LiteralPath $path -Value $t }' $true
     New-Case 'function Initialize-OutputDirectory { New-Item -ItemType Directory -Path $preferred }' $true
-    New-Case 'function Initialize-OutputDirectory { $preferred = $folderName\nNew-Item -ItemType Directory -Path $preferred }' $false
+    # Flagged since round 7: each of these hands the destination a name, and the fragment never says where
+    # that name's value comes from - so the chain has a link missing and cannot be vetted. The same three
+    # shapes with the link written in are further down, and they are clean.
+    New-Case 'function Initialize-OutputDirectory { $preferred = $folderName\nNew-Item -ItemType Directory -Path $preferred }' $true
     New-Case 'function Initialize-OutputDirectory { Remove-Item -LiteralPath $testFile -Force }' $true
     New-Case 'function Initialize-OutputDirectory { $testFile = Join-Path $preferred (".write_test_{0}.tmp" -f [guid]::NewGuid().ToString("N"))\nRemove-Item -LiteralPath $testFile -Force }' $false
     New-Case 'function Write-EmergencyReport { New-Item -ItemType Directory -Path $directory }' $true
-    New-Case 'function Write-EmergencyReport { $directory = $script:OutputDirectory\nNew-Item -ItemType Directory -Path $directory }' $false
+    New-Case 'function Write-EmergencyReport { $directory = $script:OutputDirectory\nNew-Item -ItemType Directory -Path $directory }' $true
     New-Case 'function Initialize-Gui { Start-Process -FilePath $target }' $true
-    New-Case 'function Initialize-Gui { $target = $candidate\nStart-Process -FilePath $target }' $false
+    New-Case 'function Initialize-Gui { $target = $candidate\nStart-Process -FilePath $target }' $true
     New-Case 'function Other { Start-Process -FilePath $target }' $true
     # The one static member that writes a file, with the same rule on the argument that holds the path.
     New-Case 'function Write-Utf8File { [System.IO.File]::WriteAllText($Path, $Content, $e) }' $false
@@ -481,7 +484,9 @@ $CallCases = @(
     # Round 6, and a self-audit rather than a review finding: Add-Type compiles and loads code into this process,
     # which is a wider reach than any file this tool writes, and it was vetted by a name with nothing behind it. A
     # dot-source is the same question about the operator - it runs the thing in the caller's scope.
-    New-Case 'function Get-WlanApiType { $definition = @''<nl>[DllImport("wlanapi.dll")] public static extern uint WlanOpenHandle(uint v);<nl>''@<nl>Add-Type -Namespace NetworkHealthCheck -Name WlanApi -MemberDefinition $definition -ErrorAction Stop }' $false
+    # Flagged since round 7: the site and the kind were enough for round 6, and the contents are what count. The
+    # block the tool really declares is in the shipped files, which part 2 reads, and its digest is the entry.
+    New-Case 'function Get-WlanApiType { $definition = @''<nl>[DllImport("wlanapi.dll")] public static extern uint WlanOpenHandle(uint v);<nl>''@<nl>Add-Type -Namespace NetworkHealthCheck -Name WlanApi -MemberDefinition $definition -ErrorAction Stop }' $true
     New-Case 'function Get-WlanApiType { $definition = $env:SRC<nl>Add-Type -Namespace X -Name Y -MemberDefinition $definition }' $true
     New-Case 'function Get-WlanApiType { $definition = "$($env:SRC)"<nl>Add-Type -Namespace X -Name Y -MemberDefinition $definition }' $true
     New-Case 'function Other { $definition = @''<nl>[DllImport("wlanapi.dll")] public static extern uint WlanOpenHandle(uint v);<nl>''@<nl>Add-Type -MemberDefinition $definition }' $true
@@ -494,6 +499,19 @@ $CallCases = @(
     New-Case 'function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>. $netsh wlan show interfaces }' $true
     New-Case '. Get-Date' $true
     New-Case '. "C:/Users/Public/evil.ps1"' $true
+    # Round 7: what can reach a body decides what that body can see, a literal is not its contents, and a vetted
+    # expression that is a name is a question about that name.
+    New-Case 'function Invoke-Early { Remove-Item -LiteralPath "C:/Users/Public/x" }\nInvoke-Early\nfunction Remove-Item { }' $true
+    New-Case 'function Invoke-Late { Remove-Item -LiteralPath "C:/Users/Public/x" }\nfunction Remove-Item { }\nInvoke-Late' $false
+    New-Case 'function Outer { Invoke-Early }\nfunction Invoke-Early { Remove-Item -LiteralPath "C:/Users/Public/x" }\nOuter\nfunction Remove-Item { }' $true
+    New-Case 'function A { B }\nfunction B { 1 }\nA' $false
+    New-Case 'function Get-WlanApiType { $definition = @''<nl>[DllImport("kernel32.dll")] public static extern void Sleep(uint ms);<nl>''@<nl>Add-Type -Namespace NetworkHealthCheck -Name WlanApi -MemberDefinition $definition -ErrorAction Stop }' $true
+    New-Case 'function Initialize-Gui { $target = $null<nl>foreach ($candidate in @($script:LastHtmlReport, $script:LastTextReport, $script:LastJsonReport)) { $target = $candidate }<nl>Start-Process -FilePath $target }' $false
+    New-Case 'function Initialize-Gui { $target = $null<nl>$candidate = "C:/Users/Public/evil.exe"<nl>foreach ($candidate in @($script:LastHtmlReport, $script:LastTextReport, $script:LastJsonReport)) { $target = $candidate }<nl>Start-Process -FilePath $target }' $true
+    New-Case 'function ConvertTo-SafeString { }<nl>function Initialize-OutputDirectory { $folderName = ConvertTo-SafeString $script:Config.ReportFolderName<nl>if ([System.IO.Path]::IsPathRooted($folderName)) { $preferred = $folderName }<nl>else { $preferred = Join-Path $script:BaseDirectory $folderName }<nl>New-Item -ItemType Directory -Path $preferred }' $false
+    New-Case 'function ConvertTo-SafeString { }<nl>function Initialize-OutputDirectory { $folderName = "C:/Users/Public/evil"<nl>if ([System.IO.Path]::IsPathRooted($folderName)) { $preferred = $folderName }<nl>else { $preferred = Join-Path $script:BaseDirectory $folderName }<nl>New-Item -ItemType Directory -Path $preferred }' $true
+    New-Case 'function Write-EmergencyReport { $directory = $script:OutputDirectory<nl>New-Item -ItemType Directory -Path $directory }<nl>function Initialize-OutputDirectory { $fallback = Join-Path ([System.IO.Path]::GetTempPath()) "NetworkHealthCheck<bs>Reports"<nl>$script:OutputDirectory = $fallback }' $false
+    New-Case 'function Write-EmergencyReport { $directory = $script:OutputDirectory<nl>New-Item -ItemType Directory -Path $directory }<nl>function Other { $script:OutputDirectory = "C:/Users/Public/evil" }' $true
 )
 
 # A duplicate case would silently shrink the set instead of strengthening it, so the sets are checked for one.
