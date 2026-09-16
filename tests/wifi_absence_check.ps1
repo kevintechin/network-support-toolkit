@@ -349,13 +349,20 @@ $zip = $bundle + ".zip"
 $zipOk = $true
 $zipNote = ""
 try {
-    if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
-    Compress-Archive -Path (Join-Path $bundle "*") -DestinationPath $zip -Force
+    # -ErrorAction Stop on both, because catch takes terminating errors only and this script runs with
+    # $ErrorActionPreference = "Continue": a file that became unreadable while the bundle was being enumerated
+    # would otherwise be reported, skipped, and left with $zipOk true beside an incomplete archive (PR #70
+    # round 6). Invoke-PackageAcceptance.ps1 has done it this way since backlog #19.
+    if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force -ErrorAction Stop }
+    Compress-Archive -Path (Join-Path $bundle "*") -DestinationPath $zip -Force -ErrorAction Stop
 }
 catch {
     $zipOk = $false
     # The exception alone can be a bare NullReferenceException, which says nothing about where it was writing.
     $zipNote = ("{0}: {1}" -f $zip, [string]$_.Exception.Message)
+    # A partial archive is worse than none, because it looks like the evidence: measured, Compress-Archive
+    # without -ErrorAction Stop reports an unreadable source file and writes the rest of them anyway.
+    if (Test-Path -LiteralPath $zip) { try { Remove-Item -LiteralPath $zip -Force } catch { } }
     $zip = "(not archived)"
     $failLine = "[FAIL] B1  the evidence could not be put in one file that travels: " + $zipNote
     Write-Host $failLine
