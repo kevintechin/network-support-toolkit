@@ -884,6 +884,13 @@ function Get-GuardEntryOffsets($Ast) {
     return $entries
 }
 
+function Test-GuardWithin($Node, $Container) {
+    # Whether $Node stands inside $Container, by the extents the parser gave them both.
+    if ($null -eq $Node -or $null -eq $Container) { return $false }
+    return ($Node.Extent.StartOffset -ge $Container.Extent.StartOffset -and
+            $Node.Extent.EndOffset -le $Container.Extent.EndOffset)
+}
+
 function Test-GuardDefinitionEstablished($Definition, $Call, $Entries) {
     # PowerShell defines a function when execution reaches it: a definition after the call, or one inside an if or a
     # loop or a try that may not have run, is not the command that call resolves to (PR #72 round 6). Established means
@@ -892,9 +899,13 @@ function Test-GuardDefinitionEstablished($Definition, $Call, $Entries) {
     # body (PR #72 round 7). This file calls forward 39 times and is right to: every one of those bodies is reached
     # from the entry near the end of the file, by which point all 155 definitions have been read. The two functions
     # the restricted-language guard calls at line 124 are not free that way, and they are both defined above it.
+    # The entry offset answers for definitions that stand OUTSIDE the body: those have been read by the time
+    # anything calls it. A definition inside the same body is not one of those - it runs when the body reaches it,
+    # so a call above it gets the real cmdlet, whatever reaches the function and whenever (PR #72 round 9). Such a
+    # definition is held to the text order against the call itself, which is the top-level rule one scope in.
     $owner = Get-GuardEnclosingFunctionAst $Call
     $limit = $Call.Extent.StartOffset
-    if ($null -ne $owner) {
+    if ($null -ne $owner -and -not (Test-GuardWithin $Definition $owner)) {
         if ($null -eq $Entries -or -not $Entries.ContainsKey($owner.Name)) { $limit = $null }
         else { $limit = $Entries[$owner.Name] }
     }
@@ -936,6 +947,13 @@ function Find-UnvettedEnvironmentWrite([string]$Text) {
         if ($node.Child -isnot [VariableExpressionAst]) { continue }
         if ($node.Child.VariablePath.DriveName -ne 'env') { continue }
         [void]$hits.Add(('{0} ({1})' -f $node.Extent.StartLineNumber, $node.Child.Extent.Text))
+    }
+    # foreach ($env:SystemRoot in 'C:\Users\Public') { } writes it too, the same way the vetted variables' own rule
+    # had to learn (PR #72 round 9): a loop target is a write however it is spelled.
+    foreach ($node in $ast.FindAll({ param($item) $item -is [ForEachStatementAst] }, $true)) {
+        if ($node.Variable -isnot [VariableExpressionAst]) { continue }
+        if ($node.Variable.VariablePath.DriveName -ne 'env') { continue }
+        [void]$hits.Add(('{0} ({1})' -f $node.Extent.StartLineNumber, $node.Variable.Extent.Text))
     }
     return @($hits | Select-Object -Unique)
 }

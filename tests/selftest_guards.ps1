@@ -521,6 +521,19 @@ $CallCases = @(
     New-Case '$env:SystemRoot = "C:/Users/Public"' $true
     New-Case 'function Get-WifiAssociationSample { $env:SystemRoot = "C:/Users/Public"<nl>$netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>& $netsh wlan show interfaces }' $true
     New-Case '$env:Path += ";C:/Users/Public"' $true
+    # Round 9: a definition inside the body it is called from runs when the body reaches it, and a loop target is a
+    # write - including the environment's. The last four ran over the same surface from the other directions.
+    New-Case 'function Outer { Remove-Item -LiteralPath "C:/Users/Public/x"\nfunction Remove-Item { } }\nOuter' $true
+    New-Case 'function Outer { function Remove-Item { }\nRemove-Item -LiteralPath "C:/Users/Public/x" }\nOuter' $false
+    New-Case 'function Outer { Remove-Item -LiteralPath "C:/Users/Public/x"\nfunction Remove-Item { } }' $true
+    New-Case 'function Outer { Remove-Item -LiteralPath "C:/Users/Public/x" }\nfunction Remove-Item { }\nOuter' $false
+    New-Case 'foreach ($env:SystemRoot in "C:/Users/Public") { }' $true
+    New-Case 'function Get-WifiAssociationSample { foreach ($env:SystemRoot in "C:/Users/Public") { }<nl>$netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'foreach ($folder in @($env:TEMP)) { $x = $folder }' $false
+    New-Case 'Set-Variable -Name env:SystemRoot -Value "C:/Users/Public"' $true
+    New-Case 'Remove-Item -LiteralPath Env:\SystemRoot' $true
+    New-Case 'New-Item -Path Env:\SystemRoot -Value "C:/Users/Public"' $true
+    New-Case '${env:SystemRoot} = "C:/Users/Public"' $true
 )
 
 # A duplicate case would silently shrink the set instead of strengthening it, so the sets are checked for one.
