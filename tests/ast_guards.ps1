@@ -431,21 +431,29 @@ $GuardVettedMemberNames = @(
     'ToString', 'ToUpperInvariant', 'Trim', 'TrimEnd'
 )
 # And the names that mean something on a receiver that can write - .AppendText on a FileInfo creates a file, .Clear
-# and .Stop and .Send are what their types make of them - are vetted at the site they are called, not by the name
-# alone (PR #72 round 3). A receiver's type is not in the AST and cannot be inferred from it, so this is as far as a
-# static reading goes: the name that can write is clean where the tool writes it and a finding anywhere else.
+# and .Stop and .Send are what their types make of them - are vetted at the invocation they are called from, keyed
+# <function>:<receiver>:<member> (PR #72 rounds 3 and 4). The function alone was not the site: a FileInfo.AppendText()
+# added inside Write-UiLog produced the key the log box already had. A receiver's type is still not in the AST and
+# cannot be inferred from it, so this is as far as a static reading goes - the receiver expression is read as written,
+# and a new one, however it is built, is a finding.
 $GuardVettedMemberSites = @(
-    ':ShowDialog', 'Get-HostNameSyntaxProblem:Normalize', 'Get-UrlHostProblemSuffix:Normalize',
-    'Initialize-Gui:Close', 'Initialize-Gui:Dispose', 'Initialize-Gui:PerformClick',
-    'Initialize-Gui:SetToolTip', 'Initialize-Gui:Start', 'Initialize-Gui:Stop',
-    'Invoke-DnsLookup:Stop', 'Invoke-DnsLookup:Wait', 'Invoke-HttpConnectionTest:Close',
-    'Invoke-HttpConnectionTest:Dispose', 'Invoke-HttpConnectionTest:GetResponse', 'Invoke-HttpConnectionTest:GetResponseStream',
-    'Invoke-HttpConnectionTest:ReadByte', 'Invoke-HttpConnectionTest:Stop', 'Invoke-PingMeasurement:Dispose',
-    'Invoke-PingMeasurement:Send', 'Invoke-TcpConnectionTest:BeginConnect', 'Invoke-TcpConnectionTest:Close',
-    'Invoke-TcpConnectionTest:EndConnect', 'Invoke-TcpConnectionTest:IOControl', 'Invoke-TcpConnectionTest:Stop',
-    'Invoke-TcpConnectionTest:WaitOne', 'Invoke-TraceRoute:Dispose', 'Invoke-TraceRoute:Send',
-    'Invoke-TraceRoute:Stop', 'Run-AllChecks:Clear', 'Write-UiLog:AppendText',
-    'Write-UiLog:ScrollToCaret'
+    ':$script:Form:ShowDialog', 'Get-HostNameSyntaxProblem:$label:Normalize',
+    'Get-UrlHostProblemSuffix:$written:Normalize', 'Initialize-Gui:$form:Close',
+    'Initialize-Gui:$hints:SetToolTip', 'Initialize-Gui:$script:StartButton:PerformClick',
+    'Initialize-Gui:$sender:Dispose', 'Initialize-Gui:$sender:Stop',
+    'Initialize-Gui:$timer:Start', 'Invoke-DnsLookup:$stopwatch:Stop',
+    'Invoke-DnsLookup:$task:Wait', 'Invoke-HttpConnectionTest:$request:GetResponse',
+    'Invoke-HttpConnectionTest:$response:Close', 'Invoke-HttpConnectionTest:$response:GetResponseStream',
+    'Invoke-HttpConnectionTest:$stopwatch:Stop', 'Invoke-HttpConnectionTest:$stream:Dispose',
+    'Invoke-HttpConnectionTest:$stream:ReadByte', 'Invoke-PingMeasurement:$ping:Dispose',
+    'Invoke-PingMeasurement:$ping:Send', 'Invoke-TcpConnectionTest:$asyncResult.AsyncWaitHandle:Close',
+    'Invoke-TcpConnectionTest:$asyncResult.AsyncWaitHandle:WaitOne', 'Invoke-TcpConnectionTest:$client.Client:IOControl',
+    'Invoke-TcpConnectionTest:$client:BeginConnect', 'Invoke-TcpConnectionTest:$client:Close',
+    'Invoke-TcpConnectionTest:$client:EndConnect', 'Invoke-TcpConnectionTest:$stopwatch:Stop',
+    'Invoke-TraceRoute:$ping:Dispose', 'Invoke-TraceRoute:$ping:Send',
+    'Invoke-TraceRoute:$stopwatch:Stop', 'Run-AllChecks:$script:LogBox:Clear',
+    'Run-AllChecks:$script:Results:Clear', 'Write-UiLog:$script:LogBox:AppendText',
+    'Write-UiLog:$script:LogBox:ScrollToCaret'
 )
 
 function Find-UnvettedMember([string]$Text) {
@@ -468,7 +476,7 @@ function Find-UnvettedMember([string]$Text) {
             }
         }
         elseif ($GuardVettedMemberNames -notcontains $member) {
-            $site = ((Get-GuardEnclosingFunction $call) + ':' + $member)
+            $site = ((Get-GuardEnclosingFunction $call) + ':' + $call.Expression.Extent.Text + ':' + $member)
             if ($GuardVettedMemberSites -notcontains $site) { [void]$hits.Add(('{0} (.{1})' -f $line, $member)) }
         }
     }
@@ -499,18 +507,78 @@ $GuardVettedOrigins = @{
     'Write-Utf8File:Path'                      = @('parameter')
 }
 
+function Get-GuardAssignmentTargets($Left) {
+    # The variables an assignment writes: one, or the elements of a multiple assignment, with attributes and
+    # conversions unwrapped - [string]$x = ... and $a, $x = ... both write $x.
+    $targets = New-Object System.Collections.ArrayList
+    $items = @($Left)
+    if ($Left -is [ArrayLiteralAst]) { $items = $Left.Elements }
+    foreach ($item in $items) {
+        $node = $item
+        while ($node -is [AttributedExpressionAst]) { $node = $node.Child }
+        if ($node -is [VariableExpressionAst]) { [void]$targets.Add($node) }
+    }
+    return @($targets)
+}
+function Get-GuardVariableWrites($Function, [string]$Variable) {
+    # Every write to $Variable inside $Function, whatever it is spelled as. Comparing the assignment's source text
+    # let $local:netsh = "..." through beside the vetted $netsh = Join-Path ... : the same variable, another spelling,
+    # and the vetted assignment still there to be found (PR #72 round 4). The name is normalised the way the parameter
+    # guard normalises it, and every other shape that writes - ++ and --, a foreach variable, the variable cmdlets,
+    # a multiple or compound assignment - is a write with no expression to vet, which is a finding by itself.
+    $writes = New-Object System.Collections.ArrayList
+    if ($null -eq $Function) { return @($writes) }
+    foreach ($node in $Function.FindAll({ param($item) $true }, $true)) {
+        if ($node -is [AssignmentStatementAst]) {
+            foreach ($target in (Get-GuardAssignmentTargets $node.Left)) {
+                if ((Get-GuardVariableName $target) -ne $Variable) { continue }
+                $expression = $null
+                if ($node.Operator -eq 'Equals' -and $node.Left -isnot [ArrayLiteralAst] -and $node.Left -is [VariableExpressionAst]) {
+                    $expression = $node.Right.Extent.Text
+                }
+                [void]$writes.Add([pscustomobject]@{ Expression = $expression })
+            }
+        }
+        elseif ($node -is [UnaryExpressionAst] -and ($GuardIncrements -contains [string]$node.TokenKind) -and
+                $node.Child -is [VariableExpressionAst] -and (Get-GuardVariableName $node.Child) -eq $Variable) {
+            [void]$writes.Add([pscustomobject]@{ Expression = $null })
+        }
+        elseif ($node -is [ForEachStatementAst] -and $node.Variable -is [VariableExpressionAst] -and
+                (Get-GuardVariableName $node.Variable) -eq $Variable) {
+            [void]$writes.Add([pscustomobject]@{ Expression = $null })
+        }
+        elseif ($node -is [CommandAst]) {
+            $cmdlet = Get-GuardCommandName $node
+            if ($null -eq $cmdlet) { continue }
+            $binding = Get-GuardBinding $node
+            if ($null -eq $binding) { continue }
+            if ($GuardVariableCmdlets -contains $cmdlet) {
+                foreach ($name in (Get-GuardLiteral (Get-GuardBound $binding 'Name'))) {
+                    if ($name -eq $Variable) { [void]$writes.Add([pscustomobject]@{ Expression = $null }) }
+                }
+            }
+            elseif ($GuardItemCmdlets -contains $cmdlet) {
+                foreach ($path in (@(Get-GuardLiteral (Get-GuardBound $binding 'Path')) + @(Get-GuardLiteral (Get-GuardBound $binding 'LiteralPath')))) {
+                    $match = [regex]::Match($path, '(?i)(?:^|[\\/:])variable:(\w+)$')
+                    if ($match.Success -and $match.Groups[1].Value -eq $Variable) { [void]$writes.Add([pscustomobject]@{ Expression = $null }) }
+                }
+            }
+        }
+    }
+    return @($writes)
+}
+
 function Test-GuardVettedOrigin($Function, [string]$Variable, [string]$Key) {
     # Every assignment to $Variable inside $Function must be one of the vetted expressions; 'parameter' means none.
     if (-not $GuardVettedOrigins.ContainsKey($Key)) { return $false }
     $allowed = $GuardVettedOrigins[$Key]
-    $assignments = @()
-    if ($null -ne $Function) {
-        $assignments = @($Function.FindAll({ param($node) $node -is [AssignmentStatementAst] }, $true) |
-            Where-Object { $_.Left.Extent.Text -eq ('$' + $Variable) })
+    $writes = @(Get-GuardVariableWrites $Function $Variable)
+    if ($allowed -contains 'parameter') { return ($writes.Count -eq 0) }
+    if ($writes.Count -eq 0) { return $false }
+    foreach ($write in $writes) {
+        if ($null -eq $write.Expression) { return $false }
+        if ($allowed -notcontains $write.Expression) { return $false }
     }
-    if ($allowed -contains 'parameter') { return ($assignments.Count -eq 0) }
-    if ($assignments.Count -eq 0) { return $false }
-    foreach ($assignment in $assignments) { if ($allowed -notcontains $assignment.Right.Extent.Text) { return $false } }
     return $true
 }
 

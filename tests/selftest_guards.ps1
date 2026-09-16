@@ -47,7 +47,7 @@ function Test-SameList($Actual, $Expected) { return (@($Actual) -join ' | ') -eq
 function Expand-Case([string]$Case) {
     # A case that carries a Windows path uses <nl>: the older marker is \n, and "System32\netsh.exe" has one of those
     # in it (PR #72 round 3). A case declares one marker or the other, never both.
-    if ($Case.Contains('<nl>')) { return $Case.Replace('<nl>', "`n") }
+    if ($Case.Contains('<nl>')) { return $Case.Replace('<bs>', '\').Replace('<nl>', "`n") }
     return $Case.Replace('\n', "`n")
 }
 # One object per case rather than a dictionary entry or a pair: PowerShell's hash tables are case-insensitive while the
@@ -440,9 +440,18 @@ $CallCases = @(
     # And an instance name that writes on some receiver is vetted where it is called, not by the name: .AppendText on
     # a FileInfo creates a file, and the tool calls it on the log box in Write-UiLog and nowhere else.
     New-Case 'function Other { $file = New-Object System.IO.FileInfo("C:/x.txt")\n$file.AppendText() }' $true
-    New-Case 'function Write-UiLog { $box.AppendText($line) }' $false
+    New-Case 'function Write-UiLog { $box.AppendText($line) }' $true
+    New-Case 'function Write-UiLog { $script:LogBox.AppendText($line) }' $false
     New-Case 'function Other { $box.ScrollToCaret() }' $true
-    New-Case 'function Invoke-TcpConnectionTest { $socket.IOControl(3, $in, $out) }' $false
+    New-Case 'function Invoke-TcpConnectionTest { $socket.IOControl(3, $in, $out) }' $true
+    New-Case 'function Invoke-TcpConnectionTest { $client.Client.IOControl(3, $in, $out) }' $false
+    # Round 4: every spelling of a write to a vetted variable, and the receiver a writing name is called on.
+    New-Case 'function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>$local:netsh = "x.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>[string]$netsh = "x.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>Set-Variable -Name netsh -Value "x.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>foreach ($netsh in $list) { }<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Write-UiLog { $file = New-Object System.IO.FileInfo("C:/x.txt")<nl>$file.AppendText() }' $true
+    New-Case 'function Invoke-TcpConnectionTest { $other.Close() }' $true
 )
 
 # A duplicate case would silently shrink the set instead of strengthening it, so the sets are checked for one.
