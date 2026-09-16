@@ -173,9 +173,16 @@ $runReports = (Resolve-Path -LiteralPath $runReports).Path
 # that happens without anyone noticing: measured, a 190-character folder plus the report's name crosses MAX_PATH, both
 # children fall back, and the run looks broken for a reason nobody reads (PR #70 round 4). Refused here instead, with
 # the reason and what to do about it.
+# Two files are written in there, and the report is not always the longer: Initialize-OutputDirectory first writes
+# .write_test_<32 hex>.tmp to see whether it can, and those 48 characters beat the report's own name wherever the
+# computer is called something short - seven characters or fewer (PR #70 round 5). The room asked for is the longest
+# of the two, or the probe fails, the tool falls back to the shared folder, and the run is refused for a reason this
+# preflight had just said was not there.
 $reportNameLength = ("NetworkHealthCheck_yyyyMMdd_HHmmss_{0}.json" -f $machine).Length
-if (($runReports.Length + 1 + $reportNameLength) -ge 260) {
-    Write-Host ("[FAIL] the bundle path is too long for the tool to write its report into: {0} characters, and the report's own name needs {1} more." -f $runReports.Length, ($reportNameLength + 1))
+$probeNameLength = (".write_test_{0}.tmp" -f ([guid]::NewGuid().ToString("N"))).Length
+$longestNameLength = [Math]::Max($reportNameLength, $probeNameLength)
+if (($runReports.Length + 1 + $longestNameLength) -ge 260) {
+    Write-Host ("[FAIL] the bundle path is too long for the tool to write in: {0} characters, and the longest file it writes there - the report at {1} or its write probe at {2} - needs {3} more." -f $runReports.Length, $reportNameLength, $probeNameLength, ($longestNameLength + 1))
     Write-Host  "       Run this again with -OutputRoot pointing somewhere shorter, for example C:\nhc."
     exit 1
 }
@@ -335,15 +342,28 @@ $lines += ("VERDICT: " + $verdict)
 [void](Save-Text "checks.txt" $lines)
 $checks | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $bundle "checks.json") -Encoding UTF8
 
+# The bundle is the deliverable: a check that answered and could not hand the evidence over has not finished, so a
+# failed archive is a failure of this run and not a line of text (PR #70 round 5). The note goes into the bundle's own
+# checks.txt as well, since that file is then the only copy of it.
 $zip = $bundle + ".zip"
+$zipOk = $true
+$zipNote = ""
 try {
     if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
     Compress-Archive -Path (Join-Path $bundle "*") -DestinationPath $zip -Force
 }
-catch { $zip = "(the bundle could not be zipped: " + [string]$_.Exception.Message + ")" }
+catch {
+    $zipOk = $false
+    # The exception alone can be a bare NullReferenceException, which says nothing about where it was writing.
+    $zipNote = ("{0}: {1}" -f $zip, [string]$_.Exception.Message)
+    $zip = "(not archived)"
+    $failLine = "[FAIL] B1  the evidence could not be put in one file that travels: " + $zipNote
+    Write-Host $failLine
+    try { Add-Content -LiteralPath (Join-Path $bundle "checks.txt") -Value $failLine -Encoding UTF8 } catch { }
+}
 
 Write-Host ""
-Write-Host ("VERDICT: " + $verdict)
+Write-Host ("VERDICT: " + $verdict + $(if ($zipOk) { "" } else { " - and the evidence could not be archived" }))
 if ($failed.Count -gt 0) {
     Write-Host ("what did not hold: " + (@($failed | ForEach-Object { $_.Id }) -join ", "))
     if (-not $standingOk) {
@@ -356,5 +376,5 @@ if ($failed.Count -gt 0) {
 Write-Host ("bundle : " + $bundle)
 Write-Host ("zip    : " + $zip)
 Write-Host ""
-if ($standingOk -and $behaviourOk) { exit 0 }
+if ($standingOk -and $behaviourOk -and $zipOk) { exit 0 }
 exit 1
