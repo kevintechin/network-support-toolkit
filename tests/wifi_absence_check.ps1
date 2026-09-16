@@ -381,19 +381,41 @@ if ($evidenceProblems.Count -ne $problemsBeforeSummaries) {
     Write-Host $lateLine
     $checksTxt = Join-Path $bundle "checks.txt"
     $checksJson = Join-Path $bundle "checks.json"
-    # The text one, where it landed: appended, because rewriting it could lose what is already there.
-    try { if (Test-Path -LiteralPath $checksTxt) { Add-Content -LiteralPath $checksTxt -Value $lateLine -Encoding UTF8 -ErrorAction Stop } } catch { }
-    # The JSON one, where it landed: rewritten, because a record is read by its fields and B1's field is now wrong.
-    try {
-        if (Test-Path -LiteralPath $checksJson) {
-            $corrected = @($checks | ForEach-Object {
+    # A correction can fail too, and an empty catch would leave the summary saying this run passed - the contradiction
+    # this block exists to remove (PR #70 round 10). So each correction is read back, and a summary that is there and
+    # could not be corrected is REMOVED: a missing summary is honest, a stale one is not. Where even that fails there
+    # is nothing left to write, and the console and the exit code are what says so - which is where this class ends.
+    $txtOk = $false
+    if (Test-Path -LiteralPath $checksTxt) {
+        try {
+            Add-Content -LiteralPath $checksTxt -Value $lateLine -Encoding UTF8 -ErrorAction Stop
+            $txtOk = ((Get-Content -LiteralPath $checksTxt -Raw -ErrorAction Stop) -like "*corrected after the summaries were written*")
+        }
+        catch { $txtOk = $false }
+    }
+    $jsonOk = $false
+    if (Test-Path -LiteralPath $checksJson) {
+        try {
+            $correctedChecks = @($checks | ForEach-Object {
                 if ([string]$_.Id -eq "B1") { [pscustomobject]@{ Id = $_.Id; Title = $_.Title; Ok = $false; Evidence = ($evidenceProblems -join "; ") } }
                 else { $_ }
             })
-            ($corrected | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $checksJson -Encoding UTF8 -ErrorAction Stop
+            ($correctedChecks | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $checksJson -Encoding UTF8 -ErrorAction Stop
+            $readBack = (Get-Content -LiteralPath $checksJson -Raw -ErrorAction Stop) | ConvertFrom-Json
+            $jsonOk = (@($readBack | Where-Object { [string]$_.Id -eq "B1" -and -not $_.Ok }).Count -eq 1)
+        }
+        catch { $jsonOk = $false }
+    }
+    foreach ($summary in @(@{ Path = $checksTxt; Ok = $txtOk }, @{ Path = $checksJson; Ok = $jsonOk })) {
+        if ((Test-Path -LiteralPath $summary.Path) -and -not $summary.Ok) {
+            try { Remove-Item -LiteralPath $summary.Path -Recurse -Force -ErrorAction Stop } catch { }
+            if (Test-Path -LiteralPath $summary.Path) {
+                $stuckLine = "[FAIL] B1  a summary in this bundle does not say what this run found, and could not be corrected or removed: " + $summary.Path
+                Write-Host $stuckLine
+                [void]$evidenceProblems.Add(("{0}: could not be corrected or removed, so the bundle contradicts the result" -f (Split-Path -Leaf $summary.Path)))
+            }
         }
     }
-    catch { }
 }
 
 # The bundle is the deliverable: a check that answered and could not hand the evidence over has not finished, so a
