@@ -139,6 +139,22 @@ Add-Check "S2" "the adapter list holds no wireless entry - this is a computer wi
 Add-Check "S3" "netsh did not answer either - so neither Wi-Fi reader can be asked" `
     ($netshExit -ne 0) ("netsh exit code {0}" -f $netshExit)
 
+# ---- what was there before the run ---------------------------------------------------------------------------------
+# The report this check reads has to be the one this run wrote. A child that died, or one killed on the timeout, would
+# otherwise leave the newest report of some earlier attempt to be read as this run's - and every check below would
+# pass against it, which is the mistake this whole script exists to prevent (PR #70 round 1).
+$toolDir = Split-Path -Parent $ScriptPath
+$reportDirs = @()
+if (-not [string]::IsNullOrWhiteSpace($toolDir)) { $reportDirs += (Join-Path $toolDir "Reports") }
+$reportDirs += (Join-Path $env:TEMP "NetworkHealthCheck\Reports")
+$reportsBefore = @{}
+foreach ($dir in $reportDirs) {
+    if (-not (Test-Path -LiteralPath $dir)) { continue }
+    foreach ($file in @(Get-ChildItem -LiteralPath $dir -Filter "*.json" -ErrorAction SilentlyContinue)) {
+        $reportsBefore[$file.FullName] = $true
+    }
+}
+
 # ---- the run -------------------------------------------------------------------------------------------------------
 $runStart = Get-Date
 $runOut = Join-Path $bundle "run-output.txt"
@@ -146,9 +162,10 @@ $runErr = Join-Path $bundle "run-errors.txt"
 $ran = $false
 $runNote = ""
 if ($NoRun) {
+    # The newest report as it stands, however old: this reads a capture taken earlier, and a freshness cut-off would
+    # refuse the very bundles it is for (PR #70 round 1).
     $runNote = "-NoRun was given: the tool was not started, the newest report is read instead"
     Write-Host ("[SKIP] the run: " + $runNote)
-    $runStart = (Get-Date).AddDays(-1)
     $ran = $true
 }
 elseif (-not (Test-Path -LiteralPath $ScriptPath)) {
@@ -157,12 +174,17 @@ elseif (-not (Test-Path -LiteralPath $ScriptPath)) {
 else {
     Write-Host ("[ .. ] running the tool, console only - this takes a few minutes")
     $psExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+    # One string, with the path in quotes: Start-Process joins an argument array with spaces and keeps none of the
+    # quoting, so a checkout under a path with a space in it - this repository's own, for one - would hand the child a
+    # truncated -File and never run the tool (PR #70 round 1).
+    $arguments = ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -ConsoleOnly' -f $ScriptPath)
     $proc = Start-Process -FilePath $psExe -PassThru -NoNewWindow -RedirectStandardOutput $runOut -RedirectStandardError $runErr `
-        -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ScriptPath, "-ConsoleOnly")
+        -ArgumentList $arguments
     # Touching the handle is what makes ExitCode readable after the wait.
     $null = $proc.Handle
     if ($proc.WaitForExit($TimeoutSeconds * 1000)) {
-        $ran = $true
+        # A run that ended in anything but 0 is not a run this check may read a report from.
+        $ran = ($proc.ExitCode -eq 0)
         $runNote = ("exit code {0}, {1:n0} s" -f $proc.ExitCode, ((Get-Date) - $runStart).TotalSeconds)
     }
     else {
@@ -181,17 +203,17 @@ Add-Check "S4" "and it is still stopped afterwards - the run happened in that st
     ($null -ne $svcAfter -and [string]$svcAfter.Status -eq "Stopped") $svcAfterText
 
 # ---- the report ----------------------------------------------------------------------------------------------------
-$toolDir = Split-Path -Parent $ScriptPath
-$reportDirs = @()
-if (-not [string]::IsNullOrWhiteSpace($toolDir)) { $reportDirs += (Join-Path $toolDir "Reports") }
-$reportDirs += (Join-Path $env:TEMP "NetworkHealthCheck\Reports")
-$reportJson = $null
+# A report this run wrote is one that was not there before it started. With -NoRun there was no run, and the newest
+# report is what is being re-read, whenever it was taken.
+$found = New-Object System.Collections.ArrayList
 foreach ($dir in $reportDirs) {
     if (-not (Test-Path -LiteralPath $dir)) { continue }
-    $candidate = @(Get-ChildItem -LiteralPath $dir -Filter "*.json" -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTime -ge $runStart.AddSeconds(-30) } | Sort-Object LastWriteTime -Descending)
-    if ($candidate.Count -gt 0) { $reportJson = $candidate[0]; break }
+    foreach ($file in @(Get-ChildItem -LiteralPath $dir -Filter "*.json" -ErrorAction SilentlyContinue)) {
+        if ($NoRun -or (-not $reportsBefore.ContainsKey($file.FullName))) { [void]$found.Add($file) }
+    }
 }
+$reportJson = @($found | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+if ($reportJson.Count -eq 0) { $reportJson = $null } else { $reportJson = $reportJson[0] }
 
 $report = $null
 if ($null -ne $reportJson) {
@@ -202,8 +224,8 @@ if ($null -ne $reportJson) {
         if (Test-Path -LiteralPath $peer) { Copy-Item -LiteralPath $peer -Destination $bundle -Force }
     }
 }
-Add-Check "C1" "the run wrote a report this check could read" ($null -ne $report) `
-    $(if ($null -ne $reportJson) { "report: " + $reportJson.Name } else { "no report written after the run started; " + $runNote })
+Add-Check "C1" "the report read is the one this run wrote - or, with -NoRun, the newest capture kept" (($null -ne $report) -and $ran) `
+    $(if ($null -ne $reportJson) { ("report: {0} ({1})" -f $reportJson.Name, $runNote) } else { "no report this run wrote; " + $runNote })
 
 $rows = @()
 if ($null -ne $report) { $rows = @($report.Results) }
