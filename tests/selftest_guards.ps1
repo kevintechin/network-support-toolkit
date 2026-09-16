@@ -1,13 +1,18 @@
 param([string]$EnUsAnchor, [string]$ZhTwAnchor)
-# Self-test of the two AST guards in ast_guards.ps1 (backlog #17; until 2026-09-04 they were regular expressions in
-# healthcheck/tools/validate_release.py and this file was selftest_guards.py). Four parts:
+# Self-test of the AST guards in ast_guards.ps1 - the two from backlog #17 (until 2026-09-04 regular expressions in
+# healthcheck/tools/validate_release.py, and this file selftest_guards.py) and the call guard from backlog #42.
+# Four parts:
 #   1. the v1.2.0 files must be flagged at the known lines - the top-level `$script:Interactive = $false` (line 77 in
 #      en-US, 70 in zh-TW) and the six `New-Object System.Drawing.Point(22, 84 + $offset)` constructor lines;
-#   2. the current shipped files must parse and come back clean;
+#   2. the current shipped files must parse and come back clean, the call guard included: every command they call
+#      is one of their own functions or one somebody vetted;
 #   3. the corpus below - built up over the twenty-one Codex rounds of PR #4, one case per spelling a round proposed,
-#      plus the shapes the AST rewrite made reachable - must be classified exactly as recorded;
+#      plus the shapes the AST rewrite made reachable, plus the call cases of #42 - must be classified exactly as
+#      recorded;
 #   4. the guards must survive a file that does not parse (the parse step's finding, not theirs).
 # The anchors are read from git (commit f7c45a9, the merge of PR #3 = v1.2.0 as shipped) unless a file is passed in.
+# They anchor the two guards they were built from: what v1.2.0 called is a question nobody asked at the time, and a
+# number recorded here for it would be archaeology rather than a guard.
 #
 # Usage:  tests\selftest_guards.ps1 [-EnUsAnchor <v1.2.0 en-US .ps1>] [-ZhTwAnchor <v1.2.0 zh-TW .ps1>]
 # A case is written on one line: `\n` in a case stands for a line break (no case needs a literal backslash-n).
@@ -39,7 +44,12 @@ function Get-AnchorText([string]$Language, [string]$Override) {
     return $text.TrimStart([char]0xFEFF)
 }
 function Test-SameList($Actual, $Expected) { return (@($Actual) -join ' | ') -eq (@($Expected) -join ' | ') }
-function Expand-Case([string]$Case) { return $Case.Replace('\n', "`n") }
+function Expand-Case([string]$Case) {
+    # A case that carries a Windows path uses <nl>: the older marker is \n, and "System32\netsh.exe" has one of those
+    # in it (PR #72 round 3). A case declares one marker or the other, never both.
+    if ($Case.Contains('<nl>')) { return $Case.Replace('<bs>', '\').Replace('<nl>', "`n") }
+    return $Case.Replace('\n', "`n")
+}
 # One object per case rather than a dictionary entry or a pair: PowerShell's hash tables are case-insensitive while the
 # corpus holds cases that differ only in case ($Script:Interactive against $script:Interactive), and an array literal
 # would flatten a pair into its two values.
@@ -64,8 +74,10 @@ foreach ($language in @('en-US', 'zh-TW')) {
     $errors = @(Get-GuardParseError $text)
     $parameters = @(Find-OverwrittenParameter $text)
     $arithmetic = @(Find-UnparenthesizedArithmetic $text)
-    Write-Output ('current {0}: {1} parse error(s); parameter guard [{2}]; arithmetic guard [{3}]' -f $language, $errors.Count, ($parameters -join ', '), ($arithmetic -join ', '))
-    if ($errors.Count -or $parameters.Count -or $arithmetic.Count) { $ok = $false; Write-Output '  MISMATCH: the shipped file must parse and come back clean' }
+    $calls = @(Find-UnvettedCall $text) + @(Find-UnvettedMember $text) + @(Find-UnvettedRedirection $text) +
+        @(Find-UnvettedEnvironmentWrite $text)
+    Write-Output ('current {0}: {1} parse error(s); parameter guard [{2}]; arithmetic guard [{3}]; call guard [{4}]' -f $language, $errors.Count, ($parameters -join ', '), ($arithmetic -join ', '), ($calls -join ', '))
+    if ($errors.Count -or $parameters.Count -or $arithmetic.Count -or $calls.Count) { $ok = $false; Write-Output '  MISMATCH: the shipped file must parse and come back clean' }
 }
 
 # -------------------- 3. the corpus --------------------
@@ -334,8 +346,209 @@ $ArithmeticCases = @(
     New-Case '$s = @''\nNew-Object System.Drawing.Point(22, 84 + $offset)\n''@' $false
 )
 
+# The call guard (backlog #42). $true = the guard must report it. Written at the top level of a script with no function
+# definitions in it, so a name is vetted or it is not; the last case brings its own function to stand for the tool's own.
+$CallCases = @(
+    # Writers, by cmdlet: none of these is on the list, and that is the whole rule.
+    New-Case 'Set-NetIPAddress -InterfaceAlias Wi-Fi -IPAddress 10.0.0.5' $true
+    New-Case 'Set-ItemProperty -Path HKCU:\Software\X -Name Y -Value 1' $true
+    New-Case 'Invoke-CimMethod -ClassName Win32_Process -MethodName Create' $true
+    New-Case 'Set-Service -Name WlanSvc -StartupType Automatic' $true
+    New-Case 'Remove-NetRoute -DestinationPrefix 0.0.0.0/0' $true
+    # Writers, by another program: the name is not on the list at all.
+    New-Case 'reg add HKCU\Software\X /v Y /d 1 /f' $true
+    New-Case 'setx NHC 1' $true
+    # A vetted program carrying a verb its entry does not allow.
+    New-Case 'netsh int ip set address name="Wi-Fi" static 10.0.0.5' $true
+    New-Case 'netsh advfirewall set allprofiles state off' $true
+    New-Case 'arp -s 10.0.0.1 aa-bb-cc-dd-ee-ff' $true
+    # The same through the resolved-path variable, which is how the tool really calls netsh.
+    New-Case '& $netsh int ip set address name="Wi-Fi" dhcp' $true
+    # An invocation through a variable nobody vetted.
+    New-Case '& $other wlan show interfaces' $true
+    New-Case '& (Get-Command netsh) wlan show interfaces' $true
+    # Start-Process is vetted for two programs and for the report the run wrote; anything else is a finding.
+    New-Case 'Start-Process -FilePath "cmd.exe" -ArgumentList "/c echo hi"' $true
+    New-Case 'Start-Process -FilePath $somethingElse' $true
+    New-Case 'Start-Process "notepad.exe"' $false
+    New-Case 'Start-Process -FilePath "explorer.exe"' $false
+    New-Case 'Start-Process -FilePath $target' $true
+    # An alias is not the name: a call spelled sc is a finding until somebody says which sc it is.
+    New-Case 'sc -Path out.txt -Value x' $true
+    # And the reads, which are what the tool does. The two writers here name variables the tool does not
+    # have: written when this guard vetted a writer by its name alone, they are findings under the
+    # destination rule round 1 asked for, and they stay as two more spellings of it.
+    New-Case 'netsh wlan show interfaces' $false
+    New-Case '& $netsh winhttp show proxy' $true
+    New-Case 'function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32\netsh.exe"<nl>& $netsh wlan show interfaces }' $false
+    New-Case 'arp -a' $false
+    New-Case 'Get-NetAdapter -ErrorAction Stop' $false
+    New-Case 'Get-CimInstance -ClassName Win32_NetworkAdapter' $false
+    New-Case 'Set-Content -LiteralPath $path -Value $text' $true
+    New-Case 'New-Item -ItemType Directory -Path $reports' $true
+    New-Case 'Remove-Item -LiteralPath $probe -Force' $true
+    New-Case 'function Get-Mine { 1 }\nGet-Mine' $false
+    # Member invocations, which the first version of this guard did not look at at all (PR #72 round 1).
+    New-Case '[Microsoft.Win32.Registry]::SetValue("HKCU\X", "Y", 1)' $true
+    New-Case '(Get-CimInstance Win32_NetworkAdapter).Delete()' $true
+    New-Case '$key.SetValue("a", 1)' $true
+    New-Case '$adapter.Disable()' $true
+    New-Case '[math]::Round(1.5, 1)' $false
+    New-Case '$s.Trim()' $false
+    New-Case '[System.IO.File]::WriteAllText($p, $t)' $true
+    # Where a writer writes, which vetting it by name alone left open.
+    New-Case 'New-Item -Path "HKCU:\Software\X" -ItemType Directory' $true
+    New-Case 'New-Item -Path $somewhereElse -ItemType Directory' $true
+    New-Case 'Remove-Item -LiteralPath $userFile -Force' $true
+    New-Case 'Remove-Item -Recurse -Force' $true
+    New-Case 'New-Item -ItemType Directory -Path $preferred' $true
+    New-Case 'Remove-Item -LiteralPath $testFile -Force' $true
+    # An argument the rule cannot read is an argument nobody vetted: netsh reads "int" as int.
+    New-Case 'netsh "int" "ip" "set" "address"' $true
+    New-Case '& $netsh $arguments' $true
+    New-Case 'arp ''-s'' ''10.0.0.1''' $true
+    # Round 2: a variable is vetted where it is written. The same call is clean in the function the tool writes it in
+    # and a finding anywhere else - including at the top level, which is where the five above now stand.
+    New-Case 'function Write-EnvironmentReport { Set-Content -LiteralPath $path -Value $t }' $true
+    New-Case 'function Write-EnvironmentReport { $path = Join-Path $folder $name\nSet-Content -LiteralPath $path -Value $t }' $false
+    New-Case 'function Other { Set-Content -LiteralPath $path -Value $t }' $true
+    New-Case 'function Initialize-OutputDirectory { New-Item -ItemType Directory -Path $preferred }' $true
+    # Flagged since round 7: each of these hands the destination a name, and the fragment never says where
+    # that name's value comes from - so the chain has a link missing and cannot be vetted. The same three
+    # shapes with the link written in are further down, and they are clean.
+    New-Case 'function Initialize-OutputDirectory { $preferred = $folderName\nNew-Item -ItemType Directory -Path $preferred }' $true
+    New-Case 'function Initialize-OutputDirectory { Remove-Item -LiteralPath $testFile -Force }' $true
+    New-Case 'function Initialize-OutputDirectory { $testFile = Join-Path $preferred (".write_test_{0}.tmp" -f [guid]::NewGuid().ToString("N"))\nRemove-Item -LiteralPath $testFile -Force }' $false
+    New-Case 'function Write-EmergencyReport { New-Item -ItemType Directory -Path $directory }' $true
+    New-Case 'function Write-EmergencyReport { $directory = $script:OutputDirectory\nNew-Item -ItemType Directory -Path $directory }' $true
+    New-Case 'function Initialize-Gui { Start-Process -FilePath $target }' $true
+    New-Case 'function Initialize-Gui { $target = $candidate\nStart-Process -FilePath $target }' $true
+    New-Case 'function Other { Start-Process -FilePath $target }' $true
+    # The one static member that writes a file, with the same rule on the argument that holds the path.
+    New-Case 'function Write-Utf8File { [System.IO.File]::WriteAllText($Path, $Content, $e) }' $false
+    New-Case 'function Initialize-OutputDirectory { [System.IO.File]::WriteAllText($testFile, "test") }' $true
+    New-Case 'function Initialize-OutputDirectory { $testFile = Join-Path $preferred (".write_test_{0}.tmp" -f [guid]::NewGuid().ToString("N"))\n[System.IO.File]::WriteAllText($testFile, "test") }' $false
+    New-Case 'function Write-Utf8File { [System.IO.File]::WriteAllText("C:\Users\x.txt", $c) }' $true
+    New-Case 'function Other { [System.IO.File]::WriteAllText($Path, $c) }' $true
+    New-Case 'function Write-Utf8File { [System.IO.File]::WriteAllText() }' $true
+    # And a module-qualified name is its own identity, not the basename's.
+    New-Case 'UnreviewedModule\Get-Date' $true
+    New-Case 'UnreviewedModule\Write-Utf8File' $true
+    New-Case 'Microsoft.PowerShell.Utility\Get-Date' $true
+    # Round 3: the value, not only the names. Every assignment to a vetted variable inside its function has to be one
+    # the entry names, so the review's own example - the same clean call over a changed assignment - is a finding.
+    New-Case 'function Write-EnvironmentReport { $path = "C:/Users/x.txt"\nSet-Content -LiteralPath $path -Value $t }' $true
+    New-Case 'function Get-WifiAssociationSample { $netsh = "C:/Users/Public/unreviewed.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Invoke-CheckStep { param($Action)\n$Action = { bad }\n& $Action }' $true
+    New-Case 'function Invoke-CheckStep { param($Action)\n& $Action }' $false
+    # And an instance name that writes on some receiver is vetted where it is called, not by the name: .AppendText on
+    # a FileInfo creates a file, and the tool calls it on the log box in Write-UiLog and nowhere else.
+    New-Case 'function Other { $file = New-Object System.IO.FileInfo("C:/x.txt")\n$file.AppendText() }' $true
+    New-Case 'function Write-UiLog { $box.AppendText($line) }' $true
+    New-Case 'function Write-UiLog { $script:LogBox.AppendText($line) }' $false
+    New-Case 'function Other { $box.ScrollToCaret() }' $true
+    New-Case 'function Invoke-TcpConnectionTest { $socket.IOControl(3, $in, $out) }' $true
+    New-Case 'function Invoke-TcpConnectionTest { $client.Client.IOControl(3, $in, $out) }' $false
+    # Round 4: every spelling of a write to a vetted variable, and the receiver a writing name is called on.
+    New-Case 'function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>$local:netsh = "x.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>[string]$netsh = "x.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>Set-Variable -Name netsh -Value "x.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>foreach ($netsh in $list) { }<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Write-UiLog { $file = New-Object System.IO.FileInfo("C:/x.txt")<nl>$file.AppendText() }' $true
+    New-Case 'function Invoke-TcpConnectionTest { $other.Close() }' $true
+    # Round 5: a constructor is a call with a body, an approved assignment has to be the one that can reach the call,
+    # and a function defined inside another one is not there at the top level.
+    New-Case 'New-Object -TypeName System.IO.FileStream -ArgumentList "C:/Users/Public/x", ([System.IO.FileMode]::Create)' $true
+    New-Case 'New-Object -TypeName $typeName' $true
+    New-Case 'New-Object System.Collections.ArrayList' $false
+    New-Case 'New-Object System.Windows.Forms.Timer' $false
+    New-Case '$netsh = "C:/Users/Public/evil.exe"<nl>function Get-WifiAssociationSample { if ($false) { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe" }<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Other { $script:netsh = "evil.exe" }<nl>function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Outer { function Remove-Item { } }\nRemove-Item -LiteralPath "C:/Users/Public/x"' $true
+    New-Case 'function Outer { function Remove-Item { }\nRemove-Item -LiteralPath "C:/Users/Public/x" }' $false
+    # Round 6: a loop writes the scope it names, a constructor's arguments choose the overload, a redirection
+    # writes a file with no command to read, and a definition counts only where it has already run.
+    New-Case 'function Other { foreach ($script:netsh in $list) { } }<nl>function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'foreach ($script:netsh in $list) { }<nl>function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Other { foreach ($netsh in $list) { } }<nl>function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>& $netsh wlan show interfaces }' $false
+    New-Case 'New-Object -TypeName System.Net.Sockets.TcpClient -ArgumentList "host.example", 25' $true
+    New-Case 'New-Object System.Net.Sockets.TcpClient' $false
+    New-Case 'New-Object System.Drawing.Point(22, 84)' $false
+    New-Case 'New-Object System.Drawing.Font("Consolas", 9.5, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Point)' $true
+    New-Case 'Get-Date > C:/Users/Public/x' $true
+    New-Case 'Get-Date >> C:/Users/Public/x' $true
+    New-Case '& netsh wlan show interfaces 2>&1' $false
+    New-Case 'Remove-Item -LiteralPath "C:/Users/Public/x"\nfunction Remove-Item { }' $true
+    New-Case 'if ($true) { function Remove-Item { } }\nRemove-Item -LiteralPath "C:/Users/Public/x"' $true
+    New-Case 'function Remove-Item { }\nRemove-Item -LiteralPath "C:/Users/Public/x"' $false
+    New-Case 'function A { B }\nfunction B { 1 }' $false
+    # Round 6, and a self-audit rather than a review finding: Add-Type compiles and loads code into this process,
+    # which is a wider reach than any file this tool writes, and it was vetted by a name with nothing behind it. A
+    # dot-source is the same question about the operator - it runs the thing in the caller's scope.
+    # Flagged since round 7: the site and the kind were enough for round 6, and the contents are what count. The
+    # block the tool really declares is in the shipped files, which part 2 reads, and its digest is the entry.
+    New-Case 'function Get-WlanApiType { $definition = @''<nl>[DllImport("wlanapi.dll")] public static extern uint WlanOpenHandle(uint v);<nl>''@<nl>Add-Type -Namespace NetworkHealthCheck -Name WlanApi -MemberDefinition $definition -ErrorAction Stop }' $true
+    New-Case 'function Get-WlanApiType { $definition = $env:SRC<nl>Add-Type -Namespace X -Name Y -MemberDefinition $definition }' $true
+    New-Case 'function Get-WlanApiType { $definition = "$($env:SRC)"<nl>Add-Type -Namespace X -Name Y -MemberDefinition $definition }' $true
+    New-Case 'function Other { $definition = @''<nl>[DllImport("wlanapi.dll")] public static extern uint WlanOpenHandle(uint v);<nl>''@<nl>Add-Type -MemberDefinition $definition }' $true
+    New-Case 'Add-Type -TypeDefinition $source' $true
+    New-Case 'Add-Type -Path "C:/Users/Public/evil.dll"' $true
+    New-Case 'Add-Type -AssemblyName System.Management.Automation' $true
+    New-Case 'Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop' $false
+    New-Case 'Add-Type -AssemblyName System.Drawing -ErrorAction Stop' $false
+    New-Case 'Add-Type' $true
+    New-Case 'function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>. $netsh wlan show interfaces }' $true
+    New-Case '. Get-Date' $true
+    New-Case '. "C:/Users/Public/evil.ps1"' $true
+    # Round 7: what can reach a body decides what that body can see, a literal is not its contents, and a vetted
+    # expression that is a name is a question about that name.
+    New-Case 'function Invoke-Early { Remove-Item -LiteralPath "C:/Users/Public/x" }\nInvoke-Early\nfunction Remove-Item { }' $true
+    New-Case 'function Invoke-Late { Remove-Item -LiteralPath "C:/Users/Public/x" }\nfunction Remove-Item { }\nInvoke-Late' $false
+    New-Case 'function Outer { Invoke-Early }\nfunction Invoke-Early { Remove-Item -LiteralPath "C:/Users/Public/x" }\nOuter\nfunction Remove-Item { }' $true
+    New-Case 'function A { B }\nfunction B { 1 }\nA' $false
+    New-Case 'function Get-WlanApiType { $definition = @''<nl>[DllImport("kernel32.dll")] public static extern void Sleep(uint ms);<nl>''@<nl>Add-Type -Namespace NetworkHealthCheck -Name WlanApi -MemberDefinition $definition -ErrorAction Stop }' $true
+    New-Case 'function Initialize-Gui { $target = $null<nl>foreach ($candidate in @($script:LastHtmlReport, $script:LastTextReport, $script:LastJsonReport)) { $target = $candidate }<nl>Start-Process -FilePath $target }' $false
+    New-Case 'function Initialize-Gui { $target = $null<nl>$candidate = "C:/Users/Public/evil.exe"<nl>foreach ($candidate in @($script:LastHtmlReport, $script:LastTextReport, $script:LastJsonReport)) { $target = $candidate }<nl>Start-Process -FilePath $target }' $true
+    New-Case 'function ConvertTo-SafeString { }<nl>function Initialize-OutputDirectory { $folderName = ConvertTo-SafeString $script:Config.ReportFolderName<nl>if ([System.IO.Path]::IsPathRooted($folderName)) { $preferred = $folderName }<nl>else { $preferred = Join-Path $script:BaseDirectory $folderName }<nl>New-Item -ItemType Directory -Path $preferred }' $false
+    New-Case 'function ConvertTo-SafeString { }<nl>function Initialize-OutputDirectory { $folderName = "C:/Users/Public/evil"<nl>if ([System.IO.Path]::IsPathRooted($folderName)) { $preferred = $folderName }<nl>else { $preferred = Join-Path $script:BaseDirectory $folderName }<nl>New-Item -ItemType Directory -Path $preferred }' $true
+    New-Case 'function Write-EmergencyReport { $directory = $script:OutputDirectory<nl>New-Item -ItemType Directory -Path $directory }<nl>function Initialize-OutputDirectory { $fallback = Join-Path ([System.IO.Path]::GetTempPath()) "NetworkHealthCheck<bs>Reports"<nl>$script:OutputDirectory = $fallback }' $false
+    New-Case 'function Write-EmergencyReport { $directory = $script:OutputDirectory<nl>New-Item -ItemType Directory -Path $directory }<nl>function Other { $script:OutputDirectory = "C:/Users/Public/evil" }' $true
+    # Round 8: a definition inside a script block literal has not run - and the self-audit beside it, that nothing
+    # here may write an environment variable, which is what the vetted $netsh reads its folder from.
+    New-Case '$unused = { function Remove-Item { } }\nRemove-Item -LiteralPath "C:/Users/Public/x"' $true
+    New-Case '& { function Remove-Item { }\nRemove-Item -LiteralPath "C:/Users/Public/x" }' $true
+    New-Case 'function Write-UiLog { $script:LogBox.AppendText($line) }\nfunction Initialize-Gui { $b.Add_Click({ Write-UiLog }) }' $false
+    New-Case '$env:SystemRoot = "C:/Users/Public"' $true
+    New-Case 'function Get-WifiAssociationSample { $env:SystemRoot = "C:/Users/Public"<nl>$netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case '$env:Path += ";C:/Users/Public"' $true
+    # Round 9: a definition inside the body it is called from runs when the body reaches it, and a loop target is a
+    # write - including the environment's. The last four ran over the same surface from the other directions.
+    New-Case 'function Outer { Remove-Item -LiteralPath "C:/Users/Public/x"\nfunction Remove-Item { } }\nOuter' $true
+    New-Case 'function Outer { function Remove-Item { }\nRemove-Item -LiteralPath "C:/Users/Public/x" }\nOuter' $false
+    # Clean since round 10, and the reachability rule is why: nothing calls Outer, so that body never runs and
+    # the call in it never happens. The same shape with Outer called stands above it, and is a finding.
+    New-Case 'function Outer { Remove-Item -LiteralPath "C:/Users/Public/x"\nfunction Remove-Item { } }' $false
+    New-Case 'function Outer { Remove-Item -LiteralPath "C:/Users/Public/x" }\nfunction Remove-Item { }\nOuter' $false
+    New-Case 'foreach ($env:SystemRoot in "C:/Users/Public") { }' $true
+    New-Case 'function Get-WifiAssociationSample { foreach ($env:SystemRoot in "C:/Users/Public") { }<nl>$netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'foreach ($folder in @($env:TEMP)) { $x = $folder }' $false
+    New-Case 'Set-Variable -Name env:SystemRoot -Value "C:/Users/Public"' $true
+    New-Case 'Remove-Item -LiteralPath Env:\SystemRoot' $true
+    New-Case 'New-Item -Path Env:\SystemRoot -Value "C:/Users/Public"' $true
+    New-Case '${env:SystemRoot} = "C:/Users/Public"' $true
+    # Round 10: the body a definition stands in decides when it has run, however many scopes down the call is. The
+    # fourth of these is refused conservatively - Outer really does define both before anything calls Middle, and
+    # working out that nothing else got there first is the flow analysis this guard does not do.
+    New-Case 'function Outer { function Middle { Remove-Item -LiteralPath "C:/Users/Public/x" }\nMiddle\nfunction Remove-Item { } }\nOuter' $true
+    New-Case 'function Outer { function Middle { Remove-Item -LiteralPath "C:/Users/Public/x" }\nfunction Remove-Item { }\nMiddle }\nOuter' $false
+    New-Case 'function Outer { function Middle { Inner }\nfunction Inner { Remove-Item -LiteralPath "C:/Users/Public/x" }\nMiddle\nfunction Remove-Item { } }\nOuter' $true
+    New-Case 'function Outer { function Middle { Remove-Item -LiteralPath "C:/Users/Public/x" }\nfunction Remove-Item { } }\nOuter\nMiddle' $true
+    New-Case 'function Remove-Item { }\nfunction Outer { function Middle { Remove-Item -LiteralPath "C:/Users/Public/x" }\nMiddle }\nOuter' $false
+    New-Case 'function Outer { Remove-Item -LiteralPath "C:/Users/Public/x" }\nfunction Remove-Item { }' $false
+)
+
 # A duplicate case would silently shrink the set instead of strengthening it, so the sets are checked for one.
-foreach ($set in @(@('top-level', $Cases), @('in-function', $FunctionCases), @('constructor', $ArithmeticCases))) {
+foreach ($set in @(@('top-level', $Cases), @('in-function', $FunctionCases), @('constructor', $ArithmeticCases), @('call', $CallCases))) {
     foreach ($duplicate in @($set[1] | ForEach-Object { $_.Text } | Group-Object -CaseSensitive | Where-Object { $_.Count -gt 1 })) {
         $ok = $false; Write-Output ('  DUPLICATE {0} case: {1}' -f $set[0], $duplicate.Name)
     }
@@ -350,11 +563,21 @@ foreach ($case in $FunctionCases) {
     if ($hit -ne $case.Expect) { $ok = $false }
     Write-Output ('  in-function {0} (expected {1}): {2}' -f $(if ($hit) { 'flagged' } else { 'clean  ' }), $(if ($case.Expect) { 'flagged' } else { 'clean' }), $case.Text)
 }
+foreach ($case in $CallCases) {
+    # All four guards: a command, a member invocation, a redirection and a write to the environment are four
+    # shapes of the one question - is this reach for the machine vetted (PR #72 rounds 6 and 8).
+    $text = (Expand-Case $case.Text) + "`n"
+    $hit = (@(Find-UnvettedCall $text).Count + @(Find-UnvettedMember $text).Count +
+        @(Find-UnvettedRedirection $text).Count + @(Find-UnvettedEnvironmentWrite $text).Count) -gt 0
+    if ($hit -ne $case.Expect) { $ok = $false }
+    Write-Output ('  call        {0} (expected {1}): {2}' -f $(if ($hit) { 'flagged' } else { 'clean  ' }), $(if ($case.Expect) { 'flagged' } else { 'clean' }), $case.Text)
+}
 foreach ($case in $ArithmeticCases) {
     $hit = @(Find-UnparenthesizedArithmetic ((Expand-Case $case.Text) + "`n")).Count -gt 0
     if ($hit -ne $case.Expect) { $ok = $false }
     Write-Output ('  constructor {0} (expected {1}): {2}' -f $(if ($hit) { 'flagged' } else { 'clean  ' }), $(if ($case.Expect) { 'flagged' } else { 'clean' }), $case.Text)
 }
+
 
 # -------------------- 4. a file that does not parse --------------------
 
@@ -365,6 +588,6 @@ $brokenHits = @(Find-OverwrittenParameter $broken)
 Write-Output ('unparsed input: {0} parse error(s), parameter guard [{1}]' -f $brokenErrors, ($brokenHits -join ', '))
 if ($brokenErrors -lt 1 -or $brokenHits.Count -lt 1) { $ok = $false; Write-Output '  MISMATCH: expected a parse error and the finding inside the unclosed block' }
 
-Write-Output ('corpus: {0} top-level, {1} in-function, {2} constructor cases; anchors {3} en-US / zh-TW; guards on the PowerShell AST' -f $Cases.Count, $FunctionCases.Count, $ArithmeticCases.Count, $AnchorCommit)
+Write-Output ('corpus: {0} top-level, {1} in-function, {2} constructor, {3} call cases; anchors {4} en-US / zh-TW; guards on the PowerShell AST' -f $Cases.Count, $FunctionCases.Count, $ArithmeticCases.Count, $CallCases.Count, $AnchorCommit)
 Write-Output $(if ($ok) { 'ALL SELF-TESTS OK' } else { 'SELF-TEST FAILURE' })
 exit $(if ($ok) { 0 } else { 1 })

@@ -79,6 +79,41 @@ The two shipped scripts are not signed. The launchers pass `-ExecutionPolicy Byp
 
 **Status, 2026-09-14 — deferred indefinitely by the owner; nothing of the item is withdrawn.** When what is left on this page was grouped on 2026-09-14, three pieces of work were scheduled — the decision half of #22 (the Status there), #29 and #48 — and this item was not one of them: the owner deferred it, with no date. That is a change to the schedule and to nothing else. The acceptance sentence above stands as written, the two-pair design and the reason it refuses to call a difference a proof stand with it, and the gap it names is still open — no step compares the machine before a run with the machine after. Nor is it waiting on a machine or on an occurrence, the way #31, #38 and #53 are: it waits on the decision to schedule it, and nothing else.
 
+**Status, 2026-09-16 — the static half is built; the measurement stays deferred.** The question that settled it was
+the owner's: if this is not shown to the person who runs the tool, is confirming the design not enough? It nearly is,
+and the answer is in two parts. For the regression this item was raised against — **our own code starting to
+write** — a static check is better than a measurement: deterministic, on every push, on both languages, no quiet
+machine needed, no false alarm to re-run. That check now exists as `Find-UnvettedCall` and `Find-UnvettedMember` in
+`tests\ast_guards.ps1`, and the `guards` step runs them over both shipped scripts: every command called, every
+`[Type]::Method` and `$object.Method` invoked, and where each of the four calls that write is allowed to
+write.
+
+**It is an allowlist, and that is the point.** The ways to write to Windows are open-ended — a cmdlet, a .NET
+call, a CIM method, an external program with another verb — so a denylist stays green until somebody uses a
+spelling it does not know, while an allowlist goes red the moment a call arrives that nobody vetted. Measured before
+writing it: the two scripts call **192 distinct command names, 155 of them their own functions**, leaving **38
+external names** and **three invocations through a variable** (`$netsh`, resolved to its path under `%SystemRoot%`
+rather than trusted to PATH, and two script blocks the file builds itself). Each of the 38 carries the reason it is a
+read; `netsh` and `arp` carry an argument rule, so `netsh wlan show interfaces` passes and `netsh int ip set address`
+is a finding; `Start-Process` carries the two programs it may start and the one variable the GUI's Open-report button
+hands it. Both files come back clean, and **151 corpus cases** hold it — writers by cmdlet, by another program
+and by a vetted program with another verb, an invocation through an unvetted variable, `Start-Process` with anything
+else, an alias standing in for a vetted name, a registry write through `[Microsoft.Win32.Registry]::SetValue` and a
+`.Delete()` on a CIM instance, `New-Item` aimed at `HKCU:` and `Remove-Item` aimed at a variable nobody vetted,
+an argument quoted so the rule would not read it, a constructor overload that opens a connection where the
+tool opens none, a redirection that makes a file, an `Add-Type` compiling something the file does not state,
+a dot-source standing in for `&`, and the reads that must stay clean.
+
+**Where the value chain stops.** A vetted variable is followed through writes whose whole value is another name — `$target = $candidate` asks about `$candidate`, and a script-scope name is read across every outward write in the file. It is not followed through a write that *computes* from names: `Join-Path $script:BaseDirectory $folderName` is pinned as the expression it is, and what `$folderName` holds is not traced. That was implemented and withdrawn in round 7 of PR #72, because telling `$script:Config` from a local `$config`, and knowing whether a local write shadows an outer one, need flow analysis rather than an allowlist. So the claim is the narrower one: every vetted variable is written only by expressions somebody vetted — not that nothing can influence what those expressions produce.
+
+**What it cannot do is the measurement, and the acceptance above is unchanged.** The guard reads the calls, not what
+they do: a vetted read whose side effect changes the machine — a query that starts a trigger-started service, a
+driver call that resets a counter — looks exactly like a read. Only a before-and-after pair on a quiet machine
+can see that, which is this item's two-pair design, still deferred and still not waiting on anything but the decision
+to schedule it. One datum of the kind it would gather exists already, taken for another item: on `DESKTOP-5M1K8VU`,
+2026-09-16, `WlanSvc` was stopped before the run and still stopped after it, so the WLAN reads on a machine with no
+radio started nothing.
+
 ### 43 — The tool does not say when the reports are being written into a synced folder
 
 The report is written beside the program, and the person is told where it went; nobody tells them that the folder is being copied to a cloud service as they read it. Measured during the user-manual walk on `win11-enUS`, 2026-09-08: the package was extracted to the Desktop, which Windows 11 backs up to OneDrive by default, so `en-US\Reports\` was a synced folder and every report — computer and user names, MAC and IP addresses, SSID and BSSID, DNS servers, proxy settings, routes, driver versions, profile paths — went to the cloud as it was written. Nothing about that is the tool's doing, which is exactly why the tool is the only thing in a position to say it: it knows the path it resolved, at the moment it resolves it, and the person is standing in front of it. The documents can only warn in advance — the 1.2.5 fix does that in the user manual's sections 1, 5 and 9 and in the IT deployment manual's deployment section — and a warning in advance is read once, months before the run that matters.
