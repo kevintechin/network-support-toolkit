@@ -381,11 +381,20 @@ $GuardVettedArguments = @{
 # may arrive in - the paths this tool computes at run time, each one a place the run made or wrote itself. A
 # destination the parser cannot resolve to one of those is a finding, and a call carrying none of the parameters is
 # too, because a destination nobody can read is not a destination anybody vetted.
+# A variable is vetted where it is written, not wherever its name appears: vetting $path by name alone left every
+# Set-Content in the file clean, and a function that assigned $path = 'C:\Users\...' could write it (PR #72 round 2).
+# Each entry is <function>:<variable>, the call site as it stands in the two shipped files. A literal needs no site -
+# it names the thing itself.
 $GuardVettedDestinations = @{
-    'New-Item'      = @{ Parameters = @('Path', 'LiteralPath'); Literals = @(); Variables = @('preferred', 'fallback', 'directory') }
-    'Remove-Item'   = @{ Parameters = @('Path', 'LiteralPath'); Literals = @(); Variables = @('testFile') }
-    'Set-Content'   = @{ Parameters = @('Path', 'LiteralPath'); Literals = @(); Variables = @('path') }
-    'Start-Process' = @{ Parameters = @('FilePath'); Literals = @('notepad.exe', 'explorer.exe'); Variables = @('target') }
+    'New-Item'      = @{ Parameters = @('Path', 'LiteralPath'); Literals = @(); Variables = @('Initialize-OutputDirectory:preferred', 'Initialize-OutputDirectory:fallback', 'Write-EmergencyReport:directory') }
+    'Remove-Item'   = @{ Parameters = @('Path', 'LiteralPath'); Literals = @(); Variables = @('Initialize-OutputDirectory:testFile') }
+    'Set-Content'   = @{ Parameters = @('Path', 'LiteralPath'); Literals = @(); Variables = @('Write-EnvironmentReport:path') }
+    'Start-Process' = @{ Parameters = @('FilePath'); Literals = @('notepad.exe', 'explorer.exe'); Variables = @('Initialize-Gui:target') }
+}
+# The one static member that writes a file. Vetting it by name left it free to write anywhere, which is the hole the
+# cmdlets had (PR #72 round 2): it carries a destination rule of its own, on the argument that holds the path.
+$GuardVettedMemberDestinations = @{
+    '[System.IO.File]::WriteAllText' = @{ Index = 0; Literals = @(); Variables = @('Write-Utf8File:Path', 'Initialize-OutputDirectory:testFile') }
 }
 
 # The calls the parser does not see as commands at all: [Type]::Method(...) and $object.Method(...). Leaving them out
@@ -432,11 +441,41 @@ function Find-UnvettedMember([string]$Text) {
         $member = $call.Member.Extent.Text
         if ($call.Static) {
             $name = ('{0}::{1}' -f $call.Expression.Extent.Text, $member)
-            if ($GuardVettedStaticMembers -notcontains $name) { [void]$hits.Add(('{0} ({1})' -f $line, $name)) }
+            if ($GuardVettedStaticMembers -notcontains $name) { [void]$hits.Add(('{0} ({1})' -f $line, $name)); continue }
+            if ($GuardVettedMemberDestinations.ContainsKey($name)) {
+                $rule = $GuardVettedMemberDestinations[$name]
+                $arguments = @($call.Arguments)
+                if ($arguments.Count -le $rule.Index) { [void]$hits.Add(('{0} ({1}, no destination to read)' -f $line, $name)); continue }
+                if (-not (Test-GuardVettedDestination $arguments[$rule.Index] $rule (Get-GuardEnclosingFunction $call))) {
+                    [void]$hits.Add(('{0} ({1}, a destination the entry does not allow)' -f $line, $name))
+                }
+            }
         }
         elseif ($GuardVettedMemberNames -notcontains $member) { [void]$hits.Add(('{0} (.{1})' -f $line, $member)) }
     }
     return @($hits | Select-Object -Unique)
+}
+
+function Get-GuardEnclosingFunction($Node) {
+    # The name of the function a node stands in, or '' at the top level of the file.
+    $node = $Node.Parent
+    while ($null -ne $node) {
+        if ($node -is [FunctionDefinitionAst]) { return $node.Name }
+        $node = $node.Parent
+    }
+    return ''
+}
+function Test-GuardVettedDestination($Value, $Rule, [string]$Site) {
+    # A literal is vetted as itself; anything else has to be a variable vetted at this call site.
+    $literals = @(Get-GuardLiteral $Value)
+    if ($literals.Count -gt 0) {
+        foreach ($literal in $literals) { if ($Rule.Literals -notcontains $literal) { return $false } }
+        return $true
+    }
+    $expression = $Value
+    if ($null -ne $Value -and $Value.PSObject.Properties['Value']) { $expression = $Value.Value }
+    if ($expression -isnot [VariableExpressionAst]) { return $false }
+    return ($Rule.Variables -contains ($Site + ':' + $expression.VariablePath.UserPath))
 }
 
 function Test-GuardVettedArgument([CommandAst]$Command, [string]$Key) {
@@ -458,18 +497,13 @@ function Test-GuardVettedArgument([CommandAst]$Command, [string]$Key) {
         $rule = $GuardVettedDestinations[$Key]
         $binding = Get-GuardBinding $Command
         if ($null -eq $binding) { return $false }
+        $site = Get-GuardEnclosingFunction $Command
         $seen = $false
         foreach ($parameter in $rule.Parameters) {
             $bound = Get-GuardBound $binding $parameter
             if ($null -eq $bound) { continue }
             $seen = $true
-            $literals = @(Get-GuardLiteral $bound)
-            if ($literals.Count -gt 0) {
-                foreach ($literal in $literals) { if ($rule.Literals -notcontains $literal) { return $false } }
-                continue
-            }
-            if ($bound.Value -isnot [VariableExpressionAst]) { return $false }
-            if ($rule.Variables -notcontains $bound.Value.VariablePath.UserPath) { return $false }
+            if (-not (Test-GuardVettedDestination $bound $rule $site)) { return $false }
         }
         if (-not $seen) { return $false }
     }
@@ -488,9 +522,11 @@ function Find-UnvettedCall([string]$Text) {
         # guards care about and $null for everything else, which would make every call here a finding. Module
         # qualification is stripped; an alias is left as written, so a call spelled `sc` rather than Set-Content is a
         # finding until somebody says which it is - which is the allowlist working, not failing.
+        # A module-qualified name is its own identity: stripping to the last backslash let UnreviewedModule\Get-Date
+        # inherit the clock's entry and UnreviewedModule\Write-Utf8File the in-file exemption, while PowerShell would
+        # run the module's command (PR #72 round 2). The tool qualifies nothing, so any qualified name is a finding.
         $written = $command.GetCommandName()
-        $name = $null
-        if ($written) { $name = $written.Substring($written.LastIndexOf('\') + 1) }
+        $name = $written
         if ($null -eq $name) {
             $first = $command.CommandElements[0]
             if ($first -isnot [VariableExpressionAst]) { [void]$hits.Add(('{0} (a command name built at run time)' -f $line)); continue }

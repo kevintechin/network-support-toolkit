@@ -366,7 +366,7 @@ $CallCases = @(
     New-Case 'Start-Process -FilePath $somethingElse' $true
     New-Case 'Start-Process "notepad.exe"' $false
     New-Case 'Start-Process -FilePath "explorer.exe"' $false
-    New-Case 'Start-Process -FilePath $target' $false
+    New-Case 'Start-Process -FilePath $target' $true
     # An alias is not the name: a call spelled sc is a finding until somebody says which sc it is.
     New-Case 'sc -Path out.txt -Value x' $true
     # And the reads, which are what the tool does. The two writers here name variables the tool does not
@@ -377,7 +377,7 @@ $CallCases = @(
     New-Case 'arp -a' $false
     New-Case 'Get-NetAdapter -ErrorAction Stop' $false
     New-Case 'Get-CimInstance -ClassName Win32_NetworkAdapter' $false
-    New-Case 'Set-Content -LiteralPath $path -Value $text' $false
+    New-Case 'Set-Content -LiteralPath $path -Value $text' $true
     New-Case 'New-Item -ItemType Directory -Path $reports' $true
     New-Case 'Remove-Item -LiteralPath $probe -Force' $true
     New-Case 'function Get-Mine { 1 }\nGet-Mine' $false
@@ -388,19 +388,37 @@ $CallCases = @(
     New-Case '$adapter.Disable()' $true
     New-Case '[math]::Round(1.5, 1)' $false
     New-Case '$s.Trim()' $false
-    New-Case '[System.IO.File]::WriteAllText($p, $t)' $false
+    New-Case '[System.IO.File]::WriteAllText($p, $t)' $true
     # Where a writer writes, which vetting it by name alone left open.
     New-Case 'New-Item -Path "HKCU:\Software\X" -ItemType Directory' $true
     New-Case 'New-Item -Path $somewhereElse -ItemType Directory' $true
     New-Case 'Remove-Item -LiteralPath $userFile -Force' $true
     New-Case 'Remove-Item -Recurse -Force' $true
-    New-Case 'New-Item -ItemType Directory -Path $preferred' $false
-    New-Case 'Remove-Item -LiteralPath $testFile -Force' $false
-    New-Case 'Set-Content -LiteralPath $path -Value $text' $false
+    New-Case 'New-Item -ItemType Directory -Path $preferred' $true
+    New-Case 'Remove-Item -LiteralPath $testFile -Force' $true
     # An argument the rule cannot read is an argument nobody vetted: netsh reads "int" as int.
     New-Case 'netsh "int" "ip" "set" "address"' $true
     New-Case '& $netsh $arguments' $true
     New-Case 'arp ''-s'' ''10.0.0.1''' $true
+    # Round 2: a variable is vetted where it is written. The same call is clean in the function the tool writes it in
+    # and a finding anywhere else - including at the top level, which is where the five above now stand.
+    New-Case 'function Write-EnvironmentReport { Set-Content -LiteralPath $path -Value $t }' $false
+    New-Case 'function Other { Set-Content -LiteralPath $path -Value $t }' $true
+    New-Case 'function Initialize-OutputDirectory { New-Item -ItemType Directory -Path $preferred }' $false
+    New-Case 'function Initialize-OutputDirectory { Remove-Item -LiteralPath $testFile -Force }' $false
+    New-Case 'function Write-EmergencyReport { New-Item -ItemType Directory -Path $directory }' $false
+    New-Case 'function Initialize-Gui { Start-Process -FilePath $target }' $false
+    New-Case 'function Other { Start-Process -FilePath $target }' $true
+    # The one static member that writes a file, with the same rule on the argument that holds the path.
+    New-Case 'function Write-Utf8File { [System.IO.File]::WriteAllText($Path, $Content, $e) }' $false
+    New-Case 'function Initialize-OutputDirectory { [System.IO.File]::WriteAllText($testFile, "test") }' $false
+    New-Case 'function Write-Utf8File { [System.IO.File]::WriteAllText("C:\Users\x.txt", $c) }' $true
+    New-Case 'function Other { [System.IO.File]::WriteAllText($Path, $c) }' $true
+    New-Case 'function Write-Utf8File { [System.IO.File]::WriteAllText() }' $true
+    # And a module-qualified name is its own identity, not the basename's.
+    New-Case 'UnreviewedModule\Get-Date' $true
+    New-Case 'UnreviewedModule\Write-Utf8File' $true
+    New-Case 'Microsoft.PowerShell.Utility\Get-Date' $true
 )
 
 # A duplicate case would silently shrink the set instead of strengthening it, so the sets are checked for one.
