@@ -78,10 +78,28 @@ function Add-Check([string]$Id, [string]$Title, [bool]$Ok, [string]$Evidence) {
     Write-Host ("[{0}] {1} {2}" -f $mark, $Id.PadRight(3), $Title)
     if (-not [string]::IsNullOrWhiteSpace($Evidence)) { Write-Host ("        " + $Evidence) }
 }
+# Everything this check puts in the bundle goes through these two, and a write that did not happen is recorded
+# rather than ignored: Set-Content and Copy-Item are non-terminating under $ErrorActionPreference = "Continue", so a
+# disk that filled or a permission that changed after the bundle was made would otherwise leave the archive carrying
+# most of the evidence while the run reported success (PR #70 round 8). The file is read back afterwards, because a
+# write that reported nothing is still not a file on disk.
+$evidenceProblems = New-Object System.Collections.ArrayList
 function Save-Text([string]$Name, [object]$Content) {
     $path = Join-Path $bundle $Name
-    ($Content | Out-String -Width 200) | Set-Content -LiteralPath $path -Encoding UTF8
+    try {
+        ($Content | Out-String -Width 200) | Set-Content -LiteralPath $path -Encoding UTF8 -ErrorAction Stop
+        if (-not (Test-Path -LiteralPath $path)) { throw "it is not there after being written" }
+    }
+    catch { [void]$evidenceProblems.Add(("{0}: {1}" -f $Name, [string]$_.Exception.Message)) }
     return $path
+}
+function Copy-Evidence([string]$From) {
+    $name = Split-Path -Leaf $From
+    try {
+        Copy-Item -LiteralPath $From -Destination (Join-Path $bundle $name) -Force -ErrorAction Stop
+        if (-not (Test-Path -LiteralPath (Join-Path $bundle $name))) { throw "it is not there after being copied" }
+    }
+    catch { [void]$evidenceProblems.Add(("{0}: {1}" -f $name, [string]$_.Exception.Message)) }
 }
 
 Write-Host ""
@@ -188,6 +206,13 @@ if (($runReports.Length + 1 + $longestNameLength) -ge 260) {
 }
 $configPath = Join-Path $bundle "run-config.json"
 [void](Save-Text "run-config.json" (ConvertTo-Json @{ ReportFolderName = $runReports }))
+# This one is not evidence but instruction: without it the child would read the machine's configuration and write its
+# report where this check cannot accept it, so it is refused here rather than diagnosed three screens later.
+if (-not (Test-Path -LiteralPath $configPath)) {
+    Write-Host ("[FAIL] the configuration this run needs could not be written: " + $configPath)
+    if ($evidenceProblems.Count -gt 0) { Write-Host ("       " + ($evidenceProblems -join "; ")) }
+    exit 1
+}
 
 # ---- the run -------------------------------------------------------------------------------------------------------
 $runStart = Get-Date
@@ -263,7 +288,7 @@ if ($null -ne $reportJson) {
     catch { $report = $null }
     foreach ($ext in @(".json", ".txt", ".html")) {
         $peer = [System.IO.Path]::ChangeExtension($reportJson.FullName, $ext)
-        if (Test-Path -LiteralPath $peer) { Copy-Item -LiteralPath $peer -Destination $bundle -Force }
+        if (Test-Path -LiteralPath $peer) { Copy-Evidence $peer }
     }
 }
 Add-Check "C1" "the report read is the one this run named, in the folder this check made for it" `
@@ -338,9 +363,15 @@ foreach ($row in $three) {
 $verdict = "INCONCLUSIVE - the copy under test or the standing was not what this check needs, so this run says nothing about backlog #69"
 if ($standingOk -and $behaviourOk) { $verdict = "PASS - the standing was reproduced and all three rows read the machine" }
 elseif ($standingOk -and -not $behaviourOk) { $verdict = "FAIL - the standing was reproduced and the rows did not read it" }
+# Named before checks.txt is written, so that the file carries it; a failure to write checks.txt itself cannot be in
+# checks.txt, and reaches the console and the exit code instead.
+Add-Check "B1" "every file this check meant to put in the bundle is there" ($evidenceProblems.Count -eq 0) `
+    $(if ($evidenceProblems.Count -eq 0) { "nothing was left out" } else { ($evidenceProblems -join "; ") })
+$lines += ("[{0}] B1  every file this check meant to put in the bundle is there" -f $(if ($evidenceProblems.Count -eq 0) { "PASS" } else { "FAIL" }))
+if ($evidenceProblems.Count -gt 0) { $lines += ("        " + ($evidenceProblems -join "; ")) }
 $lines += ("VERDICT: " + $verdict)
 [void](Save-Text "checks.txt" $lines)
-$checks | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $bundle "checks.json") -Encoding UTF8
+[void](Save-Text "checks.json" ($checks | ConvertTo-Json -Depth 4))
 
 # The bundle is the deliverable: a check that answered and could not hand the evidence over has not finished, so a
 # failed archive is a failure of this run and not a line of text (PR #70 round 5). The note goes into the bundle's own
@@ -375,7 +406,7 @@ catch {
         $zipNote = $zipNote + "; and what it left there could not be removed"
     }
     else { $zip = "(not archived)" }
-    $failLine = "[FAIL] B1  the evidence could not be put in one file that travels: " + $zipNote
+    $failLine = "[FAIL] B2  the evidence could not be put in one file that travels: " + $zipNote
     Write-Host $failLine
     try { Add-Content -LiteralPath (Join-Path $bundle "checks.txt") -Value $failLine -Encoding UTF8 } catch { }
 }
@@ -394,5 +425,5 @@ if ($failed.Count -gt 0) {
 Write-Host ("bundle : " + $bundle)
 Write-Host ("zip    : " + $zip)
 Write-Host ""
-if ($standingOk -and $behaviourOk -and $zipOk) { exit 0 }
+if ($standingOk -and $behaviourOk -and $zipOk -and $evidenceProblems.Count -eq 0) { exit 0 }
 exit 1
