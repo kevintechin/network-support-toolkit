@@ -367,6 +367,22 @@ $GuardVettedCalls = @{
 # under %SystemRoot% rather than trusting PATH (PR #67), and the other two hold script blocks the file built itself.
 # Keyed <function>:<variable>, and each one's value is traced through $GuardVettedOrigins above: a name alone let a
 # future function assign $netsh = 'C:\Users\Public\unreviewed.exe' and invoke it (PR #72 round 3).
+# A constructor is a call with a body: New-Object System.IO.FileStream 'C:\Users\Public\x' Create makes or
+# truncates that file without a member invocation anywhere (PR #72 round 5). The types this tool builds are
+# collections, text, the ping and TCP clients, and the WinForms controls; a type nobody vetted - or one the
+# parser cannot read as a literal - is a finding.
+$GuardVettedTypes = @(
+    'byte[]', 'System.Collections.ArrayList', 'System.ComponentModel.Win32Exception',
+    'System.Drawing.Font', 'System.Drawing.Point', 'System.Drawing.Size',
+    'System.Globalization.IdnMapping', 'System.Guid', 'System.Net.NetworkInformation.Ping',
+    'System.Net.NetworkInformation.PingOptions', 'System.Net.Sockets.TcpClient', 'System.Text.StringBuilder',
+    'System.Text.UTF8Encoding', 'System.TimeoutException', 'System.Uri',
+    'System.Windows.Forms.Button', 'System.Windows.Forms.CheckBox', 'System.Windows.Forms.Form',
+    'System.Windows.Forms.GroupBox', 'System.Windows.Forms.Label', 'System.Windows.Forms.NumericUpDown',
+    'System.Windows.Forms.ProgressBar', 'System.Windows.Forms.RichTextBox', 'System.Windows.Forms.TextBox',
+    'System.Windows.Forms.Timer', 'System.Windows.Forms.ToolTip'
+)
+
 $GuardVettedInvocations = @{
     'Get-WifiAssociationSample:netsh'         = 'netsh.exe by its resolved path under %SystemRoot%; show only, by the rule below'
     'Get-HostNameSyntaxProblem:scalarPosition' = 'a script block this file builds where it stands'
@@ -520,6 +536,13 @@ function Get-GuardAssignmentTargets($Left) {
     }
     return @($targets)
 }
+function Get-GuardWriteReach($Target, $Node) {
+    # 'outer' where this write reaches a scope outside the function it stands in - an explicit $script: or $global:,
+    # or a write at the file's top level - and 'local' otherwise.
+    if ($Target.VariablePath.IsScript -or $Target.VariablePath.IsGlobal) { return 'outer' }
+    if ($null -eq (Get-GuardEnclosingFunctionAst $Node)) { return 'outer' }
+    return 'local'
+}
 function Get-GuardVariableWrites($Function, [string]$Variable) {
     # Every write to $Variable inside $Function, whatever it is spelled as. Comparing the assignment's source text
     # let $local:netsh = "..." through beside the vetted $netsh = Join-Path ... : the same variable, another spelling,
@@ -536,16 +559,16 @@ function Get-GuardVariableWrites($Function, [string]$Variable) {
                 if ($node.Operator -eq 'Equals' -and $node.Left -isnot [ArrayLiteralAst] -and $node.Left -is [VariableExpressionAst]) {
                     $expression = $node.Right.Extent.Text
                 }
-                [void]$writes.Add([pscustomobject]@{ Expression = $expression })
+                [void]$writes.Add([pscustomobject]@{ Expression = $expression; Reach = (Get-GuardWriteReach $target $node) })
             }
         }
         elseif ($node -is [UnaryExpressionAst] -and ($GuardIncrements -contains [string]$node.TokenKind) -and
                 $node.Child -is [VariableExpressionAst] -and (Get-GuardVariableName $node.Child) -eq $Variable) {
-            [void]$writes.Add([pscustomobject]@{ Expression = $null })
+            [void]$writes.Add([pscustomobject]@{ Expression = $null; Reach = 'local' })
         }
         elseif ($node -is [ForEachStatementAst] -and $node.Variable -is [VariableExpressionAst] -and
                 (Get-GuardVariableName $node.Variable) -eq $Variable) {
-            [void]$writes.Add([pscustomobject]@{ Expression = $null })
+            [void]$writes.Add([pscustomobject]@{ Expression = $null; Reach = 'local' })
         }
         elseif ($node -is [CommandAst]) {
             $cmdlet = Get-GuardCommandName $node
@@ -554,13 +577,13 @@ function Get-GuardVariableWrites($Function, [string]$Variable) {
             if ($null -eq $binding) { continue }
             if ($GuardVariableCmdlets -contains $cmdlet) {
                 foreach ($name in (Get-GuardLiteral (Get-GuardBound $binding 'Name'))) {
-                    if ($name -eq $Variable) { [void]$writes.Add([pscustomobject]@{ Expression = $null }) }
+                    if ($name -eq $Variable) { [void]$writes.Add([pscustomobject]@{ Expression = $null; Reach = 'local' }) }
                 }
             }
             elseif ($GuardItemCmdlets -contains $cmdlet) {
                 foreach ($path in (@(Get-GuardLiteral (Get-GuardBound $binding 'Path')) + @(Get-GuardLiteral (Get-GuardBound $binding 'LiteralPath')))) {
                     $match = [regex]::Match($path, '(?i)(?:^|[\\/:])variable:(\w+)$')
-                    if ($match.Success -and $match.Groups[1].Value -eq $Variable) { [void]$writes.Add([pscustomobject]@{ Expression = $null }) }
+                    if ($match.Success -and $match.Groups[1].Value -eq $Variable) { [void]$writes.Add([pscustomobject]@{ Expression = $null; Reach = 'local' }) }
                 }
             }
         }
@@ -572,6 +595,19 @@ function Test-GuardVettedOrigin($Function, [string]$Variable, [string]$Key) {
     # Every assignment to $Variable inside $Function must be one of the vetted expressions; 'parameter' means none.
     if (-not $GuardVettedOrigins.ContainsKey($Key)) { return $false }
     $allowed = $GuardVettedOrigins[$Key]
+    # A vetted assignment inside the function does not mean the call reads it: a script-scope $netsh with the vetted
+    # assignment sitting under an if ($false) runs the outer value (PR #72 round 5). Following which write reaches a
+    # call is a dataflow this guard will not pretend to do; what it does instead is refuse the shape that makes the
+    # question possible - the name may not be written at the file's top level, nor through $script: or $global:
+    # anywhere, so the only writes that can reach the call are the ones in the function, and every one of those is
+    # vetted below. Where none of them runs, the variable is empty and the call fails; it does not run something else.
+    $root = $Function
+    while ($null -ne $root -and $null -ne $root.Parent) { $root = $root.Parent }
+    if ($null -ne $root) {
+        foreach ($outer in (Get-GuardVariableWrites $root $Variable)) {
+            if ($outer.Reach -eq 'outer') { return $false }
+        }
+    }
     $writes = @(Get-GuardVariableWrites $Function $Variable)
     if ($allowed -contains 'parameter') { return ($writes.Count -eq 0) }
     if ($writes.Count -eq 0) { return $false }
@@ -629,6 +665,13 @@ function Test-GuardVettedArgument([CommandAst]$Command, [string]$Key) {
             if ($element.Value -notmatch $pattern) { return $false }
         }
     }
+    if ($Key -eq 'New-Object') {
+        $binding = Get-GuardBinding $Command
+        if ($null -eq $binding) { return $false }
+        $types = @(Get-GuardLiteral (Get-GuardBound $binding 'TypeName'))
+        if ($types.Count -eq 0) { return $false }
+        foreach ($type in $types) { if ($GuardVettedTypes -notcontains $type) { return $false } }
+    }
     if ($GuardVettedDestinations.ContainsKey($Key)) {
         $rule = $GuardVettedDestinations[$Key]
         $binding = Get-GuardBinding $Command
@@ -649,8 +692,10 @@ function Test-GuardVettedArgument([CommandAst]$Command, [string]$Key) {
 function Find-UnvettedCall([string]$Text) {
     # The lines of the calls that are neither this file's own functions nor vetted above.
     $ast = ConvertTo-GuardAst $Text
-    $own = @{}
-    foreach ($function in $ast.FindAll({ param($node) $node -is [FunctionDefinitionAst] }, $true)) { $own[$function.Name] = $true }
+    # The definitions a call can see, not every definition in the file: a function defined inside another one is not
+    # there at the top level, where PowerShell would run the real cmdlet of that name (PR #72 round 5). This file has
+    # no nested definitions, so the rule costs nothing and refuses the shape.
+    $definitions = @($ast.FindAll({ param($node) $node -is [FunctionDefinitionAst] }, $true))
     $hits = New-Object System.Collections.ArrayList
     foreach ($command in $ast.FindAll({ param($node) $node -is [CommandAst] }, $true)) {
         $line = $command.Extent.StartLineNumber
@@ -676,7 +721,16 @@ function Find-UnvettedCall([string]$Text) {
             if (-not (Test-GuardVettedArgument $command $variable)) { [void]$hits.Add(('{0} (& ${1}, an argument the entry does not allow)' -f $line, $variable)) }
             continue
         }
-        if ($own.ContainsKey($name)) { continue }
+        $visible = $false
+        foreach ($definition in $definitions) {
+            if ($definition.Name -ne $name) { continue }
+            $owner = Get-GuardEnclosingFunctionAst $definition
+            if ($null -eq $owner) { $visible = $true; break }
+            $node = $command
+            while ($null -ne $node) { if ($node -eq $owner) { $visible = $true; break }; $node = $node.Parent }
+            if ($visible) { break }
+        }
+        if ($visible) { continue }
         if (-not $GuardVettedCalls.ContainsKey($name)) { [void]$hits.Add(('{0} ({1})' -f $line, $name)); continue }
         if (-not (Test-GuardVettedArgument $command $name)) { [void]$hits.Add(('{0} ({1}, an argument the entry does not allow)' -f $line, $name)) }
     }

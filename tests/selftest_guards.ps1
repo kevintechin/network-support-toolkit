@@ -452,6 +452,16 @@ $CallCases = @(
     New-Case 'function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>foreach ($netsh in $list) { }<nl>& $netsh wlan show interfaces }' $true
     New-Case 'function Write-UiLog { $file = New-Object System.IO.FileInfo("C:/x.txt")<nl>$file.AppendText() }' $true
     New-Case 'function Invoke-TcpConnectionTest { $other.Close() }' $true
+    # Round 5: a constructor is a call with a body, an approved assignment has to be the one that can reach the call,
+    # and a function defined inside another one is not there at the top level.
+    New-Case 'New-Object -TypeName System.IO.FileStream -ArgumentList "C:/Users/Public/x", ([System.IO.FileMode]::Create)' $true
+    New-Case 'New-Object -TypeName $typeName' $true
+    New-Case 'New-Object System.Collections.ArrayList' $false
+    New-Case 'New-Object System.Windows.Forms.Timer' $false
+    New-Case '$netsh = "C:/Users/Public/evil.exe"<nl>function Get-WifiAssociationSample { if ($false) { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe" }<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Other { $script:netsh = "evil.exe" }<nl>function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Outer { function Remove-Item { } }\nRemove-Item -LiteralPath "C:/Users/Public/x"' $true
+    New-Case 'function Outer { function Remove-Item { }\nRemove-Item -LiteralPath "C:/Users/Public/x" }' $false
 )
 
 # A duplicate case would silently shrink the set instead of strengthening it, so the sets are checked for one.

@@ -96,7 +96,7 @@ external names** and **three invocations through a variable** (`$netsh`, resolve
 rather than trusted to PATH, and two script blocks the file builds itself). Each of the 38 carries the reason it is a
 read; `netsh` and `arp` carry an argument rule, so `netsh wlan show interfaces` passes and `netsh int ip set address`
 is a finding; `Start-Process` carries the two programs it may start and the one variable the GUI's Open-report button
-hands it. Both files come back clean, and **82 corpus cases** hold it — writers by cmdlet, by another program
+hands it. Both files come back clean, and **90 corpus cases** hold it — writers by cmdlet, by another program
 and by a vetted program with another verb, an invocation through an unvetted variable, `Start-Process` with anything
 else, an alias standing in for a vetted name, a registry write through `[Microsoft.Win32.Registry]::SetValue` and a
 `.Delete()` on a CIM instance, `New-Item` aimed at `HKCU:` and `Remove-Item` aimed at a variable nobody vetted,
