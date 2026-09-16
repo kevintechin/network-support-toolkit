@@ -370,8 +370,31 @@ Add-Check "B1" "every file this check meant to put in the bundle is there" ($evi
 $lines += ("[{0}] B1  every file this check meant to put in the bundle is there" -f $(if ($evidenceProblems.Count -eq 0) { "PASS" } else { "FAIL" }))
 if ($evidenceProblems.Count -gt 0) { $lines += ("        " + ($evidenceProblems -join "; ")) }
 $lines += ("VERDICT: " + $verdict)
+# B1 is decided before these two are written, so a failure of either can only be told by the other: without that,
+# the bundle handed to someone says B1 passed while the exit code says the run failed, and nothing in it explains the
+# difference (PR #70 round 9).
+$problemsBeforeSummaries = $evidenceProblems.Count
 [void](Save-Text "checks.txt" $lines)
 [void](Save-Text "checks.json" ($checks | ConvertTo-Json -Depth 4))
+if ($evidenceProblems.Count -ne $problemsBeforeSummaries) {
+    $lateLine = "[FAIL] B1  every file this check meant to put in the bundle is there - corrected after the summaries were written: " + ($evidenceProblems -join "; ")
+    Write-Host $lateLine
+    $checksTxt = Join-Path $bundle "checks.txt"
+    $checksJson = Join-Path $bundle "checks.json"
+    # The text one, where it landed: appended, because rewriting it could lose what is already there.
+    try { if (Test-Path -LiteralPath $checksTxt) { Add-Content -LiteralPath $checksTxt -Value $lateLine -Encoding UTF8 -ErrorAction Stop } } catch { }
+    # The JSON one, where it landed: rewritten, because a record is read by its fields and B1's field is now wrong.
+    try {
+        if (Test-Path -LiteralPath $checksJson) {
+            $corrected = @($checks | ForEach-Object {
+                if ([string]$_.Id -eq "B1") { [pscustomobject]@{ Id = $_.Id; Title = $_.Title; Ok = $false; Evidence = ($evidenceProblems -join "; ") } }
+                else { $_ }
+            })
+            ($corrected | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $checksJson -Encoding UTF8 -ErrorAction Stop
+        }
+    }
+    catch { }
+}
 
 # The bundle is the deliverable: a check that answered and could not hand the evidence over has not finished, so a
 # failed archive is a failure of this run and not a line of text (PR #70 round 5). The note goes into the bundle's own
