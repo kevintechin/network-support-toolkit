@@ -345,7 +345,10 @@ $checks | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $bundle 
 # The bundle is the deliverable: a check that answered and could not hand the evidence over has not finished, so a
 # failed archive is a failure of this run and not a line of text (PR #70 round 5). The note goes into the bundle's own
 # checks.txt as well, since that file is then the only copy of it.
-$zip = $bundle + ".zip"
+# The path and what is said about it are two things: reusing one variable for both is how a line came to report a
+# removal it had not looked for (PR #70 round 7).
+$zipPath = $bundle + ".zip"
+$zip = $zipPath
 $zipOk = $true
 $zipNote = ""
 try {
@@ -353,17 +356,25 @@ try {
     # $ErrorActionPreference = "Continue": a file that became unreadable while the bundle was being enumerated
     # would otherwise be reported, skipped, and left with $zipOk true beside an incomplete archive (PR #70
     # round 6). Invoke-PackageAcceptance.ps1 has done it this way since backlog #19.
-    if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force -ErrorAction Stop }
-    Compress-Archive -Path (Join-Path $bundle "*") -DestinationPath $zip -Force -ErrorAction Stop
+    if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force -ErrorAction Stop }
+    Compress-Archive -Path (Join-Path $bundle "*") -DestinationPath $zipPath -Force -ErrorAction Stop
 }
 catch {
     $zipOk = $false
     # The exception alone can be a bare NullReferenceException, which says nothing about where it was writing.
-    $zipNote = ("{0}: {1}" -f $zip, [string]$_.Exception.Message)
-    # A partial archive is worse than none, because it looks like the evidence: measured, Compress-Archive
-    # without -ErrorAction Stop reports an unreadable source file and writes the rest of them anyway.
-    if (Test-Path -LiteralPath $zip) { try { Remove-Item -LiteralPath $zip -Force } catch { } }
-    $zip = "(not archived)"
+    $zipNote = ("{0}: {1}" -f $zipPath, [string]$_.Exception.Message)
+    # A partial archive is worse than none, because it looks like the evidence: measured, Compress-Archive without
+    # -ErrorAction Stop reports an unreadable source file and writes the rest of them anyway. And a removal is not a
+    # removal until the file is gone - this one is terminating for the same reason as the two above, and the file is
+    # looked for afterwards rather than assumed away, because something else can hold a new archive open (round 7).
+    if (Test-Path -LiteralPath $zipPath) {
+        try { Remove-Item -LiteralPath $zipPath -Force -ErrorAction Stop } catch { }
+    }
+    if (Test-Path -LiteralPath $zipPath) {
+        $zip = ("(a partial archive is still at {0})" -f $zipPath)
+        $zipNote = $zipNote + "; and what it left there could not be removed"
+    }
+    else { $zip = "(not archived)" }
     $failLine = "[FAIL] B1  the evidence could not be put in one file that travels: " + $zipNote
     Write-Host $failLine
     try { Add-Content -LiteralPath (Join-Path $bundle "checks.txt") -Value $failLine -Encoding UTF8 } catch { }
