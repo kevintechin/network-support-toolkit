@@ -365,10 +365,12 @@ $GuardVettedCalls = @{
 }
 # A name the parser cannot resolve because the call goes through a variable. The tool resolves netsh.exe to its path
 # under %SystemRoot% rather than trusting PATH (PR #67), and the other two hold script blocks the file built itself.
+# Keyed <function>:<variable>, and each one's value is traced through $GuardVettedOrigins above: a name alone let a
+# future function assign $netsh = 'C:\Users\Public\unreviewed.exe' and invoke it (PR #72 round 3).
 $GuardVettedInvocations = @{
-    'netsh'          = 'netsh.exe by its resolved path; show only, by the rule below'
-    'Action'         = 'a script block this file passes to its own step runner'
-    'scalarPosition' = 'a script block this file builds for the report layout'
+    'Get-WifiAssociationSample:netsh'         = 'netsh.exe by its resolved path under %SystemRoot%; show only, by the rule below'
+    'Get-HostNameSyntaxProblem:scalarPosition' = 'a script block this file builds where it stands'
+    'Invoke-CheckStep:Action'                  = 'the step runner''s own parameter; what a caller passes is the callers'' business, and this guard says so rather than pretending otherwise'
 }
 # Every bare-word argument and every parameter of these has to match, so a new verb is a finding rather than a silence.
 $GuardVettedArguments = @{
@@ -423,13 +425,27 @@ $GuardVettedStaticMembers = @(
 )
 $GuardVettedMemberNames = @(
     'Add', 'Add_Click', 'Add_FormClosing', 'Add_Shown', 'Add_TextChanged', 'Add_Tick',
-    'AddSeconds', 'AppendLine', 'AppendText', 'BeginConnect', 'Clear', 'Close',
-    'Contains', 'ContainsKey', 'Dispose', 'EndConnect', 'EndsWith', 'GetAddressBytes',
-    'GetAscii', 'GetProxy', 'GetResponse', 'GetResponseStream', 'GetType', 'GetUnicode',
-    'IndexOf', 'IndexOfAny', 'IOControl', 'LastIndexOf', 'Normalize', 'PerformClick',
-    'ReadByte', 'ScrollToCaret', 'Send', 'SetToolTip', 'ShowDialog', 'Split',
-    'Start', 'StartsWith', 'Stop', 'Substring', 'ToInt64', 'ToLowerInvariant',
-    'ToString', 'ToUpperInvariant', 'Trim', 'TrimEnd', 'Wait', 'WaitOne'
+    'AddSeconds', 'AppendLine', 'Contains', 'ContainsKey', 'EndsWith', 'GetAddressBytes',
+    'GetAscii', 'GetProxy', 'GetType', 'GetUnicode', 'IndexOf', 'IndexOfAny',
+    'LastIndexOf', 'Split', 'StartsWith', 'Substring', 'ToInt64', 'ToLowerInvariant',
+    'ToString', 'ToUpperInvariant', 'Trim', 'TrimEnd'
+)
+# And the names that mean something on a receiver that can write - .AppendText on a FileInfo creates a file, .Clear
+# and .Stop and .Send are what their types make of them - are vetted at the site they are called, not by the name
+# alone (PR #72 round 3). A receiver's type is not in the AST and cannot be inferred from it, so this is as far as a
+# static reading goes: the name that can write is clean where the tool writes it and a finding anywhere else.
+$GuardVettedMemberSites = @(
+    ':ShowDialog', 'Get-HostNameSyntaxProblem:Normalize', 'Get-UrlHostProblemSuffix:Normalize',
+    'Initialize-Gui:Close', 'Initialize-Gui:Dispose', 'Initialize-Gui:PerformClick',
+    'Initialize-Gui:SetToolTip', 'Initialize-Gui:Start', 'Initialize-Gui:Stop',
+    'Invoke-DnsLookup:Stop', 'Invoke-DnsLookup:Wait', 'Invoke-HttpConnectionTest:Close',
+    'Invoke-HttpConnectionTest:Dispose', 'Invoke-HttpConnectionTest:GetResponse', 'Invoke-HttpConnectionTest:GetResponseStream',
+    'Invoke-HttpConnectionTest:ReadByte', 'Invoke-HttpConnectionTest:Stop', 'Invoke-PingMeasurement:Dispose',
+    'Invoke-PingMeasurement:Send', 'Invoke-TcpConnectionTest:BeginConnect', 'Invoke-TcpConnectionTest:Close',
+    'Invoke-TcpConnectionTest:EndConnect', 'Invoke-TcpConnectionTest:IOControl', 'Invoke-TcpConnectionTest:Stop',
+    'Invoke-TcpConnectionTest:WaitOne', 'Invoke-TraceRoute:Dispose', 'Invoke-TraceRoute:Send',
+    'Invoke-TraceRoute:Stop', 'Run-AllChecks:Clear', 'Write-UiLog:AppendText',
+    'Write-UiLog:ScrollToCaret'
 )
 
 function Find-UnvettedMember([string]$Text) {
@@ -446,27 +462,75 @@ function Find-UnvettedMember([string]$Text) {
                 $rule = $GuardVettedMemberDestinations[$name]
                 $arguments = @($call.Arguments)
                 if ($arguments.Count -le $rule.Index) { [void]$hits.Add(('{0} ({1}, no destination to read)' -f $line, $name)); continue }
-                if (-not (Test-GuardVettedDestination $arguments[$rule.Index] $rule (Get-GuardEnclosingFunction $call))) {
+                if (-not (Test-GuardVettedDestination $arguments[$rule.Index] $rule (Get-GuardEnclosingFunctionAst $call))) {
                     [void]$hits.Add(('{0} ({1}, a destination the entry does not allow)' -f $line, $name))
                 }
             }
         }
-        elseif ($GuardVettedMemberNames -notcontains $member) { [void]$hits.Add(('{0} (.{1})' -f $line, $member)) }
+        elseif ($GuardVettedMemberNames -notcontains $member) {
+            $site = ((Get-GuardEnclosingFunction $call) + ':' + $member)
+            if ($GuardVettedMemberSites -notcontains $site) { [void]$hits.Add(('{0} (.{1})' -f $line, $member)) }
+        }
     }
     return @($hits | Select-Object -Unique)
 }
 
-function Get-GuardEnclosingFunction($Node) {
-    # The name of the function a node stands in, or '' at the top level of the file.
+# Where a vetted variable comes from, at the site it is vetted at. The site binding of round 2 proved the names and
+# not the value: Write-EnvironmentReport could have assigned $path = 'C:\Users\...' and kept its clean Set-Content
+# (PR #72 round 3). Every assignment to the variable inside that function has to be one of the expressions here, as
+# they stand, so a changed line is a finding until somebody writes the new one down - and 'parameter' means the
+# function may not assign it at all, its value being the callers', which is where this guard stops.
+#
+# What the expressions say, read together, is the thing worth knowing: every destination is the configured report
+# folder or the temporary folder Windows gives, and $netsh is netsh.exe under %SystemRoot%. Where the configuration
+# names a rooted folder the tool writes there, by design - so no static rule can say a destination is "inside the
+# report area", because the report area is the person's to choose. What this guard says is narrower and true: the
+# destination is the one the configuration resolved, through the expressions below.
+$GuardVettedOrigins = @{
+    'Get-HostNameSyntaxProblem:scalarPosition' = @('{ param([int]$units) $units + 1 - [regex]::Matches($name.Substring(0, [math]::Min($units, $name.Length)), ''[\uD800-\uDBFF][\uDC00-\uDFFF]'').Count }')
+    'Get-WifiAssociationSample:netsh'          = @('Join-Path $env:SystemRoot "System32\netsh.exe"')
+    'Initialize-Gui:target'                    = @('$null', '$candidate')
+    'Initialize-OutputDirectory:fallback'      = @('Join-Path ([System.IO.Path]::GetTempPath()) "NetworkHealthCheck\Reports"')
+    'Initialize-OutputDirectory:preferred'     = @('$folderName', 'Join-Path $script:BaseDirectory $folderName')
+    'Initialize-OutputDirectory:testFile'      = @('Join-Path $preferred (".write_test_{0}.tmp" -f [guid]::NewGuid().ToString("N"))')
+    'Invoke-CheckStep:Action'                  = @('parameter')
+    'Write-EmergencyReport:directory'          = @('$script:OutputDirectory', 'Join-Path ([System.IO.Path]::GetTempPath()) "NetworkHealthCheck\Reports"', '[System.IO.Path]::GetTempPath()')
+    'Write-EnvironmentReport:path'             = @('Join-Path $folder $name')
+    'Write-Utf8File:Path'                      = @('parameter')
+}
+
+function Test-GuardVettedOrigin($Function, [string]$Variable, [string]$Key) {
+    # Every assignment to $Variable inside $Function must be one of the vetted expressions; 'parameter' means none.
+    if (-not $GuardVettedOrigins.ContainsKey($Key)) { return $false }
+    $allowed = $GuardVettedOrigins[$Key]
+    $assignments = @()
+    if ($null -ne $Function) {
+        $assignments = @($Function.FindAll({ param($node) $node -is [AssignmentStatementAst] }, $true) |
+            Where-Object { $_.Left.Extent.Text -eq ('$' + $Variable) })
+    }
+    if ($allowed -contains 'parameter') { return ($assignments.Count -eq 0) }
+    if ($assignments.Count -eq 0) { return $false }
+    foreach ($assignment in $assignments) { if ($allowed -notcontains $assignment.Right.Extent.Text) { return $false } }
+    return $true
+}
+
+function Get-GuardEnclosingFunctionAst($Node) {
+    # The function a node stands in, or $null at the top level of the file.
     $node = $Node.Parent
     while ($null -ne $node) {
-        if ($node -is [FunctionDefinitionAst]) { return $node.Name }
+        if ($node -is [FunctionDefinitionAst]) { return $node }
         $node = $node.Parent
     }
-    return ''
+    return $null
 }
-function Test-GuardVettedDestination($Value, $Rule, [string]$Site) {
-    # A literal is vetted as itself; anything else has to be a variable vetted at this call site.
+function Get-GuardEnclosingFunction($Node) {
+    $function = Get-GuardEnclosingFunctionAst $Node
+    if ($null -eq $function) { return '' }
+    return $function.Name
+}
+function Test-GuardVettedDestination($Value, $Rule, $Function) {
+    # A literal is vetted as itself; anything else has to be a variable vetted at this call site AND assigned there
+    # from one of the expressions its entry names.
     $literals = @(Get-GuardLiteral $Value)
     if ($literals.Count -gt 0) {
         foreach ($literal in $literals) { if ($Rule.Literals -notcontains $literal) { return $false } }
@@ -475,7 +539,11 @@ function Test-GuardVettedDestination($Value, $Rule, [string]$Site) {
     $expression = $Value
     if ($null -ne $Value -and $Value.PSObject.Properties['Value']) { $expression = $Value.Value }
     if ($expression -isnot [VariableExpressionAst]) { return $false }
-    return ($Rule.Variables -contains ($Site + ':' + $expression.VariablePath.UserPath))
+    $site = ''
+    if ($null -ne $Function) { $site = $Function.Name }
+    $key = ($site + ':' + $expression.VariablePath.UserPath)
+    if ($Rule.Variables -notcontains $key) { return $false }
+    return (Test-GuardVettedOrigin $Function $expression.VariablePath.UserPath $key)
 }
 
 function Test-GuardVettedArgument([CommandAst]$Command, [string]$Key) {
@@ -497,13 +565,13 @@ function Test-GuardVettedArgument([CommandAst]$Command, [string]$Key) {
         $rule = $GuardVettedDestinations[$Key]
         $binding = Get-GuardBinding $Command
         if ($null -eq $binding) { return $false }
-        $site = Get-GuardEnclosingFunction $Command
+        $function = Get-GuardEnclosingFunctionAst $Command
         $seen = $false
         foreach ($parameter in $rule.Parameters) {
             $bound = Get-GuardBound $binding $parameter
             if ($null -eq $bound) { continue }
             $seen = $true
-            if (-not (Test-GuardVettedDestination $bound $rule $site)) { return $false }
+            if (-not (Test-GuardVettedDestination $bound $rule $function)) { return $false }
         }
         if (-not $seen) { return $false }
     }
@@ -531,7 +599,12 @@ function Find-UnvettedCall([string]$Text) {
             $first = $command.CommandElements[0]
             if ($first -isnot [VariableExpressionAst]) { [void]$hits.Add(('{0} (a command name built at run time)' -f $line)); continue }
             $variable = $first.VariablePath.UserPath
-            if (-not $GuardVettedInvocations.ContainsKey($variable)) { [void]$hits.Add(('{0} (& ${1})' -f $line, $variable)); continue }
+            $function = Get-GuardEnclosingFunctionAst $command
+            $site = ''
+            if ($null -ne $function) { $site = $function.Name }
+            $key = ($site + ':' + $variable)
+            if (-not $GuardVettedInvocations.ContainsKey($key)) { [void]$hits.Add(('{0} (& ${1})' -f $line, $variable)); continue }
+            if (-not (Test-GuardVettedOrigin $function $variable $key)) { [void]$hits.Add(('{0} (& ${1}, not from the expression its entry names)' -f $line, $variable)); continue }
             if (-not (Test-GuardVettedArgument $command $variable)) { [void]$hits.Add(('{0} (& ${1}, an argument the entry does not allow)' -f $line, $variable)) }
             continue
         }

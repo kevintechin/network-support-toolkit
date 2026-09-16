@@ -44,7 +44,12 @@ function Get-AnchorText([string]$Language, [string]$Override) {
     return $text.TrimStart([char]0xFEFF)
 }
 function Test-SameList($Actual, $Expected) { return (@($Actual) -join ' | ') -eq (@($Expected) -join ' | ') }
-function Expand-Case([string]$Case) { return $Case.Replace('\n', "`n") }
+function Expand-Case([string]$Case) {
+    # A case that carries a Windows path uses <nl>: the older marker is \n, and "System32\netsh.exe" has one of those
+    # in it (PR #72 round 3). A case declares one marker or the other, never both.
+    if ($Case.Contains('<nl>')) { return $Case.Replace('<nl>', "`n") }
+    return $Case.Replace('\n', "`n")
+}
 # One object per case rather than a dictionary entry or a pair: PowerShell's hash tables are case-insensitive while the
 # corpus holds cases that differ only in case ($Script:Interactive against $script:Interactive), and an array literal
 # would flatten a pair into its two values.
@@ -373,7 +378,8 @@ $CallCases = @(
     # have: written when this guard vetted a writer by its name alone, they are findings under the
     # destination rule round 1 asked for, and they stay as two more spellings of it.
     New-Case 'netsh wlan show interfaces' $false
-    New-Case '& $netsh winhttp show proxy' $false
+    New-Case '& $netsh winhttp show proxy' $true
+    New-Case 'function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32\netsh.exe"<nl>& $netsh wlan show interfaces }' $false
     New-Case 'arp -a' $false
     New-Case 'Get-NetAdapter -ErrorAction Stop' $false
     New-Case 'Get-CimInstance -ClassName Win32_NetworkAdapter' $false
@@ -402,16 +408,22 @@ $CallCases = @(
     New-Case 'arp ''-s'' ''10.0.0.1''' $true
     # Round 2: a variable is vetted where it is written. The same call is clean in the function the tool writes it in
     # and a finding anywhere else - including at the top level, which is where the five above now stand.
-    New-Case 'function Write-EnvironmentReport { Set-Content -LiteralPath $path -Value $t }' $false
+    New-Case 'function Write-EnvironmentReport { Set-Content -LiteralPath $path -Value $t }' $true
+    New-Case 'function Write-EnvironmentReport { $path = Join-Path $folder $name\nSet-Content -LiteralPath $path -Value $t }' $false
     New-Case 'function Other { Set-Content -LiteralPath $path -Value $t }' $true
-    New-Case 'function Initialize-OutputDirectory { New-Item -ItemType Directory -Path $preferred }' $false
-    New-Case 'function Initialize-OutputDirectory { Remove-Item -LiteralPath $testFile -Force }' $false
-    New-Case 'function Write-EmergencyReport { New-Item -ItemType Directory -Path $directory }' $false
-    New-Case 'function Initialize-Gui { Start-Process -FilePath $target }' $false
+    New-Case 'function Initialize-OutputDirectory { New-Item -ItemType Directory -Path $preferred }' $true
+    New-Case 'function Initialize-OutputDirectory { $preferred = $folderName\nNew-Item -ItemType Directory -Path $preferred }' $false
+    New-Case 'function Initialize-OutputDirectory { Remove-Item -LiteralPath $testFile -Force }' $true
+    New-Case 'function Initialize-OutputDirectory { $testFile = Join-Path $preferred (".write_test_{0}.tmp" -f [guid]::NewGuid().ToString("N"))\nRemove-Item -LiteralPath $testFile -Force }' $false
+    New-Case 'function Write-EmergencyReport { New-Item -ItemType Directory -Path $directory }' $true
+    New-Case 'function Write-EmergencyReport { $directory = $script:OutputDirectory\nNew-Item -ItemType Directory -Path $directory }' $false
+    New-Case 'function Initialize-Gui { Start-Process -FilePath $target }' $true
+    New-Case 'function Initialize-Gui { $target = $candidate\nStart-Process -FilePath $target }' $false
     New-Case 'function Other { Start-Process -FilePath $target }' $true
     # The one static member that writes a file, with the same rule on the argument that holds the path.
     New-Case 'function Write-Utf8File { [System.IO.File]::WriteAllText($Path, $Content, $e) }' $false
-    New-Case 'function Initialize-OutputDirectory { [System.IO.File]::WriteAllText($testFile, "test") }' $false
+    New-Case 'function Initialize-OutputDirectory { [System.IO.File]::WriteAllText($testFile, "test") }' $true
+    New-Case 'function Initialize-OutputDirectory { $testFile = Join-Path $preferred (".write_test_{0}.tmp" -f [guid]::NewGuid().ToString("N"))\n[System.IO.File]::WriteAllText($testFile, "test") }' $false
     New-Case 'function Write-Utf8File { [System.IO.File]::WriteAllText("C:\Users\x.txt", $c) }' $true
     New-Case 'function Other { [System.IO.File]::WriteAllText($Path, $c) }' $true
     New-Case 'function Write-Utf8File { [System.IO.File]::WriteAllText() }' $true
@@ -419,10 +431,22 @@ $CallCases = @(
     New-Case 'UnreviewedModule\Get-Date' $true
     New-Case 'UnreviewedModule\Write-Utf8File' $true
     New-Case 'Microsoft.PowerShell.Utility\Get-Date' $true
+    # Round 3: the value, not only the names. Every assignment to a vetted variable inside its function has to be one
+    # the entry names, so the review's own example - the same clean call over a changed assignment - is a finding.
+    New-Case 'function Write-EnvironmentReport { $path = "C:/Users/x.txt"\nSet-Content -LiteralPath $path -Value $t }' $true
+    New-Case 'function Get-WifiAssociationSample { $netsh = "C:/Users/Public/unreviewed.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Invoke-CheckStep { param($Action)\n$Action = { bad }\n& $Action }' $true
+    New-Case 'function Invoke-CheckStep { param($Action)\n& $Action }' $false
+    # And an instance name that writes on some receiver is vetted where it is called, not by the name: .AppendText on
+    # a FileInfo creates a file, and the tool calls it on the log box in Write-UiLog and nowhere else.
+    New-Case 'function Other { $file = New-Object System.IO.FileInfo("C:/x.txt")\n$file.AppendText() }' $true
+    New-Case 'function Write-UiLog { $box.AppendText($line) }' $false
+    New-Case 'function Other { $box.ScrollToCaret() }' $true
+    New-Case 'function Invoke-TcpConnectionTest { $socket.IOControl(3, $in, $out) }' $false
 )
 
 # A duplicate case would silently shrink the set instead of strengthening it, so the sets are checked for one.
-foreach ($set in @(@('top-level', $Cases), @('in-function', $FunctionCases), @('constructor', $ArithmeticCases))) {
+foreach ($set in @(@('top-level', $Cases), @('in-function', $FunctionCases), @('constructor', $ArithmeticCases), @('call', $CallCases))) {
     foreach ($duplicate in @($set[1] | ForEach-Object { $_.Text } | Group-Object -CaseSensitive | Where-Object { $_.Count -gt 1 })) {
         $ok = $false; Write-Output ('  DUPLICATE {0} case: {1}' -f $set[0], $duplicate.Name)
     }
