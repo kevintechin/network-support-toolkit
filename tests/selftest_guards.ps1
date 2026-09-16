@@ -74,7 +74,7 @@ foreach ($language in @('en-US', 'zh-TW')) {
     $errors = @(Get-GuardParseError $text)
     $parameters = @(Find-OverwrittenParameter $text)
     $arithmetic = @(Find-UnparenthesizedArithmetic $text)
-    $calls = @(Find-UnvettedCall $text) + @(Find-UnvettedMember $text)
+    $calls = @(Find-UnvettedCall $text) + @(Find-UnvettedMember $text) + @(Find-UnvettedRedirection $text)
     Write-Output ('current {0}: {1} parse error(s); parameter guard [{2}]; arithmetic guard [{3}]; call guard [{4}]' -f $language, $errors.Count, ($parameters -join ', '), ($arithmetic -join ', '), ($calls -join ', '))
     if ($errors.Count -or $parameters.Count -or $arithmetic.Count -or $calls.Count) { $ok = $false; Write-Output '  MISMATCH: the shipped file must parse and come back clean' }
 }
@@ -462,6 +462,38 @@ $CallCases = @(
     New-Case 'function Other { $script:netsh = "evil.exe" }<nl>function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>& $netsh wlan show interfaces }' $true
     New-Case 'function Outer { function Remove-Item { } }\nRemove-Item -LiteralPath "C:/Users/Public/x"' $true
     New-Case 'function Outer { function Remove-Item { }\nRemove-Item -LiteralPath "C:/Users/Public/x" }' $false
+    # Round 6: a loop writes the scope it names, a constructor's arguments choose the overload, a redirection
+    # writes a file with no command to read, and a definition counts only where it has already run.
+    New-Case 'function Other { foreach ($script:netsh in $list) { } }<nl>function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'foreach ($script:netsh in $list) { }<nl>function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case 'function Other { foreach ($netsh in $list) { } }<nl>function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>& $netsh wlan show interfaces }' $false
+    New-Case 'New-Object -TypeName System.Net.Sockets.TcpClient -ArgumentList "host.example", 25' $true
+    New-Case 'New-Object System.Net.Sockets.TcpClient' $false
+    New-Case 'New-Object System.Drawing.Point(22, 84)' $false
+    New-Case 'New-Object System.Drawing.Font("Consolas", 9.5, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Point)' $true
+    New-Case 'Get-Date > C:/Users/Public/x' $true
+    New-Case 'Get-Date >> C:/Users/Public/x' $true
+    New-Case '& netsh wlan show interfaces 2>&1' $false
+    New-Case 'Remove-Item -LiteralPath "C:/Users/Public/x"\nfunction Remove-Item { }' $true
+    New-Case 'if ($true) { function Remove-Item { } }\nRemove-Item -LiteralPath "C:/Users/Public/x"' $true
+    New-Case 'function Remove-Item { }\nRemove-Item -LiteralPath "C:/Users/Public/x"' $false
+    New-Case 'function A { B }\nfunction B { 1 }' $false
+    # Round 6, and a self-audit rather than a review finding: Add-Type compiles and loads code into this process,
+    # which is a wider reach than any file this tool writes, and it was vetted by a name with nothing behind it. A
+    # dot-source is the same question about the operator - it runs the thing in the caller's scope.
+    New-Case 'function Get-WlanApiType { $definition = @''<nl>[DllImport("wlanapi.dll")] public static extern uint WlanOpenHandle(uint v);<nl>''@<nl>Add-Type -Namespace NetworkHealthCheck -Name WlanApi -MemberDefinition $definition -ErrorAction Stop }' $false
+    New-Case 'function Get-WlanApiType { $definition = $env:SRC<nl>Add-Type -Namespace X -Name Y -MemberDefinition $definition }' $true
+    New-Case 'function Get-WlanApiType { $definition = "$($env:SRC)"<nl>Add-Type -Namespace X -Name Y -MemberDefinition $definition }' $true
+    New-Case 'function Other { $definition = @''<nl>[DllImport("wlanapi.dll")] public static extern uint WlanOpenHandle(uint v);<nl>''@<nl>Add-Type -MemberDefinition $definition }' $true
+    New-Case 'Add-Type -TypeDefinition $source' $true
+    New-Case 'Add-Type -Path "C:/Users/Public/evil.dll"' $true
+    New-Case 'Add-Type -AssemblyName System.Management.Automation' $true
+    New-Case 'Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop' $false
+    New-Case 'Add-Type -AssemblyName System.Drawing -ErrorAction Stop' $false
+    New-Case 'Add-Type' $true
+    New-Case 'function Get-WifiAssociationSample { $netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>. $netsh wlan show interfaces }' $true
+    New-Case '. Get-Date' $true
+    New-Case '. "C:/Users/Public/evil.ps1"' $true
 )
 
 # A duplicate case would silently shrink the set instead of strengthening it, so the sets are checked for one.
@@ -481,9 +513,11 @@ foreach ($case in $FunctionCases) {
     Write-Output ('  in-function {0} (expected {1}): {2}' -f $(if ($hit) { 'flagged' } else { 'clean  ' }), $(if ($case.Expect) { 'flagged' } else { 'clean' }), $case.Text)
 }
 foreach ($case in $CallCases) {
-    # Both guards: a command and a member invocation are two shapes of the one question - is this call vetted.
+    # All three guards: a command, a member invocation and a redirection are three shapes of the one question -
+    # is this reach for the machine vetted (PR #72 round 6).
     $text = (Expand-Case $case.Text) + "`n"
-    $hit = (@(Find-UnvettedCall $text).Count + @(Find-UnvettedMember $text).Count) -gt 0
+    $hit = (@(Find-UnvettedCall $text).Count + @(Find-UnvettedMember $text).Count +
+        @(Find-UnvettedRedirection $text).Count) -gt 0
     if ($hit -ne $case.Expect) { $ok = $false }
     Write-Output ('  call        {0} (expected {1}): {2}' -f $(if ($hit) { 'flagged' } else { 'clean  ' }), $(if ($case.Expect) { 'flagged' } else { 'clean' }), $case.Text)
 }

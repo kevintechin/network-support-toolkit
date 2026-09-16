@@ -371,17 +371,38 @@ $GuardVettedCalls = @{
 # truncates that file without a member invocation anywhere (PR #72 round 5). The types this tool builds are
 # collections, text, the ping and TCP clients, and the WinForms controls; a type nobody vetted - or one the
 # parser cannot read as a literal - is a finding.
-$GuardVettedTypes = @(
-    'byte[]', 'System.Collections.ArrayList', 'System.ComponentModel.Win32Exception',
-    'System.Drawing.Font', 'System.Drawing.Point', 'System.Drawing.Size',
-    'System.Globalization.IdnMapping', 'System.Guid', 'System.Net.NetworkInformation.Ping',
-    'System.Net.NetworkInformation.PingOptions', 'System.Net.Sockets.TcpClient', 'System.Text.StringBuilder',
-    'System.Text.UTF8Encoding', 'System.TimeoutException', 'System.Uri',
-    'System.Windows.Forms.Button', 'System.Windows.Forms.CheckBox', 'System.Windows.Forms.Form',
-    'System.Windows.Forms.GroupBox', 'System.Windows.Forms.Label', 'System.Windows.Forms.NumericUpDown',
-    'System.Windows.Forms.ProgressBar', 'System.Windows.Forms.RichTextBox', 'System.Windows.Forms.TextBox',
-    'System.Windows.Forms.Timer', 'System.Windows.Forms.ToolTip'
-)
+# ... and a type alone is not the constructor: New-Object System.Net.Sockets.TcpClient 'host', 25 opens the
+# connection in the constructor, while the tool builds that client with no arguments at all and connects
+# later, where the guard can see it (PR #72 round 6). Each type carries the argument counts the shipped
+# scripts use, so another overload of a vetted type is a finding.
+$GuardVettedTypes = @{
+    'System.Collections.ArrayList'              = @(0)
+    'System.ComponentModel.Win32Exception'      = @(1)
+    'System.Drawing.Font'                       = @(2, 3)
+    'System.Drawing.Point'                      = @(2)
+    'System.Drawing.Size'                       = @(2)
+    'System.Globalization.IdnMapping'           = @(0)
+    'System.Guid'                               = @(1)
+    'System.Net.NetworkInformation.Ping'        = @(0)
+    'System.Net.NetworkInformation.PingOptions' = @(2)
+    'System.Net.Sockets.TcpClient'              = @(0)
+    'System.Text.StringBuilder'                 = @(0)
+    'System.Text.UTF8Encoding'                  = @(1)
+    'System.TimeoutException'                   = @(1)
+    'System.Uri'                                = @(1)
+    'System.Windows.Forms.Button'               = @(0)
+    'System.Windows.Forms.CheckBox'             = @(0)
+    'System.Windows.Forms.Form'                 = @(0)
+    'System.Windows.Forms.GroupBox'             = @(0)
+    'System.Windows.Forms.Label'                = @(0)
+    'System.Windows.Forms.NumericUpDown'        = @(0)
+    'System.Windows.Forms.ProgressBar'          = @(0)
+    'System.Windows.Forms.RichTextBox'          = @(0)
+    'System.Windows.Forms.TextBox'              = @(0)
+    'System.Windows.Forms.Timer'                = @(0)
+    'System.Windows.Forms.ToolTip'              = @(0)
+    'byte[]'                                    = @(1)
+}
 
 $GuardVettedInvocations = @{
     'Get-WifiAssociationSample:netsh'         = 'netsh.exe by its resolved path under %SystemRoot%; show only, by the rule below'
@@ -408,6 +429,11 @@ $GuardVettedDestinations = @{
     'Remove-Item'   = @{ Parameters = @('Path', 'LiteralPath'); Literals = @(); Variables = @('Initialize-OutputDirectory:testFile') }
     'Set-Content'   = @{ Parameters = @('Path', 'LiteralPath'); Literals = @(); Variables = @('Write-EnvironmentReport:path') }
     'Start-Process' = @{ Parameters = @('FilePath'); Literals = @('notepad.exe', 'explorer.exe'); Variables = @('Initialize-Gui:target') }
+    # Add-Type compiles and loads code into this process, which is a wider reach than any file this tool writes, and
+    # it was vetted by name alone until a self-audit before round 7 read its own list. What it may carry is the two
+    # assemblies the GUI loads, and the P/Invoke block the WLAN reader declares - at that one site, from a string the
+    # file states outright. Add-Type -TypeDefinition $source, or -MemberDefinition anywhere else, is a finding.
+    'Add-Type'      = @{ Parameters = @('AssemblyName', 'MemberDefinition', 'TypeDefinition', 'Path', 'LiteralPath'); Literals = @('System.Windows.Forms', 'System.Drawing'); Variables = @('Get-WlanApiType:definition') }
 }
 # The one static member that writes a file. Vetting it by name left it free to write anywhere, which is the hole the
 # cmdlets had (PR #72 round 2): it carries a destination rule of its own, on the argument that holds the path.
@@ -517,6 +543,7 @@ $GuardVettedOrigins = @{
     'Initialize-OutputDirectory:fallback'      = @('Join-Path ([System.IO.Path]::GetTempPath()) "NetworkHealthCheck\Reports"')
     'Initialize-OutputDirectory:preferred'     = @('$folderName', 'Join-Path $script:BaseDirectory $folderName')
     'Initialize-OutputDirectory:testFile'      = @('Join-Path $preferred (".write_test_{0}.tmp" -f [guid]::NewGuid().ToString("N"))')
+    'Get-WlanApiType:definition'               = @('literal')
     'Invoke-CheckStep:Action'                  = @('parameter')
     'Write-EmergencyReport:directory'          = @('$script:OutputDirectory', 'Join-Path ([System.IO.Path]::GetTempPath()) "NetworkHealthCheck\Reports"', '[System.IO.Path]::GetTempPath()')
     'Write-EnvironmentReport:path'             = @('Join-Path $folder $name')
@@ -556,19 +583,26 @@ function Get-GuardVariableWrites($Function, [string]$Variable) {
             foreach ($target in (Get-GuardAssignmentTargets $node.Left)) {
                 if ((Get-GuardVariableName $target) -ne $Variable) { continue }
                 $expression = $null
+                $constant = $false
                 if ($node.Operator -eq 'Equals' -and $node.Left -isnot [ArrayLiteralAst] -and $node.Left -is [VariableExpressionAst]) {
                     $expression = $node.Right.Extent.Text
+                    # $x = 'a' hands the assignment a CommandExpressionAst, not a pipeline: a constant here is a
+                    # StringConstantExpressionAst, while "$a b" is an ExpandableStringExpressionAst and is not one.
+                    $right = $node.Right
+                    if ($right -is [CommandExpressionAst]) { $right = $right.Expression }
+                    $constant = ($right -is [StringConstantExpressionAst])
                 }
-                [void]$writes.Add([pscustomobject]@{ Expression = $expression; Reach = (Get-GuardWriteReach $target $node) })
+                [void]$writes.Add([pscustomobject]@{ Expression = $expression; Constant = $constant; Reach = (Get-GuardWriteReach $target $node) })
             }
         }
         elseif ($node -is [UnaryExpressionAst] -and ($GuardIncrements -contains [string]$node.TokenKind) -and
                 $node.Child -is [VariableExpressionAst] -and (Get-GuardVariableName $node.Child) -eq $Variable) {
-            [void]$writes.Add([pscustomobject]@{ Expression = $null; Reach = 'local' })
+            [void]$writes.Add([pscustomobject]@{ Expression = $null; Constant = $false; Reach = 'local' })
         }
         elseif ($node -is [ForEachStatementAst] -and $node.Variable -is [VariableExpressionAst] -and
                 (Get-GuardVariableName $node.Variable) -eq $Variable) {
-            [void]$writes.Add([pscustomobject]@{ Expression = $null; Reach = 'local' })
+            # foreach ($script:netsh in ...) writes the script scope like any other qualified write (PR #72 round 6).
+            [void]$writes.Add([pscustomobject]@{ Expression = $null; Constant = $false; Reach = (Get-GuardWriteReach $node.Variable $node) })
         }
         elseif ($node -is [CommandAst]) {
             $cmdlet = Get-GuardCommandName $node
@@ -577,13 +611,13 @@ function Get-GuardVariableWrites($Function, [string]$Variable) {
             if ($null -eq $binding) { continue }
             if ($GuardVariableCmdlets -contains $cmdlet) {
                 foreach ($name in (Get-GuardLiteral (Get-GuardBound $binding 'Name'))) {
-                    if ($name -eq $Variable) { [void]$writes.Add([pscustomobject]@{ Expression = $null; Reach = 'local' }) }
+                    if ($name -eq $Variable) { [void]$writes.Add([pscustomobject]@{ Expression = $null; Constant = $false; Reach = 'local' }) }
                 }
             }
             elseif ($GuardItemCmdlets -contains $cmdlet) {
                 foreach ($path in (@(Get-GuardLiteral (Get-GuardBound $binding 'Path')) + @(Get-GuardLiteral (Get-GuardBound $binding 'LiteralPath')))) {
                     $match = [regex]::Match($path, '(?i)(?:^|[\\/:])variable:(\w+)$')
-                    if ($match.Success -and $match.Groups[1].Value -eq $Variable) { [void]$writes.Add([pscustomobject]@{ Expression = $null; Reach = 'local' }) }
+                    if ($match.Success -and $match.Groups[1].Value -eq $Variable) { [void]$writes.Add([pscustomobject]@{ Expression = $null; Constant = $false; Reach = 'local' }) }
                 }
             }
         }
@@ -595,6 +629,9 @@ function Test-GuardVettedOrigin($Function, [string]$Variable, [string]$Key) {
     # Every assignment to $Variable inside $Function must be one of the vetted expressions; 'parameter' means none.
     if (-not $GuardVettedOrigins.ContainsKey($Key)) { return $false }
     $allowed = $GuardVettedOrigins[$Key]
+    # 'literal' means every write hands it a string the parser already knows - a quoted string or a single-quoted
+    # here-string, nothing expanded and nothing computed - so what the call receives is written in the file and can be
+    # read there. It is what a Literals entry is for a value that has to arrive in a variable because of its size.
     # A vetted assignment inside the function does not mean the call reads it: a script-scope $netsh with the vetted
     # assignment sitting under an if ($false) runs the outer value (PR #72 round 5). Following which write reaches a
     # call is a dataflow this guard will not pretend to do; what it does instead is refuse the shape that makes the
@@ -612,6 +649,10 @@ function Test-GuardVettedOrigin($Function, [string]$Variable, [string]$Key) {
     if ($allowed -contains 'parameter') { return ($writes.Count -eq 0) }
     if ($writes.Count -eq 0) { return $false }
     foreach ($write in $writes) {
+        if ($allowed -contains 'literal') {
+            if (-not $write.Constant) { return $false }
+            continue
+        }
         if ($null -eq $write.Expression) { return $false }
         if ($allowed -notcontains $write.Expression) { return $false }
     }
@@ -669,8 +710,24 @@ function Test-GuardVettedArgument([CommandAst]$Command, [string]$Key) {
         $binding = Get-GuardBinding $Command
         if ($null -eq $binding) { return $false }
         $types = @(Get-GuardLiteral (Get-GuardBound $binding 'TypeName'))
-        if ($types.Count -eq 0) { return $false }
-        foreach ($type in $types) { if ($GuardVettedTypes -notcontains $type) { return $false } }
+        if ($types.Count -ne 1) { return $false }
+        if (-not $GuardVettedTypes.ContainsKey($types[0])) { return $false }
+        $arguments = Get-GuardBound $binding 'ArgumentList'
+        $count = 0
+        if ($null -ne $arguments) {
+            # New-Object Point(22, 84) hands the binder a parenthesised array, not an array: the commas are inside the
+            # parentheses, which is the same shape the New-Object guard of backlog #17 is about.
+            $value = $arguments.Value
+            while ($value -is [ParenExpressionAst]) {
+                if (@($value.Pipeline.PipelineElements).Count -ne 1) { break }
+                $element = $value.Pipeline.PipelineElements[0]
+                if ($element -isnot [CommandExpressionAst]) { break }
+                $value = $element.Expression
+            }
+            $count = 1
+            if ($value -is [ArrayLiteralAst]) { $count = @($value.Elements).Count }
+        }
+        if ($GuardVettedTypes[$types[0]] -notcontains $count) { return $false }
     }
     if ($GuardVettedDestinations.ContainsKey($Key)) {
         $rule = $GuardVettedDestinations[$Key]
@@ -687,6 +744,34 @@ function Test-GuardVettedArgument([CommandAst]$Command, [string]$Key) {
         if (-not $seen) { return $false }
     }
     return $true
+}
+
+function Test-GuardDefinitionEstablished($Definition, $Call) {
+    # PowerShell defines a function when it reaches it: a definition after the call, or one inside an if or a loop or
+    # a try that may not have run, is not the command that call resolves to (PR #72 round 6). Established means every
+    # step from it up to its own scope is a plain block, and - for a call at the top level of the file - that it
+    # stands before that call. A call inside a function body is not held to the text order: the definitions have all
+    # run by the time anything invokes that function, which is why this file calls forward 39 times and is right to.
+    if ($null -eq (Get-GuardEnclosingFunctionAst $Call) -and $Definition.Extent.StartOffset -ge $Call.Extent.StartOffset) { return $false }
+    $node = $Definition.Parent
+    while ($null -ne $node -and $node -isnot [FunctionDefinitionAst]) {
+        if ($node -is [IfStatementAst] -or $node -is [LoopStatementAst] -or $node -is [SwitchStatementAst] -or
+            $node -is [TryStatementAst] -or $node -is [TrapStatementAst] -or $node -is [CatchClauseAst]) { return $false }
+        $node = $node.Parent
+    }
+    return $true
+}
+
+function Find-UnvettedRedirection([string]$Text) {
+    # > and >> create or truncate the file they name, with no command and no member to read: Get-Date > C:\Users\x
+    # is a write this guard saw nothing of (PR #72 round 6). The shipped scripts redirect one thing, 2>&1, which
+    # merges a stream into another and touches nothing - so a redirection to a file is a finding, whatever it names.
+    $ast = ConvertTo-GuardAst $Text
+    $hits = New-Object System.Collections.ArrayList
+    foreach ($redirection in $ast.FindAll({ param($node) $node -is [FileRedirectionAst] }, $true)) {
+        [void]$hits.Add(('{0} ({1})' -f $redirection.Extent.StartLineNumber, $redirection.Extent.Text))
+    }
+    return @($hits | Select-Object -Unique)
 }
 
 function Find-UnvettedCall([string]$Text) {
@@ -706,6 +791,12 @@ function Find-UnvettedCall([string]$Text) {
         # A module-qualified name is its own identity: stripping to the last backslash let UnreviewedModule\Get-Date
         # inherit the clock's entry and UnreviewedModule\Write-Utf8File the in-file exemption, while PowerShell would
         # run the module's command (PR #72 round 2). The tool qualifies nothing, so any qualified name is a finding.
+        # . runs the thing in the caller's scope, where a script can rewrite this tool's own functions and
+        # variables - including a variable some entry above vets. The two scripts dot-source nothing at all, so the
+        # operator is part of what a vetted call is (a self-audit before round 7, not a review finding).
+        if ($command.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Dot) {
+            [void]$hits.Add(('{0} (dot-sourced, which runs in the caller''s scope)' -f $line)); continue
+        }
         $written = $command.GetCommandName()
         $name = $written
         if ($null -eq $name) {
@@ -724,6 +815,7 @@ function Find-UnvettedCall([string]$Text) {
         $visible = $false
         foreach ($definition in $definitions) {
             if ($definition.Name -ne $name) { continue }
+            if (-not (Test-GuardDefinitionEstablished $definition $command)) { continue }
             $owner = Get-GuardEnclosingFunctionAst $definition
             if ($null -eq $owner) { $visible = $true; break }
             $node = $command
@@ -755,12 +847,14 @@ if ($Path) {
         $arithmetic = @(Find-UnparenthesizedArithmetic $text)
         $overwrites = @(Find-OverwrittenParameter $text)
         $unvetted = @(Find-UnvettedCall $text) + @(Find-UnvettedMember $text)
+        $redirections = @(Find-UnvettedRedirection $text)
         foreach ($parseError in $errors) { Write-Output ('[FINDING] {0}:{1}: does not parse: {2}' -f $full, $parseError.Extent.StartLineNumber, $parseError.Message) }
         foreach ($line in $arithmetic) { Write-Output ('[FINDING] {0}:{1}: arithmetic at the top level of a New-Object argument list' -f $full, $line) }
         foreach ($hit in $overwrites) { Write-Output ('[FINDING] {0}:{1}: the write reaches the parameter at script scope' -f $full, $hit) }
         foreach ($hit in $unvetted) { Write-Output ('[FINDING] {0}:{1}: a call nobody vetted' -f $full, $hit) }
-        $findings += $errors.Count + $arithmetic.Count + $overwrites.Count + $unvetted.Count
-        Write-Output ('{0}: {1} parse error(s), {2} New-Object finding(s), {3} parameter finding(s), {4} unvetted call(s)' -f $full, $errors.Count, $arithmetic.Count, $overwrites.Count, $unvetted.Count)
+        foreach ($hit in $redirections) { Write-Output ('[FINDING] {0}:{1}: a redirection that writes a file' -f $full, $hit) }
+        $findings += $errors.Count + $arithmetic.Count + $overwrites.Count + $unvetted.Count + $redirections.Count
+        Write-Output ('{0}: {1} parse error(s), {2} New-Object finding(s), {3} parameter finding(s), {4} unvetted call(s), {5} redirection(s)' -f $full, $errors.Count, $arithmetic.Count, $overwrites.Count, $unvetted.Count, $redirections.Count)
     }
     Write-Output ('Summary: {0} file(s), {1} finding(s)' -f $targets.Count, $findings)
     exit $findings
