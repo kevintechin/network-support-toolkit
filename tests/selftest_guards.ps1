@@ -74,7 +74,8 @@ foreach ($language in @('en-US', 'zh-TW')) {
     $errors = @(Get-GuardParseError $text)
     $parameters = @(Find-OverwrittenParameter $text)
     $arithmetic = @(Find-UnparenthesizedArithmetic $text)
-    $calls = @(Find-UnvettedCall $text) + @(Find-UnvettedMember $text) + @(Find-UnvettedRedirection $text)
+    $calls = @(Find-UnvettedCall $text) + @(Find-UnvettedMember $text) + @(Find-UnvettedRedirection $text) +
+        @(Find-UnvettedEnvironmentWrite $text)
     Write-Output ('current {0}: {1} parse error(s); parameter guard [{2}]; arithmetic guard [{3}]; call guard [{4}]' -f $language, $errors.Count, ($parameters -join ', '), ($arithmetic -join ', '), ($calls -join ', '))
     if ($errors.Count -or $parameters.Count -or $arithmetic.Count -or $calls.Count) { $ok = $false; Write-Output '  MISMATCH: the shipped file must parse and come back clean' }
 }
@@ -512,6 +513,14 @@ $CallCases = @(
     New-Case 'function ConvertTo-SafeString { }<nl>function Initialize-OutputDirectory { $folderName = "C:/Users/Public/evil"<nl>if ([System.IO.Path]::IsPathRooted($folderName)) { $preferred = $folderName }<nl>else { $preferred = Join-Path $script:BaseDirectory $folderName }<nl>New-Item -ItemType Directory -Path $preferred }' $true
     New-Case 'function Write-EmergencyReport { $directory = $script:OutputDirectory<nl>New-Item -ItemType Directory -Path $directory }<nl>function Initialize-OutputDirectory { $fallback = Join-Path ([System.IO.Path]::GetTempPath()) "NetworkHealthCheck<bs>Reports"<nl>$script:OutputDirectory = $fallback }' $false
     New-Case 'function Write-EmergencyReport { $directory = $script:OutputDirectory<nl>New-Item -ItemType Directory -Path $directory }<nl>function Other { $script:OutputDirectory = "C:/Users/Public/evil" }' $true
+    # Round 8: a definition inside a script block literal has not run - and the self-audit beside it, that nothing
+    # here may write an environment variable, which is what the vetted $netsh reads its folder from.
+    New-Case '$unused = { function Remove-Item { } }\nRemove-Item -LiteralPath "C:/Users/Public/x"' $true
+    New-Case '& { function Remove-Item { }\nRemove-Item -LiteralPath "C:/Users/Public/x" }' $true
+    New-Case 'function Write-UiLog { $script:LogBox.AppendText($line) }\nfunction Initialize-Gui { $b.Add_Click({ Write-UiLog }) }' $false
+    New-Case '$env:SystemRoot = "C:/Users/Public"' $true
+    New-Case 'function Get-WifiAssociationSample { $env:SystemRoot = "C:/Users/Public"<nl>$netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>& $netsh wlan show interfaces }' $true
+    New-Case '$env:Path += ";C:/Users/Public"' $true
 )
 
 # A duplicate case would silently shrink the set instead of strengthening it, so the sets are checked for one.
@@ -531,11 +540,11 @@ foreach ($case in $FunctionCases) {
     Write-Output ('  in-function {0} (expected {1}): {2}' -f $(if ($hit) { 'flagged' } else { 'clean  ' }), $(if ($case.Expect) { 'flagged' } else { 'clean' }), $case.Text)
 }
 foreach ($case in $CallCases) {
-    # All three guards: a command, a member invocation and a redirection are three shapes of the one question -
-    # is this reach for the machine vetted (PR #72 round 6).
+    # All four guards: a command, a member invocation, a redirection and a write to the environment are four
+    # shapes of the one question - is this reach for the machine vetted (PR #72 rounds 6 and 8).
     $text = (Expand-Case $case.Text) + "`n"
     $hit = (@(Find-UnvettedCall $text).Count + @(Find-UnvettedMember $text).Count +
-        @(Find-UnvettedRedirection $text).Count) -gt 0
+        @(Find-UnvettedRedirection $text).Count + @(Find-UnvettedEnvironmentWrite $text).Count) -gt 0
     if ($hit -ne $case.Expect) { $ok = $false }
     Write-Output ('  call        {0} (expected {1}): {2}' -f $(if ($hit) { 'flagged' } else { 'clean  ' }), $(if ($case.Expect) { 'flagged' } else { 'clean' }), $case.Text)
 }

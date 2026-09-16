@@ -899,13 +899,45 @@ function Test-GuardDefinitionEstablished($Definition, $Call, $Entries) {
         else { $limit = $Entries[$owner.Name] }
     }
     if ($null -ne $limit -and $Definition.Extent.StartOffset -ge $limit) { return $false }
+    # Unconditional means the plain statement blocks of the scope it stands in, and a script block literal is not
+    # one of those: $unused = { function Remove-Item {} } defines nothing until something runs that block, and the
+    # call below it gets the real cmdlet (PR #72 round 8). A function's own body is a ScriptBlockAst and the file's
+    # root is too, so neither trips this; only a { } written as an expression does. The tool defines no function
+    # inside a block, so & { function X {}; X } is refused with the rest - a shape it does not use.
     $node = $Definition.Parent
     while ($null -ne $node -and $node -isnot [FunctionDefinitionAst]) {
+        if ($node -is [ScriptBlockExpressionAst]) { return $false }
         if ($node -is [IfStatementAst] -or $node -is [LoopStatementAst] -or $node -is [SwitchStatementAst] -or
             $node -is [TryStatementAst] -or $node -is [TrapStatementAst] -or $node -is [CatchClauseAst]) { return $false }
         $node = $node.Parent
     }
     return $true
+}
+
+function Find-UnvettedEnvironmentWrite([string]$Text) {
+    # $env:SystemRoot = "C:\Users\Public" is a write with no command and no member either, and it aims at the one
+    # thing a vetted entry reads from outside this file: $netsh is Join-Path $env:SystemRoot "System32\netsh.exe",
+    # resolved rather than trusted to PATH, and an entry above says so. Writing that name would redirect the program
+    # while every rule here stayed green. The two shipped scripts write no environment variable at all - measured,
+    # zero in both - so any write to one is a finding, and the assumption is a check now (a self-audit before round
+    # 8, not a review finding). Set-Item Env:\... and [Environment]::SetEnvironmentVariable are findings already,
+    # by the name and the member they carry.
+    $ast = ConvertTo-GuardAst $Text
+    $hits = New-Object System.Collections.ArrayList
+    foreach ($assignment in $ast.FindAll({ param($node) $node -is [AssignmentStatementAst] }, $true)) {
+        foreach ($target in (Get-GuardAssignmentTargets $assignment.Left)) {
+            if ($target -isnot [VariableExpressionAst]) { continue }
+            if ($target.VariablePath.DriveName -ne 'env') { continue }
+            [void]$hits.Add(('{0} ({1})' -f $assignment.Extent.StartLineNumber, $target.Extent.Text))
+        }
+    }
+    foreach ($node in $ast.FindAll({ param($item) $item -is [UnaryExpressionAst] }, $true)) {
+        if ($GuardIncrements -notcontains [string]$node.TokenKind) { continue }
+        if ($node.Child -isnot [VariableExpressionAst]) { continue }
+        if ($node.Child.VariablePath.DriveName -ne 'env') { continue }
+        [void]$hits.Add(('{0} ({1})' -f $node.Extent.StartLineNumber, $node.Child.Extent.Text))
+    }
+    return @($hits | Select-Object -Unique)
 }
 
 function Find-UnvettedRedirection([string]$Text) {
@@ -995,13 +1027,15 @@ if ($Path) {
         $overwrites = @(Find-OverwrittenParameter $text)
         $unvetted = @(Find-UnvettedCall $text) + @(Find-UnvettedMember $text)
         $redirections = @(Find-UnvettedRedirection $text)
+        $environment = @(Find-UnvettedEnvironmentWrite $text)
         foreach ($parseError in $errors) { Write-Output ('[FINDING] {0}:{1}: does not parse: {2}' -f $full, $parseError.Extent.StartLineNumber, $parseError.Message) }
         foreach ($line in $arithmetic) { Write-Output ('[FINDING] {0}:{1}: arithmetic at the top level of a New-Object argument list' -f $full, $line) }
         foreach ($hit in $overwrites) { Write-Output ('[FINDING] {0}:{1}: the write reaches the parameter at script scope' -f $full, $hit) }
         foreach ($hit in $unvetted) { Write-Output ('[FINDING] {0}:{1}: a call nobody vetted' -f $full, $hit) }
         foreach ($hit in $redirections) { Write-Output ('[FINDING] {0}:{1}: a redirection that writes a file' -f $full, $hit) }
-        $findings += $errors.Count + $arithmetic.Count + $overwrites.Count + $unvetted.Count + $redirections.Count
-        Write-Output ('{0}: {1} parse error(s), {2} New-Object finding(s), {3} parameter finding(s), {4} unvetted call(s), {5} redirection(s)' -f $full, $errors.Count, $arithmetic.Count, $overwrites.Count, $unvetted.Count, $redirections.Count)
+        foreach ($hit in $environment) { Write-Output ('[FINDING] {0}:{1}: a write to an environment variable' -f $full, $hit) }
+        $findings += $errors.Count + $arithmetic.Count + $overwrites.Count + $unvetted.Count + $redirections.Count + $environment.Count
+        Write-Output ('{0}: {1} parse error(s), {2} New-Object finding(s), {3} parameter finding(s), {4} unvetted call(s), {5} redirection(s), {6} environment write(s)' -f $full, $errors.Count, $arithmetic.Count, $overwrites.Count, $unvetted.Count, $redirections.Count, $environment.Count)
     }
     Write-Output ('Summary: {0} file(s), {1} finding(s)' -f $targets.Count, $findings)
     exit $findings
