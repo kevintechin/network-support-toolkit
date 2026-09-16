@@ -28,12 +28,14 @@ wlan show interfaces` is clean and `netsh int ip set address` is a finding — i
 which is the single call whose path is built at run time; another variable there is a finding. An alias is not a name:
 a call spelled `sc` is a finding until somebody says which `sc` it is.
 
-**28 corpus cases**, each recorded as flagged or clean and every one of them checked: writers by cmdlet
+**45 corpus cases**, each recorded as flagged or clean and every one of them checked: writers by cmdlet
 (`Set-NetIPAddress`, `Set-ItemProperty`, `Invoke-CimMethod`, `Set-Service`, `Remove-NetRoute`), writers by another
 program (`reg add`, `setx`), a vetted program with another verb (`netsh int ip set`, `netsh advfirewall set`, `arp
 -s`), the same through `$netsh`, an invocation through an unvetted variable, `Start-Process` with `cmd.exe` and with
 an unvetted variable, an alias, and the reads that must stay clean. `guards` step: **152 / 33 / 57 / 28 cases**, both
 shipped files clean.
+
+**Independent review — Codex, PR #72, round 1 · 2026-09-16, on `14c6fb9`: three findings, all P1, all accepted, and together they are one sentence: an allowlist is only as wide as what it looks at.** *It did not look at member invocations at all.* `[Microsoft.Win32.Registry]::SetValue(...)`, `(Get-CimInstance ...).Delete()` and `$key.SetValue(...)` are `InvokeMemberExpressionAst`, not `CommandAst`, so the entire .NET and CIM-method surface passed unread — while this guard's own header named a .NET call as one of the open-ended ways to write. `Find-UnvettedMember` reads them now, on the same measurement: **49 static names and 48 method names** over the two files, each vetted, a name nobody vetted a finding. What it claims is exactly that — every member invocation carries a name somebody looked at — and not *no member invocation writes*, which no static reading can say: `.Add` on a list and `.Add` on something else read alike here. *The writers were vetted by name, so where they wrote was nobody's question.* `New-Item -Path HKCU:\Software\X` creates a registry key and `Remove-Item` deletes whatever it is pointed at, both under names already on the list. Each writer now names the parameters that carry its destination, the literals it may be, and the variables it may arrive in — the five the tool actually computes, each a place the run made or wrote itself — and a call carrying no destination at all is a finding too. *And the verb rule read only bare words.* `netsh "int" "ip" "set"` is the same instruction as `netsh int ip set`, and `& $netsh $arguments` is an instruction nobody can read; every argument is checked now and anything the parser cannot resolve to a string is refused. **Corpus 28 → 45**, and two cases written in the first version flipped from clean to flagged: they named variables the tool does not have, which the destination rule is exactly about.
 
 **What it does not do, and the item says so.** It reads the calls, not what they do: a vetted read whose side effect
 changes the machine — a query that starts a trigger-started service, a driver call that resets a counter —

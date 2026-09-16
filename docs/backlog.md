@@ -83,8 +83,10 @@ The two shipped scripts are not signed. The launchers pass `-ExecutionPolicy Byp
 the owner's: if this is not shown to the person who runs the tool, is confirming the design not enough? It nearly is,
 and the answer is in two parts. For the regression this item was raised against — **our own code starting to
 write** — a static check is better than a measurement: deterministic, on every push, on both languages, no quiet
-machine needed, no false alarm to re-run. That check now exists as `Find-UnvettedCall` in `tests\ast_guards.ps1`, and
-the `guards` step runs it over both shipped scripts.
+machine needed, no false alarm to re-run. That check now exists as `Find-UnvettedCall` and `Find-UnvettedMember` in
+`tests\ast_guards.ps1`, and the `guards` step runs them over both shipped scripts: every command called, every
+`[Type]::Method` and `$object.Method` invoked, and where each of the four calls that write is allowed to
+write.
 
 **It is an allowlist, and that is the point.** The ways to write to Windows are open-ended — a cmdlet, a .NET
 call, a CIM method, an external program with another verb — so a denylist stays green until somebody uses a
@@ -94,9 +96,11 @@ external names** and **three invocations through a variable** (`$netsh`, resolve
 rather than trusted to PATH, and two script blocks the file builds itself). Each of the 38 carries the reason it is a
 read; `netsh` and `arp` carry an argument rule, so `netsh wlan show interfaces` passes and `netsh int ip set address`
 is a finding; `Start-Process` carries the two programs it may start and the one variable the GUI's Open-report button
-hands it. Both files come back clean, and **28 corpus cases** hold it — writers by cmdlet, by another program
+hands it. Both files come back clean, and **45 corpus cases** hold it — writers by cmdlet, by another program
 and by a vetted program with another verb, an invocation through an unvetted variable, `Start-Process` with anything
-else, an alias standing in for a vetted name, and the reads that must stay clean.
+else, an alias standing in for a vetted name, a registry write through `[Microsoft.Win32.Registry]::SetValue` and a
+`.Delete()` on a CIM instance, `New-Item` aimed at `HKCU:` and `Remove-Item` aimed at a variable nobody vetted,
+an argument quoted so the rule would not read it, and the reads that must stay clean.
 
 **What it cannot do is the measurement, and the acceptance above is unchanged.** The guard reads the calls, not what
 they do: a vetted read whose side effect changes the machine — a query that starts a trigger-started service, a

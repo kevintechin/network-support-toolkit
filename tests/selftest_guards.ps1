@@ -69,7 +69,7 @@ foreach ($language in @('en-US', 'zh-TW')) {
     $errors = @(Get-GuardParseError $text)
     $parameters = @(Find-OverwrittenParameter $text)
     $arithmetic = @(Find-UnparenthesizedArithmetic $text)
-    $calls = @(Find-UnvettedCall $text)
+    $calls = @(Find-UnvettedCall $text) + @(Find-UnvettedMember $text)
     Write-Output ('current {0}: {1} parse error(s); parameter guard [{2}]; arithmetic guard [{3}]; call guard [{4}]' -f $language, $errors.Count, ($parameters -join ', '), ($arithmetic -join ', '), ($calls -join ', '))
     if ($errors.Count -or $parameters.Count -or $arithmetic.Count -or $calls.Count) { $ok = $false; Write-Output '  MISMATCH: the shipped file must parse and come back clean' }
 }
@@ -369,16 +369,38 @@ $CallCases = @(
     New-Case 'Start-Process -FilePath $target' $false
     # An alias is not the name: a call spelled sc is a finding until somebody says which sc it is.
     New-Case 'sc -Path out.txt -Value x' $true
-    # And the reads, which are what the tool does.
+    # And the reads, which are what the tool does. The two writers here name variables the tool does not
+    # have: written when this guard vetted a writer by its name alone, they are findings under the
+    # destination rule round 1 asked for, and they stay as two more spellings of it.
     New-Case 'netsh wlan show interfaces' $false
     New-Case '& $netsh winhttp show proxy' $false
     New-Case 'arp -a' $false
     New-Case 'Get-NetAdapter -ErrorAction Stop' $false
     New-Case 'Get-CimInstance -ClassName Win32_NetworkAdapter' $false
     New-Case 'Set-Content -LiteralPath $path -Value $text' $false
-    New-Case 'New-Item -ItemType Directory -Path $reports' $false
-    New-Case 'Remove-Item -LiteralPath $probe -Force' $false
+    New-Case 'New-Item -ItemType Directory -Path $reports' $true
+    New-Case 'Remove-Item -LiteralPath $probe -Force' $true
     New-Case 'function Get-Mine { 1 }\nGet-Mine' $false
+    # Member invocations, which the first version of this guard did not look at at all (PR #72 round 1).
+    New-Case '[Microsoft.Win32.Registry]::SetValue("HKCU\X", "Y", 1)' $true
+    New-Case '(Get-CimInstance Win32_NetworkAdapter).Delete()' $true
+    New-Case '$key.SetValue("a", 1)' $true
+    New-Case '$adapter.Disable()' $true
+    New-Case '[math]::Round(1.5, 1)' $false
+    New-Case '$s.Trim()' $false
+    New-Case '[System.IO.File]::WriteAllText($p, $t)' $false
+    # Where a writer writes, which vetting it by name alone left open.
+    New-Case 'New-Item -Path "HKCU:\Software\X" -ItemType Directory' $true
+    New-Case 'New-Item -Path $somewhereElse -ItemType Directory' $true
+    New-Case 'Remove-Item -LiteralPath $userFile -Force' $true
+    New-Case 'Remove-Item -Recurse -Force' $true
+    New-Case 'New-Item -ItemType Directory -Path $preferred' $false
+    New-Case 'Remove-Item -LiteralPath $testFile -Force' $false
+    New-Case 'Set-Content -LiteralPath $path -Value $text' $false
+    # An argument the rule cannot read is an argument nobody vetted: netsh reads "int" as int.
+    New-Case 'netsh "int" "ip" "set" "address"' $true
+    New-Case '& $netsh $arguments' $true
+    New-Case 'arp ''-s'' ''10.0.0.1''' $true
 )
 
 # A duplicate case would silently shrink the set instead of strengthening it, so the sets are checked for one.
@@ -398,7 +420,9 @@ foreach ($case in $FunctionCases) {
     Write-Output ('  in-function {0} (expected {1}): {2}' -f $(if ($hit) { 'flagged' } else { 'clean  ' }), $(if ($case.Expect) { 'flagged' } else { 'clean' }), $case.Text)
 }
 foreach ($case in $CallCases) {
-    $hit = @(Find-UnvettedCall ((Expand-Case $case.Text) + "`n")).Count -gt 0
+    # Both guards: a command and a member invocation are two shapes of the one question - is this call vetted.
+    $text = (Expand-Case $case.Text) + "`n"
+    $hit = (@(Find-UnvettedCall $text).Count + @(Find-UnvettedMember $text).Count) -gt 0
     if ($hit -ne $case.Expect) { $ok = $false }
     Write-Output ('  call        {0} (expected {1}): {2}' -f $(if ($hit) { 'flagged' } else { 'clean  ' }), $(if ($case.Expect) { 'flagged' } else { 'clean' }), $case.Text)
 }

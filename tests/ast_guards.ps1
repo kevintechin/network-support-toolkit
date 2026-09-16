@@ -14,7 +14,8 @@ param([string[]]$Path)
 #     parenthesized argument list (or an @( ) one) whose top-level expression is an arithmetic BinaryExpressionAst over
 #     the ArrayLiteralAst the commas built, and an unparenthesized `-ArgumentList 22, 84 + $offset`, where the comma
 #     ends the array and `+` and `$offset` reach New-Object as positional arguments it cannot bind.
-#   Find-UnvettedCall - a command the shipped script calls that is neither one of its own functions nor on the
+#   Find-UnvettedCall / Find-UnvettedMember - a command the shipped script calls, or a [Type]::Method / $object.Method
+#     it invokes, that is neither one of its own functions nor on the
 #     list of calls somebody looked at, which is the static half of backlog #42: "it changes nothing" is the
 #     tool's first promise and nothing measured it. An allowlist, because the ways to write to Windows are
 #     open-ended and a denylist is green until it meets a spelling it does not know. See its own section.
@@ -374,15 +375,68 @@ $GuardVettedArguments = @{
     'netsh' = '^(wlan|winhttp|show|interfaces|proxy)$'
     'arp'   = '^-a$'
 }
-# And the programs these may start. A path the parser can read is checked against the list; the one call whose path
-# is built at run time - the GUI's Open-report button, which starts whichever of the three files this run wrote is on
-# disk - is vetted by the variable it arrives in, so a Start-Process in that same function carrying any other variable
-# is still a finding.
-$GuardVettedFilePaths = @{
-    'Start-Process' = @('notepad.exe', 'explorer.exe')
+# Where the calls that write are allowed to write. Vetting these by name alone left New-Item free to make a registry
+# key and Remove-Item free to delete anything (PR #72 round 1): the name is the same, the destination is the whole
+# question. Each entry names the parameters that carry the destination, the literals it may be, and the variables it
+# may arrive in - the paths this tool computes at run time, each one a place the run made or wrote itself. A
+# destination the parser cannot resolve to one of those is a finding, and a call carrying none of the parameters is
+# too, because a destination nobody can read is not a destination anybody vetted.
+$GuardVettedDestinations = @{
+    'New-Item'      = @{ Parameters = @('Path', 'LiteralPath'); Literals = @(); Variables = @('preferred', 'fallback', 'directory') }
+    'Remove-Item'   = @{ Parameters = @('Path', 'LiteralPath'); Literals = @(); Variables = @('testFile') }
+    'Set-Content'   = @{ Parameters = @('Path', 'LiteralPath'); Literals = @(); Variables = @('path') }
+    'Start-Process' = @{ Parameters = @('FilePath'); Literals = @('notepad.exe', 'explorer.exe'); Variables = @('target') }
 }
-$GuardVettedFilePathVariables = @{
-    'Start-Process' = @('target')
+
+# The calls the parser does not see as commands at all: [Type]::Method(...) and $object.Method(...). Leaving them out
+# was the hole the allowlist was built to close - $obj.SetValue, (Get-CimInstance ...).Delete(), a CIM method - and the
+# guard said so in its own header while not looking (PR #72 round 1). Same rule, same measurement: 49 static names and
+# 48 method names over the two shipped files, each one read or written down. A name nobody vetted is a finding, which
+# is the property that matters: a new .SetValue( or .Delete( goes red the day it arrives.
+#
+# A method name is vetted, not a method: .Add on a list and .Add on something else read alike here. That is the claim -
+# every member invocation carries a name somebody looked at - and it is weaker than "no member invocation writes",
+# which no static reading can make.
+$GuardVettedStaticMembers = @(
+    '$apiType::WlanCloseHandle', '$apiType::WlanEnumInterfaces', '$apiType::WlanFreeMemory', '$apiType::WlanOpenHandle',
+    '$apiType::WlanQueryInterface', '[array]::IndexOf', '[char]::ConvertToUtf32', '[char]::IsHighSurrogate',
+    '[char]::IsLowSurrogate', '[Console]::ReadKey', '[Convert]::ToInt32', '[double]::IsInfinity',
+    '[double]::IsNaN', '[double]::TryParse', '[guid]::NewGuid', '[math]::Ceiling',
+    '[math]::Floor', '[math]::Max', '[math]::Min', '[math]::Pow',
+    '[math]::Round', '[math]::Sqrt', '[regex]::Escape', '[regex]::Match',
+    '[regex]::Matches', '[string]::Equals', '[string]::IsNullOrWhiteSpace', '[System.BitConverter]::GetBytes',
+    '[System.BitConverter]::ToUInt32', '[System.Diagnostics.Stopwatch]::StartNew', '[System.Drawing.Color]::FromArgb', '[System.IO.File]::ReadAllText',
+    '[System.IO.File]::WriteAllText', '[System.IO.Path]::GetTempPath', '[System.IO.Path]::IsPathRooted', '[System.Net.Dns]::GetHostAddressesAsync',
+    '[System.Net.HttpWebRequest]::Create', '[System.Net.IPAddress]::Parse', '[System.Net.IPAddress]::TryParse', '[System.Net.WebRequest]::GetSystemWebProxy',
+    '[System.Net.WebUtility]::HtmlEncode', '[System.Runtime.InteropServices.Marshal]::Copy', '[System.Runtime.InteropServices.Marshal]::PtrToStringUni', '[System.Runtime.InteropServices.Marshal]::ReadInt32',
+    '[System.Runtime.InteropServices.Marshal]::ReadInt64', '[System.Uri]::TryCreate', '[System.Windows.Forms.Application]::DoEvents', '[System.Windows.Forms.Application]::EnableVisualStyles',
+    '[System.Windows.Forms.MessageBox]::Show'
+)
+$GuardVettedMemberNames = @(
+    'Add', 'Add_Click', 'Add_FormClosing', 'Add_Shown', 'Add_TextChanged', 'Add_Tick',
+    'AddSeconds', 'AppendLine', 'AppendText', 'BeginConnect', 'Clear', 'Close',
+    'Contains', 'ContainsKey', 'Dispose', 'EndConnect', 'EndsWith', 'GetAddressBytes',
+    'GetAscii', 'GetProxy', 'GetResponse', 'GetResponseStream', 'GetType', 'GetUnicode',
+    'IndexOf', 'IndexOfAny', 'IOControl', 'LastIndexOf', 'Normalize', 'PerformClick',
+    'ReadByte', 'ScrollToCaret', 'Send', 'SetToolTip', 'ShowDialog', 'Split',
+    'Start', 'StartsWith', 'Stop', 'Substring', 'ToInt64', 'ToLowerInvariant',
+    'ToString', 'ToUpperInvariant', 'Trim', 'TrimEnd', 'Wait', 'WaitOne'
+)
+
+function Find-UnvettedMember([string]$Text) {
+    # The lines of the member invocations whose name is on neither list.
+    $ast = ConvertTo-GuardAst $Text
+    $hits = New-Object System.Collections.ArrayList
+    foreach ($call in $ast.FindAll({ param($node) $node -is [InvokeMemberExpressionAst] }, $true)) {
+        $line = $call.Extent.StartLineNumber
+        $member = $call.Member.Extent.Text
+        if ($call.Static) {
+            $name = ('{0}::{1}' -f $call.Expression.Extent.Text, $member)
+            if ($GuardVettedStaticMembers -notcontains $name) { [void]$hits.Add(('{0} ({1})' -f $line, $name)) }
+        }
+        elseif ($GuardVettedMemberNames -notcontains $member) { [void]$hits.Add(('{0} (.{1})' -f $line, $member)) }
+    }
+    return @($hits | Select-Object -Unique)
 }
 
 function Test-GuardVettedArgument([CommandAst]$Command, [string]$Key) {
@@ -391,26 +445,33 @@ function Test-GuardVettedArgument([CommandAst]$Command, [string]$Key) {
         foreach ($element in @($Command.CommandElements | Select-Object -Skip 1)) {
             if ($element -is [CommandParameterAst]) {
                 if (('-' + $element.ParameterName) -notmatch $pattern) { return $false }
+                continue
             }
-            elseif ($element -is [StringConstantExpressionAst] -and $element.StringConstantType -eq 'BareWord') {
-                if ($element.Value -notmatch $pattern) { return $false }
-            }
+            # Every argument, not the bare words alone: netsh reads "int" "ip" "set" exactly as it reads int ip set,
+            # and a variable is an argument nobody can read (PR #72 round 1). Anything the parser cannot resolve to a
+            # string is refused, which is the safe direction for a rule about what a program is being told to do.
+            if ($element -isnot [StringConstantExpressionAst]) { return $false }
+            if ($element.Value -notmatch $pattern) { return $false }
         }
     }
-    if ($GuardVettedFilePaths.ContainsKey($Key)) {
+    if ($GuardVettedDestinations.ContainsKey($Key)) {
+        $rule = $GuardVettedDestinations[$Key]
         $binding = Get-GuardBinding $Command
         if ($null -eq $binding) { return $false }
-        $bound = Get-GuardBound $binding 'FilePath'
-        $paths = @(Get-GuardLiteral $bound)
-        if ($paths.Count -gt 0) {
-            foreach ($path in $paths) { if ($GuardVettedFilePaths[$Key] -notcontains $path) { return $false } }
+        $seen = $false
+        foreach ($parameter in $rule.Parameters) {
+            $bound = Get-GuardBound $binding $parameter
+            if ($null -eq $bound) { continue }
+            $seen = $true
+            $literals = @(Get-GuardLiteral $bound)
+            if ($literals.Count -gt 0) {
+                foreach ($literal in $literals) { if ($rule.Literals -notcontains $literal) { return $false } }
+                continue
+            }
+            if ($bound.Value -isnot [VariableExpressionAst]) { return $false }
+            if ($rule.Variables -notcontains $bound.Value.VariablePath.UserPath) { return $false }
         }
-        else {
-            # Not a literal: the only accepted shape is one of the vetted variables, by name.
-            if ($null -eq $bound -or $bound.Value -isnot [VariableExpressionAst]) { return $false }
-            if (-not $GuardVettedFilePathVariables.ContainsKey($Key)) { return $false }
-            if ($GuardVettedFilePathVariables[$Key] -notcontains $bound.Value.VariablePath.UserPath) { return $false }
-        }
+        if (-not $seen) { return $false }
     }
     return $true
 }
@@ -462,7 +523,7 @@ if ($Path) {
         $errors = @(Get-GuardParseError $text)
         $arithmetic = @(Find-UnparenthesizedArithmetic $text)
         $overwrites = @(Find-OverwrittenParameter $text)
-        $unvetted = @(Find-UnvettedCall $text)
+        $unvetted = @(Find-UnvettedCall $text) + @(Find-UnvettedMember $text)
         foreach ($parseError in $errors) { Write-Output ('[FINDING] {0}:{1}: does not parse: {2}' -f $full, $parseError.Extent.StartLineNumber, $parseError.Message) }
         foreach ($line in $arithmetic) { Write-Output ('[FINDING] {0}:{1}: arithmetic at the top level of a New-Object argument list' -f $full, $line) }
         foreach ($hit in $overwrites) { Write-Output ('[FINDING] {0}:{1}: the write reaches the parameter at script scope' -f $full, $hit) }
