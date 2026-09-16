@@ -851,6 +851,51 @@ function Test-GuardVettedArgument([CommandAst]$Command, [string]$Key) {
     return $true
 }
 
+function Get-GuardCallees($Ast) {
+    # Which of the file's own functions each function calls, by the name the call is written with.
+    $names = @{}
+    foreach ($definition in $Ast.FindAll({ param($node) $node -is [FunctionDefinitionAst] }, $true)) { $names[$definition.Name] = $true }
+    $callees = @{}
+    foreach ($command in $Ast.FindAll({ param($node) $node -is [CommandAst] }, $true)) {
+        $name = $command.GetCommandName()
+        if ($null -eq $name -or -not $names.ContainsKey($name)) { continue }
+        $owner = Get-GuardEnclosingFunctionAst $command
+        if ($null -eq $owner) { continue }
+        if (-not $callees.ContainsKey($owner.Name)) { $callees[$owner.Name] = @{} }
+        $callees[$owner.Name][$name] = $true
+    }
+    return $callees
+}
+
+function Test-GuardReaches([string]$From, [string]$Target, $Callees) {
+    # Whether calling $From can end up running $Target's body, by this file's own calls. Cycles are walked once.
+    $seen = @{}
+    $queue = New-Object System.Collections.Queue
+    $queue.Enqueue($From)
+    while ($queue.Count -gt 0) {
+        $name = [string]$queue.Dequeue()
+        if ($seen.ContainsKey($name)) { continue }
+        $seen[$name] = $true
+        if ($name -eq $Target) { return $true }
+        if ($Callees.ContainsKey($name)) { foreach ($callee in $Callees[$name].Keys) { $queue.Enqueue($callee) } }
+    }
+    return $false
+}
+
+function Get-GuardMomentWithin($Body, [string]$Target, $Callees) {
+    # The earliest statement of $Body's OWN scope that can end up running $Target - the moment, in this body's own
+    # order, at which a call inside $Target can happen. $null where nothing in this body reaches it.
+    $moment = $null
+    foreach ($command in $Body.FindAll({ param($node) $node -is [CommandAst] }, $true)) {
+        $name = $command.GetCommandName()
+        if ($null -eq $name) { continue }
+        if ((Get-GuardEnclosingFunctionAst $command) -ne $Body) { continue }
+        if (-not (Test-GuardReaches $name $Target $Callees)) { continue }
+        if ($null -eq $moment -or $command.Extent.StartOffset -lt $moment) { $moment = $command.Extent.StartOffset }
+    }
+    return $moment
+}
+
 function Get-GuardEntryOffsets($Ast) {
     # The earliest point in the file at which each function can start running: a top-level call to it, or a top-level
     # call to something that reaches it. A body is not held to the text order the way a top-level call is - but it is
@@ -859,15 +904,13 @@ function Get-GuardEntryOffsets($Ast) {
     # the time the first top-level call able to reach it ran.
     $names = @{}
     foreach ($definition in $Ast.FindAll({ param($node) $node -is [FunctionDefinitionAst] }, $true)) { $names[$definition.Name] = $true }
-    $callees = @{}
+    $callees = Get-GuardCallees $Ast
     $roots = New-Object System.Collections.ArrayList
     foreach ($command in $Ast.FindAll({ param($node) $node -is [CommandAst] }, $true)) {
         $name = $command.GetCommandName()
         if ($null -eq $name -or -not $names.ContainsKey($name)) { continue }
-        $owner = Get-GuardEnclosingFunctionAst $command
-        if ($null -eq $owner) { [void]$roots.Add($command); continue }
-        if (-not $callees.ContainsKey($owner.Name)) { $callees[$owner.Name] = @{} }
-        $callees[$owner.Name][$name] = $true
+        if ($null -ne (Get-GuardEnclosingFunctionAst $command)) { continue }
+        [void]$roots.Add($command)
     }
     $entries = @{}
     foreach ($root in $roots) {
@@ -884,14 +927,7 @@ function Get-GuardEntryOffsets($Ast) {
     return $entries
 }
 
-function Test-GuardWithin($Node, $Container) {
-    # Whether $Node stands inside $Container, by the extents the parser gave them both.
-    if ($null -eq $Node -or $null -eq $Container) { return $false }
-    return ($Node.Extent.StartOffset -ge $Container.Extent.StartOffset -and
-            $Node.Extent.EndOffset -le $Container.Extent.EndOffset)
-}
-
-function Test-GuardDefinitionEstablished($Definition, $Call, $Entries) {
+function Test-GuardDefinitionEstablished($Definition, $Call, $Entries, $Callees) {
     # PowerShell defines a function when execution reaches it: a definition after the call, or one inside an if or a
     # loop or a try that may not have run, is not the command that call resolves to (PR #72 round 6). Established means
     # every step from it up to its own scope is a plain block, and that it stands before the call can happen - which
@@ -899,17 +935,29 @@ function Test-GuardDefinitionEstablished($Definition, $Call, $Entries) {
     # body (PR #72 round 7). This file calls forward 39 times and is right to: every one of those bodies is reached
     # from the entry near the end of the file, by which point all 155 definitions have been read. The two functions
     # the restricted-language guard calls at line 124 are not free that way, and they are both defined above it.
-    # The entry offset answers for definitions that stand OUTSIDE the body: those have been read by the time
-    # anything calls it. A definition inside the same body is not one of those - it runs when the body reaches it,
-    # so a call above it gets the real cmdlet, whatever reaches the function and whenever (PR #72 round 9). Such a
-    # definition is held to the text order against the call itself, which is the top-level rule one scope in.
+    # A definition runs when the body it stands in reaches it, so the question is asked in THAT body's order, not
+    # the call's (PR #72 round 10). The moment to beat is the earliest statement of the definition's own body that
+    # can end up running the call - the call itself where they share a body, the earliest top-level call that
+    # reaches it where the definition is at the file's level, and otherwise the earliest call in that body which
+    # reaches the function the call stands in. Looking only at the call's immediate owner missed
+    # function Outer { function Middle { Remove-Item ... }; Middle; function Remove-Item {} }: the definition is
+    # outside Middle, so Middle's own entry - the top-level Outer call, near the end - was the comparison, while
+    # what actually decides it is the Middle call that stands above the definition inside Outer.
+    #
+    # A body nothing can reach never runs, so a call inside it never runs either, and the order cannot matter.
     $owner = Get-GuardEnclosingFunctionAst $Call
-    $limit = $Call.Extent.StartOffset
-    if ($null -ne $owner -and -not (Test-GuardWithin $Definition $owner)) {
-        if ($null -eq $Entries -or -not $Entries.ContainsKey($owner.Name)) { $limit = $null }
-        else { $limit = $Entries[$owner.Name] }
+    $container = Get-GuardEnclosingFunctionAst $Definition
+    if ($null -eq $owner -or $null -eq $Entries -or $Entries.ContainsKey($owner.Name)) {
+        $moment = $null
+        if ($owner -eq $container) { $moment = $Call.Extent.StartOffset }
+        elseif ($null -eq $owner) { return $false }
+        elseif ($null -eq $container) { $moment = $Entries[$owner.Name] }
+        else { $moment = Get-GuardMomentWithin $container $owner.Name $Callees }
+        # Nothing in the definition's own body reaches the call: this body cannot be what put the definition in
+        # place before it, and working out whether something else did is the flow analysis this guard has refused.
+        if ($null -eq $moment) { return $false }
+        if ($Definition.Extent.StartOffset -ge $moment) { return $false }
     }
-    if ($null -ne $limit -and $Definition.Extent.StartOffset -ge $limit) { return $false }
     # Unconditional means the plain statement blocks of the scope it stands in, and a script block literal is not
     # one of those: $unused = { function Remove-Item {} } defines nothing until something runs that block, and the
     # call below it gets the real cmdlet (PR #72 round 8). A function's own body is a ScriptBlockAst and the file's
@@ -978,6 +1026,7 @@ function Find-UnvettedCall([string]$Text) {
     # no nested definitions, so the rule costs nothing and refuses the shape.
     $definitions = @($ast.FindAll({ param($node) $node -is [FunctionDefinitionAst] }, $true))
     $entries = Get-GuardEntryOffsets $ast
+    $callees = Get-GuardCallees $ast
     $hits = New-Object System.Collections.ArrayList
     foreach ($command in $ast.FindAll({ param($node) $node -is [CommandAst] }, $true)) {
         $line = $command.Extent.StartLineNumber
@@ -1012,7 +1061,7 @@ function Find-UnvettedCall([string]$Text) {
         $visible = $false
         foreach ($definition in $definitions) {
             if ($definition.Name -ne $name) { continue }
-            if (-not (Test-GuardDefinitionEstablished $definition $command $entries)) { continue }
+            if (-not (Test-GuardDefinitionEstablished $definition $command $entries $callees)) { continue }
             $owner = Get-GuardEnclosingFunctionAst $definition
             if ($null -eq $owner) { $visible = $true; break }
             $node = $command

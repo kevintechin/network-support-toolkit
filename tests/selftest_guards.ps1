@@ -525,7 +525,9 @@ $CallCases = @(
     # write - including the environment's. The last four ran over the same surface from the other directions.
     New-Case 'function Outer { Remove-Item -LiteralPath "C:/Users/Public/x"\nfunction Remove-Item { } }\nOuter' $true
     New-Case 'function Outer { function Remove-Item { }\nRemove-Item -LiteralPath "C:/Users/Public/x" }\nOuter' $false
-    New-Case 'function Outer { Remove-Item -LiteralPath "C:/Users/Public/x"\nfunction Remove-Item { } }' $true
+    # Clean since round 10, and the reachability rule is why: nothing calls Outer, so that body never runs and
+    # the call in it never happens. The same shape with Outer called stands above it, and is a finding.
+    New-Case 'function Outer { Remove-Item -LiteralPath "C:/Users/Public/x"\nfunction Remove-Item { } }' $false
     New-Case 'function Outer { Remove-Item -LiteralPath "C:/Users/Public/x" }\nfunction Remove-Item { }\nOuter' $false
     New-Case 'foreach ($env:SystemRoot in "C:/Users/Public") { }' $true
     New-Case 'function Get-WifiAssociationSample { foreach ($env:SystemRoot in "C:/Users/Public") { }<nl>$netsh = Join-Path $env:SystemRoot "System32<bs>netsh.exe"<nl>& $netsh wlan show interfaces }' $true
@@ -534,6 +536,15 @@ $CallCases = @(
     New-Case 'Remove-Item -LiteralPath Env:\SystemRoot' $true
     New-Case 'New-Item -Path Env:\SystemRoot -Value "C:/Users/Public"' $true
     New-Case '${env:SystemRoot} = "C:/Users/Public"' $true
+    # Round 10: the body a definition stands in decides when it has run, however many scopes down the call is. The
+    # fourth of these is refused conservatively - Outer really does define both before anything calls Middle, and
+    # working out that nothing else got there first is the flow analysis this guard does not do.
+    New-Case 'function Outer { function Middle { Remove-Item -LiteralPath "C:/Users/Public/x" }\nMiddle\nfunction Remove-Item { } }\nOuter' $true
+    New-Case 'function Outer { function Middle { Remove-Item -LiteralPath "C:/Users/Public/x" }\nfunction Remove-Item { }\nMiddle }\nOuter' $false
+    New-Case 'function Outer { function Middle { Inner }\nfunction Inner { Remove-Item -LiteralPath "C:/Users/Public/x" }\nMiddle\nfunction Remove-Item { } }\nOuter' $true
+    New-Case 'function Outer { function Middle { Remove-Item -LiteralPath "C:/Users/Public/x" }\nfunction Remove-Item { } }\nOuter\nMiddle' $true
+    New-Case 'function Remove-Item { }\nfunction Outer { function Middle { Remove-Item -LiteralPath "C:/Users/Public/x" }\nMiddle }\nOuter' $false
+    New-Case 'function Outer { Remove-Item -LiteralPath "C:/Users/Public/x" }\nfunction Remove-Item { }' $false
 )
 
 # A duplicate case would silently shrink the set instead of strengthening it, so the sets are checked for one.
