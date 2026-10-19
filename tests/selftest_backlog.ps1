@@ -168,7 +168,7 @@ Assert-Catches 'a closed item still listed as open, its group counted right' 'R2
     Edit-All $Readme 'sum to five where the items are five' 'sum to six where the items are six'
 }
 Assert-Catches 'an open item dropped from the row, its group counted right' 'R3' {
-    Edit-All $Readme ', and [#72](docs/backlog.md#72--a-shipped-manual-dates-its-own-features-and-every-date-moves-with-the-release) whether a manual that ships inside one package should date its own features, since the check that keeps its version honest moves every date with the release' ''
+    Edit-All $Readme ', and [#72](docs/backlog.md#72--a-shipped-manual-dates-its-own-features-and-every-date-moves-with-the-release) whether a shipped manual should date its own features' ''
     Edit-All $Readme 'two decisions (' 'one decision ('
     Edit-All $Readme 'sum to five where the items are five' 'sum to four where the items are four'
 }
@@ -183,7 +183,7 @@ Assert-Catches 'an open item linked outside every group, its group counted right
     # PR #63, round 1: the link leaves its group, the group's count follows it, and the link stands in the row's prose
     # between the last group and the closed list, where it is listed (R2, R3) and points at its heading (R4) and is
     # in no group; the overlap sentence is moved with the count so that this is the one thing R5 has to say.
-    Edit-All $Readme ', [#43](docs/backlog.md#43--the-tool-does-not-say-when-the-reports-are-being-written-into-a-synced-folder) nothing telling the person that the reports are being written into a synced folder - the last of the tool items by decision, since the copying is the computer''s own behaviour and the person knows their machine better than the tool does, and met on a machine on 2026-09-15, whose Desktop resolves inside OneDrive with nothing arranged for it, ' ''
+    Edit-All $Readme ', [#43](docs/backlog.md#43--the-tool-does-not-say-when-the-reports-are-being-written-into-a-synced-folder) no warning about a synced report folder' ''
     Edit-All $Readme 'two changes to the tool (' 'one change to the tool ('
     Edit-All $Readme 'sum to five where the items are five' 'sum to four where the items are five'
     Edit-All $Readme ' Numbers 1 to 21' ' [#43](docs/backlog.md#43--the-tool-does-not-say-when-the-reports-are-being-written-into-a-synced-folder) stands outside every group. Numbers 1 to 21'
@@ -194,7 +194,7 @@ Assert-Catches 'the overlap sentence stating a sum the groups do not make' 'R5' 
 Assert-Catches 'an item listed twice in the same group, the count and the sum raised with it' 'R5' {
     # PR #63, round 2: a copied link is a second membership of the same group, not of a further one; the group's count
     # and the overlap sentence are raised with it so that the duplicate is the one thing R5 has to say.
-    Edit-All $Readme 'two changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the retransmission' 'three changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) twice, [#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the retransmission'
+    Edit-All $Readme 'two changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the intermittent' 'three changes to the tool ([#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) twice, [#38](docs/backlog.md#38--the-retransmission-counter-read-fails-intermittently-and-takes-the-verdict-and-the-runs-length-with-it) the intermittent'
     Edit-All $Readme 'sum to five where the items are five' 'sum to six where the items are five'
 }
 Assert-Catches 'a number listed as closed that no closed row carries' 'R6' {
